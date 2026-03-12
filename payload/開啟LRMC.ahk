@@ -1,0 +1,544 @@
+#Requires AutoHotkey v2.0+
+#SingleInstance Force
+SetWorkingDir A_ScriptDir
+
+#Include plugin\RapidOcr\RapidOcr.ahk
+#Include plugin\ImagePut-1.11\ImagePut.ahk
+#Include LogManager.ahk
+
+; 初始化新的日誌系統
+global logger := InitLogger("開啟LRMC")
+
+; 日誌函數（使用新的日誌系統）
+WriteLog(msg, level := "INFO") {
+    global logger
+    if IsSet(logger) && IsObject(logger) {
+        logger.log(msg, level)
+    } else {
+        ; 備用方案
+        ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+        line := ts " [" level "] " msg "`r`n"
+        try FileAppend(line, A_ScriptDir "\lrmc_fallback.log", "UTF-8")
+    }
+}
+
+Log("LRMC 啟動腳本開始: " A_ScriptFullPath)
+
+; 設置進程優先級為普通，避免佔用過多系統資源
+try {
+    ProcessSetPriority("Normal", DllCall("GetCurrentProcessId"))
+    Log("已設置進程優先級為 Normal")
+} catch as e {
+    Log("設置進程優先級失敗: " e.Message, "WARN")
+}
+
+; 管理員提權
+if !A_IsAdmin {
+    Log("需要管理員權限，嘗試提權...")
+    try Run('*RunAs "' A_ScriptFullPath '"')
+    ExitApp
+}
+
+; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
+dataDir := EnvGet("PACK_DATA_DIR")
+if (dataDir = "") {
+    ; 如果沒有環境變數，嘗試使用新的位置
+    dataDir := A_ScriptDir "\..\config"
+    if !DirExist(dataDir) {
+        ; 向後兼容舊位置
+        dataDir := A_Temp "\okww_runtime\config"
+    }
+}
+DirCreate dataDir
+global CFG_FILE := dataDir "\config.ini"
+
+; 顯示提示時避免被游標遮住（開頭加5個空白）
+ShowTip(msg, duration := 1200) {
+    ToolTip "     " msg
+    if (duration > 0)
+        SetTimer(() => ToolTip(), -duration)
+}
+
+; 去除路徑前後的引號和空白
+NormalizePath(p) {
+    return Trim(p, ' "')
+}
+
+; ===== 重啟計數器和安全機制 =====
+global RESTART_COUNT_KEY := "LRMC_restart_count"
+global MAX_RESTART_ATTEMPTS := 3  ; 最多重啟3次
+global RESTART_RESET_TIME := 1800  ; 30分鐘後重置計數器（秒）
+global SCRIPT_START_TIME := A_Now  ; 記錄腳本啟動時間
+
+; 重置重啟計數器（每次腳本啟動時調用）
+ResetRestartCounter() {
+    global CFG_FILE, RESTART_COUNT_KEY, SCRIPT_START_TIME
+    
+    Log("腳本啟動，重置 LRMCAI 重啟計數器")
+    IniWrite "0", CFG_FILE, "restart_tracking", RESTART_COUNT_KEY
+    IniWrite SCRIPT_START_TIME, CFG_FILE, "restart_tracking", RESTART_COUNT_KEY "_time"
+    Log("重啟計數器已歸零")
+}
+
+; 檢查重啟計數器
+CheckRestartCounter() {
+    global CFG_FILE, RESTART_COUNT_KEY, MAX_RESTART_ATTEMPTS, SCRIPT_START_TIME
+    
+    ; 讀取當前計數
+    restartCount := IniReadSafe(CFG_FILE, "restart_tracking", RESTART_COUNT_KEY, "0")
+    restartCount := Integer(restartCount)
+    
+    Log("當前重啟計數: " restartCount "/" MAX_RESTART_ATTEMPTS)
+    
+    ; 檢查是否超過最大重啟次數
+    if (restartCount >= MAX_RESTART_ATTEMPTS) {
+        Log("已達到最大重啟次數限制 (" MAX_RESTART_ATTEMPTS " 次)，停止自動重啟", "ERROR")
+        MsgBox "❌ LRMCAI 重啟次數已達上限 (" MAX_RESTART_ATTEMPTS " 次)`n`n請檢查 LRMCAI 程式是否正常，或稍後手動重新執行。`n`n重新啟動全自動腳本將重置計數器。", "重啟限制", "T10"
+        ExitApp
+    }
+    
+    return restartCount
+}
+
+; 更新重啟計數器
+IncrementRestartCounter() {
+    global CFG_FILE, RESTART_COUNT_KEY, SCRIPT_START_TIME
+    
+    restartCount := IniReadSafe(CFG_FILE, "restart_tracking", RESTART_COUNT_KEY, "0")
+    restartCount := Integer(restartCount) + 1
+    
+    IniWrite restartCount, CFG_FILE, "restart_tracking", RESTART_COUNT_KEY
+    IniWrite SCRIPT_START_TIME, CFG_FILE, "restart_tracking", RESTART_COUNT_KEY "_time"
+    
+    Log("重啟計數器已更新: " restartCount)
+    return restartCount
+}
+
+Hotkey("^F2", (*) => ForceAskAndSave_LRMC())
+
+LaunchLRMC() {
+    return GetPathWithAsk_LRMC("LRMC", "請選擇 LRMCAI 執行檔或捷徑", "可執行檔或捷徑 (*.exe;*.lnk)")
+}
+
+GetPathWithAsk_LRMC(key, prompt, filter) {
+    global CFG_FILE
+    path     := NormalizePath(IniReadSafe(CFG_FILE, "paths", key, ""))
+    remember := IniReadSafe(CFG_FILE, "flags", key "_remember", "0")
+    if (remember != "1" || !FileExist(path)) {
+        sel := AskPathGui(prompt, path, filter)
+        if (!sel.path)
+            return ""
+        path := NormalizePath(sel.path)
+        IniWrite path,     CFG_FILE, "paths", key
+        IniWrite sel.keep, CFG_FILE, "flags", key "_remember"
+    }
+    return path
+}
+
+ForceAskAndSave_LRMC() {
+    global CFG_FILE
+    cur := NormalizePath(IniReadSafe(CFG_FILE, "paths", "LRMC", ""))
+    sel := AskPathGui("請選擇 LRMCAI 執行檔或捷徑", cur, "可執行檔或捷徑 (*.exe;*.lnk)")
+    if (!sel.path)
+        return
+    IniWrite sel.path, CFG_FILE, "paths", "LRMC"
+    IniWrite 1,        CFG_FILE, "flags", "LRMC_remember"
+    TrayTip "已更新 LRMCAI 路徑", sel.path, 2
+}
+
+AskPathGui(prompt, defaultPath := "", filter := "All Files (*.*)") {
+    sel := { path: "", keep: 0 }  ; 預設不記住
+    g := Gui("+AlwaysOnTop -MinimizeBox", prompt)
+    g.SetFont("s10")
+
+    g.Add("Text", "xm ym", "執行檔路徑：")
+    e := g.AddEdit("xm w520 vPATH", defaultPath)
+
+    b := g.AddButton("x+m w90", "瀏覽...")
+    b.OnEvent("Click", AskPathGui_Browse.Bind(e, prompt, filter))
+
+    cb := g.AddCheckbox("xm vKEEP", "下次不再詢問")
+
+    ok := g.AddButton("xm w120 Default", "確定")
+    cancel := g.AddButton("x+m w90", "取消")
+
+    ok.OnEvent("Click", AskPathGui_Ok.Bind(g, e, cb, sel))
+    cancel.OnEvent("Click", AskPathGui_Cancel.Bind(g, sel))
+
+    g.Show("AutoSize Center")
+    WinWaitClose g.Hwnd
+    return sel
+}
+AskPathGui_Browse(e, prompt, filter, *) {
+    p := FileSelect(, "", prompt, filter)
+    if (p)
+        e.Value := p
+}
+AskPathGui_Ok(g, e, cb, sel, *) {
+    sel.path := Trim(e.Value)
+    sel.keep := cb.Value ? 1 : 0
+    g.Hide()
+}
+AskPathGui_Cancel(g, sel, *) {
+    sel.path := ""
+    g.Hide()
+}
+
+IniReadSafe(file, section, key, default) {
+    try return IniRead(file, section, key, default)
+    catch 
+        return default
+}
+
+; ===== 原流程（僅將寫死路徑改為動態）=====
+
+; 每次腳本啟動時重置重啟計數器
+ResetRestartCounter()
+
+; 檢查重啟計數器，防止無限循環
+currentRestartCount := CheckRestartCounter()
+
+; 啟動 LRMCAI
+Log("開始啟動 LRMCAI... (重啟計數: " currentRestartCount ")")
+lnkPath := LaunchLRMC()
+if (!lnkPath) {
+    Log("未設定 LRMCAI 路徑", "ERROR")
+    MsgBox "未設定 LRMCAI 路徑。按 Ctrl+F2 重新指定。"
+    ExitApp
+}
+
+Log("執行 LRMCAI: " lnkPath)
+Run lnkPath,,, &pid
+ProcessWait(pid)
+Sleep 3000  ; 從3秒減少到2秒
+
+; 優化：增加錯誤處理和資源監控
+Log("LRMCAI 進程已啟動，PID: " pid)
+
+; 搜尋啟動視窗（優化版：減少資源占用）
+findWindow() {
+    ; 限制搜尋次數，避免無限循環占用 CPU
+    maxAttempts := 10
+    attempt := 0
+    
+    while (attempt < maxAttempts) {
+        attempt++
+        
+        ; 只搜尋指定 PID 的視窗，減少遍歷範圍
+        try {
+            for hwnd in WinGetList("ahk_pid " pid) {
+                if WinGetPID(hwnd) == pid
+                    return hwnd
+            }
+        } catch {
+            ; 如果出錯，等待一下再試
+        }
+        
+        ; 每次嘗試間等待，減少 CPU 占用
+        Sleep 300
+    }
+    return 0
+}
+
+targetHwnd := findWindow()
+if !targetHwnd {
+    MsgBox "❌ 找不到應用程式視窗"
+    ExitApp
+}
+
+WinActivate targetHwnd
+WinWaitActive targetHwnd
+Sleep 500
+
+; 點擊視窗左上角位置啟動處理
+pt := Buffer(8)
+NumPut("int", 30, pt, 0), NumPut("int", 30, pt, 4)
+DllCall("ClientToScreen", "ptr", targetHwnd, "ptr", pt)
+MouseClick "left", NumGet(pt, 0, "int"), NumGet(pt, 4, "int")
+Sleep 300
+
+; 送出 Enter 鍵
+PostMessage 0x100, 0x0D, 0, , targetHwnd
+Sleep 200
+PostMessage 0x101, 0x0D, 0, , targetHwnd
+ShowTip("LRMCAI 啟動中...", 1500)
+
+; 等待新視窗出現
+; 取代你原本的等待視窗迴圈
+Log("等待 LRMCAI 主視窗出現（包含版本號的UI窗口）...")
+
+; 先嘗試找到包含版本號的主窗口（優先）
+targetHwnd := 0
+maxAttempts := 30
+attempt := 0
+
+while (attempt < maxAttempts && !targetHwnd) {
+    attempt++
+    
+    try {
+        for hwnd in WinGetList("ahk_pid " pid) {
+            title := WinGetTitle(hwnd)
+            Log("檢查窗口: [" title "]")
+            
+            ; 檢查 LRMCAI 後面是否有數字
+            ; 匹配任何格式的版本號（3.03、v3.03、v303、3 等）
+            if (title ~= "i)LRMCAI.*\d") {
+                Log("找到UI窗口（含數字）: [" title "]", "INFO")
+                targetHwnd := hwnd
+                break
+            }
+        }
+    } catch as e {
+        Log("搜索窗口出錯: " e.Message, "WARN")
+    }
+    
+    if (!targetHwnd) {
+        Log("第 " attempt " 次搜索未找到UI窗口，3秒後重試...")
+        Sleep 3000
+    }
+}
+
+if !targetHwnd {
+    Log("等待 LRMCAI UI 窗口超時（100秒），無法找到包含版本號的窗口", "ERROR")
+    
+    ; 列出所有找到的窗口供調試
+    Log("所有找到的窗口:", "WARN")
+    try {
+        for hwnd in WinGetList("ahk_pid " pid) {
+            title := WinGetTitle(hwnd)
+            Log("  - [" title "]")
+        }
+    }
+    
+    Log("準備重啟", "WARN")
+    
+    ; 更新重啟計數器
+    newRestartCount := IncrementRestartCounter()
+    Log("準備執行第 " newRestartCount " 次重啟")
+    
+    ; 關閉 LRMCAI 進程
+    try {
+        ProcessClose(pid)
+        Log("已關閉超時的 LRMCAI 進程 PID: " pid)
+    } catch as e {
+        Log("關閉 LRMCAI 進程失敗: " e.Message, "ERROR")
+    }
+    
+    ; 強制關閉所有 LRMCAI 相關進程
+    try {
+        Run("taskkill /F /IM LRMCAI.exe", , "Hide")
+        Log("執行強制關閉 LRMCAI.exe")
+    } catch as e {
+        Log("強制關閉 LRMCAI 失敗: " e.Message, "WARN")
+    }
+    
+    Sleep 2000  ; 等待進程完全關閉
+    
+    ; 重新啟動開啟LRMC.ahk腳本
+    Log("重新啟動開啟LRMC.ahk腳本... (第 " newRestartCount " 次重啟)")
+    try {
+        ; 尋找 AutoHotkey 執行檔
+        ahkExe := A_ScriptDir "\..\AutoHotkey64.exe"
+        if !FileExist(ahkExe) {
+            packAppDir := EnvGet("PACK_APP_DIR")
+            if (packAppDir != "") {
+                ahkExe := StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe"
+            }
+        }
+        
+        if FileExist(ahkExe) {
+            Run('"' ahkExe '" "' A_ScriptFullPath '"')
+            Log("已重新啟動開啟LRMC.ahk腳本 (第 " newRestartCount " 次)")
+        } else {
+            Log("找不到 AutoHotkey 執行檔，無法重啟", "ERROR")
+            MsgBox "❌ 找不到 AutoHotkey 執行檔，無法重啟 LRMCAI"
+        }
+    } catch as e {
+        Log("重啟腳本失敗: " e.Message, "ERROR")
+        MsgBox "❌ 重啟 LRMCAI 腳本失敗: " e.Message
+    }
+    
+    ExitApp
+}
+
+; 獲取工作區域信息（排除工作列）
+GetWorkArea() {
+    rect := Buffer(16)
+    DllCall("SystemParametersInfo", "UInt", 48, "UInt", 0, "Ptr", rect, "UInt", 0) ; SPI_GETWORKAREA
+    return {
+        left: NumGet(rect, 0, "Int"),
+        top: NumGet(rect, 4, "Int"), 
+        right: NumGet(rect, 8, "Int"),
+        bottom: NumGet(rect, 12, "Int"),
+        width: NumGet(rect, 8, "Int") - NumGet(rect, 0, "Int"),
+        height: NumGet(rect, 12, "Int") - NumGet(rect, 4, "Int")
+    }
+}
+
+WindowReady:
+WinActivate targetHwnd
+WinWaitActive targetHwnd
+Sleep 500
+
+; 🎯 分別移動兩個LRMCAI視窗到正確位置
+Log("調整LRMCAI視窗位置...")
+try {
+    ; 獲取螢幕尺寸
+    screenWidth := A_ScreenWidth
+    screenHeight := A_ScreenHeight
+    
+    ; 尋找所有相關的LRMCAI視窗
+    controlWindowHwnd := 0
+    consoleWindowHwnd := 0
+    
+    for hwnd in WinGetList() {
+        try {
+            if (WinGetPID(hwnd) = pid) {
+                title := WinGetTitle(hwnd)
+                Log("發現PID " pid " 的視窗: " title)
+                
+                ; 控制視窗：包含F8暂停、F9停止、F10标记等字樣
+                if (InStr(title, "F8") || InStr(title, "F9") || InStr(title, "F10") || 
+                    InStr(title, "暂停") || InStr(title, "停止") || InStr(title, "标记")) {
+                    controlWindowHwnd := hwnd
+                    Log("識別為控制視窗: " title)
+                }
+                ; 執行視窗：包含LRMCAI字樣的黑色控制台
+                else if (InStr(title, "LRMCAI")) {
+                    consoleWindowHwnd := hwnd
+                    Log("識別為執行視窗: " title)
+                }
+            }
+        } catch {
+            continue
+        }
+    }
+    
+    ; 1. 移動控制視窗到螢幕左上角（完全貼邊）
+    if (controlWindowHwnd) {
+        WinMove 0, 0, , , "ahk_id " controlWindowHwnd
+        Log("控制視窗已移動到螢幕左上角 (0,0)")
+    } else {
+        Log("未找到控制視窗，使用預設目標視窗", "WARN")
+        WinMove 0, 0, , , "ahk_id " targetHwnd
+        Log("預設視窗已移動到螢幕左上角 (0,0)")
+    }
+    
+    ; 2. 移動執行視窗到螢幕右下角（貼齊工作列）
+    if (consoleWindowHwnd) {
+        WinGetPos ,, &consoleWidth, &consoleHeight, "ahk_id " consoleWindowHwnd
+        
+        ; 使用工作區域信息
+        workArea := GetWorkArea()
+        
+        newX := screenWidth - consoleWidth
+        newY := workArea.height - consoleHeight
+        WinMove newX, newY, , , "ahk_id " consoleWindowHwnd
+        Log("LRMCAI執行視窗已移動到右下角（貼齊工作列）: X=" newX " Y=" newY)
+    } else {
+        Log("未找到LRMCAI執行視窗", "WARN")
+    }
+    
+} catch as e {
+    Log("移動視窗時出錯: " e.Message, "WARN")
+}
+
+Sleep 2000
+
+Log("開始 OCR 識別...")
+; OCR 偵測「副本」（優化版：減少內存占用）
+ocr := RapidOcr()
+
+; 使用臨時檔案名避免衝突，執行後清理
+tempFile := A_ScriptDir "\temp_lrmc_" A_TickCount ".png"
+try {
+    ImagePutFile(targetHwnd, tempFile)
+    res := ocr.ocr_from_file(tempFile, , true)
+    
+    ; 立即清理臨時檔案，釋放磁碟空間
+    if FileExist(tempFile)
+        FileDelete(tempFile)
+} catch as e {
+    Log("OCR 處理失敗: " e.Message, "ERROR")
+    if FileExist(tempFile)
+        FileDelete(tempFile)
+    ExitApp
+}
+
+; 顯示 OCR 識別結果（簡化輸出，減少字串處理）
+foundCopy := false
+for block in res {
+    clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", " ")
+    if InStr(clean, "副本") {
+        foundCopy := true
+        Log("找到「副本」文字: " clean)
+        break
+    }
+}
+
+if (!foundCopy) {
+    Log("未找到「副本」文字，繼續處理...", "WARN")
+}
+
+; 尋找最左上角「副本」並點擊（優化版：減少計算量）
+best := ""
+bestScore := 99999999
+copyFound := false
+
+for block in res {
+    clean := StrReplace(block.text, " ", "")
+    if InStr(clean, "副本") && block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
+        copyFound := true
+        x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
+        x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
+        cx := Round((x1 + x2) / 2), cy := Round((y1 + y2) / 2)
+        score := cx + cy  ; 左上角優先（數值越小越好）
+        
+        if (score < bestScore) {
+            best := [cx, cy]
+            bestScore := score
+            Log("找到更佳的「副本」位置: " cx "," cy " (得分: " score ")")
+        }
+    }
+}
+
+if (best is Array) {
+    Log("點擊「副本」位置: " best[1] "," best[2])
+    MouseClick "left", best[1], best[2]
+    Sleep 500
+    SendCtrlF1(targetHwnd)   ; 送 Ctrl+F1
+    Log("已發送 Ctrl+F1")
+} else if (copyFound) {
+    Log("找到「副本」文字但無法獲取座標", "WARN")
+} else {
+    Log("未找到「副本」文字，跳過點擊", "WARN")
+}
+
+Log("LRMC 啟動流程完成")
+ExitApp
+
+; ========= 穩健送出 Ctrl+F1（移除 ControlFocus，避免 Target control not found） =========
+SendCtrlF1(hwnd) {
+    WinActivate "ahk_id " hwnd
+    WinWaitActive "ahk_id " hwnd, , 1
+    Sleep 60
+
+    ; 只使用前景 Send，確保只送出一次
+    Send "{Ctrl down}{F1}{Ctrl up}"
+    Sleep 120
+}
+
+; ===== 放在同一支檔案結尾：函式定義 =====
+WaitWindowByKeywords(pid, keywords, timeout := 600) {
+    ; 用正則一次匹配多關鍵字，僅限於該 pid 的視窗
+    SetTitleMatchMode "RegEx"
+    pat := "(?i)"
+    for kw in keywords
+        pat .= ".*" RegExReplace(kw, "([\\^$.|?*+(){}\[\]])", "\\$1")
+    pat .= ""  ; 收尾
+    if !WinWait(pat " ahk_pid " pid, , timeout)
+        return 0
+    hwnd := WinExist()  ; WinWait 命中後，WinExist() 回傳該視窗
+    SetTitleMatchMode "Fast"
+    return hwnd
+}

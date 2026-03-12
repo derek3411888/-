@@ -1,0 +1,5 @@
+{
+  "version": "2026.03.12.1",
+  "payload_url": "https://example.com/releases/payload-2026.03.12.1.zip",
+  "payload_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
