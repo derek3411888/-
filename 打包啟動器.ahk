@@ -95,7 +95,7 @@ HttpDownloadFile(url, destPath, extraHeaders := Map()) {
     stream.Close()
 }
 
-TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
+TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownload := false) {
     WriteLog("開始檢查遠端更新設定...")
     cfgFile := dataDir "\\config.ini"
     defaultManifestUrl := "https://api.github.com/repos/derek3411888/-/contents/update_manifest.example.json?ref=main"
@@ -140,10 +140,13 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
             return false
         }
 
-        if (remoteVer = currentVer) {
+        if (!forceDownload && remoteVer = currentVer) {
             WriteLog("遠端版本一致，無需更新：" remoteVer)
             return false
         }
+
+        if (forceDownload && remoteVer = currentVer)
+            WriteLog("遠端版本相同，但本地 payload 缺失，改為重新下載：" remoteVer)
 
         WriteLog("檢測到新版本：" currentVer " -> " remoteVer)
         zipTmp := A_Temp "\\payload_update_" A_TickCount ".zip"
@@ -441,9 +444,19 @@ if FileExist(STAMP) {
 
 needUnpack := !FileExist(STAMP) || (currentStamp != exeMTime)
 remotePreparedVersion := ""
+payloadMainPath := APP_DIR "\" MAIN_FILE
+payloadHealthy := DirExist(APP_DIR) && FileExist(payloadMainPath)
 
-; 檢查遠端更新（若命中會覆蓋 payload.zip 並強制解壓）
-if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion) {
+; 若本地 payload 缺檔，優先嘗試從遠端重抓同版本內容修復
+if !payloadHealthy {
+    needUnpack := true
+    WriteLog("偵測到本地 payload 不完整，缺少主檔：" payloadMainPath, "WARN")
+    if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion, true) {
+        WriteLog("已從遠端重新取得 payload.zip，將進行修復解壓")
+    } else {
+        WriteLog("遠端重新取得 payload 失敗，將改用本地 payload.zip 重新解壓", "WARN")
+    }
+} else if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion) {
     needUnpack := true
     WriteLog("遠端更新已準備完成，強制執行解壓更新")
 }
