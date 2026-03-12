@@ -79,8 +79,10 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
     }
 
     manifestTmp := A_Temp "\\payload_manifest_" A_TickCount ".json"
+    manifestReqUrl := manifestUrl
+    manifestReqUrl .= (InStr(manifestReqUrl, "?") ? "&" : "?") "ts=" A_NowUTC
     try {
-        Download(manifestUrl, manifestTmp)
+        Download(manifestReqUrl, manifestTmp)
     } catch as e {
         WriteLog("下載 manifest 失敗: " e.Message, "WARN")
         return false
@@ -104,8 +106,10 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
 
         WriteLog("檢測到新版本：" currentVer " -> " remoteVer)
         zipTmp := A_Temp "\\payload_update_" A_TickCount ".zip"
+        payloadReqUrl := payloadUrl
+        payloadReqUrl .= (InStr(payloadReqUrl, "?") ? "&" : "?") "ver=" remoteVer
         try {
-            Download(payloadUrl, zipTmp)
+            Download(payloadReqUrl, zipTmp)
         } catch as e {
             WriteLog("下載 payload 更新包失敗: " e.Message, "WARN")
             return false
