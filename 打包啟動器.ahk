@@ -53,10 +53,52 @@ GetFileSha256(filePath) {
     }
 }
 
+; 若 URL 為 raw.githubusercontent.com，自動轉換為 GitHub API 端點（不受 CDN 快取影響）
+ConvertToGitHubApiUrl(url) {
+    if RegExMatch(url, "^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$", &m)
+        return "https://api.github.com/repos/" m[1] "/" m[2] "/contents/" m[4] "?ref=" m[3]
+    return url
+}
+
+; HTTP GET 並返回文字（使用系統 Proxy，附帶 no-cache 標頭）
+HttpGetText(url, extraHeaders := Map()) {
+    http := ComObject("Msxml2.XMLHTTP.6.0")
+    http.open("GET", url, false)
+    http.setRequestHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+    http.setRequestHeader("Pragma", "no-cache")
+    http.setRequestHeader("User-Agent", "AHK-Launcher/2.0")
+    for k, v in extraHeaders
+        http.setRequestHeader(k, v)
+    http.send()
+    if (http.status != 200)
+        throw Error("HTTP " http.status " for: " url)
+    return http.responseText
+}
+
+; HTTP GET 並將二進位結果寫入檔案（使用系統 Proxy，附帶 no-cache 標頭）
+HttpDownloadFile(url, destPath, extraHeaders := Map()) {
+    http := ComObject("Msxml2.XMLHTTP.6.0")
+    http.open("GET", url, false)
+    http.setRequestHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+    http.setRequestHeader("Pragma", "no-cache")
+    http.setRequestHeader("User-Agent", "AHK-Launcher/2.0")
+    for k, v in extraHeaders
+        http.setRequestHeader(k, v)
+    http.send()
+    if (http.status != 200)
+        throw Error("HTTP " http.status " for: " url)
+    stream := ComObject("ADODB.Stream")
+    stream.Type := 1  ; adTypeBinary
+    stream.Open()
+    stream.Write(http.responseBody)
+    stream.SaveToFile(destPath, 2)  ; adSaveCreateOverWrite
+    stream.Close()
+}
+
 TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
     WriteLog("開始檢查遠端更新設定...")
     cfgFile := dataDir "\\config.ini"
-    defaultManifestUrl := "https://raw.githubusercontent.com/derek3411888/-/main/update_manifest.example.json"
+    defaultManifestUrl := "https://api.github.com/repos/derek3411888/-/contents/update_manifest.example.json?ref=main"
 
     ; 零設定預設啟用；若使用者手動設為 0 才關閉
     enabled := IniReadSafe(cfgFile, "updater", "enabled", "1")
@@ -78,18 +120,17 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
         try currentVer := Trim(FileRead(currentVerFile, "UTF-8"), " `t`r`n")
     }
 
-    manifestTmp := A_Temp "\\payload_manifest_" A_TickCount ".json"
-    manifestReqUrl := manifestUrl
-    manifestReqUrl .= (InStr(manifestReqUrl, "?") ? "&" : "?") "ts=" A_NowUTC
+    ; 自動將 raw.githubusercontent.com 轉為 GitHub API 端點（繞過 CDN 快取）
+    manifestApiUrl := ConvertToGitHubApiUrl(manifestUrl)
+    manifestText := ""
     try {
-        Download(manifestReqUrl, manifestTmp)
+        manifestText := HttpGetText(manifestApiUrl, Map("Accept", "application/vnd.github.raw+v3"))
     } catch as e {
         WriteLog("下載 manifest 失敗: " e.Message, "WARN")
         return false
     }
 
     try {
-        manifestText := FileRead(manifestTmp, "UTF-8")
         remoteVer := Trim(JsonGetString(manifestText, "version"), " `t`r`n")
         payloadUrl := Trim(JsonGetString(manifestText, "payload_url"), " `t`r`n")
         payloadSha := StrLower(Trim(JsonGetString(manifestText, "payload_sha256"), " `t`r`n"))
@@ -109,7 +150,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
         payloadReqUrl := payloadUrl
         payloadReqUrl .= (InStr(payloadReqUrl, "?") ? "&" : "?") "ver=" remoteVer
         try {
-            Download(payloadReqUrl, zipTmp)
+            HttpDownloadFile(payloadReqUrl, zipTmp)
         } catch as e {
             WriteLog("下載 payload 更新包失敗: " e.Message, "WARN")
             return false
@@ -155,8 +196,6 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
         forcedVersion := remoteVer
         WriteLog("已準備遠端更新，待解壓套用版本：" forcedVersion)
         return true
-    } finally {
-        try FileDelete(manifestTmp)
     }
 }
 
