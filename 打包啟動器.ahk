@@ -56,13 +56,17 @@ GetFileSha256(filePath) {
 TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "") {
     WriteLog("開始檢查遠端更新設定...")
     cfgFile := dataDir "\\config.ini"
-    enabled := IniReadSafe(cfgFile, "updater", "enabled", "0")
+    defaultManifestUrl := "https://raw.githubusercontent.com/derek3411888/-/main/update_manifest.example.json"
+
+    ; 零設定預設啟用；若使用者手動設為 0 才關閉
+    enabled := IniReadSafe(cfgFile, "updater", "enabled", "1")
     if (enabled != "1") {
         WriteLog("遠端更新未啟用（[updater] enabled!=1）")
         return false
     }
 
-    manifestUrl := Trim(IniReadSafe(cfgFile, "updater", "manifest_url", ""), ' "')
+    ; 若未提供 manifest_url，使用內建預設網址
+    manifestUrl := Trim(IniReadSafe(cfgFile, "updater", "manifest_url", defaultManifestUrl), ' "')
     if (manifestUrl = "") {
         WriteLog("遠端更新已啟用但未設定 manifest_url", "WARN")
         return false
