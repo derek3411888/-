@@ -408,6 +408,7 @@ try {
     ; 尋找所有相關的LRMCAI視窗
     controlWindowHwnd := 0
     consoleWindowHwnd := 0
+    ocrTargetHwnd := targetHwnd
     
     for hwnd in WinGetList() {
         try {
@@ -456,9 +457,19 @@ try {
     } else {
         Log("未找到LRMCAI執行視窗", "WARN")
     }
+
+    ; OCR 視窗固定使用控制視窗
+    if (controlWindowHwnd) {
+        ocrTargetHwnd := controlWindowHwnd
+        Log("OCR 將使用控制視窗")
+    } else {
+        ocrTargetHwnd := targetHwnd
+        Log("未找到控制視窗，OCR 沿用預設 target", "WARN")
+    }
     
 } catch as e {
     Log("移動視窗時出錯: " e.Message, "WARN")
+    ocrTargetHwnd := targetHwnd
 }
 
 Sleep 2000
@@ -471,8 +482,8 @@ ocr := RapidOcr()
 tempFile := A_ScriptDir "\temp_lrmc_" A_TickCount ".png"
 debugCapturePath := ""
 try {
-    captureInfo := CaptureWindowVisibleRegionForOcr(targetHwnd, tempFile)
-    Log("OCR 目標視窗: 標題=[" WinGetTitle("ahk_id " targetHwnd) "] 尺寸=" captureInfo.w "x" captureInfo.h " 位置=" captureInfo.x "," captureInfo.y " 擷取方式=" captureInfo.method)
+    captureInfo := CaptureWindowVisibleRegionForOcr(ocrTargetHwnd, tempFile)
+    Log("OCR 目標視窗: 標題=[" WinGetTitle("ahk_id " ocrTargetHwnd) "] 尺寸=" captureInfo.w "x" captureInfo.h " 位置=" captureInfo.x "," captureInfo.y " 擷取方式=" captureInfo.method)
     if FileExist(tempFile)
         Log("OCR 截圖已保存: " tempFile " (" FileGetSize(tempFile) " bytes)")
     res := ocr.ocr_from_file(tempFile, , true)
