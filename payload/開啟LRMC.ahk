@@ -64,6 +64,24 @@ NormalizePath(p) {
     return Trim(p, ' "')
 }
 
+CaptureWindowVisibleRegionForOcr(hwnd, outFile) {
+    WinGetPos &winX, &winY, &winW, &winH, "ahk_id " hwnd
+    if (winW <= 0 || winH <= 0)
+        throw Error("目標視窗尺寸異常: " winW "x" winH)
+
+    ; 優先擷取螢幕上可見的視窗區域，避免透明/分層視窗直接抓 hwnd 時拿到空圖。
+    try {
+        ImagePutFile([winX, winY, winW, winH], outFile)
+        if FileExist(outFile) && (FileGetSize(outFile) > 0)
+            return { method: "screen-region", x: winX, y: winY, w: winW, h: winH }
+    } catch as e {
+        Log("螢幕區域截圖失敗，改用 hwnd 擷取: " e.Message, "WARN")
+    }
+
+    ImagePutFile("ahk_id " hwnd, outFile)
+    return { method: "window-hwnd", x: winX, y: winY, w: winW, h: winH }
+}
+
 ; ===== 重啟計數器和安全機制 =====
 global RESTART_COUNT_KEY := "LRMC_restart_count"
 global MAX_RESTART_ATTEMPTS := 3  ; 最多重啟3次
@@ -451,19 +469,38 @@ ocr := RapidOcr()
 
 ; 使用臨時檔案名避免衝突，執行後清理
 tempFile := A_ScriptDir "\temp_lrmc_" A_TickCount ".png"
+debugCapturePath := ""
 try {
-    ImagePutFile(targetHwnd, tempFile)
-    res := ocr.ocr_from_file(tempFile, , true)
-    
-    ; 立即清理臨時檔案，釋放磁碟空間
+    captureInfo := CaptureWindowVisibleRegionForOcr(targetHwnd, tempFile)
+    Log("OCR 目標視窗: 標題=[" WinGetTitle("ahk_id " targetHwnd) "] 尺寸=" captureInfo.w "x" captureInfo.h " 位置=" captureInfo.x "," captureInfo.y " 擷取方式=" captureInfo.method)
     if FileExist(tempFile)
-        FileDelete(tempFile)
+        Log("OCR 截圖已保存: " tempFile " (" FileGetSize(tempFile) " bytes)")
+    res := ocr.ocr_from_file(tempFile, , true)
 } catch as e {
     Log("OCR 處理失敗: " e.Message, "ERROR")
     if FileExist(tempFile)
         FileDelete(tempFile)
     ExitApp
 }
+
+if (res is Array) && (res.Length = 0) {
+    debugCapturePath := A_ScriptDir "\debug_lrmc_ocr_empty_" FormatTime(, "yyyyMMdd_HHmmss") ".png"
+    try {
+        if FileExist(debugCapturePath)
+            FileDelete(debugCapturePath)
+        FileCopy(tempFile, debugCapturePath, 1)
+        Log("OCR 未返回任何文字區塊，已保留除錯截圖: " debugCapturePath, "WARN")
+    } catch as e {
+        Log("保存 OCR 除錯截圖失敗: " e.Message, "WARN")
+    }
+} else {
+    ; 正常情況下立即清理臨時檔案
+    if FileExist(tempFile)
+        FileDelete(tempFile)
+}
+
+if (res is Array) && (res.Length = 0)
+    Log("OCR 未返回任何文字區塊，將略過「副本」點擊流程", "WARN")
 
 ; 顯示 OCR 識別結果（簡化輸出，減少字串處理）
 foundCopy := false
