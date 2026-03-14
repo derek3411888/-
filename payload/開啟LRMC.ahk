@@ -483,29 +483,16 @@ try {
     ExitApp
 }
 
-if (res is Array) && (res.Length = 0) {
-    debugCapturePath := A_ScriptDir "\debug_lrmc_ocr_empty_" FormatTime(, "yyyyMMdd_HHmmss") ".png"
-    try {
-        if FileExist(debugCapturePath)
-            FileDelete(debugCapturePath)
-        FileCopy(tempFile, debugCapturePath, 1)
-        Log("OCR 未返回任何文字區塊，已保留除錯截圖: " debugCapturePath, "WARN")
-    } catch as e {
-        Log("保存 OCR 除錯截圖失敗: " e.Message, "WARN")
-    }
-} else {
-    ; 正常情況下立即清理臨時檔案
-    if FileExist(tempFile)
-        FileDelete(tempFile)
-}
-
 if (res is Array) && (res.Length = 0)
     Log("OCR 未返回任何文字區塊，將略過「副本」點擊流程", "WARN")
 
 ; 顯示 OCR 識別結果（簡化輸出，減少字串處理）
 foundCopy := false
+ocrTexts := []
 for block in res {
     clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", " ")
+    if (clean != "")
+        ocrTexts.Push(clean)
     if InStr(clean, "副本") {
         foundCopy := true
         Log("找到「副本」文字: " clean)
@@ -515,6 +502,8 @@ for block in res {
 
 if (!foundCopy) {
     Log("未找到「副本」文字，繼續處理...", "WARN")
+    if (ocrTexts.Length > 0)
+        Log("OCR 辨識內容: " StrJoin(ocrTexts, " | "), "WARN")
 }
 
 ; 尋找最左上角「副本」並點擊（優化版：減少計算量）
@@ -548,8 +537,21 @@ if (best is Array) {
 } else if (copyFound) {
     Log("找到「副本」文字但無法獲取座標", "WARN")
 } else {
+    debugCapturePath := A_ScriptDir "\debug_lrmc_ocr_nomatch_" FormatTime(, "yyyyMMdd_HHmmss") ".png"
+    try {
+        if FileExist(debugCapturePath)
+            FileDelete(debugCapturePath)
+        if FileExist(tempFile)
+            FileCopy(tempFile, debugCapturePath, 1)
+        Log("未找到「副本」文字，已保留除錯截圖: " debugCapturePath, "WARN")
+    } catch as e {
+        Log("保存 OCR 除錯截圖失敗: " e.Message, "WARN")
+    }
     Log("未找到「副本」文字，跳過點擊", "WARN")
 }
+
+if FileExist(tempFile)
+    FileDelete(tempFile)
 
 Log("LRMC 啟動流程完成")
 ExitApp
@@ -563,6 +565,16 @@ SendCtrlF1(hwnd) {
     ; 只使用前景 Send，確保只送出一次
     Send "{Ctrl down}{F1}{Ctrl up}"
     Sleep 120
+}
+
+StrJoin(items, sep := ", ") {
+    out := ""
+    for index, item in items {
+        if (index > 1)
+            out .= sep
+        out .= item
+    }
+    return out
 }
 
 ; ===== 放在同一支檔案結尾：函式定義 =====
