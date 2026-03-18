@@ -5,6 +5,12 @@ SetWorkingDir A_ScriptDir
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 
+ShowTip(msg, duration := 900) {
+    ToolTip "          " msg
+    if (duration > 0)
+        SetTimer(() => ToolTip(), -duration)
+}
+
 WriteLog(msg, level := "INFO") {
     global RUN_ID
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
@@ -19,6 +25,7 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
+    ShowTip("📌 " stepName, 700)
 }
 
 cfgPath := A_ScriptDir "\mail_config.ini"

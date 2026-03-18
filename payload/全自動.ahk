@@ -43,7 +43,7 @@ OnExit(RestoreWutheringAudioOnExit)
 
 ; 提示工具（開頭加5個空白避免被滑鼠遮擋）
 ShowTip(msg, duration := 1200) {
-    ToolTip "     " msg
+    ToolTip "          " msg
     if (duration > 0)
         SetTimer(() => ToolTip(), -duration)
 }
@@ -396,6 +396,7 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
+    ShowTip("📌 " stepName, 700)
 }
 
 WriteLog("全自動腳本啟動: " A_ScriptFullPath)

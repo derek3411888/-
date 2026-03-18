@@ -43,13 +43,14 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
+    ShowTip("📌 " stepName, 700)
 }
 
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
 ShowTip(msg, duration := 1200) {
-    ToolTip "     " msg
+    ToolTip "          " msg
     if (duration > 0)
         SetTimer(() => ToolTip(), -duration)
 }

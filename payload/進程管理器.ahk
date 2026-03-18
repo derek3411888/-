@@ -28,6 +28,12 @@ global logger := InitLogger("進程管理器")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 
+ShowTip(msg, duration := 900) {
+    ToolTip "          " msg
+    if (duration > 0)
+        SetTimer(() => ToolTip(), -duration)
+}
+
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
     global logger, RUN_ID
@@ -48,6 +54,7 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
+    ShowTip("📌 " stepName, 700)
 }
 
 WriteLog("進程管理器啟動: PID=" DllCall("GetCurrentProcessId"))
