@@ -588,7 +588,7 @@ if (best is Array) {
             MouseClick "left", clickX, clickY
         }
         Sleep 500
-        SendCtrlF1(ocrHwnd)   ; 送 Ctrl+F1
+        SendCtrlF1(pid, ocrHwnd)   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
         Log("已發送 Ctrl+F1")
     }
 } else if (copyFound) {
@@ -613,28 +613,63 @@ if FileExist(tempFile)
 Log("LRMC 啟動流程完成")
 ExitApp
 
-; ========= 穩健送出 Ctrl+F1（移除 ControlFocus，避免 Target control not found） =========
-SendCtrlF1(hwnd) {
-    ; 優先以背景 PostMessage 送鍵，避免影響全螢幕遊戲。
+; ========= 穩健送出 Ctrl+F1（同 PID 多視窗嘗試，提升命中率） =========
+SendCtrlF1(pid, preferredHwnd := 0) {
+    targets := []
+    seen := Map()
+
+    if (preferredHwnd) {
+        targets.Push(preferredHwnd)
+        seen[preferredHwnd] := true
+    }
+
     try {
-        PostMessage 0x100, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL down
-        PostMessage 0x100, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 down
-        PostMessage 0x101, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 up
-        PostMessage 0x101, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL up
-        Sleep 120
+        for hwnd in WinGetList("ahk_pid " pid) {
+            if !seen.Has(hwnd) {
+                targets.Push(hwnd)
+                seen[hwnd] := true
+            }
+        }
+    }
+
+    if (targets.Length = 0) {
+        Log("SendCtrlF1: 找不到可送鍵的目標視窗，PID=" pid, "WARN")
         return
     }
-    ; 次佳：ControlSend（仍不切焦點）
-    try {
-        ControlSend("{Ctrl down}{F1}{Ctrl up}", , "ahk_id " hwnd)
-        Sleep 120
-        return
+
+    ; 第一輪：背景 PostMessage
+    for hwnd in targets {
+        try {
+            PostMessage 0x100, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL down
+            PostMessage 0x100, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 down
+            PostMessage 0x101, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 up
+            PostMessage 0x101, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL up
+            Log("SendCtrlF1: 已對 hwnd=" hwnd " 送出 PostMessage")
+        }
     }
-    ; 後備：若背景方式失敗，才使用前景 Send。
-    WinActivate "ahk_id " hwnd
-    WinWaitActive "ahk_id " hwnd, , 1
-    Sleep 60
-    Send "{Ctrl down}{F1}{Ctrl up}"
+
+    Sleep 100
+
+    ; 第二輪：ControlSend（仍不切焦點）
+    for hwnd in targets {
+        try {
+            ControlSend("{Ctrl down}{F1}{Ctrl up}", , "ahk_id " hwnd)
+            Log("SendCtrlF1: 已對 hwnd=" hwnd " 送出 ControlSend")
+        }
+    }
+
+    ; 第三輪：必要時才做一次前景備援（用 preferredHwnd 優先）
+    fallbackHwnd := preferredHwnd ? preferredHwnd : targets[1]
+    try {
+        WinActivate "ahk_id " fallbackHwnd
+        WinWaitActive "ahk_id " fallbackHwnd, , 0.6
+        Sleep 40
+        Send "{Ctrl down}{F1}{Ctrl up}"
+        Log("SendCtrlF1: 前景備援已送出，hwnd=" fallbackHwnd)
+    } catch as e {
+        Log("SendCtrlF1: 前景備援失敗: " e.Message, "WARN")
+    }
+
     Sleep 120
 }
 
