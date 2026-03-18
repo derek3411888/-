@@ -540,11 +540,30 @@ for block in res {
 }
 
 if (best is Array) {
-    Log("點擊「副本」位置: " best[1] "," best[2])
-    MouseClick "left", best[1], best[2]
-    Sleep 500
-    SendCtrlF1(targetHwnd)   ; 送 Ctrl+F1
-    Log("已發送 Ctrl+F1")
+    ; OCR 座標通常是截圖內相對座標，需轉為螢幕座標避免誤點。
+    clickX := best[1]
+    clickY := best[2]
+    if (IsSet(captureInfo) && IsObject(captureInfo)
+        && captureInfo.HasOwnProp("w") && captureInfo.HasOwnProp("h")
+        && captureInfo.HasOwnProp("x") && captureInfo.HasOwnProp("y")) {
+        ; 只有在座標看起來落在截圖尺寸內時才做偏移，避免重複加位移。
+        if (clickX <= captureInfo.w + 5 && clickY <= captureInfo.h + 5) {
+            clickX += captureInfo.x
+            clickY += captureInfo.y
+        }
+    }
+
+    ; 避免誤點工作列右下角「顯示桌面」熱區，防止全視窗最小化。
+    if (clickX >= A_ScreenWidth - 8 && clickY >= A_ScreenHeight - 8) {
+        Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
+    } else {
+        CoordMode "Mouse", "Screen"
+        Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
+        MouseClick "left", clickX, clickY
+        Sleep 500
+        SendCtrlF1(targetHwnd)   ; 送 Ctrl+F1
+        Log("已發送 Ctrl+F1")
+    }
 } else if (copyFound) {
     Log("找到「副本」文字但無法獲取座標", "WARN")
 } else {
