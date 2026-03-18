@@ -577,26 +577,18 @@ if (best is Array) {
     if (clickX >= A_ScreenWidth - 8 && clickY >= A_ScreenHeight - 8) {
         Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
     } else {
-        ; 優先用 NA 模式點擊，不切換前景，避免全螢幕遊戲被最小化。
-        clicked := false
-        if (IsSet(ocrTargetHwnd) && ocrTargetHwnd) {
-            clientX := clickX - captureInfo.x
-            clientY := clickY - captureInfo.y
-            try {
-                ControlClick("x" clientX " y" clientY, "ahk_id " ocrTargetHwnd, , "Left", 1, "NA")
-                clicked := true
-                Log("點擊「副本」位置(NA): raw=" best[1] "," best[2] " -> screen=" clickX "," clickY " client=" clientX "," clientY)
-            } catch as e {
-                Log("ControlClick(NA) 失敗，改用 MouseClick: " e.Message, "WARN")
-            }
-        }
+        ; 以 ScreenToClient 轉換後點擊，避免邊框/標題列造成偏移。
+        ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+        clicked := TryClickWindowNoActivate(ocrHwnd, clickX, clickY, &clientX, &clientY)
+        if (clicked)
+            Log("點擊「副本」位置(背景): raw=" best[1] "," best[2] " -> screen=" clickX "," clickY " client=" clientX "," clientY)
         if (!clicked) {
             CoordMode "Mouse", "Screen"
             Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
             MouseClick "left", clickX, clickY
         }
         Sleep 500
-        SendCtrlF1(targetHwnd)   ; 送 Ctrl+F1
+        SendCtrlF1(ocrHwnd)   ; 送 Ctrl+F1
         Log("已發送 Ctrl+F1")
     }
 } else if (copyFound) {
@@ -623,18 +615,59 @@ ExitApp
 
 ; ========= 穩健送出 Ctrl+F1（移除 ControlFocus，避免 Target control not found） =========
 SendCtrlF1(hwnd) {
-    ; 優先以不切焦點方式送鍵，避免影響全螢幕遊戲。
+    ; 優先以背景 PostMessage 送鍵，避免影響全螢幕遊戲。
+    try {
+        PostMessage 0x100, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL down
+        PostMessage 0x100, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 down
+        PostMessage 0x101, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 up
+        PostMessage 0x101, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL up
+        Sleep 120
+        return
+    }
+    ; 次佳：ControlSend（仍不切焦點）
     try {
         ControlSend("{Ctrl down}{F1}{Ctrl up}", , "ahk_id " hwnd)
         Sleep 120
         return
     }
-    ; 後備：若 ControlSend 失敗，才使用前景 Send。
+    ; 後備：若背景方式失敗，才使用前景 Send。
     WinActivate "ahk_id " hwnd
     WinWaitActive "ahk_id " hwnd, , 1
     Sleep 60
     Send "{Ctrl down}{F1}{Ctrl up}"
     Sleep 120
+}
+
+ScreenToClientPoint(hwnd, sx, sy) {
+    pt := Buffer(8)
+    NumPut("int", sx, pt, 0)
+    NumPut("int", sy, pt, 4)
+    DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt)
+    return {x: NumGet(pt, 0, "int"), y: NumGet(pt, 4, "int")}
+}
+
+TryClickWindowNoActivate(hwnd, sx, sy, &clientX := 0, &clientY := 0) {
+    try {
+        p := ScreenToClientPoint(hwnd, sx, sy)
+        clientX := p.x
+        clientY := p.y
+        ControlClick("x" clientX " y" clientY, "ahk_id " hwnd, , "Left", 1, "NA")
+        return true
+    } catch as e {
+        Log("ControlClick(NA) 失敗，改用 PostMessage 點擊: " e.Message, "WARN")
+        try {
+            ; WM_LBUTTONDOWN/UP，lParam = y<<16 | x（client 座標）
+            clientX := clientX & 0xFFFF
+            clientY := clientY & 0xFFFF
+            lParam := (clientY << 16) | clientX
+            PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
+            Sleep 30
+            PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
+            return true
+        } catch {
+            return false
+        }
+    }
 }
 
 StrJoin(items, sep := ", ") {
