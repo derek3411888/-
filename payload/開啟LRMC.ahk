@@ -281,14 +281,15 @@ if !targetHwnd {
 }
 WriteStep("主窗口定位", "hwnd=" targetHwnd)
 
-WinActivate targetHwnd
-WinWaitActive targetHwnd
-Sleep 500
+; 避免搶焦點導致全螢幕遊戲被最小化。
+try WinRestore targetHwnd
+Sleep 200
 
 ; 點擊視窗左上角位置啟動處理
 pt := Buffer(8)
 NumPut("int", 30, pt, 0), NumPut("int", 30, pt, 4)
 DllCall("ClientToScreen", "ptr", targetHwnd, "ptr", pt)
+CoordMode "Mouse", "Screen"
 MouseClick "left", NumGet(pt, 0, "int"), NumGet(pt, 4, "int")
 Sleep 300
 
@@ -412,9 +413,9 @@ GetWorkArea() {
 }
 
 WindowReady:
-WinActivate targetHwnd
-WinWaitActive targetHwnd
-Sleep 500
+; 避免再次切換前景視窗，減少讓遊戲失焦的機率。
+try WinRestore targetHwnd
+Sleep 200
 
 ; 🎯 分別移動兩個LRMCAI視窗到正確位置
 Log("調整LRMCAI視窗位置...")
@@ -576,9 +577,24 @@ if (best is Array) {
     if (clickX >= A_ScreenWidth - 8 && clickY >= A_ScreenHeight - 8) {
         Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
     } else {
-        CoordMode "Mouse", "Screen"
-        Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
-        MouseClick "left", clickX, clickY
+        ; 優先用 NA 模式點擊，不切換前景，避免全螢幕遊戲被最小化。
+        clicked := false
+        if (IsSet(ocrTargetHwnd) && ocrTargetHwnd) {
+            clientX := clickX - captureInfo.x
+            clientY := clickY - captureInfo.y
+            try {
+                ControlClick("x" clientX " y" clientY, "ahk_id " ocrTargetHwnd, , "Left", 1, "NA")
+                clicked := true
+                Log("點擊「副本」位置(NA): raw=" best[1] "," best[2] " -> screen=" clickX "," clickY " client=" clientX "," clientY)
+            } catch as e {
+                Log("ControlClick(NA) 失敗，改用 MouseClick: " e.Message, "WARN")
+            }
+        }
+        if (!clicked) {
+            CoordMode "Mouse", "Screen"
+            Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
+            MouseClick "left", clickX, clickY
+        }
         Sleep 500
         SendCtrlF1(targetHwnd)   ; 送 Ctrl+F1
         Log("已發送 Ctrl+F1")
@@ -607,11 +623,16 @@ ExitApp
 
 ; ========= 穩健送出 Ctrl+F1（移除 ControlFocus，避免 Target control not found） =========
 SendCtrlF1(hwnd) {
+    ; 優先以不切焦點方式送鍵，避免影響全螢幕遊戲。
+    try {
+        ControlSend("{Ctrl down}{F1}{Ctrl up}", , "ahk_id " hwnd)
+        Sleep 120
+        return
+    }
+    ; 後備：若 ControlSend 失敗，才使用前景 Send。
     WinActivate "ahk_id " hwnd
     WinWaitActive "ahk_id " hwnd, , 1
     Sleep 60
-
-    ; 只使用前景 Send，確保只送出一次
     Send "{Ctrl down}{F1}{Ctrl up}"
     Sleep 120
 }
