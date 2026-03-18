@@ -25,26 +25,39 @@ SetKeyDelay 40, 40
 
 ; 初始化新的日誌系統
 global logger := InitLogger("進程管理器")
+global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
-    global logger
+    global logger, RUN_ID
     if IsSet(logger) && IsObject(logger) {
-        logger.log(msg, level)
+        logger.log("[" RUN_ID "] " msg, level)
     } else {
         ; 備用方案
         ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-        line := ts " [" level "] " msg "`r`n"
+        line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
         try FileAppend(line, A_ScriptDir "\process_manager_fallback.log", "UTF-8")
     }
 }
 
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
 WriteLog("進程管理器啟動: PID=" DllCall("GetCurrentProcessId"))
+WriteStep("啟動", "AHK=" A_AhkVersion)
 
 ; 使用互斥量確保單一實例（增強版）
 global uniqueID := "OKWW_EXE_ProcessManager_SingleInstance_V2"
 global singletonMutex := DllCall("CreateMutex", "Ptr", 0, "Int", 1, "Str", uniqueID, "Ptr") ; 注意：第二個參數設為1，表示需要立即擁有互斥量
 global lastError := DllCall("GetLastError")
+WriteStep("單例鎖", "mutex=" uniqueID " lastError=" lastError)
 
 ; 檢查是否已經有實例在運行
 if (lastError = 183) { ; ERROR_ALREADY_EXISTS
@@ -116,6 +129,7 @@ potentialPaths := [
 ]
 
 ; 遍歷所有可能路徑
+WriteStep("尋找AutoHotkey", "開始檢查候選路徑")
 for path in potentialPaths {
     if (path && FileExist(path)) {
         AhkExe := path

@@ -27,7 +27,25 @@ catch
 
 ; 初始化日誌
 global logger := InitLogger("聲骸合成")
+global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
 logger.log("========== 聲骸合成腳本啟動 ==========")
+
+WriteLog(msg, level := "INFO") {
+    global logger, RUN_ID
+    logger.log("[" RUN_ID "] " msg, level)
+}
+
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
+WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
 ShowTip(msg, duration := 1200) {
@@ -48,22 +66,22 @@ Main() {
     try {
         ; 初始化 OCR
         global ocrEngine := RapidOcr()
-        logger.log("OCR 引擎初始化成功")
+        WriteStep("OCR初始化", "成功")
         
         ; 尋找遊戲視窗
         if !FindGameWindow() {
-            logger.log("找不到遊戲視窗", "ERROR")
+            WriteStep("尋找遊戲視窗", "失敗", "ERROR")
             ShowTip("找不到遊戲視窗（鳴潮/鸣潮），請先啟動遊戲。", 3000)
             Sleep 3000
             return
         }
         
-        logger.log("找到遊戲視窗: " gameWindow)
+        WriteStep("尋找遊戲視窗", "成功 hwnd=" gameWindow)
         
         ; 用 ESC+OCR 驗證遊戲是否可操作
-        logger.log("開始驗證遊戲是否可操作...")
+        WriteStep("可操作驗證", "開始 ESC+OCR")
         if !WaitEscMenuOCR(gameWindow, 120) {
-            logger.log("無法確認遊戲可操作，寫入重啟標記", "ERROR")
+            WriteStep("可操作驗證", "失敗，寫入重啟標記", "ERROR")
             ; 寫入重啟標記檔
             try {
                 FileAppend "RESTART_NEEDED", A_ScriptDir "\..\config\synthesis_restart.flag"
@@ -73,11 +91,11 @@ Main() {
             Sleep 3000
             ExitApp
         } else {
-            logger.log("遊戲驗證成功，可以正常操作")
+            WriteStep("可操作驗證", "通過")
         }
         
         ; 開始聲骸合成流程
-        logger.log("開始執行聲骸合成流程")
+        WriteStep("聲骸合成流程", "開始執行")
         RunSynthesisLoop()
         
         logger.log("========== 聲骸合成完成 ==========")

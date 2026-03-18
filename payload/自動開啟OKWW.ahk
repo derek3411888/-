@@ -26,6 +26,7 @@ if (DllCall("GetLastError") = 183) { ; ERROR_ALREADY_EXISTS
 ; ====================== 新的日誌系統 ======================
 global logger := InitLogger("自動開啟OKWW")
 global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
 
 ; 日誌函數（使用新的日誌系統，保持RUN_ID兼容性）
 WriteLog(msg, level := "INFO") {
@@ -40,7 +41,17 @@ WriteLog(msg, level := "INFO") {
     }
 }
 
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
 Log("程序啟動: PID=" DllCall("GetCurrentProcessId") " 腳本=" A_ScriptFullPath)
+WriteStep("啟動", "AHK=" A_AhkVersion)
 
 ; ⛑️ 自動提權（提權前也先記一筆）
 if !A_IsAdmin {
@@ -119,7 +130,9 @@ StartupSafetyCheck() {
 }
 
 ; 執行安全檢查
+WriteStep("前置安全檢查", "重複實例與進程衝突檢查")
 StartupSafetyCheck()
+WriteStep("前置安全檢查", "通過")
 
 LaunchOKWW() {
     return GetPathWithAsk("OKWW", "請選擇 ok-ww 可執行檔或捷徑", "可執行檔或捷徑 (*.exe;*.lnk)")

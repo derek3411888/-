@@ -2,9 +2,30 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
+global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
+
+WriteLog(msg, level := "INFO") {
+    global RUN_ID
+    ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
+    try FileAppend(line, A_ScriptDir "\寄送信件測試.log", "UTF-8")
+}
+
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
 cfgPath := A_ScriptDir "\mail_config.ini"
+WriteStep("啟動", "cfgPath=" cfgPath)
 
 if !FileExist(cfgPath) {
+    WriteStep("設定檢查失敗", "mail_config.ini 不存在", "ERROR")
     MsgBox "找不到設定檔：" cfgPath "`n請先複製並填寫 mail_config.ini", "寄信測試", "Iconx"
     ExitApp
 }
@@ -33,23 +54,30 @@ if (mailTo = "")
     missing.Push("to")
 
 if (missing.Length > 0) {
+    WriteStep("設定檢查失敗", "缺少欄位=" JoinByComma(missing), "ERROR")
     MsgBox "mail_config.ini 內容不完整。`n缺少：" JoinByComma(missing), "寄信測試", "Iconx"
     ExitApp
 }
 
 if !(smtpPort ~= "^\d+$") {
+    WriteStep("設定檢查失敗", "smtp_port 非數字: " smtpPort, "ERROR")
     MsgBox "smtp_port 必須是數字。當前值：" smtpPort, "寄信測試", "Iconx"
     ExitApp
 }
+
+WriteStep("設定檢查", "SMTP=" smtpHost ":" smtpPort " SSL=" useSsl)
 
 nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
 subject := subjectPrefix " 測試通知 " nowText
 body := "這是一封測試信。`r`n時間：" nowText "`r`n主機：" A_ComputerName
 
+WriteStep("寄信流程", "開始呼叫 PowerShell SMTP")
 sendResult := SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
 if sendResult.ok {
+    WriteStep("完成", "測試信寄送成功")
     MsgBox "✅ 測試信寄送成功！", "寄信測試", "Iconi"
 } else {
+    WriteStep("完成", "測試信寄送失敗: " sendResult.message, "ERROR")
     hint := ""
     if (InStr(smtpHost, "gmail.com")) {
         hint := "`n`nGmail 提示：請使用『應用程式密碼』，不能用一般登入密碼。"
@@ -101,11 +129,13 @@ SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, s
     script .= "  exit 1`n"
     script .= "}`n"
 
+    WriteLog("PowerShell 腳本已組裝，準備執行 SMTP", "INFO")
     try FileDelete(psFile)
     try FileDelete(errFile)
     FileAppend(script, psFile, "UTF-8")
 
     cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' errFile '" 2>&1'
+    WriteLog("執行命令: " cmd)
     exitCode := RunWait(cmd, , "Hide")
 
     errMsg := ""

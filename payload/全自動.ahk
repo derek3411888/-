@@ -22,6 +22,8 @@ catch
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
+global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
@@ -376,18 +378,28 @@ namespace AudioUtil {
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
-    global logger
+    global logger, RUN_ID
     if IsSet(logger) && IsObject(logger) {
-        logger.log(msg, level)
+        logger.log("[" RUN_ID "] " msg, level)
     } else {
         ; 備用方案
         ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-        line := ts " [" level "] " msg "`r`n"
+        line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
         try FileAppend(line, A_ScriptDir "\main_fallback.log", "UTF-8")
     }
 }
 
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
 WriteLog("全自動腳本啟動: " A_ScriptFullPath)
+WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 鍵盤更穩
 SendMode "Input"
@@ -435,12 +447,15 @@ DirCreate dataDir
 global CFG_FILE := dataDir "\config.ini"
 WriteLog("dataDir=" dataDir)
 WriteLog("CFG_FILE=" CFG_FILE)
+WriteStep("載入設定", "config=" CFG_FILE)
 
 ; ★ 流程開始前統一檢查：程式路徑 + 郵件通知設定
+WriteStep("前置檢查", "程式路徑與通知設定")
 EnsureAllConfigAtStartup()
 
 ; ★ 啟動前檢測：確保三個程式都沒有在運行
 WriteLog("執行啟動前檢測，確保所有目標程式都已關閉...")
+WriteStep("清場", "關閉既有目標進程")
 CheckAndCloseExistingProcesses()
 
 ; 讀取重啟計數器（避免無限循環）
@@ -462,6 +477,7 @@ loginDetected := false
 okwwStarted := false
 
 EnsureWutheringRunning()
+WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
     loginDetected := false
@@ -516,6 +532,7 @@ if (loginDetected) {
 ; 2) 登入後啟動 OKWW 並確認啟動成功
 if !okwwStarted {
     WriteLog("登入完成，開始啟動 OKWW...")
+    WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
     StartOKWWFlow(isRestart)
     okwwStarted := true
 }
@@ -529,9 +546,11 @@ if !WaitEscMenuOCR(gameHwnd, 180) {
     RestartAutoScript()
     return
 }
+WriteStep("遊戲可操作驗證", "ESC+OCR 通過")
 
 ; 4) 執行聲骸合成流程
 WriteLog("啟動聲骸合成腳本...")
+WriteStep("啟動聲骸合成", "等待完成或重啟標記")
 ShowTip("🔧 正在執行聲骸合成...", 1500)
 ; 額外等待確保OKWW啟動後鳴潮完全穩定
 WriteLog("等待OKWW初始化完成，確保遊戲穩定...")
@@ -602,6 +621,7 @@ try {
 
 ; 4) 啟動 LRMC 管理腳本（由該腳本負責LRMC的啟動與管理）
 WriteLog("啟動 LRMC 管理腳本...")
+WriteStep("啟動LRMC", "交由開啟LRMC.ahk 控制")
 Run('"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk"')
 ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 
@@ -609,8 +629,10 @@ ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 ; 成功完成流程，重置重啟計數器
 IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
 WriteLog("流程成功完成，已重置重啟計數器")
+WriteStep("主流程完成", "重啟計數已歸零")
 
 WriteLog("全自動流程完成，進入收尾監測（等待電台一鍵領取達標）")
+WriteStep("收尾監測", "等待電台一鍵領取條件")
 MonitorRewardAndShutdown()
 ExitApp
 

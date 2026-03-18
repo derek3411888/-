@@ -2,14 +2,29 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
+global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
+global STEP_SEQ := 0
+
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
 ; 初始化備用日誌系統（獨立實現，避免依賴外部檔案）
 WriteLog(msg, level := "INFO") {
+    global RUN_ID
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-    line := ts " [" level "] " msg "`r`n"
+    line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
     try FileAppend(line, A_ScriptDir "\打包啟動器_fallback.log", "UTF-8")
 }
 
 WriteLog("打包啟動器開始: " A_ScriptFullPath)
+WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
+WriteStep("工作目錄", A_WorkingDir)
 
 IniReadSafe(file, section, key, default := "") {
     try {

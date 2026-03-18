@@ -2,6 +2,25 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
+global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
+
+WriteLog(msg, level := "INFO") {
+    global RUN_ID
+    ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
+    try FileAppend(line, A_ScriptDir "\文字識別測試.log", "UTF-8")
+}
+
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    WriteLog(msg, level)
+}
+
 FIXED_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
 ; 0 = 輸出完整日誌，>0 = 只輸出最後 N 行
 LOG_OUTPUT_LAST_LINES := 0
@@ -10,30 +29,38 @@ Main()
 
 Main() {
     global FIXED_LOG_FILE, LOG_OUTPUT_LAST_LINES
+    WriteStep("啟動", "腳本=" A_ScriptFullPath)
 
     logPath := Trim(FIXED_LOG_FILE, " `t`r`n")
+    WriteStep("讀取設定", "logPath=" logPath)
     if (logPath = "") {
+        WriteStep("設定檢查失敗", "日誌路徑為空", "ERROR")
         MsgBox "未設定日誌路徑。", "讀取失敗", "Iconx"
         ExitApp
     }
 
     if !FileExist(logPath) {
+        WriteStep("檔案檢查失敗", "找不到日誌檔", "ERROR")
         MsgBox "找不到日誌檔：`n" logPath, "讀取失敗", "Iconx"
         ExitApp
     }
 
+    WriteStep("讀取日誌", "開始解碼文字")
     logText := ReadTextFileBestEffort(logPath)
     logText := NormalizeText(logText)
     if (logText = "") {
+        WriteStep("內容檢查失敗", "日誌為空或無法解碼", "ERROR")
         MsgBox "日誌檔存在，但內容為空或無法解碼。`n" logPath, "讀取失敗", "Iconx"
         ExitApp
     }
 
     outText := "[來源檔案] " logPath "`n`n" FormatLogOutput(logText, LOG_OUTPUT_LAST_LINES)
     outPath := A_ScriptDir "\\lrmcai_logtext_" A_Now ".txt"
+    WriteStep("輸出整理", "outPath=" outPath)
 
     try FileDelete outPath
     FileAppend outText, outPath, "UTF-8"
+    WriteStep("完成", "成功輸出結果")
 
     MsgBox "日誌讀取完成。`n`n輸出檔案：`n" outPath, "完成", "Iconi"
     ExitApp

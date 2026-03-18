@@ -8,21 +8,33 @@ SetWorkingDir A_ScriptDir
 
 ; 初始化新的日誌系統
 global logger := InitLogger("開啟LRMC")
+global RUN_ID := A_Now "@" A_TickCount
+global STEP_SEQ := 0
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
-    global logger
+    global logger, RUN_ID
     if IsSet(logger) && IsObject(logger) {
-        logger.log(msg, level)
+        logger.log("[" RUN_ID "] " msg, level)
     } else {
         ; 備用方案
         ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-        line := ts " [" level "] " msg "`r`n"
+        line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
         try FileAppend(line, A_ScriptDir "\lrmc_fallback.log", "UTF-8")
     }
 }
 
+WriteStep(stepName, detail := "", level := "INFO") {
+    global STEP_SEQ
+    STEP_SEQ += 1
+    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    if (detail != "")
+        msg .= " | " detail
+    Log(msg, level)
+}
+
 Log("LRMC 啟動腳本開始: " A_ScriptFullPath)
+WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 設置進程優先級為普通，避免佔用過多系統資源
 try {
@@ -211,6 +223,7 @@ IniReadSafe(file, section, key, default) {
 ; ===== 原流程（僅將寫死路徑改為動態）=====
 
 ; 每次腳本啟動時重置重啟計數器
+WriteStep("重啟計數器", "重置並檢查上限")
 ResetRestartCounter()
 
 ; 檢查重啟計數器，防止無限循環
@@ -218,6 +231,7 @@ currentRestartCount := CheckRestartCounter()
 
 ; 啟動 LRMCAI
 Log("開始啟動 LRMCAI... (重啟計數: " currentRestartCount ")")
+WriteStep("啟動LRMCAI", "準備讀取路徑並啟動進程")
 lnkPath := LaunchLRMC()
 if (!lnkPath) {
     Log("未設定 LRMCAI 路徑", "ERROR")
@@ -229,6 +243,7 @@ Log("執行 LRMCAI: " lnkPath)
 Run lnkPath,,, &pid
 ProcessWait(pid)
 Sleep 3000  ; 從3秒減少到2秒
+WriteStep("進程已啟動", "PID=" pid)
 
 ; 優化：增加錯誤處理和資源監控
 Log("LRMCAI 進程已啟動，PID: " pid)
@@ -263,6 +278,7 @@ if !targetHwnd {
     MsgBox "❌ 找不到應用程式視窗"
     ExitApp
 }
+WriteStep("主窗口定位", "hwnd=" targetHwnd)
 
 WinActivate targetHwnd
 WinWaitActive targetHwnd
@@ -284,6 +300,7 @@ ShowTip("LRMCAI 啟動中...", 1500)
 ; 等待新視窗出現
 ; 取代你原本的等待視窗迴圈
 Log("等待 LRMCAI 主視窗出現（包含版本號的UI窗口）...")
+WriteStep("等待UI窗口", "條件: 標題包含 LRMCAI 且有版本數字")
 
 ; 先嘗試找到包含版本號的主窗口（優先）
 targetHwnd := 0
@@ -475,6 +492,7 @@ try {
 Sleep 2000
 
 Log("開始 OCR 識別...")
+WriteStep("OCR", "搜尋『副本』按鈕")
 ; OCR 偵測「副本」（優化版：減少內存占用）
 ocr := RapidOcr()
 
