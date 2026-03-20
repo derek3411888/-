@@ -450,6 +450,8 @@ global CFG_FILE := dataDir "\config.ini"
 WriteLog("dataDir=" dataDir)
 WriteLog("CFG_FILE=" CFG_FILE)
 WriteStep("載入設定", "config=" CFG_FILE)
+LoadMailNotifyEnabled()
+SetupTrayMenu()
 
 ; ★ 流程開始前統一檢查：程式路徑 + 郵件通知設定
 WriteStep("前置檢查", "程式路徑與通知設定")
@@ -1839,6 +1841,8 @@ ReadCombinedConfigState() {
     state.mailTo := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "to", ""), " `t`r`n")
     state.subjectPrefix := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "subject_prefix", "LRMCAI"), " `t`r`n")
     state.useSsl := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "use_ssl", "1"), " `t`r`n")
+    state.sendEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
+    MAIL_NOTIFY_ENABLED := state.sendEnabled
     state.fallbackLogFile := NormalizePath(IniReadSafe(CFG_FILE, "reward_monitor", "fallback_log_file", ""))
     if (state.fallbackLogFile = "")
         state.fallbackLogFile := Trim(REWARD_LOG_FILE, ' "')
@@ -1903,6 +1907,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "smtp_user: " state.smtpUser "`r`n"
     summary .= "from: " state.mailFrom "`r`n"
     summary .= "to: " state.mailTo "`r`n"
+    summary .= "send_enabled: " (state.sendEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     g.AddEdit("xm w720 r8 ReadOnly", summary)
 
@@ -1927,6 +1932,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     txtFallbackHint := g.AddText("xm y+4 w720 cE6A700", "")
 
     g.AddText("xm y+14 w720", "【郵件設定】Gmail: smtp.gmail.com / 587 / use_ssl=1；密碼請使用應用程式密碼")
+    cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
+    cbSendEnabled.Value := state.sendEnabled ? 1 : 0
+    txtMailHint := g.AddText("x+12 w420", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
 
     g.AddText("xm y+10 w120", "smtp_host")
     edHost := g.AddEdit("x+10 w500", state.smtpHost)
@@ -1974,7 +1982,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edFrom: edFrom,
         edTo: edTo,
         edPrefix: edPrefix,
-        ddSsl: ddSsl
+        ddSsl: ddSsl,
+        cbSendEnabled: cbSendEnabled,
+        txtMailHint: txtMailHint
     }
 
     btnOkww.OnEvent("Click", OnCombinedBrowseOkww)
@@ -1982,11 +1992,13 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnWu.OnEvent("Click", OnCombinedBrowseWu)
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
+    cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Close", OnCombinedSetupClose)
 
     RefreshFallbackLogHint()
+    RefreshMailInputsEnabled()
 
     g.Show("AutoSize")
     while !__MAIL_SETUP.done
@@ -2065,6 +2077,7 @@ OnCombinedSetupSave(*) {
     toVal := Trim(st.edTo.Value, " `t`r`n")
     prefixVal := Trim(st.edPrefix.Value, " `t`r`n")
     sslVal := st.ddSsl.Text
+    sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
         MsgBox "OKWW 路徑空白或不存在", "整合設定", "Iconx"
@@ -2079,7 +2092,7 @@ OnCombinedSetupSave(*) {
         return
     }
 
-    if MAIL_NOTIFY_ENABLED {
+    if sendEnabledVal {
         if (hostVal = "" || portVal = "" || userVal = "" || passVal = "" || fromVal = "" || toVal = "") {
             MsgBox "郵件欄位不可空白：smtp_host/smtp_port/smtp_user/smtp_pass/from/to", "整合設定", "Iconx"
             return
@@ -2107,10 +2120,75 @@ OnCombinedSetupSave(*) {
     IniWrite toVal, st.cfgPath, st.section, "to"
     IniWrite (prefixVal = "" ? "LRMCAI" : prefixVal), st.cfgPath, st.section, "subject_prefix"
     IniWrite sslVal, st.cfgPath, st.section, "use_ssl"
+    IniWrite sendEnabledVal, st.cfgPath, st.section, "send_enabled"
+    MAIL_NOTIFY_ENABLED := sendEnabledVal
 
     __MAIL_SETUP.saved := true
     __MAIL_SETUP.done := true
     st.gui.Destroy()
+}
+
+OnSendEnabledChanged(*) {
+    RefreshMailInputsEnabled()
+}
+
+RefreshMailInputsEnabled() {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    enabled := __MAIL_SETUP.cbSendEnabled.Value ? true : false
+    __MAIL_SETUP.edHost.Enabled := enabled
+    __MAIL_SETUP.edPort.Enabled := enabled
+    __MAIL_SETUP.edUser.Enabled := enabled
+    __MAIL_SETUP.edPass.Enabled := enabled
+    __MAIL_SETUP.edFrom.Enabled := enabled
+    __MAIL_SETUP.edTo.Enabled := enabled
+    __MAIL_SETUP.edPrefix.Enabled := enabled
+    __MAIL_SETUP.ddSsl.Enabled := enabled
+    __MAIL_SETUP.txtMailHint.Value := enabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位"
+}
+
+LoadMailNotifyEnabled() {
+    global CFG_FILE, MAIL_SECTION, MAIL_NOTIFY_ENABLED
+    MAIL_NOTIFY_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
+    WriteLog("郵件通知開關(send_enabled)=" MAIL_NOTIFY_ENABLED)
+}
+
+ParseBool01(val, defaultVal := 1) {
+    s := StrLower(Trim(val, " `t`r`n"))
+    if (s = "")
+        return defaultVal
+    if (s = "1" || s = "true" || s = "yes" || s = "on")
+        return 1
+    if (s = "0" || s = "false" || s = "no" || s = "off")
+        return 0
+    return defaultVal
+}
+
+SetupTrayMenu() {
+    try {
+        A_TrayMenu.Delete("開啟設定 UI")
+    }
+
+    A_TrayMenu.Insert(1, "開啟設定 UI", OpenSettingsFromTray)
+    A_TrayMenu.Insert(2)
+}
+
+OpenSettingsFromTray(*) {
+    global CFG_FILE, MAIL_SECTION
+
+    WriteLog("使用者由系統匣開啟設定 UI")
+    state := ReadCombinedConfigState()
+    ok := ShowCombinedConfigSetupGui(CFG_FILE, MAIL_SECTION, state, "由系統匣手動開啟設定")
+    if ok {
+        LoadMailNotifyEnabled()
+        WriteLog("系統匣設定已儲存")
+        ShowTip("✅ 設定已儲存", 1200)
+    } else {
+        WriteLog("系統匣設定已取消", "WARN")
+        ShowTip("⚠️ 已取消設定", 1200)
+    }
 }
 
 OnCombinedSetupCancel(*) {
