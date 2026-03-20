@@ -144,34 +144,34 @@ RunSynthesisLoop() {
         return
     }
     
-    ; 進入主迴圈（圖4開始循環）
+    ; 進入主迴圈（第16步開始，圖4開始循環）
     loopCount := 0
     firstLoop := true  ; 標記是否首次迴圈
     while true {
         loopCount++
         logger.log("========== 第 " loopCount " 輪融合 ==========")
         
-        ; 步驟4：點擊批量融合（圖4 → 圖5）
+        ; 步驟16：點擊批量融合（圖4 → 圖5）
         if !ClickBatchMerge() {
             logger.log("無法點擊批量融合", "ERROR")
             break
         }
         
-        ; 步驟4.5：點擊最靠下的標準融合（Y軸最大）
+        ; 步驟17：點擊最靠下的標準融合（Y軸最大）
         if !ClickBottomStandardMerge() {
             logger.log("無法點擊最靠下的標準融合", "ERROR")
             break
         }
         
-        ; 步驟5和6：僅在第一次執行
+        ; 步驟18和19：僅在第一次執行
         if firstLoop {
-            ; 步驟5：點擊圖5紅框（圖5 → 圖6）
+            ; 步驟18：點擊圖5紅框（圖5 → 圖6）
             if !ClickStep5Icon() {
                 logger.log("無法點擊圖5目標", "ERROR")
                 break
             }
             
-            ; 步驟6：選擇已棄置並確認（圖6 → 圖7）
+            ; 步驟19：選擇已棄置並返回（圖6 → 圖7）
             if !SelectDiscardedAndConfirm() {
                 logger.log("無法選擇已棄置", "ERROR")
                 break
@@ -181,29 +181,25 @@ RunSynthesisLoop() {
             Sleep 1000
         }
         
-        ; 步驟7：點擊全選（圖7 → 圖8）
+        ; 步驟20：點擊全選（圖7 → 圖8）
         if !ClickSelectAll() {
             logger.log("無法點擊全選", "ERROR")
             break
         }
         
-        ; 步驟8：檢查次數並點擊批量融合（圖8）
+        ; 步驟21：檢查次數並點擊批量融合（圖8）
         mergeCount := CheckMergeCount()
         logger.log("批量融合次數: " mergeCount)
         
         if (mergeCount <= 0) {
-            logger.log("融合次數為 0，先點擊圖12再點擊圖11後結束流程")
-            
-            ; 點擊圖12紅框（座標：1168,15,1233,65）
-            cx12 := (1168 + 1233) / 2
-            cy12 := (15 + 65) / 2
-            ClickRelative(cx12, cy12)
+            logger.log("融合次數為 0，先點擊返回再點擊回到主畫面後結束流程")
+
+            ; 步驟22：先點擊右上角返回（座標：1213,56）
+            ClickRelative(1213, 56)
             Sleep 1000
-            
-            ; 點擊圖11紅框（座標：1116,14,1176,72）
-            cx11 := (1116 + 1176) / 2
-            cy11 := (14 + 72) / 2
-            ClickRelative(cx11, cy11)
+
+            ; 步驟23：再點擊回到主畫面（座標：1139,56）
+            ClickRelative(1139, 56)
             Sleep 2000  ; 等待遊戲作動
             
             ; 打開 ESC 背包畫面
@@ -223,7 +219,7 @@ RunSynthesisLoop() {
             break
         }
         
-        ; 步驟9：首次處理提示框（圖9 → 圖10）
+        ; 步驟24：首次處理提示框（圖9 → 圖10）
         if (firstTime) {
             if !HandleFirstTimePrompt() {
                 logger.log("無法處理首次提示", "WARN")
@@ -234,7 +230,7 @@ RunSynthesisLoop() {
         ; 等待融合完成（圖10）
         Sleep 2000
         
-        ; 步驟10：按 Esc 返回圖4
+        ; 步驟25：按 Esc 返回圖4
         if !ReturnToStep4() {
             logger.log("無法返回圖4", "ERROR")
             break
