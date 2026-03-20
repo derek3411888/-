@@ -445,22 +445,49 @@ ClickStep5Icon() {
 
 SelectDiscardedAndConfirm() {
     global logger
-    logger.log("選擇已棄置並確認")
-    
-    ; 已棄置座標：472,184,779,247
-    cx1 := (472 + 779) / 2
-    cy1 := (184 + 247) / 2
-    
-    ClickRelative(cx1, cy1)
+    logger.log("選擇已棄置並返回")
+
+    foundDiscarded := false
+
+    ; 先嘗試用OCR尋找「已棄置」
+    try {
+        result := OCRWindow()
+        if IsObject(result) {
+            for block in result {
+                text := CleanText(block.text)
+                if InStr(text, "已弃置") || InStr(text, "已棄置") {
+                    if block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3 {
+                        cx1 := (block.boxPoint[1].x + block.boxPoint[3].x) / 2
+                        cy1 := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
+                        logger.log("用OCR找到已棄置，座標: " cx1 ", " cy1)
+                        ClickRelative(cx1, cy1)
+                        foundDiscarded := true
+                        break
+                    }
+                }
+            }
+        }
+    } catch as e {
+        logger.log("OCR查找已棄置失敗: " e.Message, "WARN")
+    }
+
+    ; OCR找不到，使用備選座標
+    if !foundDiscarded {
+        cx1 := 890
+        cy1 := 185
+        logger.log("使用備選座標點擊已棄置: " cx1 ", " cy1)
+        ClickRelative(cx1, cy1)
+    }
+
     Sleep 800
-    
-    ; 確認座標：941,578,1143,623
-    cx2 := (941 + 1143) / 2
-    cy2 := (578 + 623) / 2
-    
+
+    ; 點擊右上角關閉/返回圖示
+    cx2 := 1213
+    cy2 := 56
+    logger.log("點擊右上角關閉/返回: " cx2 ", " cy2)
     ClickRelative(cx2, cy2)
     Sleep 2000
-    
+
     return true
 }
 
