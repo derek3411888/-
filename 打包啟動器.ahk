@@ -199,30 +199,58 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 
         WriteLog("檢測到新版本：" currentVer " -> " remoteVer)
         zipTmp := A_Temp "\\payload_update_" A_TickCount ".zip"
-        payloadReqUrl := payloadUrl
-        payloadReqUrl .= (InStr(payloadReqUrl, "?") ? "&" : "?") "ver=" remoteVer
-        try {
-            HttpDownloadFile(payloadReqUrl, zipTmp)
-        } catch as e {
-            WriteLog("下載 payload 更新包失敗: " e.Message, "WARN")
-            return false
-        }
+        verified := false
+        lastSha := ""
 
-        if (payloadSha != "") {
+        ; 下載重試：避免 CDN 回傳舊快取導致 SHA 驗證失敗。
+        Loop 3 {
+            attempt := A_Index
+            payloadReqUrl := payloadUrl
+            payloadReqUrl .= (InStr(payloadReqUrl, "?") ? "&" : "?") "ver=" remoteVer "&retry=" attempt "&ts=" A_NowUTC
+
+            try {
+                HttpDownloadFile(payloadReqUrl, zipTmp)
+            } catch as e {
+                WriteLog("下載 payload 更新包失敗(第 " attempt " 次): " e.Message, "WARN")
+                if (attempt >= 3)
+                    return false
+                Sleep 1200
+                continue
+            }
+
+            if (payloadSha = "") {
+                WriteLog("manifest 未提供 payload_sha256，略過雜湊驗證", "WARN")
+                verified := true
+                break
+            }
+
             gotSha := GetFileSha256(zipTmp)
             if (gotSha = "") {
-                WriteLog("無法計算更新包 SHA256", "WARN")
-                try FileDelete(zipTmp)
-                return false
+                WriteLog("無法計算更新包 SHA256(第 " attempt " 次)", "WARN")
+                if (attempt >= 3) {
+                    try FileDelete(zipTmp)
+                    return false
+                }
+                Sleep 1200
+                continue
             }
-            if (gotSha != payloadSha) {
-                WriteLog("更新包 SHA256 不符，預期=" payloadSha " 實際=" gotSha, "WARN")
-                try FileDelete(zipTmp)
-                return false
+
+            lastSha := gotSha
+            if (gotSha = payloadSha) {
+                WriteLog("更新包 SHA256 驗證通過")
+                verified := true
+                break
             }
-            WriteLog("更新包 SHA256 驗證通過")
-        } else {
-            WriteLog("manifest 未提供 payload_sha256，略過雜湊驗證", "WARN")
+
+            WriteLog("更新包 SHA256 不符(第 " attempt " 次)，預期=" payloadSha " 實際=" gotSha, "WARN")
+            if (attempt < 3)
+                Sleep 1500
+        }
+
+        if !verified {
+            WriteLog("更新包 SHA256 連續驗證失敗，預期=" payloadSha " 最後實際=" lastSha, "WARN")
+            try FileDelete(zipTmp)
+            return false
         }
 
         payloadPath := workDir "\\payload.zip"
