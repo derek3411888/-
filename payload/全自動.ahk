@@ -981,39 +981,21 @@ CrashWatcherTick() {
         }
 
         btn := ""
-        crashDetected := false
-        ocrPreview := ""
         if IsObject(res) {
             for block in res {
                 t := StrReplace(StrReplace(block.text, "`r",""), "`n","")
                 t := StrReplace(t, " ", "")
                 t := ToSimp(t)
-
-                if (t != "") {
-                    if (ocrPreview != "")
-                        ocrPreview .= " | "
-                    ocrPreview .= t
-                }
-
-                if (InStr(t, "崩溃") || InStr(t, "崩潰") || InStr(t, "fatal") || InStr(t, "crash") || InStr(t, "错误") || InStr(t, "錯誤") || InStr(t, "ue4"))
-                    crashDetected := true
-
                 if (block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3) {
                     if (InStr(t, "确定") || InStr(t, "確定") || InStr(t, "OK") || InStr(t, "确认") || InStr(t, "Confirm")) {
                         cx := (block.boxPoint[1].x + block.boxPoint[3].x) / 2
                         cy := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
                         btn := [Round(cx), Round(cy)]
+                        break
                     }
                 }
             }
         }
-
-        if !crashDetected {
-            ; 避免誤判：只有偵測到明確崩潰文字才執行關閉/重啟。
-            return
-        }
-
-        Log("偵測到 UE4 崩潰視窗，將執行自動確認與重啟。OCR=" ocrPreview, "WARN")
 
         WinActivate "ahk_id " hwndC
         Sleep 120
