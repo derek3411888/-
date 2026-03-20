@@ -8,6 +8,7 @@ SetWorkingDir A_ScriptDir
 
 ; 初始化新的日誌系統
 global logger := InitLogger("開啟LRMC")
+RegisterLifecycleLogging("開啟LRMC")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 

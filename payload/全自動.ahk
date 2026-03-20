@@ -22,6 +22,7 @@ catch
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
+RegisterLifecycleLogging("全自動")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 
@@ -980,21 +981,39 @@ CrashWatcherTick() {
         }
 
         btn := ""
+        crashDetected := false
+        ocrPreview := ""
         if IsObject(res) {
             for block in res {
                 t := StrReplace(StrReplace(block.text, "`r",""), "`n","")
                 t := StrReplace(t, " ", "")
                 t := ToSimp(t)
+
+                if (t != "") {
+                    if (ocrPreview != "")
+                        ocrPreview .= " | "
+                    ocrPreview .= t
+                }
+
+                if (InStr(t, "崩溃") || InStr(t, "崩潰") || InStr(t, "fatal") || InStr(t, "crash") || InStr(t, "错误") || InStr(t, "錯誤") || InStr(t, "ue4"))
+                    crashDetected := true
+
                 if (block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3) {
                     if (InStr(t, "确定") || InStr(t, "確定") || InStr(t, "OK") || InStr(t, "确认") || InStr(t, "Confirm")) {
                         cx := (block.boxPoint[1].x + block.boxPoint[3].x) / 2
                         cy := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
                         btn := [Round(cx), Round(cy)]
-                        break
                     }
                 }
             }
         }
+
+        if !crashDetected {
+            ; 避免誤判：只有偵測到明確崩潰文字才執行關閉/重啟。
+            return
+        }
+
+        Log("偵測到 UE4 崩潰視窗，將執行自動確認與重啟。OCR=" ocrPreview, "WARN")
 
         WinActivate "ahk_id " hwndC
         Sleep 120
@@ -1580,15 +1599,16 @@ ResolveRewardLogPath() {
 
     lrmcExe := NormalizePath(IniReadSafe(CFG_FILE, "paths", "LRMC", ""))
     if (lrmcExe != "") {
-        SplitPath lrmcExe, , &lrmcDir
+        lrmcResolved := ResolveLrmcPathForLog(lrmcExe)
+        SplitPath lrmcResolved, , &lrmcDir
         if (lrmcDir != "") {
             candidate := lrmcDir "\log\LRMCAI.log"
             if FileExist(candidate) {
-                WriteLog("收尾監測日誌路徑（由 LRMC 路徑推導）: " candidate)
+                WriteLog("收尾監測日誌路徑（由 LRMC 路徑推導）: " candidate "，來源=" lrmcResolved)
                 return candidate
             }
 
-            WriteLog("由 LRMC 路徑推導的日誌不存在，改用後備路徑: " candidate, "WARN")
+            WriteLog("由 LRMC 路徑推導的日誌不存在，改用後備路徑: " candidate "，來源=" lrmcResolved, "WARN")
         }
     }
 
@@ -1607,6 +1627,41 @@ ResolveRewardLogPath() {
     }
 
     return ""
+}
+
+ResolveLrmcPathForLog(pathVal) {
+    p := NormalizePath(pathVal)
+    if (p = "")
+        return ""
+
+    ; 若設定的是捷徑，先解析到實際目標程式，避免用到開始功能表目錄。
+    if (p ~= "i)\.lnk$") {
+        try {
+            target := "", outDir := "", outArgs := "", outDesc := "", outIcon := "", outIconNum := 0, outRunState := 0
+            FileGetShortcut p, &target, &outDir, &outArgs, &outDesc, &outIcon, &outIconNum, &outRunState
+            target := NormalizePath(target)
+            if (target != "") {
+                WriteLog("LRMC 捷徑已解析：" p " -> " target)
+                return target
+            }
+
+            if (outDir != "") {
+                candidateExe := NormalizePath(outDir "\\LRMCAI.exe")
+                if FileExist(candidateExe) {
+                    WriteLog("LRMC 捷徑目標為空，改用捷徑工作目錄推導：" candidateExe, "WARN")
+                    return candidateExe
+                }
+            }
+
+            WriteLog("LRMC 捷徑解析失敗，沿用原路徑：" p, "WARN")
+            return p
+        } catch as e {
+            WriteLog("LRMC 捷徑解析例外，沿用原路徑：" p "，" e.Message, "WARN")
+            return p
+        }
+    }
+
+    return p
 }
 
 GetLogFileLength(filePath) {

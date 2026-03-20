@@ -9,6 +9,7 @@
 
 class LogManager {
     static instances := Map()
+    static lifecycleCallbacks := Map()
     
     __New(scriptName) {
         this.scriptName := scriptName
@@ -147,6 +148,64 @@ class LogManager {
         }
         return LogManager.instances[scriptName]
     }
+}
+
+JoinArray(items, sep := ",") {
+    out := ""
+    for idx, v in items {
+        if (idx > 1)
+            out .= sep
+        out .= v
+    }
+    return out
+}
+
+GetProcessCommandLine(pid) {
+    try {
+        for proc in ComObjGet("winmgmts:").ExecQuery("Select CommandLine from Win32_Process where ProcessId=" pid) {
+            try return proc.CommandLine
+        }
+    }
+    return ""
+}
+
+BuildStartupReason(hint := "") {
+    parts := []
+    if (hint != "")
+        parts.Push("hint=" hint)
+
+    if (A_Args.Length > 0)
+        parts.Push("args=" JoinArray(A_Args, "|"))
+    else
+        parts.Push("args=<none>")
+
+    cmd := Trim(GetProcessCommandLine(DllCall("GetCurrentProcessId")))
+    if (cmd != "")
+        parts.Push("cmdline=" cmd)
+
+    if (A_Args.Length = 0)
+        parts.Push("source=external-trigger(manual-or-scheduler)")
+    else if (InStr(StrLower(JoinArray(A_Args, " ")), "restart"))
+        parts.Push("source=script-restart")
+    else
+        parts.Push("source=arg-trigger")
+
+    return JoinArray(parts, " | ")
+}
+
+RegisterLifecycleLogging(scriptName, startupHint := "") {
+    if (scriptName = "") {
+        SplitPath(A_ScriptName, , , , &nameNoExt)
+        scriptName := nameNoExt
+    }
+
+    if !LogManager.lifecycleCallbacks.Has(scriptName) {
+        cb := (exitReason, exitCode) => Log("生命週期停止原因: reason=" exitReason " | exitCode=" exitCode, "INFO", scriptName)
+        OnExit(cb)
+        LogManager.lifecycleCallbacks[scriptName] := cb
+    }
+
+    Log("生命週期啟動原因: " BuildStartupReason(startupHint), "INFO", scriptName)
 }
 
 ; 全域便利函數

@@ -25,6 +25,7 @@ if (DllCall("GetLastError") = 183) { ; ERROR_ALREADY_EXISTS
 
 ; ====================== 新的日誌系統 ======================
 global logger := InitLogger("自動開啟OKWW")
+RegisterLifecycleLogging("自動開啟OKWW")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 

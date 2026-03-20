@@ -29,7 +29,34 @@ WriteLog(msg, level := "INFO") {
     try FileAppend(line, A_ScriptDir "\打包啟動器_fallback.log", "UTF-8")
 }
 
+JoinArray(items, sep := ",") {
+    out := ""
+    for idx, v in items {
+        if (idx > 1)
+            out .= sep
+        out .= v
+    }
+    return out
+}
+
+BuildStartupReason() {
+    parts := []
+    if (A_Args.Length > 0)
+        parts.Push("args=" JoinArray(A_Args, "|"))
+    else
+        parts.Push("args=<none>")
+
+    parts.Push("source=" (A_Args.Length > 0 ? "arg-trigger" : "external-trigger(manual-or-scheduler)"))
+    return JoinArray(parts, " | ")
+}
+
+LifecycleOnExit(exitReason, exitCode) {
+    WriteLog("生命週期停止原因: reason=" exitReason " | exitCode=" exitCode)
+}
+
 WriteLog("打包啟動器開始: " A_ScriptFullPath)
+WriteLog("生命週期啟動原因: " BuildStartupReason())
+OnExit(LifecycleOnExit)
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 WriteStep("工作目錄", A_WorkingDir)
 

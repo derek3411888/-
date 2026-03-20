@@ -18,6 +18,30 @@ WriteLog(msg, level := "INFO") {
     try FileAppend(line, A_ScriptDir "\文字識別測試.log", "UTF-8")
 }
 
+JoinArray(items, sep := ",") {
+    out := ""
+    for idx, v in items {
+        if (idx > 1)
+            out .= sep
+        out .= v
+    }
+    return out
+}
+
+BuildStartupReason() {
+    parts := []
+    if (A_Args.Length > 0)
+        parts.Push("args=" JoinArray(A_Args, "|"))
+    else
+        parts.Push("args=<none>")
+    parts.Push("source=" (A_Args.Length > 0 ? "arg-trigger" : "external-trigger(manual-or-scheduler)"))
+    return JoinArray(parts, " | ")
+}
+
+LifecycleOnExit(exitReason, exitCode) {
+    WriteLog("生命週期停止原因: reason=" exitReason " | exitCode=" exitCode)
+}
+
 WriteStep(stepName, detail := "", level := "INFO") {
     global STEP_SEQ
     STEP_SEQ += 1
@@ -31,6 +55,9 @@ WriteStep(stepName, detail := "", level := "INFO") {
 FIXED_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
 ; 0 = 輸出完整日誌，>0 = 只輸出最後 N 行
 LOG_OUTPUT_LAST_LINES := 0
+
+WriteLog("生命週期啟動原因: " BuildStartupReason())
+OnExit(LifecycleOnExit)
 
 Main()
 

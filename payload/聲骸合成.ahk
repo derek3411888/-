@@ -27,6 +27,7 @@ catch
 
 ; 初始化日誌
 global logger := InitLogger("聲骸合成")
+RegisterLifecycleLogging("聲骸合成")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 logger.log("========== 聲骸合成腳本啟動 ==========")
