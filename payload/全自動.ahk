@@ -2171,8 +2171,8 @@ SetupTrayMenu() {
         A_TrayMenu.Delete("開啟設定 UI")
     }
 
-    A_TrayMenu.Insert(1, "開啟設定 UI", OpenSettingsFromTray)
-    A_TrayMenu.Insert(2)
+    A_TrayMenu.Add("開啟設定 UI", OpenSettingsFromTray)
+    A_TrayMenu.Add()
 }
 
 OpenSettingsFromTray(*) {
