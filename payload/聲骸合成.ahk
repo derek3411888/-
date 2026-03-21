@@ -228,7 +228,7 @@ RunSynthesisLoop() {
         }
         
         ; 等待融合完成（圖10）
-        Sleep 2000
+        Sleep 1000
         
         ; 步驟25：按 Esc 返回圖4
         if !ReturnToStep4() {
@@ -311,7 +311,7 @@ ClickDataWarehouse() {
                         cy := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
                         logger.log("用OCR找到數據屋，座標: " cx ", " cy)
                         ClickRelative(cx, cy)
-                        Sleep 2000
+                        Sleep 1000
                         return true
                     }
                 }
@@ -327,7 +327,7 @@ ClickDataWarehouse() {
     cy := (273 + 418) / 2
     
     ClickRelative(cx, cy)
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
@@ -341,7 +341,7 @@ ClickStep3Icon() {
     cy := (356 + 437) / 2
     
     ClickRelative(cx, cy)
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
@@ -362,7 +362,7 @@ ClickBatchMerge() {
                         cy := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
                         logger.log("用OCR找到標準融合，座標: " cx ", " cy)
                         ClickRelative(cx, cy)
-                        Sleep 2000
+                        Sleep 1000
                         return true
                     }
                 }
@@ -375,7 +375,7 @@ ClickBatchMerge() {
     ; OCR找不到，使用備選座標
     logger.log("使用備選座標點擊標準融合")
     ClickRelative(368, 98)
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
@@ -409,7 +409,7 @@ ClickBottomStandardMerge() {
                 cy := (bottomMerge.boxPoint[1].y + bottomMerge.boxPoint[3].y) / 2
                 logger.log("用OCR找到最靠下的標準融合，座標: " cx ", " cy)
                 ClickRelative(cx, cy)
-                Sleep 2000
+                Sleep 1000
                 return true
             }
         }
@@ -420,7 +420,7 @@ ClickBottomStandardMerge() {
     ; OCR找不到，使用備選座標
     logger.log("使用備選座標點擊最靠下的標準融合")
     ClickRelative(685, 658)
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
@@ -434,7 +434,7 @@ ClickStep5Icon() {
     cy := (636 + 683) / 2
     
     ClickRelative(cx, cy)
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
@@ -496,7 +496,7 @@ ClickSelectAll() {
     cy := (637 + 684) / 2
     
     ClickRelative(cx, cy)
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
@@ -610,7 +610,7 @@ ReturnToStep4() {
     ActivateGame()
     
     Send "{Esc}"
-    Sleep 2000
+    Sleep 1000
     
     return true
 }
