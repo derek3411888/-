@@ -268,8 +268,8 @@ findWindow() {
         } catch {
             ; 如果出錯，等待一下再試
         }
-        
-        ; 每次嘗試間等待，減少 CPU 占用
+
+        ; 每次嘗試後等待，減少 CPU 占用
         Sleep 300
     }
     return 0
@@ -578,16 +578,10 @@ if (best is Array) {
     if (clickX >= A_ScreenWidth - 8 && clickY >= A_ScreenHeight - 8) {
         Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
     } else {
-        ; 以 ScreenToClient 轉換後點擊，避免邊框/標題列造成偏移。
         ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
-        clicked := TryClickWindowNoActivate(ocrHwnd, clickX, clickY, &clientX, &clientY)
-        if (clicked)
-            Log("點擊「副本」位置(背景): raw=" best[1] "," best[2] " -> screen=" clickX "," clickY " client=" clientX "," clientY)
-        if (!clicked) {
-            CoordMode "Mouse", "Screen"
-            Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
-            MouseClick "left", clickX, clickY
-        }
+        CoordMode "Mouse", "Screen"
+        Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
+        MouseClick "left", clickX, clickY
         Sleep 500
         SendCtrlF1(pid, ocrHwnd)   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
         Log("已發送 Ctrl+F1")
@@ -672,38 +666,6 @@ SendCtrlF1(pid, preferredHwnd := 0) {
     }
 
     Sleep 120
-}
-
-ScreenToClientPoint(hwnd, sx, sy) {
-    pt := Buffer(8)
-    NumPut("int", sx, pt, 0)
-    NumPut("int", sy, pt, 4)
-    DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt)
-    return {x: NumGet(pt, 0, "int"), y: NumGet(pt, 4, "int")}
-}
-
-TryClickWindowNoActivate(hwnd, sx, sy, &clientX := 0, &clientY := 0) {
-    try {
-        p := ScreenToClientPoint(hwnd, sx, sy)
-        clientX := p.x
-        clientY := p.y
-        ControlClick("x" clientX " y" clientY, "ahk_id " hwnd, , "Left", 1, "NA")
-        return true
-    } catch as e {
-        Log("ControlClick(NA) 失敗，改用 PostMessage 點擊: " e.Message, "WARN")
-        try {
-            ; WM_LBUTTONDOWN/UP，lParam = y<<16 | x（client 座標）
-            clientX := clientX & 0xFFFF
-            clientY := clientY & 0xFFFF
-            lParam := (clientY << 16) | clientX
-            PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
-            Sleep 30
-            PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
-            return true
-        } catch {
-            return false
-        }
-    }
 }
 
 StrJoin(items, sep := ", ") {

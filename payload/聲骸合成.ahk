@@ -753,66 +753,20 @@ ClickRelative(x, y) {
     
     ActivateGame()
 
-    if BackgroundClickClient(gameWindow, x, y) {
-        logger.log("背景點擊客戶區座標: (" Round(x) ", " Round(y) ")")
-        return true
-    }
+    ; 使用前景實體滑鼠點擊客戶區座標
+    CoordMode "Mouse", "Client"
+    WinActivate "ahk_id " gameWindow
+    Sleep 100
 
-    ; 背景點擊在部分畫面可能被遊戲忽略，回退前景點擊保證流程可用。
-    if ForegroundClickClient(gameWindow, x, y) {
-        logger.log("前景回退點擊客戶區座標: (" Round(x) ", " Round(y) ")", "WARN")
-        return true
-    }
+    MouseMove x, y
+    Sleep 50
+    Click
+    Sleep 100
 
-    logger.log("點擊失敗: (" Round(x) ", " Round(y) ")", "ERROR")
-    return false
-}
+    CoordMode "Mouse", "Screen"
 
-BackgroundClickClient(hwnd, clientX, clientY) {
-    if !hwnd
-        return false
-
-    x := Round(clientX)
-    y := Round(clientY)
-
-    try {
-        ControlClick "x" x " y" y, "ahk_id " hwnd, , "Left", 1, "NA Pos"
-        return true
-    } catch {
-        try {
-            lParam := (y << 16) | (x & 0xFFFF)
-            PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
-            Sleep 20
-            PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
-            return true
-        } catch {
-            return false
-        }
-    }
-}
-
-ForegroundClickClient(hwnd, clientX, clientY) {
-    if !hwnd
-        return false
-
-    x := Round(clientX)
-    y := Round(clientY)
-
-    try {
-        oldMode := A_CoordModeMouse
-        CoordMode "Mouse", "Client"
-        WinActivate "ahk_id " hwnd
-        Sleep 80
-        MouseMove x, y
-        Sleep 40
-        Click
-        return true
-    } catch {
-        return false
-    } finally {
-        if IsSet(oldMode)
-            CoordMode "Mouse", oldMode
-    }
+    logger.log("點擊客戶區座標: (" Round(x) ", " Round(y) ")")
+    return true
 }
 
 OCRWindow() {

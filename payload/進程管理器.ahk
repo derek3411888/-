@@ -634,10 +634,7 @@ DetectWutheringAndExit() {
                 ; 如果檢測到更新完成且有確認按鈕，立即點擊
                 if (updateCompleted && IsObject(confirmButton)) {
                     WriteLog("檢測到更新完成，立即點擊確認按鈕")
-                    if !BackgroundClickClient(hwnd, confirmButton[1], confirmButton[2]) {
-                        WriteLog("背景點擊確認按鈕失敗，改用 Enter", "WARN")
-                        Send "{Enter}"
-                    }
+                    MouseClick("left", confirmButton[1], confirmButton[2])
                     Sleep(2000)
                     return true
                 } else if (updateCompleted) {
@@ -700,10 +697,7 @@ DetectWutheringAndExit() {
                                 ; 如果找到更新完成且有確認按鈕，就點擊它
                                 if (updateCompleted && IsObject(confirmButton)) {
                                     WriteLog("檢測到更新完成，點擊確認按鈕")
-                                    if !BackgroundClickClient(hwnd, confirmButton[1], confirmButton[2]) {
-                                        WriteLog("背景點擊確認按鈕失敗，改用 Enter", "WARN")
-                                        Send "{Enter}"
-                                    }
+                                    MouseClick("left", confirmButton[1], confirmButton[2])
                                     Sleep(2000)
                                     return true
                                 } else if (updateCompleted) {
@@ -746,30 +740,6 @@ GetWorkArea() {
         bottom: NumGet(rect, 12, "Int"),
         width: NumGet(rect, 8, "Int") - NumGet(rect, 0, "Int"),
         height: NumGet(rect, 12, "Int") - NumGet(rect, 4, "Int")
-    }
-}
-
-BackgroundClickClient(hwnd, clientX, clientY) {
-    if !hwnd
-        return false
-
-    x := Round(clientX)
-    y := Round(clientY)
-
-    try {
-        ControlClick "x" x " y" y, "ahk_id " hwnd, , "Left", 1, "NA"
-        return true
-    } catch {
-        try {
-            lParam := (y << 16) | (x & 0xFFFF)
-            PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
-            Sleep 20
-            PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
-            return true
-        } catch as e {
-            WriteLog("背景點擊失敗: " e.Message, "WARN")
-            return false
-        }
     }
 }
 
