@@ -543,7 +543,8 @@ if !okwwStarted {
 
 ; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）
 gameHwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
-if !WaitEscMenuOCR(gameHwnd, 180) {
+WriteLog("開始主畫面模板驗證（最多 90 秒）...")
+if !WaitEscMenuOCR(gameHwnd, 90) {
     WriteLog("鳴潮無法使用或超時，觸發重啟機制", "ERROR")
     ShowTip("⚠️ 鳴潮無法使用，重新啟動...", 3000)
     Sleep 3000
@@ -558,7 +559,7 @@ WriteStep("啟動聲骸合成", "等待完成或重啟標記")
 ShowTip("🔧 正在執行聲骸合成...", 1500)
 ; 額外等待確保OKWW啟動後鳴潮完全穩定
 WriteLog("等待OKWW初始化完成，確保遊戲穩定...")
-Sleep 10000  ; 再等10秒，確保鳴潮完全穩定
+Sleep 5000  ; 再等5秒，確保鳴潮完全穩定
 try {
     Run('"' AhkExe '" "' A_ScriptDir '\聲骸合成.ahk"')
     WriteLog("聲骸合成腳本已啟動")
@@ -1145,6 +1146,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     }
 
     templateFile := A_ScriptDir "\icon_main.png"
+
     if !FileExist(templateFile) {
         WriteLog("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
         return false
@@ -1160,10 +1162,16 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     roiRightMargin := 0
     roiBottomMargin := 0
 
+    WriteLog("模板驗證參數: template=" templateFile " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
+
     deadline := A_TickCount + timeoutSec*1000
+    lastProgressLog := A_TickCount
+    sampleCount := 0
+    bestVar := 0
     while (A_TickCount < deadline) {
         try WinActivate "ahk_id " hwnd
         Sleep 120
+        sampleCount += 1
 
         try {
             WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
@@ -1190,6 +1198,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
                 if ImageSearch(&fx, &fy, x1, y1, x2, y2, spec) {
                     found := true
                     matchedVar := v
+                    bestVar := v
                     break
                 }
             } catch {
@@ -1206,8 +1215,16 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             stable := 0
         }
 
+        if (A_TickCount - lastProgressLog >= 5000) {
+            remainSec := Round((deadline - A_TickCount) / 1000.0, 1)
+            WriteLog("模板驗證進行中: 樣本=" sampleCount " 連續命中=" stable "/" stableNeeded " 最後Var=" (bestVar ? bestVar : "-") " 剩餘=" remainSec "s")
+            lastProgressLog := A_TickCount
+        }
+
         Sleep checkIntervalMs
     }
+
+    WriteLog("模板驗證超時: 樣本=" sampleCount " 未達連續命中 " stableNeeded, "WARN")
     return false
 }
 
