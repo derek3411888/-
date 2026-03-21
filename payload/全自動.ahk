@@ -1139,16 +1139,22 @@ DetectWutheringAndExit(&loginDetected := false) {
 
 ; B) 去抖動主畫面模板比對（右下 ROI）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
+    oldPixelMode := A_CoordModePixel
+    CoordMode "Pixel", "Screen"
+
     if !hwnd {
         hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
-        if !hwnd
+        if !hwnd {
+            CoordMode "Pixel", oldPixelMode
             return false
+        }
     }
 
     templateFile := A_ScriptDir "\icon_main.png"
 
     if !FileExist(templateFile) {
         WriteLog("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
+        CoordMode "Pixel", oldPixelMode
         return false
     }
 
@@ -1157,7 +1163,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     stable := 0
     checkIntervalMs := 500
 
-    roiWidth := 400
+    roiWidth := 500
     roiHeight := 140
     roiRightMargin := 0
     roiBottomMargin := 0
@@ -1225,6 +1231,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     }
 
     WriteLog("模板驗證超時: 樣本=" sampleCount " 未達連續命中 " stableNeeded, "WARN")
+    CoordMode "Pixel", oldPixelMode
     return false
 }
 

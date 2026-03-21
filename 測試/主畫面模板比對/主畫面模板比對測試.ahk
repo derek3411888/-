@@ -13,9 +13,9 @@ if !A_IsAdmin {
 
 ; ===== 可調參數 =====
 ; ROI 以遊戲視窗右下角為基準
-; 下列設定代表：從右下角往左 400px、往上 140px 的矩形區域
-global ROI_WIDTH := 1280
-global ROI_HEIGHT := 720
+; 下列設定代表：從右下角往左 500px、往上 140px 的矩形區域
+global ROI_WIDTH := 500
+global ROI_HEIGHT := 140
 global ROI_RIGHT_MARGIN := 0
 global ROI_BOTTOM_MARGIN := 0
 

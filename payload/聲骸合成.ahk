@@ -634,7 +634,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     stable := 0
     checkIntervalMs := 500
 
-    roiWidth := 400
+    roiWidth := 500
     roiHeight := 140
     roiRightMargin := 0
     roiBottomMargin := 0
