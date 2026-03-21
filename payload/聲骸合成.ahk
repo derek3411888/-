@@ -151,20 +151,20 @@ RunSynthesisLoop() {
         loopCount++
         logger.log("========== 第 " loopCount " 輪融合 ==========")
         
-        ; 步驟16：點擊批量融合（圖4 → 圖5）
-        if !ClickBatchMerge() {
-            logger.log("無法點擊批量融合", "ERROR")
-            break
-        }
-        
-        ; 步驟17：點擊最靠下的標準融合（Y軸最大）
-        if !ClickBottomStandardMerge() {
-            logger.log("無法點擊最靠下的標準融合", "ERROR")
-            break
-        }
-        
-        ; 步驟18和19：僅在第一次執行
+        ; 步驟16~19：僅在第一次執行，後續迴圈從「全選」開始
         if firstLoop {
+            ; 步驟16：點擊批量融合（圖4 → 圖5）
+            if !ClickBatchMerge() {
+                logger.log("無法點擊批量融合", "ERROR")
+                break
+            }
+
+            ; 步驟17：點擊最靠下的標準融合（Y軸最大）
+            if !ClickBottomStandardMerge() {
+                logger.log("無法點擊最靠下的標準融合", "ERROR")
+                break
+            }
+
             ; 步驟18：點擊圖5紅框（圖5 → 圖6）
             if !ClickStep5Icon() {
                 logger.log("無法點擊圖5目標", "ERROR")
@@ -177,7 +177,7 @@ RunSynthesisLoop() {
                 break
             }
         } else {
-            logger.log("非首次迴圈，跳過圖5和圖6（遊戲已記住選擇）")
+            logger.log("非首次迴圈，跳過標準融合與篩選步驟（圖5/圖6），直接從全選開始")
             Sleep 1000
         }
         
