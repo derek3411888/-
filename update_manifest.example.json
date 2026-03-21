@@ -1,5 +1,5 @@
-{
-  "version": "1.8",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip",
-  "payload_sha256": "d1cea68dd7ed3c65b2115970ada57b65d5f842175be29fa61c69a2f6b4465ea0"
+﻿{
+    "version":  "1.9",
+    "payload_url":  "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip",
+    "payload_sha256":  "ccf905094413a08c1fa8950ab7e0848eecc8c87ed240a9a2dcd85e445b75e25e"
 }

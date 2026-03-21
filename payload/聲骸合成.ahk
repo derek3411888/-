@@ -80,21 +80,8 @@ Main() {
         
         WriteStep("尋找遊戲視窗", "成功 hwnd=" gameWindow)
         
-        ; 用主畫面模板比對驗證遊戲是否可操作
-        WriteStep("可操作驗證", "開始模板比對")
-        if !WaitEscMenuOCR(gameWindow, 120) {
-            WriteStep("可操作驗證", "失敗，寫入重啟標記", "ERROR")
-            ; 寫入重啟標記檔
-            try {
-                FileAppend "RESTART_NEEDED", A_ScriptDir "\..\config\synthesis_restart.flag"
-                logger.log("已寫入重啟標記檔")
-            }
-            ShowTip("⚠️ 鳴潮無法使用，觸發重啟...", 3000)
-            Sleep 3000
-            ExitApp
-        } else {
-            WriteStep("可操作驗證", "通過")
-        }
+        ; 由全自動主流程先完成可操作驗證，這裡不再重複驗證
+        WriteStep("可操作驗證", "略過（由全自動前置驗證）")
         
         ; 開始聲骸合成流程
         WriteStep("聲骸合成流程", "開始執行")
@@ -618,14 +605,19 @@ ReturnToStep4() {
 ; 去抖動主畫面模板比對（驗證遊戲是否正常運行）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     global logger
+    oldPixelMode := A_CoordModePixel
+    CoordMode "Pixel", "Screen"
+
     if !hwnd {
         logger.log("WaitEscMenuOCR: 無效的視窗句柄", "ERROR")
+        CoordMode "Pixel", oldPixelMode
         return false
     }
 
     templateFile := A_ScriptDir "\icon_main.png"
     if !FileExist(templateFile) {
         logger.log("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
+        CoordMode "Pixel", oldPixelMode
         return false
     }
 
@@ -639,10 +631,16 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     roiRightMargin := 0
     roiBottomMargin := 0
 
+    logger.log("開始模板驗證: template=" templateFile " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
+
     deadline := A_TickCount + timeoutSec*1000
+    lastProgressLog := A_TickCount
+    sampleCount := 0
+    bestVar := 0
     while (A_TickCount < deadline) {
         try WinActivate "ahk_id " hwnd
         Sleep 120
+        sampleCount += 1
 
         try {
             WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
@@ -669,6 +667,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
                 if ImageSearch(&fx, &fy, x1, y1, x2, y2, spec) {
                     found := true
                     matchedVar := v
+                    bestVar := v
                     break
                 }
             } catch {
@@ -680,15 +679,23 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             logger.log("模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）")
             if (stable >= stableNeeded) {
                 logger.log("遊戲驗證成功")
+                CoordMode "Pixel", oldPixelMode
                 return true
             }
         } else {
             stable := 0
         }
 
+        if (A_TickCount - lastProgressLog >= 5000) {
+            remainSec := Round((deadline - A_TickCount) / 1000.0, 1)
+            logger.log("模板驗證進行中: 樣本=" sampleCount " 連續命中=" stable "/" stableNeeded " 最後Var=" (bestVar ? bestVar : "-") " 剩餘=" remainSec "s")
+            lastProgressLog := A_TickCount
+        }
+
         Sleep checkIntervalMs
     }
     logger.log("遊戲驗證超時", "WARN")
+    CoordMode "Pixel", oldPixelMode
     return false
 }
 
@@ -745,23 +752,37 @@ ClickRelative(x, y) {
     global gameWindow, logger
     
     ActivateGame()
-    
-    ; 使用 ControlClick 或 PostMessage 在客戶區域內點擊
-    ; 方法1：直接用客戶區座標點擊（不需要轉換）
-    CoordMode "Mouse", "Client"
-    WinActivate "ahk_id " gameWindow
-    Sleep 100
-    
-    ; 移動滑鼠到客戶區座標
-    MouseMove x, y
-    Sleep 50
-    Click
-    Sleep 100
-    
-    ; 恢復座標模式
-    CoordMode "Mouse", "Screen"
-    
-    logger.log("點擊客戶區座標: (" Round(x) ", " Round(y) ")")
+
+    if !BackgroundClickClient(gameWindow, x, y) {
+        logger.log("背景點擊失敗: (" Round(x) ", " Round(y) ")", "WARN")
+        return false
+    }
+
+    logger.log("背景點擊客戶區座標: (" Round(x) ", " Round(y) ")")
+    return true
+}
+
+BackgroundClickClient(hwnd, clientX, clientY) {
+    if !hwnd
+        return false
+
+    x := Round(clientX)
+    y := Round(clientY)
+
+    try {
+        ControlClick "x" x " y" y, "ahk_id " hwnd, , "Left", 1, "NA"
+        return true
+    } catch {
+        try {
+            lParam := (y << 16) | (x & 0xFFFF)
+            PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
+            Sleep 20
+            PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
+            return true
+        } catch {
+            return false
+        }
+    }
 }
 
 OCRWindow() {

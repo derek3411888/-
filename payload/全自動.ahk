@@ -754,10 +754,12 @@ StartOKWWFlow(isRestart) {
                 ; 如果找到按鈕，點擊它
                 if (foundButton && clickX > 0 && clickY > 0) {
                     WriteLog("點擊啟動按鈕座標: " clickX ", " clickY)
-                    MouseMove clickX, clickY
-                    Sleep 200
-                    MouseClick "left"
-                    WriteLog("已點擊OKWW啟動按鈕")
+                    if BackgroundClickClient(okwwHwnd, clickX, clickY) {
+                        WriteLog("已背景點擊OKWW啟動按鈕")
+                    } else {
+                        WriteLog("背景點擊OKWW按鈕失敗，改用備用方案F11", "WARN")
+                        SendEvent "{F11}"
+                    }
                     Sleep 1000
                 } else {
                     WriteLog("未找到啟動遊戲按鈕，嘗試使用備用方案F11", "WARN")
@@ -1000,11 +1002,12 @@ CrashWatcherTick() {
             }
         }
 
-        WinActivate "ahk_id " hwndC
-        Sleep 120
-        if IsObject(btn)
-            MouseClick "left", btn[1], btn[2]
-        else
+        if IsObject(btn) {
+            if !BackgroundClickClient(hwndC, btn[1], btn[2]) {
+                WriteLog("崩潰視窗背景點擊失敗，改用 Enter", "WARN")
+                Send "{Enter}"
+            }
+        } else
             Send "{Enter}"
         Sleep 1000
 
@@ -1115,7 +1118,10 @@ DetectWutheringAndExit(&loginDetected := false) {
 
         if (foundUpdate && IsObject(btnCenter)) {
             ShowTip("✅ 偵測到更新完成 → 點擊按鈕", 800)
-            MouseClick "left", btnCenter[1], btnCenter[2]
+            if !BackgroundClickClient(hwnd, btnCenter[1], btnCenter[2]) {
+                WriteLog("更新完成按鈕背景點擊失敗，改用 Enter", "WARN")
+                Send "{Enter}"
+            }
             ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
             return true
         }
@@ -1240,22 +1246,47 @@ ClickWindowCenter(hwnd) {
     if !hwnd
         return false
     try {
-        oldMode := A_CoordModeMouse
-        CoordMode "Mouse", "Screen"
-        WinGetPos(&x, &y, &w, &h, "ahk_id " hwnd)
-        if (w = "" || h = "" || w <= 0 || h <= 0)
-            return false
-        cx := x + (w // 2)
-        cy := y + (h // 2)
-        WriteLog("點擊視窗中心: " cx "," cy)
-        MouseClick "left", cx, cy
-        return true
+        cw := 0, ch := 0
+        try WinGetClientPos(, , &cw, &ch, "ahk_id " hwnd)
+        if (cw <= 0 || ch <= 0) {
+            WinGetPos(&x, &y, &w, &h, "ahk_id " hwnd)
+            if (w = "" || h = "" || w <= 0 || h <= 0)
+                return false
+            cw := w
+            ch := h
+        }
+
+        cx := cw // 2
+        cy := ch // 2
+        WriteLog("背景點擊視窗中心(client): " cx "," cy)
+        return BackgroundClickClient(hwnd, cx, cy)
     } catch as e {
         WriteLog("點擊視窗中心失敗: " e.Message, "WARN")
         return false
-    } finally {
-        if IsSet(oldMode)
-            CoordMode "Mouse", oldMode
+    }
+}
+
+BackgroundClickClient(hwnd, clientX, clientY) {
+    if !hwnd
+        return false
+
+    x := Round(clientX)
+    y := Round(clientY)
+
+    try {
+        ControlClick "x" x " y" y, "ahk_id " hwnd, , "Left", 1, "NA"
+        return true
+    } catch {
+        try {
+            lParam := (y << 16) | (x & 0xFFFF)
+            PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
+            Sleep 20
+            PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
+            return true
+        } catch as e {
+            WriteLog("背景點擊失敗: " e.Message, "WARN")
+            return false
+        }
     }
 }
 
