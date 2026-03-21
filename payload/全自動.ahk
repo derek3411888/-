@@ -541,7 +541,7 @@ if !okwwStarted {
     okwwStarted := true
 }
 
-; 3) 用 ESC+OCR 驗證遊戲是否可操作（整窗偵測、去抖動）
+; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）
 gameHwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
 if !WaitEscMenuOCR(gameHwnd, 180) {
     WriteLog("鳴潮無法使用或超時，觸發重啟機制", "ERROR")
@@ -550,7 +550,7 @@ if !WaitEscMenuOCR(gameHwnd, 180) {
     RestartAutoScript()
     return
 }
-WriteStep("遊戲可操作驗證", "ESC+OCR 通過")
+WriteStep("遊戲可操作驗證", "模板比對通過")
 
 ; 4) 執行聲骸合成流程
 WriteLog("啟動聲骸合成腳本...")
@@ -1136,7 +1136,7 @@ DetectWutheringAndExit(&loginDetected := false) {
     return false
 }
 
-; B) 去抖動整窗版 ESC 菜單 OCR（簡體關鍵詞）
+; B) 去抖動主畫面模板比對（右下 ROI）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     if !hwnd {
         hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
@@ -1144,79 +1144,69 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             return false
     }
 
-    ocr := RapidOcr()
-    ; 主選單常見詞（簡體）
-    kws := ["终端","活动","商城","先约电台","唤取","共鸣者","编队",
-            "数据坞","教程","百科","索拉指南","任务","好友","成就",
-            "合成","设置","地图","相机","邮件","社交"]
+    templateFile := A_ScriptDir "\icon_main.png"
+    if !FileExist(templateFile) {
+        WriteLog("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
+        return false
+    }
 
-    needHitsPerFrame := 4
-    stableNeeded      := 2
-    cooldownMs        := 900
-    lastEsc := 0
-    stable  := 0
-    menuOpen := false
+    variations := [30, 40, 50, 60, 80, 100]
+    stableNeeded := 2
+    stable := 0
+    checkIntervalMs := 500
+
+    roiWidth := 400
+    roiHeight := 140
+    roiRightMargin := 0
+    roiBottomMargin := 0
 
     deadline := A_TickCount + timeoutSec*1000
     while (A_TickCount < deadline) {
-        WinActivate "ahk_id " hwnd
+        try WinActivate "ahk_id " hwnd
         Sleep 120
 
-        if (!menuOpen && (A_TickCount - lastEsc >= cooldownMs)) {
-            Send "{Esc}"
-            lastEsc := A_TickCount
-            Sleep 650
-        }
-
-        ; 使用唯一臨時檔案名，執行後清理（避免檔案衝突）
-        tempFile := A_ScriptDir "\menu_" A_TickCount ".png"
         try {
-            ImagePutFile("ahk_id " hwnd, tempFile)
-            res := ocr.ocr_from_file(tempFile, , true)
-            
-            ; 立即清理臨時檔案
-            if FileExist(tempFile)
-                FileDelete(tempFile)
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
         } catch as e {
-            WriteLog("ESC 菜單 OCR 失敗: " e.Message, "WARN")
-            if FileExist(tempFile)
-                FileDelete(tempFile)
-            Sleep 500
+            WriteLog("模板驗證取視窗座標失敗: " e.Message, "WARN")
+            Sleep checkIntervalMs
             continue
         }
 
-        hits := 0
-        if IsObject(res) {
-            for block in res {
-                t := block.text
-                t := StrReplace(StrReplace(t, "`r",""), "`n","")
-                t := StrReplace(t, " ", "")
-                t := ToSimp(t)
-                for _, kw in kws {
-                    if InStr(t, kw) {
-                        hits++
-                        break
-                    }
+        x2 := wx + ww - roiRightMargin
+        y2 := wy + wh - roiBottomMargin
+        x1 := x2 - roiWidth
+        y1 := y2 - roiHeight
+        if (x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1) {
+            Sleep checkIntervalMs
+            continue
+        }
+
+        found := false
+        matchedVar := 0
+        for _, v in variations {
+            spec := "*" v " " templateFile
+            try {
+                if ImageSearch(&fx, &fy, x1, y1, x2, y2, spec) {
+                    found := true
+                    matchedVar := v
+                    break
                 }
+            } catch {
             }
         }
 
-        if (hits >= needHitsPerFrame) {
-            menuOpen := true
+        if found {
             stable += 1
-            ShowTip("✅ 菜單偵測 " stable "/" stableNeeded "（匹配 " hits "）", 600)
-            Sleep 300
+            ShowTip("✅ 模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）", 600)
             if (stable >= stableNeeded) {
-                Send "{Esc}"  ; 關掉選單以免擋畫面
-                Sleep 2000
                 return true
             }
         } else {
-            menuOpen := false
             stable := 0
         }
 
-        Sleep 500
+        Sleep checkIntervalMs
     }
     return false
 }

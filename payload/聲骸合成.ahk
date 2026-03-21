@@ -80,8 +80,8 @@ Main() {
         
         WriteStep("尋找遊戲視窗", "成功 hwnd=" gameWindow)
         
-        ; 用 ESC+OCR 驗證遊戲是否可操作
-        WriteStep("可操作驗證", "開始 ESC+OCR")
+        ; 用主畫面模板比對驗證遊戲是否可操作
+        WriteStep("可操作驗證", "開始模板比對")
         if !WaitEscMenuOCR(gameWindow, 120) {
             WriteStep("可操作驗證", "失敗，寫入重啟標記", "ERROR")
             ; 寫入重啟標記檔
@@ -615,86 +615,78 @@ ReturnToStep4() {
     return true
 }
 
-; 去抖動整窗版 ESC 菜單 OCR（驗證遊戲是否正常運行）
+; 去抖動主畫面模板比對（驗證遊戲是否正常運行）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
-    global logger, ocrEngine
+    global logger
     if !hwnd {
         logger.log("WaitEscMenuOCR: 無效的視窗句柄", "ERROR")
         return false
     }
 
-    ; 主選單常見詞（簡體）
-    kws := ["终端","活动","商城","先约电台","唤取","共鸣者","编队",
-            "数据坞","教程","百科","索拉指南","任务","好友","成就",
-            "合成","设置","地图","相机","邮件","社交"]
+    templateFile := A_ScriptDir "\icon_main.png"
+    if !FileExist(templateFile) {
+        logger.log("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
+        return false
+    }
 
-    needHitsPerFrame := 4
-    stableNeeded      := 2
-    cooldownMs        := 900
-    lastEsc := 0
-    stable  := 0
-    menuOpen := false
+    variations := [30, 40, 50, 60, 80, 100]
+    stableNeeded := 2
+    stable := 0
+    checkIntervalMs := 500
+
+    roiWidth := 400
+    roiHeight := 140
+    roiRightMargin := 0
+    roiBottomMargin := 0
 
     deadline := A_TickCount + timeoutSec*1000
     while (A_TickCount < deadline) {
-        WinActivate "ahk_id " hwnd
+        try WinActivate "ahk_id " hwnd
         Sleep 120
 
-        if (!menuOpen && (A_TickCount - lastEsc >= cooldownMs)) {
-            Send "{Esc}"
-            lastEsc := A_TickCount
-            Sleep 650
-        }
-
-        ; 使用唯一臨時檔案名
-        tempFile := A_ScriptDir "\menu_" A_TickCount ".png"
         try {
-            ImagePutFile(hwnd, tempFile)
-            res := ocrEngine.ocr_from_file(tempFile, , true)
-            
-            ; 立即清理臨時檔案
-            if FileExist(tempFile)
-                FileDelete(tempFile)
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
         } catch as e {
-            logger.log("ESC 菜單 OCR 失敗: " e.Message, "WARN")
-            if FileExist(tempFile)
-                FileDelete(tempFile)
-            Sleep 500
+            logger.log("模板驗證取視窗座標失敗: " e.Message, "WARN")
+            Sleep checkIntervalMs
             continue
         }
 
-        hits := 0
-        if IsObject(res) {
-            for block in res {
-                t := block.text
-                t := StrReplace(StrReplace(t, "`r",""), "`n","")
-                t := StrReplace(t, " ", "")
-                t := ToSimp(t)
-                for _, kw in kws {
-                    if InStr(t, kw) {
-                        hits++
-                        break
-                    }
+        x2 := wx + ww - roiRightMargin
+        y2 := wy + wh - roiBottomMargin
+        x1 := x2 - roiWidth
+        y1 := y2 - roiHeight
+        if (x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1) {
+            Sleep checkIntervalMs
+            continue
+        }
+
+        found := false
+        matchedVar := 0
+        for _, v in variations {
+            spec := "*" v " " templateFile
+            try {
+                if ImageSearch(&fx, &fy, x1, y1, x2, y2, spec) {
+                    found := true
+                    matchedVar := v
+                    break
                 }
+            } catch {
             }
         }
 
-        if (hits >= needHitsPerFrame) {
-            menuOpen := true
+        if found {
             stable += 1
-            logger.log("菜單偵測 " stable "/" stableNeeded "（匹配 " hits " 個關鍵字）")
+            logger.log("模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）")
             if (stable >= stableNeeded) {
-                Send "{Esc}"  ; 關掉選單
-                Sleep 2000
                 logger.log("遊戲驗證成功")
                 return true
             }
         } else {
-            menuOpen := false
             stable := 0
         }
 
-        Sleep 500
+        Sleep checkIntervalMs
     }
     logger.log("遊戲驗證超時", "WARN")
     return false

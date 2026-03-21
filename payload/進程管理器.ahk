@@ -834,7 +834,7 @@ ToSimp(s) {
     return s
 }
 
-; 去抖動整窗版 ESC 菜單 OCR（檢測遊戲是否可操作）
+; 去抖動主畫面模板比對（檢測遊戲是否可操作）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     if !hwnd {
         hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
@@ -842,78 +842,72 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             return false
     }
 
-    WriteLog("開始檢測遊戲是否可操作（ESC菜單測試）...")
+    WriteLog("開始檢測遊戲是否可操作（主畫面模板比對）...")
 
-    ocr := RapidOcr()
-    ; 主選單常見詞（簡體）
-    kws := ["终端","活动","商城","先约电台","唤取","共鸣者","编队",
-            "数据坞","教程","百科","索拉指南","任务","好友","成就",
-            "合成","设置","地图","相机","邮件","社交"]
+    templateFile := A_ScriptDir "\icon_main.png"
+    if !FileExist(templateFile) {
+        WriteLog("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
+        return false
+    }
 
-    needHitsPerFrame := 4
-    stableNeeded     := 2
-    cooldownMs       := 900
-    lastEsc := 0
-    stable  := 0
-    menuOpen := false
+    variations := [30, 40, 50, 60, 80, 100]
+    stableNeeded := 2
+    stable := 0
+    checkIntervalMs := 500
+
+    roiWidth := 400
+    roiHeight := 140
+    roiRightMargin := 0
+    roiBottomMargin := 0
 
     deadline := A_TickCount + timeoutSec*1000
     while (A_TickCount < deadline) {
         try WinActivate "ahk_id " hwnd
         Sleep 120
 
-        if (!menuOpen && (A_TickCount - lastEsc >= cooldownMs)) {
-            Send "{Esc}"
-            lastEsc := A_TickCount
-            Sleep 650
-        }
-
-        ; 使用臨時檔案進行OCR處理，避免權限問題
-        tempFile := A_Temp "\pm_menu_" A_TickCount ".png"
         try {
-            ImagePutFile(hwnd, tempFile)
-            res := ocr.ocr_from_file(tempFile, , true)
-            ; 清理臨時檔案
-            FileDelete(tempFile)
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
         } catch as e {
-            WriteLog("OCR處理失敗: " e.Message, "WARN")
-            try FileDelete(tempFile)  ; 確保清理
-            return false
+            WriteLog("模板驗證取視窗座標失敗: " e.Message, "WARN")
+            Sleep checkIntervalMs
+            continue
         }
 
-        hits := 0
-        if IsObject(res) {
-            for block in res {
-                t := block.text
-                t := StrReplace(StrReplace(t, "`r",""), "`n","")
-                t := StrReplace(t, " ", "")
-                t := ToSimp(t)
-                for _, kw in kws {
-                    if InStr(t, kw) {
-                        hits++
-                        break
-                    }
+        x2 := wx + ww - roiRightMargin
+        y2 := wy + wh - roiBottomMargin
+        x1 := x2 - roiWidth
+        y1 := y2 - roiHeight
+        if (x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1) {
+            Sleep checkIntervalMs
+            continue
+        }
+
+        found := false
+        matchedVar := 0
+        for _, v in variations {
+            spec := "*" v " " templateFile
+            try {
+                if ImageSearch(&fx, &fy, x1, y1, x2, y2, spec) {
+                    found := true
+                    matchedVar := v
+                    break
                 }
+            } catch {
             }
         }
 
-        if (hits >= needHitsPerFrame) {
-            menuOpen := true
+        if found {
             stable += 1
-            WriteLog("菜單檢測進度: " stable "/" stableNeeded "（匹配關鍵詞: " hits "個）")
-            Sleep 300
+            WriteLog("模板檢測進度: " stable "/" stableNeeded "（Var=" matchedVar "）")
             if (stable >= stableNeeded) {
-                Send "{Esc}"  ; 關掉選單以免擋畫面
-                Sleep 2000
                 WriteLog("確認遊戲可操作")
                 return true
             }
         } else {
-            menuOpen := false
             stable := 0
         }
 
-        Sleep 500
+        Sleep checkIntervalMs
     }
     
     WriteLog("遊戲可操作檢測超時", "WARN")
