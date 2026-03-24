@@ -1030,9 +1030,14 @@ DetectWutheringAndExit(&loginDetected := false) {
         return false
     }
 
-    ; 視窗貼齊右上角（確保在螢幕內）
-    MoveWindowTopRight(hwnd, 0, 0)
+    ; 視窗貼齊右上角（確保在螢幕內）— 非關鍵，失敗不中斷
+    try MoveWindowTopRight(hwnd, 0, 0)
+    catch as e
+        WriteLog("視窗移動失敗（非致命）: " e.Message, "WARN")
 
+    ; ⏱️ 至少等待 30 秒讓遊戲完全啟動（登入畫面一般需要 25-35 秒）
+    earlyExitDeadline := A_TickCount + 30000
+    
     deadline := A_TickCount + 1800000   ; 1800 秒（30 分鐘）
     kwUpdate1 := "更新完成"
     kwUpdate2 := "请重新启动游戏"
@@ -1040,8 +1045,11 @@ DetectWutheringAndExit(&loginDetected := false) {
     kwUpdate4 := "游戏即将重启"
     kwBtn     := "退出"
     
-    ; 新增：登入畫面關鍵字檢測
-    loginKeywords := [ "点击", "點擊",  "开始游戏", "開始遊戲"]
+    ; 優化：登入畫面檢測需要多個指標同時出現（降低誤判）
+    ; 登入按鈕相關詞彙（包括「點擊連接」）
+    loginBtnKeywords := [ "點擊開始", "点击开始", "點選開始", "点选开始", "開始遊戲", "开始游戏", "點擊連接", "点击连接", "點選連接", "点选连接" ]
+    ; 登入UI相關詞彙（如賬號/伺服器選擇）
+    loginUIKeywords := [ "伺服器", "服务器", "賬號", "账号", "帳號", "账户" ]
 
     while (A_TickCount < deadline) {
         hwnd := GetWutheringGameHwnd()
@@ -1067,7 +1075,8 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
 
         foundUpdate := false
-        foundLogin := false
+        foundLoginBtn := false
+        foundLoginUI := false
         btnCenter := ""
 
         if IsObject(res) {
@@ -1079,11 +1088,20 @@ DetectWutheringAndExit(&loginDetected := false) {
                 if InStr(clean, kwUpdate1) || InStr(clean, kwUpdate2) || InStr(clean, kwUpdate3) || InStr(clean, kwUpdate4)
                     foundUpdate := true
                 
-                ; 檢測登入畫面相關文字
-                for _, loginKw in loginKeywords {
-                    if InStr(clean, loginKw) {
-                        foundLogin := true
-                        WriteLog("檢測到登入畫面關鍵字: " loginKw " 在文字: " clean)
+                ; 檢測登入按鈕相關文字
+                for _, btnKw in loginBtnKeywords {
+                    if InStr(clean, btnKw) {
+                        foundLoginBtn := true
+                        WriteLog("檢測到登入按鈕關鍵字: " btnKw " 在文字: " clean)
+                        break
+                    }
+                }
+                
+                ; 檢測登入UI相關文字
+                for _, uiKw in loginUIKeywords {
+                    if InStr(clean, uiKw) {
+                        foundLoginUI := true
+                        WriteLog("檢測到登入UI關鍵字: " uiKw " 在文字: " clean)
                         break
                     }
                 }
@@ -1113,13 +1131,23 @@ DetectWutheringAndExit(&loginDetected := false) {
             return true
         }
         
-        ; 新增：如果檢測到登入畫面，表示不需要更新
-        if (foundLogin) {
+        ; ✅ 優化：檢測到登入按鈕相關文字，且超過最小等待時間（30秒）才判定為登入畫面
+        if (foundLoginBtn && A_TickCount >= earlyExitDeadline) {
             loginDetected := true
-            WriteLog("檢測到登入畫面，無需更新，繼續正常流程")
+            WriteLog("✅ 檢測到登入畫面（已超過 30 秒啟動時間，找到登入按鈕關鍵字），無需更新，繼續正常流程")
             MuteWutheringAudioAtStartup()
             TryMuteWutheringAudio("檢測到登入畫面後")
             ShowTip("✅ 檢測到登入畫面，無需更新", 1000)
+            return false
+        }
+        
+        ; 如果只find到登入UI但沒找到按鈕，也要等待足夠時間再判定
+        if (foundLoginUI && A_TickCount >= earlyExitDeadline + 10000) {
+            loginDetected := true
+            WriteLog("⚠️ 檢測到登入UI（伺服器/賬號相關），判定為登入畫面，繼續")
+            MuteWutheringAudioAtStartup()
+            TryMuteWutheringAudio("檢測到登入UI後")
+            ShowTip("✅ 檢測到登入畫面UI，無需更新", 1000)
             return false
         }
         
