@@ -233,25 +233,17 @@ IniReadSafe(file, section, key, default) {
 }
 
 IsWutheringGameRunning() {
-    ; ✅ 優先檢查：完全初始化的遊戲視窗
+    ; ✅ 只檢查進程是否存在，不檢查視窗尺寸
+    ;    這樣即使遊戲被最小化或視窗變小，也不會重新啟動遊戲
+    
+    ; 優先條件：完全初始化的遊戲視窗
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
-    if (hwndList.Length > 0) {
-        for hwnd in hwndList {
-            if (IsValidGameWindow(hwnd))
-                return true
-        }
-    }
+    if (hwndList.Length > 0)
+        return true
 
-    ; ⚠️ 回退：尋找有效的遊戲進程視窗
+    ; 回退：只檢查進程是否存在
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
-    if (hwndList.Length > 0) {
-        for hwnd in hwndList {
-            if (IsValidGameWindow(hwnd))
-                return true
-        }
-    }
-
-    return false
+    return (hwndList.Length > 0)
 }
 
 ; ✅ 驗證視窗是否為真正的遊戲視窗（而非臨時初始化視窗）

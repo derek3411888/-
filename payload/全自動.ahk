@@ -1282,9 +1282,12 @@ ClickWindowCenter(hwnd) {
 
 ; F) 取得並啟動鳴潮路徑（可記憶）
 EnsureWutheringRunning() {
-    if GetWutheringGameHwnd() {
+    ; ✅ 只檢查遊戲進程是否存在，不檢查視窗尺寸
+    ;    這樣防止因視窗最小化而誤判為「遊戲未運行」
+    if (IsWutheringProcessRunning()) {
         return true
     }
+    
     path := GetPathWithAsk("WUTHERING", "請選擇鳴潮遊戲主程式或捷徑", "可執行檔或捷徑 (*.exe;*.lnk)")
     if (!path) {
         WriteLog("未設定鳴潮路徑，無法啟動", "ERROR")
@@ -1300,6 +1303,16 @@ EnsureWutheringRunning() {
     }
     Sleep 5000
     return true
+}
+
+; ✅ 只檢查遊戲進程是否存在
+IsWutheringProcessRunning() {
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+    if (hwndList.Length > 0)
+        return true
+    
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+    return (hwndList.Length > 0)
 }
 
 GetWutheringGameHwnd() {
