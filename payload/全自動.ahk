@@ -1303,16 +1303,55 @@ EnsureWutheringRunning() {
 }
 
 GetWutheringGameHwnd() {
+    ; ✅ 優先條件：執行程序 + UnrealWindow 類別（完全初始化的遊戲視窗）
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
-    if (hwndList.Length > 0)
-        return hwndList[1]
+    if (hwndList.Length > 0) {
+        hwnd := hwndList[1]
+        if (IsValidGameWindow(hwnd))
+            return hwnd
+    }
 
-    ; 回退：部分環境 class 可能不同，但仍限定遊戲主進程。
+    ; ⚠️ 回退：部分環境 class 可能不同，但需驗證視窗有效性
+    ;   這個回退會延遲遊戲啟動的判定，避免找到臨時初始化視窗
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
-    if (hwndList.Length > 0)
-        return hwndList[1]
+    if (hwndList.Length > 0) {
+        for hwnd in hwndList {
+            if (IsValidGameWindow(hwnd))
+                return hwnd
+        }
+    }
 
     return 0
+}
+
+; ✅ 驗證視窗是否為真正的遊戲視窗（而非臨時初始化視窗）
+IsValidGameWindow(hwnd) {
+    if !hwnd
+        return false
+    
+    ; 檢查視窗是否存在
+    if !WinExist("ahk_id " hwnd)
+        return false
+    
+    ; 檢查視窗是否可見（排除隱藏/最小化的臨時視窗）
+    if !WinGetExStyle("ahk_id " hwnd) {
+        return false  ; 獲取視窗狀態失敗
+    }
+    
+    ; 取得視窗寬高
+    try WinGetPos , , &w, &h, "ahk_id " hwnd
+    catch {
+        return false
+    }
+    
+    ; 檢查視窗有合理的尺寸（排除 0x0 或異常小的初始化視窗）
+    ; 遊戲視窗通常至少 800x600
+    if (w < 800 || h < 600) {
+        return false
+    }
+    
+    ; ✅ 視窗有效
+    return true
 }
 
 WaitForWutheringGameWindow(timeoutSec := 120) {

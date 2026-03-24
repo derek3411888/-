@@ -837,15 +837,49 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
 
 
 GetWutheringGameHwnd() {
+    ; ✅ 優先條件：執行程序 + UnrealWindow 類別（完全初始化的遊戲視窗）
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
-    if (hwndList.Length > 0)
-        return hwndList[1]
+    if (hwndList.Length > 0) {
+        hwnd := hwndList[1]
+        if (IsValidGameWindow(hwnd))
+            return hwnd
+    }
 
+    ; ⚠️ 回退：部分環境 class 可能不同，但需驗證視窗有效性
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
-    if (hwndList.Length > 0)
-        return hwndList[1]
+    if (hwndList.Length > 0) {
+        for hwnd in hwndList {
+            if (IsValidGameWindow(hwnd))
+                return hwnd
+        }
+    }
 
     return 0
+}
+
+; ✅ 驗證視窗是否為真正的遊戲視窗（而非臨時初始化視窗）
+IsValidGameWindow(hwnd) {
+    if !hwnd
+        return false
+    
+    if !WinExist("ahk_id " hwnd)
+        return false
+    
+    if !WinGetExStyle("ahk_id " hwnd) {
+        return false
+    }
+    
+    try WinGetPos , , &w, &h, "ahk_id " hwnd
+    catch {
+        return false
+    }
+    
+    ; 遊戲視窗通常至少 800x600
+    if (w < 800 || h < 600) {
+        return false
+    }
+    
+    return true
 }
 
 WaitForWutheringGameWindow(timeoutSec := 60) {

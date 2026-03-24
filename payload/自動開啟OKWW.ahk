@@ -233,12 +233,50 @@ IniReadSafe(file, section, key, default) {
 }
 
 IsWutheringGameRunning() {
+    ; ✅ 優先檢查：完全初始化的遊戲視窗
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
-    if (hwndList.Length > 0)
-        return true
+    if (hwndList.Length > 0) {
+        for hwnd in hwndList {
+            if (IsValidGameWindow(hwnd))
+                return true
+        }
+    }
 
+    ; ⚠️ 回退：尋找有效的遊戲進程視窗
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
-    return (hwndList.Length > 0)
+    if (hwndList.Length > 0) {
+        for hwnd in hwndList {
+            if (IsValidGameWindow(hwnd))
+                return true
+        }
+    }
+
+    return false
+}
+
+; ✅ 驗證視窗是否為真正的遊戲視窗（而非臨時初始化視窗）
+IsValidGameWindow(hwnd) {
+    if !hwnd
+        return false
+    
+    if !WinExist("ahk_id " hwnd)
+        return false
+    
+    if !WinGetExStyle("ahk_id " hwnd) {
+        return false
+    }
+    
+    try WinGetPos , , &w, &h, "ahk_id " hwnd
+    catch {
+        return false
+    }
+    
+    ; 遊戲視窗通常至少 800x600
+    if (w < 800 || h < 600) {
+        return false
+    }
+    
+    return true
 }
 
 ; ====================== 多實例守門員 ======================
