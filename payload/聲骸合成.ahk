@@ -239,16 +239,18 @@ RunSynthesisLoop() {
 
 FindGameWindow() {
     global gameWindow
-    
-    ; 嘗試找繁體視窗
-    gameWindow := WinExist("鳴潮")
-    if gameWindow
+
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+    if (hwndList.Length > 0) {
+        gameWindow := hwndList[1]
         return true
-    
-    ; 嘗試找簡體視窗
-    gameWindow := WinExist("鸣潮")
-    if gameWindow
+    }
+
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+    if (hwndList.Length > 0) {
+        gameWindow := hwndList[1]
         return true
+    }
     
     return false
 }

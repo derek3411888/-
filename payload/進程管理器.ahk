@@ -551,12 +551,11 @@ ArrangeLrmcWindows() {
 ; 更新偵測函數 (改為等待3.5秒檢測方式，重複多次以免沒截圖到)
 DetectWutheringAndExit() {
     SetTitleMatchMode 2
-    if !WinWait("鸣潮",, 60) && !WinWait("鳴潮",, 5) {
-        WriteLog("找不到「鸣潮/鳴潮」視窗（逾時）")
+    hwnd := WaitForWutheringGameWindow(65)
+    if !hwnd {
+        WriteLog("找不到「Client-Win64-Shipping.exe」遊戲視窗（逾時）")
         return false
     }
-
-    hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
     if (!hwnd) {
         WriteLog("無法獲取游戲窗口句柄")
         return false
@@ -578,11 +577,8 @@ DetectWutheringAndExit() {
         Sleep 3500
         
         ; 確認視窗仍然存在
-        if WinExist("鸣潮")
-            hwnd := WinExist("鸣潮")
-        else if WinExist("鳴潮")
-            hwnd := WinExist("鳴潮")
-        else {
+        hwnd := GetWutheringGameHwnd()
+        if !hwnd {
             WriteLog("第 " currentCheck " 次檢測時視窗已消失")
             break
         }
@@ -652,11 +648,8 @@ DetectWutheringAndExit() {
                     while (A_TickCount - waitStart < 1800000) {  ; 30分鐘
                         Sleep 10000  ; 每10秒檢查一次
                         
-                        if WinExist("鸣潮")
-                            hwnd := WinExist("鸣潮")
-                        else if WinExist("鳴潮")
-                            hwnd := WinExist("鳴潮")
-                        else {
+                        hwnd := GetWutheringGameHwnd()
+                        if !hwnd {
                             WriteLog("更新過程中視窗消失，可能已完成")
                             return true
                         }
@@ -837,11 +830,34 @@ ToSimp(s) {
 ; 去抖動主畫面模板比對（檢測遊戲是否可操作）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     if !hwnd {
-        hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
+        hwnd := GetWutheringGameHwnd()
         if !hwnd
             return false
     }
 
+
+GetWutheringGameHwnd() {
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+    if (hwndList.Length > 0)
+        return hwndList[1]
+
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+    if (hwndList.Length > 0)
+        return hwndList[1]
+
+    return 0
+}
+
+WaitForWutheringGameWindow(timeoutSec := 60) {
+    deadline := A_TickCount + timeoutSec * 1000
+    while (A_TickCount < deadline) {
+        hwnd := GetWutheringGameHwnd()
+        if hwnd
+            return hwnd
+        Sleep 300
+    }
+    return 0
+}
     WriteLog("開始檢測遊戲是否可操作（主畫面模板比對）...")
 
     templateFile := A_ScriptDir "\icon_main.png"

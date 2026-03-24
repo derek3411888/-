@@ -505,13 +505,10 @@ if (loginDetected) {
     StartOKWWFlow(isRestart)
     okwwStarted := true
 
-    hwndLogin := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
+    hwndLogin := GetWutheringGameHwnd()
     WriteLog("檢測到登入畫面，嘗試點擊視窗中心喚醒")
     if !hwndLogin {
-        if WinWait("鸣潮",, 15)
-            hwndLogin := WinExist("鸣潮")
-        else if WinWait("鳴潮",, 5)
-            hwndLogin := WinExist("鳴潮")
+        hwndLogin := WaitForWutheringGameWindow(20)
     }
     if hwndLogin {
         try WinRestore "ahk_id " hwndLogin
@@ -542,7 +539,7 @@ if !okwwStarted {
 }
 
 ; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）
-gameHwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
+gameHwnd := GetWutheringGameHwnd()
 WriteLog("開始主畫面模板驗證（最多 90 秒）...")
 if !WaitEscMenuOCR(gameHwnd, 90) {
     WriteLog("鳴潮無法使用或超時，觸發重啟機制", "ERROR")
@@ -1027,12 +1024,11 @@ CrashWatcherTick() {
 DetectWutheringAndExit(&loginDetected := false) {
     loginDetected := false
     SetTitleMatchMode 2
-    if !WinWait("鸣潮",, 120) && !WinWait("鳴潮",, 120) {
-        ShowTip("找不到「鸣潮/鳴潮」視窗（逾時）。", 1200)
+    hwnd := WaitForWutheringGameWindow(120)
+    if !hwnd {
+        ShowTip("找不到「Client-Win64-Shipping.exe」遊戲視窗（逾時）。", 1200)
         return false
     }
-
-    hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
 
     ; 視窗貼齊右上角（確保在螢幕內）
     MoveWindowTopRight(hwnd, 0, 0)
@@ -1048,11 +1044,8 @@ DetectWutheringAndExit(&loginDetected := false) {
     loginKeywords := [ "点击", "點擊",  "开始游戏", "開始遊戲"]
 
     while (A_TickCount < deadline) {
-        if WinExist("鸣潮")
-            hwnd := WinExist("鸣潮")
-        else if WinExist("鳴潮")
-            hwnd := WinExist("鳴潮")
-        else
+        hwnd := GetWutheringGameHwnd()
+        if !hwnd
             break
 
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
@@ -1143,7 +1136,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     CoordMode "Pixel", "Screen"
 
     if !hwnd {
-        hwnd := WinExist("鸣潮") ? WinExist("鸣潮") : WinExist("鳴潮")
+        hwnd := GetWutheringGameHwnd()
         if !hwnd {
             CoordMode "Pixel", oldPixelMode
             return false
@@ -1261,7 +1254,7 @@ ClickWindowCenter(hwnd) {
 
 ; F) 取得並啟動鳴潮路徑（可記憶）
 EnsureWutheringRunning() {
-    if WinExist("鸣潮") || WinExist("鳴潮") {
+    if GetWutheringGameHwnd() {
         return true
     }
     path := GetPathWithAsk("WUTHERING", "請選擇鳴潮遊戲主程式或捷徑", "可執行檔或捷徑 (*.exe;*.lnk)")
@@ -1279,6 +1272,30 @@ EnsureWutheringRunning() {
     }
     Sleep 5000
     return true
+}
+
+GetWutheringGameHwnd() {
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+    if (hwndList.Length > 0)
+        return hwndList[1]
+
+    ; 回退：部分環境 class 可能不同，但仍限定遊戲主進程。
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+    if (hwndList.Length > 0)
+        return hwndList[1]
+
+    return 0
+}
+
+WaitForWutheringGameWindow(timeoutSec := 120) {
+    deadline := A_TickCount + timeoutSec * 1000
+    while (A_TickCount < deadline) {
+        hwnd := GetWutheringGameHwnd()
+        if hwnd
+            return hwnd
+        Sleep 300
+    }
+    return 0
 }
 
 EnsureCoreProgramPathsAtStartup() {

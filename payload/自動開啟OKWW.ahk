@@ -232,6 +232,15 @@ IniReadSafe(file, section, key, default) {
     }
 }
 
+IsWutheringGameRunning() {
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+    if (hwndList.Length > 0)
+        return true
+
+    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+    return (hwndList.Length > 0)
+}
+
 ; ====================== 多實例守門員 ======================
 ; 列出所有標題含 ok-ww 的視窗（回傳陣列 [{pid, hwnd, title}]）
 ListOkwwWindows() {
@@ -512,7 +521,7 @@ if (hasRunningOKWW) {
     Log("未發現已運行的OKWW進程，準備啟動新進程")
 
     ; 先啟動鳴潮遊戲，與 OKWW/LRMCAI 一樣記憶路徑
-    wutheringRunning := WinExist("鸣潮") || WinExist("鳴潮")
+    wutheringRunning := IsWutheringGameRunning()
     if (!wutheringRunning) {
         gameExe := LaunchWuthering()
         if (!gameExe) {
