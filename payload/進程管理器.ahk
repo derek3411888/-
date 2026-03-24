@@ -865,10 +865,6 @@ IsValidGameWindow(hwnd) {
     if !WinExist("ahk_id " hwnd)
         return false
     
-    if !WinGetExStyle("ahk_id " hwnd) {
-        return false
-    }
-    
     try WinGetPos , , &w, &h, "ahk_id " hwnd
     catch {
         return false

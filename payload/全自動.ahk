@@ -1346,11 +1346,6 @@ IsValidGameWindow(hwnd) {
     if !WinExist("ahk_id " hwnd)
         return false
     
-    ; 檢查視窗是否可見（排除隱藏/最小化的臨時視窗）
-    if !WinGetExStyle("ahk_id " hwnd) {
-        return false  ; 獲取視窗狀態失敗
-    }
-    
     ; 取得視窗寬高
     try WinGetPos , , &w, &h, "ahk_id " hwnd
     catch {
