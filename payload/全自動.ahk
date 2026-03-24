@@ -485,8 +485,8 @@ WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
     loginDetected := false
-    updated := DetectWutheringAndExit(&loginDetected)
-    if updated {
+    detectState := DetectWutheringAndExit(&loginDetected)
+    if (detectState = "update") {
         updateLoops++
         WriteLog("偵測到鳴潮更新，等待遊戲自動重啟後再次檢測 (" updateLoops "/" maxUpdateLoops ")")
         Sleep 8000
@@ -495,6 +495,16 @@ loop {
             break
         }
         continue
+    }
+
+    if (detectState = "no_window") {
+        WriteLog("鳴潮視窗尚未就緒（no_window），避免誤判登入，等待後重試", "WARN")
+        Sleep 3000
+        continue
+    }
+
+    if (detectState = "unknown") {
+        WriteLog("鳴潮狀態尚未明確（unknown），不提前判定登入", "WARN")
     }
     break
 }
@@ -532,10 +542,7 @@ if (loginDetected) {
 
 ; 2) 登入後啟動 OKWW 並確認啟動成功
 if !okwwStarted {
-    WriteLog("登入完成，開始啟動 OKWW...")
-    WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
-    StartOKWWFlow(isRestart)
-    okwwStarted := true
+    WriteLog("遊戲可操作驗證通過前，不提前宣告登入完成")
 }
 
 ; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）
@@ -550,7 +557,15 @@ if !WaitEscMenuOCR(gameHwnd, 90) {
 }
 WriteStep("遊戲可操作驗證", "模板比對通過")
 
-; 4) 執行聲骸合成流程
+; 4) 只有在可操作驗證通過後，才啟動 OKWW（避免過早啟動）
+if !okwwStarted {
+    WriteLog("遊戲已可操作，開始啟動 OKWW...")
+    WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
+    StartOKWWFlow(isRestart)
+    okwwStarted := true
+}
+
+; 5) 執行聲骸合成流程
 WriteLog("啟動聲骸合成腳本...")
 WriteStep("啟動聲骸合成", "等待完成或重啟標記")
 ShowTip("🔧 正在執行聲骸合成...", 1500)
@@ -1027,7 +1042,7 @@ DetectWutheringAndExit(&loginDetected := false) {
     hwnd := WaitForWutheringGameWindow(120)
     if !hwnd {
         ShowTip("找不到「Client-Win64-Shipping.exe」遊戲視窗（逾時）。", 1200)
-        return false
+        return "no_window"
     }
 
     ; 視窗貼齊右上角（確保在螢幕內）— 非關鍵，失敗不中斷
@@ -1053,8 +1068,10 @@ DetectWutheringAndExit(&loginDetected := false) {
 
     while (A_TickCount < deadline) {
         hwnd := GetWutheringGameHwnd()
-        if !hwnd
-            break
+        if !hwnd {
+            WriteLog("檢測途中失去鳴潮視窗，標記為 no_window", "WARN")
+            return "no_window"
+        }
 
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
         tempFile := A_ScriptDir "\temp_update_" A_TickCount ".png"
@@ -1128,7 +1145,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             ShowTip("✅ 偵測到更新完成 → 點擊按鈕", 800)
             MouseClick "left", btnCenter[1], btnCenter[2]
             ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
-            return true
+            return "update"
         }
         
         ; ✅ 優化：檢測到登入按鈕相關文字，且超過最小等待時間（30秒）才判定為登入畫面
@@ -1138,7 +1155,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             MuteWutheringAudioAtStartup()
             TryMuteWutheringAudio("檢測到登入畫面後")
             ShowTip("✅ 檢測到登入畫面，無需更新", 1000)
-            return false
+            return "login"
         }
         
         ; 如果只find到登入UI但沒找到按鈕，也要等待足夠時間再判定
@@ -1148,14 +1165,14 @@ DetectWutheringAndExit(&loginDetected := false) {
             MuteWutheringAudioAtStartup()
             TryMuteWutheringAudio("檢測到登入UI後")
             ShowTip("✅ 檢測到登入畫面UI，無需更新", 1000)
-            return false
+            return "login"
         }
         
         Sleep 900
     }
 
-    ShowTip("未檢測到更新或登入畫面，繼續正常流程。", 900)
-    return false
+    ShowTip("未檢測到更新或登入畫面，回傳 unknown。", 900)
+    return "unknown"
 }
 
 ; B) 去抖動主畫面模板比對（右下 ROI）
