@@ -2154,11 +2154,11 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     g.AddText("xm y+10 w120", "ai_api_url")
     edAiApiUrl := g.AddEdit("x+10 w500", state.aiApiUrl)
-    g.AddText("xm y+4 w720 c666666", "格式：完整 HTTPS API 位址。預設 OpenAI: https://api.openai.com/v1/chat/completions")
+    g.AddText("xm y+4 w720 c666666", "支援 OpenAI相容 / Gemini / Anthropic / Azure OpenAI。例：OpenAI https://api.openai.com/v1/chat/completions；Gemini https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent")
 
     g.AddText("xm y+10 w120", "ai_model")
     edAiModel := g.AddEdit("x+10 w500", state.aiModel)
-    g.AddText("xm y+4 w720 c666666", "範例：gpt-4o-mini（便宜快速）/ gpt-4.1-mini（品質較高）。")
+    g.AddText("xm y+4 w720 c666666", "模型範例：OpenAI gpt-4o-mini；Gemini gemini-1.5-flash 或 gemini-2.0-flash-exp；Anthropic claude-3-5-sonnet-latest。")
 
     g.AddText("xm y+10 w120", "ai_api_key")
     edAiApiKey := g.AddEdit("x+10 w500 Password", "")
@@ -2641,9 +2641,22 @@ TailText(txt, maxChars := 12000) {
     return "（僅附上末段 " maxChars " 字）`n" SubStr(txt, start)
 }
 
+DetectAiProvider(apiUrl) {
+    u := StrLower(Trim(apiUrl, " `t`r`n"))
+    if InStr(u, "generativelanguage.googleapis.com")
+        return "gemini"
+    if InStr(u, "anthropic.com")
+        return "anthropic"
+    if InStr(u, ".openai.azure.com")
+        return "azure-openai"
+    return "openai-compatible"
+}
+
 CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
     psFile := A_Temp "\ai_summary_" A_TickCount ".ps1"
     outFile := A_Temp "\ai_summary_out_" A_TickCount ".txt"
+
+    provider := DetectAiProvider(apiUrl)
 
     escApiUrl := PsEsc(apiUrl)
     escApiKey := PsEsc(apiKey)
@@ -2655,12 +2668,44 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
     script .= "$apiKey = '" escApiKey "'`n"
     script .= "$model = '" escModel "'`n"
     script .= "$prompt = @'`n" escPrompt "`n'@`n"
-    script .= "$headers = @{ Authorization = 'Bearer ' + $apiKey; 'Content-Type' = 'application/json' }`n"
-    script .= "$payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 8`n"
     script .= "try {`n"
-    script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
-    script .= "  $content = ''`n"
-    script .= "  if ($resp.choices -and $resp.choices.Count -gt 0) { $content = $resp.choices[0].message.content }`n"
+
+    if (provider = "gemini") {
+        script .= "  $callUrl = $apiUrl`n"
+        script .= "  if ($callUrl -notmatch '\\?') { $callUrl += '?key=' + [System.Uri]::EscapeDataString($apiKey) } else { $callUrl += '&key=' + [System.Uri]::EscapeDataString($apiKey) }`n"
+        script .= "  $payload = @{ contents = @(@{ role = 'user'; parts = @(@{ text = $prompt }) }); generationConfig = @{ temperature = 0.2 } } | ConvertTo-Json -Depth 12`n"
+        script .= "  $resp = Invoke-RestMethod -Uri $callUrl -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 50`n"
+        script .= "  $content = ''`n"
+        script .= "  if ($resp.candidates -and $resp.candidates.Count -gt 0 -and $resp.candidates[0].content -and $resp.candidates[0].content.parts) {`n"
+        script .= "    $parts = @()`n"
+        script .= "    foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $parts += $p.text } }`n"
+        script .= "    $content = ($parts -join [Environment]::NewLine)`n"
+        script .= "  }`n"
+    } else if (provider = "anthropic") {
+        script .= "  $headers = @{ 'x-api-key' = $apiKey; 'anthropic-version' = '2023-06-01'; 'Content-Type' = 'application/json' }`n"
+        script .= "  $payload = @{ model = $model; max_tokens = 800; temperature = 0.2; messages = @(@{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
+        script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
+        script .= "  $content = ''`n"
+        script .= "  if ($resp.content) {`n"
+        script .= "    $parts = @()`n"
+        script .= "    foreach ($item in $resp.content) { if ($item.type -eq 'text' -and $item.text) { $parts += $item.text } }`n"
+        script .= "    $content = ($parts -join [Environment]::NewLine)`n"
+        script .= "  }`n"
+    } else {
+        if (provider = "azure-openai") {
+            script .= "  $headers = @{ 'api-key' = $apiKey; 'Content-Type' = 'application/json' }`n"
+        } else {
+            script .= "  $headers = @{ Authorization = 'Bearer ' + $apiKey; 'Content-Type' = 'application/json' }`n"
+        }
+        script .= "  $payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
+        script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
+        script .= "  $content = ''`n"
+        script .= "  if ($resp.choices -and $resp.choices.Count -gt 0) {`n"
+        script .= "    if ($resp.choices[0].message -and $resp.choices[0].message.content) { $content = $resp.choices[0].message.content }`n"
+        script .= "    elseif ($resp.choices[0].text) { $content = $resp.choices[0].text }`n"
+        script .= "  }`n"
+    }
+
     script .= "  if ([string]::IsNullOrWhiteSpace($content)) { Write-Output 'AI 回傳空內容'; exit 2 }`n"
     script .= "  Write-Output $content`n"
     script .= "  exit 0`n"
