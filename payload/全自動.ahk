@@ -2540,7 +2540,7 @@ SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, s
     try FileDelete(errFile)
     FileAppend(script, psFile, "UTF-8")
 
-    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' errFile '" 2>&1'
+    cmd := A_ComSpec ' /D /C ""powershell" -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' errFile '" 2>&1"'
     exitCode := RunWait(cmd, , "Hide")
 
     errMsg := ""
@@ -2730,7 +2730,7 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
     try FileDelete(outFile)
     FileAppend(script, psFile, "UTF-8")
 
-    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1'
+    cmd := A_ComSpec ' /D /C ""powershell" -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1"'
     exitCode := RunWait(cmd, , "Hide")
 
     output := ""
@@ -2776,7 +2776,7 @@ EncryptLocalSecret(plainText) {
     try FileDelete(outFile)
     FileAppend(script, psFile, "UTF-8")
 
-    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1'
+    cmd := A_ComSpec ' /D /C ""powershell" -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1"'
     exitCode := RunWait(cmd, , "Hide")
 
     out := ""
@@ -2822,7 +2822,7 @@ DecryptLocalSecret(encText) {
     try FileDelete(outFile)
     FileAppend(script, psFile, "UTF-8")
 
-    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1'
+    cmd := A_ComSpec ' /D /C ""powershell" -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1"'
     exitCode := RunWait(cmd, , "Hide")
 
     out := ""
