@@ -24,6 +24,7 @@ catch
 global logger := InitLogger("全自動")
 RegisterLifecycleLogging("全自動")
 global RUN_ID := A_Now "@" A_TickCount
+global RUN_START_TS := A_Now
 global STEP_SEQ := 0
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
@@ -2576,7 +2577,8 @@ GenerateAiShutdownSummary(state) {
     lrmcLog := GetLrmcLogTail(maxChars)
 
     prompt := "請用繁體中文總結以下兩份自動化日誌，輸出要精簡：`n"
-    prompt .= "1) 今天執行摘要（3-5 點）`n"
+    prompt .= "注意：以下內容是直接從原始 txt/log 讀取，且只保留今天、本次流程時間區間內的內容。`n"
+    prompt .= "1) 本次流程執行摘要（3-5 點）`n"
     prompt .= "2) 是否有錯誤/警告與可能原因`n"
     prompt .= "3) 建議下一步（最多3點）`n"
     prompt .= "`n[全自動腳本log]`n" scriptLog
@@ -2617,7 +2619,7 @@ GetTodayScriptLogTail(maxChars := 12000) {
         return "（找不到全自動腳本日誌）"
 
     txt := SafeReadTextFile(path)
-    return TailText(txt, maxChars)
+    return BuildAiWindowedLogText(path, txt, maxChars)
 }
 
 GetLrmcLogTail(maxChars := 12000) {
@@ -2626,7 +2628,92 @@ GetLrmcLogTail(maxChars := 12000) {
         return "（找不到 LRMCAI 日誌）"
 
     txt := SafeReadTextFile(lrmcPath)
-    return TailText(txt, maxChars)
+    return BuildAiWindowedLogText(lrmcPath, txt, maxChars)
+}
+
+BuildAiWindowedLogText(path, txt, maxChars := 12000) {
+    win := GetCurrentFlowWindow()
+    filtered := FilterLogTextByWindow(txt, win.startTs, win.endTs)
+
+    if (filtered = "") {
+        ; 後備：若無法按時間戳切片，至少保留今日相關內容
+        filtered := FilterLogTextByDate(txt, SubStr(win.startTs, 1, 8))
+    }
+    if (filtered = "")
+        filtered := txt
+
+    head := "來源檔案: " path "`n"
+    head .= "流程時間區間: " win.startText " ~ " win.endText "`n"
+    head .= "（以下為原始 txt/log 內容切片）`n"
+
+    return TailText(head . filtered, maxChars)
+}
+
+GetCurrentFlowWindow() {
+    global RUN_START_TS
+
+    startTs := RUN_START_TS
+    if (startTs = "" || StrLen(startTs) < 14)
+        startTs := A_Now
+
+    endTs := A_Now
+    return {
+        startTs: startTs,
+        endTs: endTs,
+        startText: FormatTs14(startTs),
+        endText: FormatTs14(endTs)
+    }
+}
+
+FormatTs14(ts) {
+    if (StrLen(ts) < 14)
+        return ts
+    return SubStr(ts, 1, 4) "-" SubStr(ts, 5, 2) "-" SubStr(ts, 7, 2) " " SubStr(ts, 9, 2) ":" SubStr(ts, 11, 2) ":" SubStr(ts, 13, 2)
+}
+
+FilterLogTextByWindow(txt, startTs, endTs) {
+    if (txt = "")
+        return ""
+
+    today := SubStr(startTs, 1, 8)
+    out := ""
+    keepFollowing := false
+
+    for rawLine in StrSplit(txt, "`n") {
+        line := Trim(rawLine, "`r")
+        if RegExMatch(line, "^\s*(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})", &m) {
+            ts := m[1] m[2] m[3] m[4] m[5] m[6]
+            keepFollowing := (SubStr(ts, 1, 8) = today && ts >= startTs && ts <= endTs)
+            if keepFollowing
+                out .= line "`n"
+        } else if (keepFollowing) {
+            out .= line "`n"
+        }
+    }
+
+    return out
+}
+
+FilterLogTextByDate(txt, date8) {
+    if (txt = "")
+        return ""
+
+    out := ""
+    keepFollowing := false
+
+    for rawLine in StrSplit(txt, "`n") {
+        line := Trim(rawLine, "`r")
+        if RegExMatch(line, "^\s*(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})", &m) {
+            tsDate := m[1] m[2] m[3]
+            keepFollowing := (tsDate = date8)
+            if keepFollowing
+                out .= line "`n"
+        } else if (keepFollowing) {
+            out .= line "`n"
+        }
+    }
+
+    return out
 }
 
 SafeReadTextFile(path) {
