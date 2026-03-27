@@ -38,6 +38,7 @@ global __MAIL_SETUP := ""
 global __WUTHERING_AUDIO_MUTED := false
 global __WUTHERING_MUTE_PENDING := false
 global WUTHERING_PROCESS_EXE := "Client-Win64-Shipping.exe"
+global LAST_RESTART_REASON := ""
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -472,6 +473,14 @@ isRestart := false
 if A_Args.Length > 0 && A_Args[1] = "restart" {
     isRestart := true
     WriteLog("檢測到重啟模式，遊戲更新後將重新啟動OKWW")
+    prevReason := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_reason", ""), " `t`r`n")
+    prevTime := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_time", ""), " `t`r`n")
+    if (prevReason != "") {
+        detail := prevReason
+        if (prevTime != "")
+            detail .= " @ " prevTime
+        WriteStep("上次重啟原因", detail, "WARN")
+    }
 }
 
 ; 1) 先處理鳴潮更新／登入，OKWW 之後再啟動
@@ -552,7 +561,7 @@ if !WaitEscMenuOCR(gameHwnd, 90) {
     WriteLog("鳴潮無法使用或超時，觸發重啟機制", "ERROR")
     ShowTip("⚠️ 鳴潮無法使用，重新啟動...", 3000)
     Sleep 3000
-    RestartAutoScript()
+    RequestRestart("遊戲可操作驗證超時或失敗")
     return
 }
 WriteStep("遊戲可操作驗證", "模板比對通過")
@@ -613,7 +622,7 @@ try {
                 WriteLog("偵測到聲骸合成要求重啟，刪除標記並觸發重啟機制", "WARN")
                 try FileDelete(flagFile)
                 Sleep 2000
-                RestartAutoScript()
+                RequestRestart("聲骸合成回報重啟旗標 synthesis_restart.flag", "WARN")
                 return
             }
             break
@@ -626,7 +635,7 @@ try {
         WriteLog("聲骸合成超時，觸發重啟機制", "ERROR")
         ShowTip("⚠️ 聲骸合成超時，重新啟動...", 3000)
         Sleep 3000
-        RestartAutoScript()
+        RequestRestart("聲骸合成流程超時")
         return
     }
     
@@ -1563,17 +1572,40 @@ ToSimp(s) {
     return s
 }
 
-; 重啟全自動腳本（帶重啟計數）
-RestartAutoScript() {
-    global CFG_FILE, restartCount, MAX_RESTART_COUNT
+RequestRestart(reason, level := "ERROR") {
+    global LAST_RESTART_REASON
+
+    reason := Trim(reason, " `t`r`n")
+    if (reason = "")
+        reason := "未提供"
+
+    LAST_RESTART_REASON := reason
+    WriteLog("觸發重啟請求，原因: " reason, level)
+    RestartAutoScript(reason)
+}
+
+; 重啟全自動腳本（帶重啟計數與重啟原因）
+RestartAutoScript(reason := "") {
+    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON
+
+    reason := Trim(reason, " `t`r`n")
+    if (reason = "")
+        reason := Trim(LAST_RESTART_REASON, " `t`r`n")
+    if (reason = "")
+        reason := "未提供"
     
     ; 增加重啟計數
     restartCount++
-    WriteLog("準備重啟全自動腳本，第 " restartCount " 次重啟")
+    nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    WriteLog("準備重啟全自動腳本，第 " restartCount " 次重啟，原因: " reason, "WARN")
+
+    ; 記錄最近一次重啟原因，供下一次啟動追蹤
+    IniWrite reason, CFG_FILE, "restart_tracking", "last_restart_reason"
+    IniWrite nowText, CFG_FILE, "restart_tracking", "last_restart_time"
     
     ; 檢查是否超過最大重啟次數
     if (restartCount > MAX_RESTART_COUNT) {
-        WriteLog("重啟次數已達上限 (" MAX_RESTART_COUNT ")，停止重啟以避免無限循環", "ERROR")
+        WriteLog("重啟次數已達上限 (" MAX_RESTART_COUNT ")，停止重啟以避免無限循環。最後原因: " reason, "ERROR")
         ShowTip("❌ 重啟次數過多，停止執行", 5000)
         Sleep 5000
         ; 重置計數器
@@ -1911,6 +1943,16 @@ SendShutdownNotifyMail() {
     subject := subjectPrefix " 關閉完成通知 " nowText
     body := "全自動收尾已完成。`r`n時間：" nowText "`r`n主機：" A_ComputerName "`r`n腳本：" A_ScriptFullPath
 
+    if state.aiSummaryEnabled {
+        ai := GenerateAiShutdownSummary(state)
+        if ai.ok {
+            body .= "`r`n`r`n=== AI 日誌摘要 ===`r`n" ai.summary
+        } else {
+            WriteLog("AI 摘要產生失敗，改寄送原始收尾通知: " ai.message, "WARN")
+            body .= "`r`n`r`n=== AI 日誌摘要 ===`r`n（未啟用或產生失敗：" ai.message "）"
+        }
+    }
+
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
 }
 
@@ -1965,6 +2007,12 @@ ReadCombinedConfigState() {
     state.subjectPrefix := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "subject_prefix", "LRMCAI"), " `t`r`n")
     state.useSsl := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "use_ssl", "1"), " `t`r`n")
     state.sendEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
+    state.aiSummaryEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "ai_summary_enabled", "0"), 0)
+    state.aiApiUrl := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "ai_api_url", "https://api.openai.com/v1/chat/completions"), " `t`r`n")
+    state.aiModel := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "ai_model", "gpt-4o-mini"), " `t`r`n")
+    state.aiMaxChars := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "ai_max_chars", "12000"), " `t`r`n")
+    state.aiApiKeyEnc := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "ai_api_key_enc", ""), " `t`r`n")
+    state.aiApiKey := DecryptLocalSecret(state.aiApiKeyEnc)
     MAIL_NOTIFY_ENABLED := state.sendEnabled
     state.fallbackLogFile := NormalizePath(IniReadSafe(CFG_FILE, "reward_monitor", "fallback_log_file", ""))
     if (state.fallbackLogFile = "")
@@ -2001,6 +2049,17 @@ ReadCombinedConfigState() {
             err.Push("from 為空")
         if (state.mailTo = "")
             err.Push("to 為空")
+
+        if state.aiSummaryEnabled {
+            if (state.aiApiUrl = "")
+                err.Push("ai_api_url 為空")
+            if (state.aiModel = "")
+                err.Push("ai_model 為空")
+            if !(state.aiMaxChars ~= "^\d+$")
+                err.Push("ai_max_chars 不是數字")
+            if (state.aiApiKey = "")
+                err.Push("ai_api_key 未設定或解密失敗")
+        }
     }
 
     state.errors := err
@@ -2031,6 +2090,11 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "from: " state.mailFrom "`r`n"
     summary .= "to: " state.mailTo "`r`n"
     summary .= "send_enabled: " (state.sendEnabled ? "1(啟用)" : "0(停用)") "`r`n"
+    summary .= "ai_summary_enabled: " (state.aiSummaryEnabled ? "1(啟用)" : "0(停用)") "`r`n"
+    summary .= "ai_api_url: " state.aiApiUrl "`r`n"
+    summary .= "ai_model: " state.aiModel "`r`n"
+    summary .= "ai_api_key: " (state.aiApiKey != "" ? "已設定" : "未設定") "`r`n"
+    summary .= "ai_max_chars: " state.aiMaxChars "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     g.AddEdit("xm w720 r8 ReadOnly", summary)
 
@@ -2083,6 +2147,27 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("xm y+10 w120", "subject_prefix")
     edPrefix := g.AddEdit("x+10 w500", state.subjectPrefix)
 
+    g.AddText("xm y+14 w720", "【AI 摘要設定】可選。啟用後會摘要今日全自動 log 與 LRMCAI.log，失敗會自動回退原通知。")
+    cbAiSummaryEnabled := g.AddCheckbox("xm y+8", "啟用 AI 摘要（收尾寄信時附加）")
+    cbAiSummaryEnabled.Value := state.aiSummaryEnabled ? 1 : 0
+    txtAiHint := g.AddText("x+12 w500", state.aiSummaryEnabled ? "AI 摘要已啟用，請確認 API 設定完整" : "AI 摘要停用（不影響原本寄信流程）")
+
+    g.AddText("xm y+10 w120", "ai_api_url")
+    edAiApiUrl := g.AddEdit("x+10 w500", state.aiApiUrl)
+    g.AddText("xm y+4 w720 c666666", "格式：完整 HTTPS API 位址。預設 OpenAI: https://api.openai.com/v1/chat/completions")
+
+    g.AddText("xm y+10 w120", "ai_model")
+    edAiModel := g.AddEdit("x+10 w500", state.aiModel)
+    g.AddText("xm y+4 w720 c666666", "範例：gpt-4o-mini（便宜快速）/ gpt-4.1-mini（品質較高）。")
+
+    g.AddText("xm y+10 w120", "ai_api_key")
+    edAiApiKey := g.AddEdit("x+10 w500 Password", "")
+    g.AddText("xm y+4 w720 c666666", "來源：AI 平台後台產生的 API Key。留空＝沿用既有；新輸入會用 Windows 帳號加密儲存。")
+
+    g.AddText("xm y+10 w120", "ai_max_chars")
+    edAiMaxChars := g.AddEdit("x+10 w120", state.aiMaxChars)
+    g.AddText("x+12 w560 c666666", "每份 log 最多送出的字數。建議 8000~15000，預設 12000。")
+
     btnSave := g.AddButton("xm y+18 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
 
@@ -2105,6 +2190,13 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edFrom: edFrom,
         edTo: edTo,
         edPrefix: edPrefix,
+        cbAiSummaryEnabled: cbAiSummaryEnabled,
+        txtAiHint: txtAiHint,
+        edAiApiUrl: edAiApiUrl,
+        edAiModel: edAiModel,
+        edAiApiKey: edAiApiKey,
+        edAiMaxChars: edAiMaxChars,
+        aiApiKeyEnc: state.aiApiKeyEnc,
         ddSsl: ddSsl,
         cbSendEnabled: cbSendEnabled,
         txtMailHint: txtMailHint
@@ -2116,12 +2208,14 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
     cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
+    cbAiSummaryEnabled.OnEvent("Click", OnAiSummaryEnabledChanged)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Close", OnCombinedSetupClose)
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
+    RefreshAiInputsEnabled()
 
     g.Show("AutoSize")
     while !__MAIL_SETUP.done
@@ -2199,6 +2293,11 @@ OnCombinedSetupSave(*) {
     fromVal := Trim(st.edFrom.Value, " `t`r`n")
     toVal := Trim(st.edTo.Value, " `t`r`n")
     prefixVal := Trim(st.edPrefix.Value, " `t`r`n")
+    aiSummaryEnabledVal := st.cbAiSummaryEnabled.Value ? 1 : 0
+    aiApiUrlVal := Trim(st.edAiApiUrl.Value, " `t`r`n")
+    aiModelVal := Trim(st.edAiModel.Value, " `t`r`n")
+    aiApiKeyInputVal := Trim(st.edAiApiKey.Value, " `t`r`n")
+    aiMaxCharsVal := Trim(st.edAiMaxChars.Value, " `t`r`n")
     sslVal := st.ddSsl.Text
     sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
 
@@ -2224,6 +2323,29 @@ OnCombinedSetupSave(*) {
             MsgBox "smtp_port 必須是數字", "整合設定", "Iconx"
             return
         }
+
+        if aiSummaryEnabledVal {
+            if (aiApiUrlVal = "" || aiModelVal = "") {
+                MsgBox "啟用 AI 摘要時，ai_api_url 與 ai_model 不可空白", "整合設定", "Iconx"
+                return
+            }
+            if !(InStr(StrLower(aiApiUrlVal), "https://")) {
+                MsgBox "ai_api_url 必須是 https:// 開頭的完整 URL", "整合設定", "Iconx"
+                return
+            }
+            if !(aiMaxCharsVal ~= "^\d+$") {
+                MsgBox "ai_max_chars 必須是數字", "整合設定", "Iconx"
+                return
+            }
+            if (Integer(aiMaxCharsVal) < 1000 || Integer(aiMaxCharsVal) > 50000) {
+                MsgBox "ai_max_chars 建議介於 1000 到 50000", "整合設定", "Iconx"
+                return
+            }
+            if (aiApiKeyInputVal = "" && st.aiApiKeyEnc = "") {
+                MsgBox "啟用 AI 摘要時，請輸入 ai_api_key（或先前已儲存過）", "整合設定", "Iconx"
+                return
+            }
+        }
     }
 
     IniWrite okwwPath, st.cfgPath, "paths", "OKWW"
@@ -2244,6 +2366,15 @@ OnCombinedSetupSave(*) {
     IniWrite (prefixVal = "" ? "LRMCAI" : prefixVal), st.cfgPath, st.section, "subject_prefix"
     IniWrite sslVal, st.cfgPath, st.section, "use_ssl"
     IniWrite sendEnabledVal, st.cfgPath, st.section, "send_enabled"
+    IniWrite aiSummaryEnabledVal, st.cfgPath, st.section, "ai_summary_enabled"
+    IniWrite (aiApiUrlVal = "" ? "https://api.openai.com/v1/chat/completions" : aiApiUrlVal), st.cfgPath, st.section, "ai_api_url"
+    IniWrite (aiModelVal = "" ? "gpt-4o-mini" : aiModelVal), st.cfgPath, st.section, "ai_model"
+    IniWrite (aiMaxCharsVal = "" ? "12000" : aiMaxCharsVal), st.cfgPath, st.section, "ai_max_chars"
+
+    encKey := st.aiApiKeyEnc
+    if (aiApiKeyInputVal != "")
+        encKey := EncryptLocalSecret(aiApiKeyInputVal)
+    IniWrite encKey, st.cfgPath, st.section, "ai_api_key_enc"
     MAIL_NOTIFY_ENABLED := sendEnabledVal
 
     __MAIL_SETUP.saved := true
@@ -2253,6 +2384,11 @@ OnCombinedSetupSave(*) {
 
 OnSendEnabledChanged(*) {
     RefreshMailInputsEnabled()
+    RefreshAiInputsEnabled()
+}
+
+OnAiSummaryEnabledChanged(*) {
+    RefreshAiInputsEnabled()
 }
 
 RefreshMailInputsEnabled() {
@@ -2270,6 +2406,25 @@ RefreshMailInputsEnabled() {
     __MAIL_SETUP.edPrefix.Enabled := enabled
     __MAIL_SETUP.ddSsl.Enabled := enabled
     __MAIL_SETUP.txtMailHint.Value := enabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位"
+
+    __MAIL_SETUP.cbAiSummaryEnabled.Enabled := enabled
+    if !enabled
+        __MAIL_SETUP.cbAiSummaryEnabled.Value := 0
+}
+
+RefreshAiInputsEnabled() {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    sendEnabled := __MAIL_SETUP.cbSendEnabled.Value ? true : false
+    aiEnabled := (__MAIL_SETUP.cbAiSummaryEnabled.Value ? true : false) && sendEnabled
+
+    __MAIL_SETUP.edAiApiUrl.Enabled := aiEnabled
+    __MAIL_SETUP.edAiModel.Enabled := aiEnabled
+    __MAIL_SETUP.edAiApiKey.Enabled := aiEnabled
+    __MAIL_SETUP.edAiMaxChars.Enabled := aiEnabled
+    __MAIL_SETUP.txtAiHint.Value := aiEnabled ? "AI 摘要已啟用：收尾寄信會附上 AI 總結（失敗自動回退原通知）" : "AI 摘要停用（不影響原本寄信流程）"
 }
 
 LoadMailNotifyEnabled() {
@@ -2396,4 +2551,218 @@ SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, s
 
 PsEsc(text) {
     return StrReplace(text, "'", "''")
+}
+
+GenerateAiShutdownSummary(state) {
+    if !state.aiSummaryEnabled
+        return { ok: false, message: "AI 摘要未啟用" }
+
+    apiKey := Trim(state.aiApiKey, " `t`r`n")
+    if (apiKey = "")
+        return { ok: false, message: "AI API Key 為空或解密失敗" }
+
+    maxChars := Integer(state.aiMaxChars ~= "^\d+$" ? state.aiMaxChars : "12000")
+    scriptLog := GetTodayScriptLogTail(maxChars)
+    lrmcLog := GetLrmcLogTail(maxChars)
+
+    prompt := "請用繁體中文總結以下兩份自動化日誌，輸出要精簡：`n"
+    prompt .= "1) 今天執行摘要（3-5 點）`n"
+    prompt .= "2) 是否有錯誤/警告與可能原因`n"
+    prompt .= "3) 建議下一步（最多3點）`n"
+    prompt .= "`n[全自動腳本log]`n" scriptLog
+    prompt .= "`n`n[LRMCAI log]`n" lrmcLog
+
+    aiResp := CallAiChatByPowerShell(state.aiApiUrl, apiKey, state.aiModel, prompt)
+    if !aiResp.ok
+        return aiResp
+
+    return { ok: true, summary: aiResp.content }
+}
+
+GetTodayScriptLogTail(maxChars := 12000) {
+    global logger
+
+    path := ""
+    try {
+        if IsObject(logger) && logger.HasOwnProp("logFile")
+            path := logger.logFile
+    }
+
+    if (path = "" || !FileExist(path)) {
+        ; 後備：掃描當前腳本目錄下最近一份全自動日誌
+        latest := ""
+        latestTime := ""
+        pattern := A_ScriptDir "\..\log\全自動\全自動_*.log"
+        Loop Files, pattern, "F" {
+            t := FileGetTime(A_LoopFileFullPath, "M")
+            if (latest = "" || t > latestTime) {
+                latest := A_LoopFileFullPath
+                latestTime := t
+            }
+        }
+        path := latest
+    }
+
+    if (path = "" || !FileExist(path))
+        return "（找不到全自動腳本日誌）"
+
+    txt := SafeReadTextFile(path)
+    return TailText(txt, maxChars)
+}
+
+GetLrmcLogTail(maxChars := 12000) {
+    lrmcPath := ResolveRewardLogPath()
+    if (lrmcPath = "" || !FileExist(lrmcPath))
+        return "（找不到 LRMCAI 日誌）"
+
+    txt := SafeReadTextFile(lrmcPath)
+    return TailText(txt, maxChars)
+}
+
+SafeReadTextFile(path) {
+    try {
+        return FileRead(path, "UTF-8")
+    } catch {
+        try return FileRead(path)
+        catch {
+            return "（讀取失敗: " path "）"
+        }
+    }
+}
+
+TailText(txt, maxChars := 12000) {
+    if (txt = "")
+        return "（空內容）"
+
+    if (StrLen(txt) <= maxChars)
+        return txt
+
+    start := StrLen(txt) - maxChars + 1
+    return "（僅附上末段 " maxChars " 字）`n" SubStr(txt, start)
+}
+
+CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
+    psFile := A_Temp "\ai_summary_" A_TickCount ".ps1"
+    outFile := A_Temp "\ai_summary_out_" A_TickCount ".txt"
+
+    escApiUrl := PsEsc(apiUrl)
+    escApiKey := PsEsc(apiKey)
+    escModel := PsEsc(model)
+    escPrompt := PsEsc(userPrompt)
+
+    script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$apiUrl = '" escApiUrl "'`n"
+    script .= "$apiKey = '" escApiKey "'`n"
+    script .= "$model = '" escModel "'`n"
+    script .= "$prompt = @'`n" escPrompt "`n'@`n"
+    script .= "$headers = @{ Authorization = 'Bearer ' + $apiKey; 'Content-Type' = 'application/json' }`n"
+    script .= "$payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 8`n"
+    script .= "try {`n"
+    script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
+    script .= "  $content = ''`n"
+    script .= "  if ($resp.choices -and $resp.choices.Count -gt 0) { $content = $resp.choices[0].message.content }`n"
+    script .= "  if ([string]::IsNullOrWhiteSpace($content)) { Write-Output 'AI 回傳空內容'; exit 2 }`n"
+    script .= "  Write-Output $content`n"
+    script .= "  exit 0`n"
+    script .= "} catch {`n"
+    script .= "  $m = $_.Exception.Message`n"
+    script .= "  if ($_.Exception.InnerException) { $m += ' | Inner: ' + $_.Exception.InnerException.Message }`n"
+    script .= "  Write-Output $m`n"
+    script .= "  exit 1`n"
+    script .= "}`n"
+
+    try FileDelete(psFile)
+    try FileDelete(outFile)
+    FileAppend(script, psFile, "UTF-8")
+
+    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1'
+    exitCode := RunWait(cmd, , "Hide")
+
+    output := ""
+    try output := Trim(FileRead(outFile, "UTF-8"), "`r`n`t ")
+    if (output = "")
+        try output := Trim(FileRead(outFile), "`r`n`t ")
+
+    try FileDelete(psFile)
+    try FileDelete(outFile)
+
+    if (exitCode = 0)
+        return { ok: true, content: output }
+
+    if (output = "")
+        output := "AI API 呼叫失敗，ExitCode=" exitCode
+    return { ok: false, message: output }
+}
+
+EncryptLocalSecret(plainText) {
+    plainText := Trim(plainText, " `t`r`n")
+    if (plainText = "")
+        return ""
+
+    psFile := A_Temp "\enc_secret_" A_TickCount ".ps1"
+    outFile := A_Temp "\enc_secret_out_" A_TickCount ".txt"
+    escPlain := PsEsc(plainText)
+
+    script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$plain = '" escPlain "'`n"
+    script .= "$bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)`n"
+    script .= "$enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
+    script .= "Write-Output ([Convert]::ToBase64String($enc))`n"
+
+    try FileDelete(psFile)
+    try FileDelete(outFile)
+    FileAppend(script, psFile, "UTF-8")
+
+    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1'
+    exitCode := RunWait(cmd, , "Hide")
+
+    out := ""
+    try out := Trim(FileRead(outFile, "UTF-8"), "`r`n`t ")
+    if (out = "")
+        try out := Trim(FileRead(outFile), "`r`n`t ")
+
+    try FileDelete(psFile)
+    try FileDelete(outFile)
+
+    if (exitCode = 0)
+        return out
+
+    WriteLog("AI API Key 加密失敗，將清空儲存值", "WARN")
+    return ""
+}
+
+DecryptLocalSecret(encText) {
+    encText := Trim(encText, " `t`r`n")
+    if (encText = "")
+        return ""
+
+    psFile := A_Temp "\dec_secret_" A_TickCount ".ps1"
+    outFile := A_Temp "\dec_secret_out_" A_TickCount ".txt"
+    escEnc := PsEsc(encText)
+
+    script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$encB64 = '" escEnc "'`n"
+    script .= "$enc = [Convert]::FromBase64String($encB64)`n"
+    script .= "$bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
+    script .= "Write-Output ([System.Text.Encoding]::UTF8.GetString($bytes))`n"
+
+    try FileDelete(psFile)
+    try FileDelete(outFile)
+    FileAppend(script, psFile, "UTF-8")
+
+    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1'
+    exitCode := RunWait(cmd, , "Hide")
+
+    out := ""
+    try out := Trim(FileRead(outFile, "UTF-8"), "`r`n`t ")
+    if (out = "")
+        try out := Trim(FileRead(outFile), "`r`n`t ")
+
+    try FileDelete(psFile)
+    try FileDelete(outFile)
+
+    if (exitCode = 0)
+        return out
+
+    return ""
 }
