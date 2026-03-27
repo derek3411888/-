@@ -2372,8 +2372,18 @@ OnCombinedSetupSave(*) {
     IniWrite (aiMaxCharsVal = "" ? "12000" : aiMaxCharsVal), st.cfgPath, st.section, "ai_max_chars"
 
     encKey := st.aiApiKeyEnc
-    if (aiApiKeyInputVal != "")
+    if (aiApiKeyInputVal != "") {
         encKey := EncryptLocalSecret(aiApiKeyInputVal)
+        if (encKey = "") {
+            MsgBox "ai_api_key 加密失敗，請確認目前 Windows 使用者權限或重新輸入後再試一次", "整合設定", "Iconx"
+            return
+        }
+        decCheck := DecryptLocalSecret(encKey)
+        if (decCheck = "") {
+            MsgBox "ai_api_key 加密後驗證失敗，請重新輸入一次再儲存", "整合設定", "Iconx"
+            return
+        }
+    }
     IniWrite encKey, st.cfgPath, st.section, "ai_api_key_enc"
     MAIL_NOTIFY_ENABLED := sendEnabledVal
 
