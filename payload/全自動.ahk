@@ -2757,6 +2757,12 @@ NormalizeAiApiUrl(apiUrl, provider) {
     low := StrLower(u)
 
     if (provider = "gemini") {
+        ; Gemini 常見舊名自動映射，避免 404
+        if InStr(low, "/models/gemini-flash-latest")
+            u := RegExReplace(u, "i)/models/gemini-flash-latest", "/models/gemini-1.5-flash-latest")
+        if InStr(low, "/models/gemini-pro-latest")
+            u := RegExReplace(u, "i)/models/gemini-pro-latest", "/models/gemini-1.5-pro-latest")
+
         if !InStr(low, ":generatecontent")
             u .= ":generateContent"
         return u
@@ -2797,12 +2803,30 @@ NormalizeAiApiUrl(apiUrl, provider) {
     return u
 }
 
+NormalizeGeminiModelName(model) {
+    m := Trim(model, " `t`r`n")
+    if (m = "")
+        return m
+
+    ml := StrLower(m)
+    if (ml = "gemini-flash-latest")
+        return "gemini-1.5-flash-latest"
+    if (ml = "gemini-pro-latest")
+        return "gemini-1.5-pro-latest"
+    return m
+}
+
 CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
     psFile := A_Temp "\ai_summary_" A_TickCount ".ps1"
     outFile := A_Temp "\ai_summary_out_" A_TickCount ".txt"
 
     provider := DetectAiProvider(apiUrl)
     normalizedUrl := NormalizeAiApiUrl(apiUrl, provider)
+    if (provider = "gemini") {
+        model := NormalizeGeminiModelName(model)
+        if (model != "")
+            normalizedUrl := RegExReplace(normalizedUrl, "i)(/models/)([^/:?]+)", "$1" model)
+    }
     useResponsesApi := (provider = "openai-compatible") && InStr(StrLower(normalizedUrl), "/v1/responses")
 
     escApiUrl := PsEsc(normalizedUrl)
@@ -2898,7 +2922,7 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
 
     if (output = "")
         output := "AI API 呼叫失敗，ExitCode=" exitCode
-    return { ok: false, message: "provider=" provider " | url=" normalizedUrl " | " output }
+    return { ok: false, message: "provider=" provider " | model=" model " | url=" normalizedUrl " | " output }
 }
 
 EncryptLocalSecret(plainText) {
