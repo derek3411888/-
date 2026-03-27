@@ -2809,10 +2809,6 @@ NormalizeGeminiModelName(model) {
         return m
 
     ml := StrLower(m)
-    if (ml = "gemini-flash-latest")
-        return "gemini-1.5-flash-latest"
-    if (ml = "gemini-pro-latest")
-        return "gemini-1.5-pro-latest"
     if (ml = "gemini-3-flash-preview")
         return "gemini-2.0-flash"
     return m
@@ -2851,147 +2847,27 @@ BuildGeminiFallbackCsv(model) {
 }
 
 CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
-    psFile := A_Temp "\ai_summary_" A_TickCount ".ps1"
-    outFile := A_Temp "\ai_summary_out_" A_TickCount ".txt"
-
     provider := DetectAiProvider(apiUrl)
     normalizedUrl := NormalizeAiApiUrl(apiUrl, provider)
-    geminiModelCsv := ""
-    if (provider = "gemini") {
-        model := NormalizeGeminiModelName(model)
-        geminiModelCsv := BuildGeminiFallbackCsv(model)
-        if (model != "")
-            normalizedUrl := RegExReplace(normalizedUrl, "i)(/models/)([^/:?]+)", "$1" model)
-    }
-    useResponsesApi := (provider = "openai-compatible") && InStr(StrLower(normalizedUrl), "/v1/responses")
-
-    escApiUrl := PsEsc(normalizedUrl)
-    escApiKey := PsEsc(apiKey)
-    escModel := PsEsc(model)
-    escGeminiModelCsv := PsEsc(geminiModelCsv)
-    escPrompt := PsEsc(userPrompt)
-
-    script := "$ErrorActionPreference = 'Stop'`n"
-    script .= "$apiUrl = '" escApiUrl "'`n"
-    script .= "$apiKey = '" escApiKey "'`n"
-    script .= "$model = '" escModel "'`n"
-    script .= "$geminiModelsCsv = '" escGeminiModelCsv "'`n"
-    script .= "$prompt = @'`n" escPrompt "`n'@`n"
-    script .= "try {`n"
 
     if (provider = "gemini") {
-        script .= "  $payload = @{ contents = @(@{ role = 'user'; parts = @(@{ text = $prompt }) }); generationConfig = @{ temperature = 0.2 } } | ConvertTo-Json -Depth 12`n"
-        script .= "  $content = ''`n"
-        script .= "  $lastErr = ''`n"
-        script .= "  $candidates = @()`n"
-        script .= "  $autoCandidates = @()`n"
-        script .= "  try {`n"
-        script .= "    $modelsUrl = 'https://generativelanguage.googleapis.com/v1beta/models?key=' + [System.Uri]::EscapeDataString($apiKey)`n"
-        script .= "    $modelsResp = Invoke-RestMethod -Uri $modelsUrl -Method Get -TimeoutSec 30`n"
-        script .= "    if ($modelsResp.models) {`n"
-        script .= "      foreach ($mm in $modelsResp.models) {`n"
-        script .= "        if (-not $mm.name) { continue }`n"
-        script .= "        if ($mm.supportedGenerationMethods -and ($mm.supportedGenerationMethods -contains 'generateContent') -and $mm.name -match '^models/gemini') {`n"
-        script .= "          $id = $mm.name -replace '^models/', ''`n"
-        script .= "          if ($id -match 'embedding|vision|aqa') { continue }`n"
-        script .= "          $autoCandidates += $id`n"
-        script .= "        }`n"
-        script .= "      }`n"
-        script .= "    }`n"
-        script .= "  } catch {`n"
-        script .= "    $lastErr = 'models API 讀取失敗: ' + $_.Exception.Message`n"
-        script .= "  }`n"
-        script .= "  $priority = @('gemini-2.5-flash', 'gemini-2.5-flash-latest', 'gemini-2.5-pro', 'gemini-2.5-pro-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro-latest')`n"
-        script .= "  foreach ($p in $priority) {`n"
-        script .= "    if ($autoCandidates -contains $p) { $candidates += $p }`n"
-        script .= "  }`n"
-        script .= "  foreach ($x in $autoCandidates) {`n"
-        script .= "    if ($candidates -notcontains $x) { $candidates += $x }`n"
-        script .= "  }`n"
-        script .= "  if (-not [string]::IsNullOrWhiteSpace($model) -and $candidates -notcontains $model) {`n"
-        script .= "    $candidates += $model`n"
-        script .= "  }`n"
-        script .= "  if (-not [string]::IsNullOrWhiteSpace($geminiModelsCsv)) {`n"
-        script .= "    foreach ($x in $geminiModelsCsv.Split(',')) {`n"
-        script .= "      if (-not [string]::IsNullOrWhiteSpace($x) -and $candidates -notcontains $x) {`n"
-        script .= "        $candidates += $x`n"
-        script .= "      }`n"
-        script .= "    }`n"
-        script .= "  }`n"
-        script .= "  if (-not $candidates -or $candidates.Count -eq 0) { $candidates = @('gemini-2.0-flash', 'gemini-1.5-flash-latest') }`n"
-        script .= "  foreach ($m in $candidates) {`n"
-        script .= "    if ([string]::IsNullOrWhiteSpace($m)) { continue }`n"
-        script .= "    $tryUrl = [Regex]::Replace($apiUrl, '/models/[^/:?]+', '/models/' + $m, 'IgnoreCase')`n"
-        script .= "    $callUrl = $tryUrl`n"
-        script .= "    if ($callUrl -notmatch '\\?') { $callUrl += '?key=' + [System.Uri]::EscapeDataString($apiKey) } else { $callUrl += '&key=' + [System.Uri]::EscapeDataString($apiKey) }`n"
-        script .= "    try {`n"
-        script .= "      $resp = Invoke-RestMethod -Uri $callUrl -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 50`n"
-        script .= "      if ($resp.candidates -and $resp.candidates.Count -gt 0 -and $resp.candidates[0].content -and $resp.candidates[0].content.parts) {`n"
-        script .= "        $parts = @()`n"
-        script .= "        foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $parts += $p.text } }`n"
-        script .= "        $content = ($parts -join [Environment]::NewLine)`n"
-        script .= "      }`n"
-        script .= "      if (-not [string]::IsNullOrWhiteSpace($content)) { $model = $m; $apiUrl = $tryUrl; break }`n"
-        script .= "      $lastErr = 'AI 回傳空內容'`n"
-        script .= "    } catch {`n"
-        script .= "      $lastErr = $_.Exception.Message`n"
-        script .= "      if ($lastErr -notmatch '404') { throw }`n"
-        script .= "    }`n"
-        script .= "  }`n"
-        script .= "  if ([string]::IsNullOrWhiteSpace($content)) { throw ('Gemini 候選模型皆失敗: ' + ($candidates -join ',') + ' | ' + $lastErr) }`n"
-    } else if (provider = "anthropic") {
-        script .= "  $headers = @{ 'x-api-key' = $apiKey; 'anthropic-version' = '2023-06-01'; 'Content-Type' = 'application/json' }`n"
-        script .= "  $payload = @{ model = $model; max_tokens = 800; temperature = 0.2; messages = @(@{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
-        script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
-        script .= "  $content = ''`n"
-        script .= "  if ($resp.content) {`n"
-        script .= "    $parts = @()`n"
-        script .= "    foreach ($item in $resp.content) { if ($item.type -eq 'text' -and $item.text) { $parts += $item.text } }`n"
-        script .= "    $content = ($parts -join [Environment]::NewLine)`n"
-        script .= "  }`n"
-    } else {
-        if (provider = "azure-openai") {
-            script .= "  $headers = @{ 'api-key' = $apiKey; 'Content-Type' = 'application/json' }`n"
-        } else {
-            script .= "  $headers = @{ Authorization = 'Bearer ' + $apiKey; 'Content-Type' = 'application/json' }`n"
-        }
-        if (useResponsesApi) {
-            script .= "  $payload = @{ model = $model; input = $prompt; temperature = 0.2 } | ConvertTo-Json -Depth 12`n"
-        } else {
-            script .= "  $payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
-        }
-        script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
-        script .= "  $content = ''`n"
-        if (useResponsesApi) {
-            script .= "  if ($resp.output_text) { $content = $resp.output_text }`n"
-            script .= "  elseif ($resp.output) {`n"
-            script .= "    $parts = @()`n"
-            script .= "    foreach ($o in $resp.output) {`n"
-            script .= "      if ($o.content) { foreach ($c in $o.content) { if ($c.text) { $parts += $c.text } } }`n"
-            script .= "    }`n"
-            script .= "    $content = ($parts -join [Environment]::NewLine)`n"
-            script .= "  }`n"
-        } else {
-            script .= "  if ($resp.choices -and $resp.choices.Count -gt 0) {`n"
-            script .= "    if ($resp.choices[0].message -and $resp.choices[0].message.content) { $content = $resp.choices[0].message.content }`n"
-            script .= "    elseif ($resp.choices[0].text) { $content = $resp.choices[0].text }`n"
-            script .= "  }`n"
-        }
+        return CallGeminiByPowerShell(normalizedUrl, apiKey, model, userPrompt)
     }
 
-    script .= "  if ([string]::IsNullOrWhiteSpace($content)) { Write-Output 'AI 回傳空內容'; exit 2 }`n"
-    script .= "  Write-Output $content`n"
-    script .= "  exit 0`n"
-    script .= "} catch {`n"
-    script .= "  $m = $_.Exception.Message`n"
-    script .= "  if ($_.Exception.InnerException) { $m += ' | Inner: ' + $_.Exception.InnerException.Message }`n"
-    script .= "  Write-Output $m`n"
-    script .= "  exit 1`n"
-    script .= "}`n"
+    if (provider = "anthropic")
+        return CallAnthropicByPowerShell(normalizedUrl, apiKey, model, userPrompt)
+
+    return CallOpenAiFamilyByPowerShell(normalizedUrl, apiKey, model, userPrompt, provider)
+}
+
+RunAiPowerShellScript(script, tag := "ai_summary") {
+    psFile := A_Temp "\\" tag "_" A_TickCount ".ps1"
+    outFile := A_Temp "\\" tag "_out_" A_TickCount ".txt"
+    scriptToRun := "$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)`n" script
 
     try FileDelete(psFile)
     try FileDelete(outFile)
-    FileAppend(script, psFile, "UTF-8")
+    FileAppend(scriptToRun, psFile, "UTF-8")
 
     cmd := A_ComSpec ' /D /C ""powershell" -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' outFile '" 2>&1"'
     exitCode := RunWait(cmd, , "Hide")
@@ -3003,13 +2879,227 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
 
     try FileDelete(psFile)
     try FileDelete(outFile)
+    return { code: exitCode, output: output }
+}
 
-    if (exitCode = 0)
-        return { ok: true, content: output }
+CallGeminiByPowerShell(apiUrl, apiKey, model, userPrompt) {
+    model := NormalizeGeminiModelName(model)
+    if (model != "")
+        apiUrl := RegExReplace(apiUrl, "i)(/models/)([^/:?]+)", "$1" model)
 
-    if (output = "")
-        output := "AI API 呼叫失敗，ExitCode=" exitCode
-    return { ok: false, message: "provider=" provider " | model=" model " | url=" normalizedUrl " | " output }
+    geminiModelCsv := BuildGeminiFallbackCsv(model)
+    escApiUrl := PsEsc(apiUrl)
+    escApiKey := PsEsc(apiKey)
+    escModel := PsEsc(model)
+    escCsv := PsEsc(geminiModelCsv)
+    escPrompt := PsEsc(userPrompt)
+
+    script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$apiUrl = '" escApiUrl "'`n"
+    script .= "$apiKey = '" escApiKey "'`n"
+    script .= "$model = '" escModel "'`n"
+    script .= "$extraCsv = '" escCsv "'`n"
+    script .= "$prompt = @'`n" escPrompt "`n'@`n"
+    script .= "try {`n"
+    script .= "  $payload = @{ contents = @(@{ role = 'user'; parts = @(@{ text = $prompt }) }); generationConfig = @{ temperature = 0.2 } } | ConvertTo-Json -Depth 12`n"
+    script .= "  $candidates = @()`n"
+    script .= "  $auto = @()`n"
+    script .= "  $lastErr = ''`n"
+    script .= "  try {`n"
+    script .= "    $modelsUrl = 'https://generativelanguage.googleapis.com/v1beta/models?key=' + [System.Uri]::EscapeDataString($apiKey)`n"
+    script .= "    $mresp = Invoke-RestMethod -Uri $modelsUrl -Method Get -TimeoutSec 30`n"
+    script .= "    if ($mresp.models) {`n"
+    script .= "      foreach ($mm in $mresp.models) {`n"
+    script .= "        if (-not $mm.name) { continue }`n"
+    script .= "        if (-not ($mm.supportedGenerationMethods -and ($mm.supportedGenerationMethods -contains 'generateContent'))) { continue }`n"
+    script .= "        if ($mm.name -notmatch '^models/gemini') { continue }`n"
+    script .= "        $id = $mm.name -replace '^models/', ''`n"
+    script .= "        if ($id -match 'embedding|vision|aqa') { continue }`n"
+    script .= "        $auto += $id`n"
+    script .= "      }`n"
+    script .= "    }`n"
+    script .= "  } catch {`n"
+    script .= "    $lastErr = 'models API 讀取失敗: ' + $_.Exception.Message`n"
+    script .= "  }`n"
+    script .= "  $priority = @('gemini-2.5-flash', 'gemini-2.5-flash-latest', 'gemini-2.5-pro', 'gemini-2.5-pro-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro-latest')`n"
+    script .= "  foreach ($p in $priority) { if ($auto -contains $p -and $candidates -notcontains $p) { $candidates += $p } }`n"
+    script .= "  foreach ($x in $auto) { if ($candidates -notcontains $x) { $candidates += $x } }`n"
+    script .= "  if (-not [string]::IsNullOrWhiteSpace($model) -and $candidates -notcontains $model) { $candidates += $model }`n"
+    script .= "  if (-not [string]::IsNullOrWhiteSpace($extraCsv)) {`n"
+    script .= "    foreach ($x in $extraCsv.Split(',')) { if (-not [string]::IsNullOrWhiteSpace($x) -and $candidates -notcontains $x) { $candidates += $x } }`n"
+    script .= "  }`n"
+    script .= "  if (-not $candidates -or $candidates.Count -eq 0) { $candidates = @('gemini-2.0-flash', 'gemini-1.5-flash-latest') }`n"
+    script .= "  $urlVariants = @()`n"
+    script .= "  $urlVariants += $apiUrl`n"
+    script .= "  if ($apiUrl -match '/v1beta/') { $urlVariants += ($apiUrl -replace '/v1beta/', '/v1/') }`n"
+    script .= "  elseif ($apiUrl -match '/v1/') { $urlVariants += ($apiUrl -replace '/v1/', '/v1beta/') }`n"
+    script .= "  $uniqUrls = @()`n"
+    script .= "  foreach ($u in $urlVariants) { if (-not [string]::IsNullOrWhiteSpace($u) -and $uniqUrls -notcontains $u) { $uniqUrls += $u } }`n"
+    script .= "  $content = ''`n"
+    script .= "  foreach ($m in $candidates) {`n"
+    script .= "    foreach ($baseUrl in $uniqUrls) {`n"
+    script .= "      $tryUrl = [Regex]::Replace($baseUrl, '/models/[^/:?]+', '/models/' + $m, 'IgnoreCase')`n"
+    script .= "      $callUrl = $tryUrl`n"
+    script .= "      if ($callUrl -notmatch '\\?') { $callUrl += '?key=' + [System.Uri]::EscapeDataString($apiKey) } else { $callUrl += '&key=' + [System.Uri]::EscapeDataString($apiKey) }`n"
+    script .= "      try {`n"
+    script .= "        $resp = Invoke-RestMethod -Uri $callUrl -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 50`n"
+    script .= "        if ($resp.candidates -and $resp.candidates.Count -gt 0 -and $resp.candidates[0].content -and $resp.candidates[0].content.parts) {`n"
+    script .= "          $parts = @()`n"
+    script .= "          foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $parts += $p.text } }`n"
+    script .= "          $content = ($parts -join [Environment]::NewLine)`n"
+    script .= "        }`n"
+    script .= "        if (-not [string]::IsNullOrWhiteSpace($content)) { $model = $m; $apiUrl = $tryUrl; break }`n"
+    script .= "        $lastErr = 'Empty content from AI response'`n"
+    script .= "      } catch {`n"
+    script .= "        $errText = $_.Exception.Message`n"
+    script .= "        $statusCode = 0`n"
+    script .= "        try { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { $statusCode = [int]$_.Exception.Response.StatusCode } } catch { }`n"
+    script .= "        $lastErr = 'status=' + $statusCode + '; ' + $errText`n"
+    script .= "        if ($statusCode -eq 404 -or $statusCode -eq 400 -or $errText -match '404|not found|NOT_FOUND') {`n"
+    script .= "          try {`n"
+    script .= "            $headers = @{ 'x-goog-api-key' = $apiKey; 'Content-Type' = 'application/json' }`n"
+    script .= "            $resp = Invoke-RestMethod -Uri $tryUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
+    script .= "            if ($resp.candidates -and $resp.candidates.Count -gt 0 -and $resp.candidates[0].content -and $resp.candidates[0].content.parts) {`n"
+    script .= "              $parts = @()`n"
+    script .= "              foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $parts += $p.text } }`n"
+    script .= "              $content = ($parts -join [Environment]::NewLine)`n"
+    script .= "            }`n"
+    script .= "            if (-not [string]::IsNullOrWhiteSpace($content)) { $model = $m; $apiUrl = $tryUrl; break }`n"
+    script .= "            $lastErr = 'Empty content from AI response (header auth)'`n"
+    script .= "          } catch {`n"
+    script .= "            $errText2 = $_.Exception.Message`n"
+    script .= "            $statusCode2 = 0`n"
+    script .= "            try { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { $statusCode2 = [int]$_.Exception.Response.StatusCode } } catch { }`n"
+    script .= "            $lastErr = 'status=' + $statusCode2 + '; ' + $errText2`n"
+    script .= "          }`n"
+    script .= "        } else {`n"
+    script .= "          throw`n"
+    script .= "        }`n"
+    script .= "      }`n"
+    script .= "      if (-not [string]::IsNullOrWhiteSpace($content)) { break }`n"
+    script .= "    }`n"
+    script .= "    if (-not [string]::IsNullOrWhiteSpace($content)) { break }`n"
+    script .= "  }`n"
+    script .= "  if ([string]::IsNullOrWhiteSpace($content)) {`n"
+    script .= "    $preview = @()`n"
+    script .= "    $limit = [Math]::Min(8, $candidates.Count)`n"
+    script .= "    for ($i = 0; $i -lt $limit; $i++) { $preview += $candidates[$i] }`n"
+    script .= "    throw ('Gemini candidates failed (total=' + $candidates.Count + '; preview=' + ($preview -join ',') + ') | ' + $lastErr)`n"
+    script .= "  }`n"
+    script .= "  Write-Output $content`n"
+    script .= "  exit 0`n"
+    script .= "} catch {`n"
+    script .= "  $m = $_.Exception.Message`n"
+    script .= "  if ($_.Exception.InnerException) { $m += ' | Inner: ' + $_.Exception.InnerException.Message }`n"
+    script .= "  Write-Output $m`n"
+    script .= "  exit 1`n"
+    script .= "}`n"
+
+    run := RunAiPowerShellScript(script, "ai_gemini")
+    if (run.code = 0)
+        return { ok: true, content: run.output }
+
+    msg := run.output
+    if (msg = "")
+        msg := "AI API 呼叫失敗，ExitCode=" run.code
+    return { ok: false, message: "provider=gemini | model=" model " | url=" apiUrl " | " msg }
+}
+
+CallAnthropicByPowerShell(apiUrl, apiKey, model, userPrompt) {
+    escApiUrl := PsEsc(apiUrl)
+    escApiKey := PsEsc(apiKey)
+    escModel := PsEsc(model)
+    escPrompt := PsEsc(userPrompt)
+
+    script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$apiUrl = '" escApiUrl "'`n"
+    script .= "$apiKey = '" escApiKey "'`n"
+    script .= "$model = '" escModel "'`n"
+    script .= "$prompt = @'`n" escPrompt "`n'@`n"
+    script .= "try {`n"
+    script .= "  $headers = @{ 'x-api-key' = $apiKey; 'anthropic-version' = '2023-06-01'; 'Content-Type' = 'application/json' }`n"
+    script .= "  $payload = @{ model = $model; max_tokens = 800; temperature = 0.2; messages = @(@{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
+    script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
+    script .= "  $parts = @()`n"
+    script .= "  if ($resp.content) { foreach ($item in $resp.content) { if ($item.type -eq 'text' -and $item.text) { $parts += $item.text } } }`n"
+    script .= "  $content = ($parts -join [Environment]::NewLine)`n"
+    script .= "  if ([string]::IsNullOrWhiteSpace($content)) { throw 'AI 回傳空內容' }`n"
+    script .= "  Write-Output $content`n"
+    script .= "  exit 0`n"
+    script .= "} catch {`n"
+    script .= "  $m = $_.Exception.Message`n"
+    script .= "  if ($_.Exception.InnerException) { $m += ' | Inner: ' + $_.Exception.InnerException.Message }`n"
+    script .= "  Write-Output $m`n"
+    script .= "  exit 1`n"
+    script .= "}`n"
+
+    run := RunAiPowerShellScript(script, "ai_anthropic")
+    if (run.code = 0)
+        return { ok: true, content: run.output }
+
+    msg := run.output
+    if (msg = "")
+        msg := "AI API 呼叫失敗，ExitCode=" run.code
+    return { ok: false, message: "provider=anthropic | model=" model " | url=" apiUrl " | " msg }
+}
+
+CallOpenAiFamilyByPowerShell(apiUrl, apiKey, model, userPrompt, provider) {
+    useResponsesApi := InStr(StrLower(apiUrl), "/v1/responses")
+    escApiUrl := PsEsc(apiUrl)
+    escApiKey := PsEsc(apiKey)
+    escModel := PsEsc(model)
+    escPrompt := PsEsc(userPrompt)
+
+    script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$apiUrl = '" escApiUrl "'`n"
+    script .= "$apiKey = '" escApiKey "'`n"
+    script .= "$model = '" escModel "'`n"
+    script .= "$prompt = @'`n" escPrompt "`n'@`n"
+    script .= "$useResponses = " (useResponsesApi ? "$true" : "$false") "`n"
+    script .= "try {`n"
+    if (provider = "azure-openai")
+        script .= "  $headers = @{ 'api-key' = $apiKey; 'Content-Type' = 'application/json' }`n"
+    else
+        script .= "  $headers = @{ Authorization = 'Bearer ' + $apiKey; 'Content-Type' = 'application/json' }`n"
+
+    script .= "  if ($useResponses) {`n"
+    script .= "    $payload = @{ model = $model; input = $prompt; temperature = 0.2 } | ConvertTo-Json -Depth 12`n"
+    script .= "  } else {`n"
+    script .= "    $payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
+    script .= "  }`n"
+    script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
+    script .= "  $content = ''`n"
+    script .= "  if ($useResponses) {`n"
+    script .= "    if ($resp.output_text) { $content = $resp.output_text }`n"
+    script .= "    elseif ($resp.output) {`n"
+    script .= "      $parts = @()`n"
+    script .= "      foreach ($o in $resp.output) { if ($o.content) { foreach ($c in $o.content) { if ($c.text) { $parts += $c.text } } } }`n"
+    script .= "      $content = ($parts -join [Environment]::NewLine)`n"
+    script .= "    }`n"
+    script .= "  } else {`n"
+    script .= "    if ($resp.choices -and $resp.choices.Count -gt 0) {`n"
+    script .= "      if ($resp.choices[0].message -and $resp.choices[0].message.content) { $content = $resp.choices[0].message.content }`n"
+    script .= "      elseif ($resp.choices[0].text) { $content = $resp.choices[0].text }`n"
+    script .= "    }`n"
+    script .= "  }`n"
+    script .= "  if ([string]::IsNullOrWhiteSpace($content)) { throw 'AI 回傳空內容' }`n"
+    script .= "  Write-Output $content`n"
+    script .= "  exit 0`n"
+    script .= "} catch {`n"
+    script .= "  $m = $_.Exception.Message`n"
+    script .= "  if ($_.Exception.InnerException) { $m += ' | Inner: ' + $_.Exception.InnerException.Message }`n"
+    script .= "  Write-Output $m`n"
+    script .= "  exit 1`n"
+    script .= "}`n"
+
+    run := RunAiPowerShellScript(script, provider = "azure-openai" ? "ai_azure" : "ai_openai")
+    if (run.code = 0)
+        return { ok: true, content: run.output }
+
+    msg := run.output
+    if (msg = "")
+        msg := "AI API 呼叫失敗，ExitCode=" run.code
+    return { ok: false, message: "provider=" provider " | model=" model " | url=" apiUrl " | " msg }
 }
 
 EncryptLocalSecret(plainText) {
