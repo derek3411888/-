@@ -2759,6 +2759,7 @@ EncryptLocalSecret(plainText) {
     escPlain := PsEsc(plainText)
 
     script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "Add-Type -AssemblyName System.Security`n"
     script .= "$plain = '" escPlain "'`n"
     script .= "$bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)`n"
     script .= "$enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
@@ -2796,6 +2797,7 @@ DecryptLocalSecret(encText) {
     escEnc := PsEsc(encText)
 
     script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "Add-Type -AssemblyName System.Security`n"
     script .= "$encB64 = '" escEnc "'`n"
     script .= "$enc = [Convert]::FromBase64String($encB64)`n"
     script .= "$bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
