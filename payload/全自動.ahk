@@ -2813,7 +2813,41 @@ NormalizeGeminiModelName(model) {
         return "gemini-1.5-flash-latest"
     if (ml = "gemini-pro-latest")
         return "gemini-1.5-pro-latest"
+    if (ml = "gemini-3-flash-preview")
+        return "gemini-2.0-flash"
     return m
+}
+
+AddUniqueModel(arr, seen, modelName) {
+    m := Trim(modelName, " `t`r`n")
+    if (m = "")
+        return
+    key := StrLower(m)
+    if seen.Has(key)
+        return
+    seen[key] := 1
+    arr.Push(m)
+}
+
+BuildGeminiFallbackCsv(model) {
+    primary := NormalizeGeminiModelName(model)
+    models := []
+    seen := Map()
+
+    AddUniqueModel(models, seen, primary)
+    AddUniqueModel(models, seen, "gemini-2.0-flash")
+    AddUniqueModel(models, seen, "gemini-2.0-flash-exp")
+    AddUniqueModel(models, seen, "gemini-1.5-flash-latest")
+    AddUniqueModel(models, seen, "gemini-1.5-flash")
+    AddUniqueModel(models, seen, "gemini-1.5-pro-latest")
+
+    csv := ""
+    for m in models {
+        if (csv != "")
+            csv .= ","
+        csv .= m
+    }
+    return csv
 }
 
 CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
@@ -2822,8 +2856,10 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
 
     provider := DetectAiProvider(apiUrl)
     normalizedUrl := NormalizeAiApiUrl(apiUrl, provider)
+    geminiModelCsv := ""
     if (provider = "gemini") {
         model := NormalizeGeminiModelName(model)
+        geminiModelCsv := BuildGeminiFallbackCsv(model)
         if (model != "")
             normalizedUrl := RegExReplace(normalizedUrl, "i)(/models/)([^/:?]+)", "$1" model)
     }
@@ -2832,25 +2868,44 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
     escApiUrl := PsEsc(normalizedUrl)
     escApiKey := PsEsc(apiKey)
     escModel := PsEsc(model)
+    escGeminiModelCsv := PsEsc(geminiModelCsv)
     escPrompt := PsEsc(userPrompt)
 
     script := "$ErrorActionPreference = 'Stop'`n"
     script .= "$apiUrl = '" escApiUrl "'`n"
     script .= "$apiKey = '" escApiKey "'`n"
     script .= "$model = '" escModel "'`n"
+    script .= "$geminiModelsCsv = '" escGeminiModelCsv "'`n"
     script .= "$prompt = @'`n" escPrompt "`n'@`n"
     script .= "try {`n"
 
     if (provider = "gemini") {
-        script .= "  $callUrl = $apiUrl`n"
-        script .= "  if ($callUrl -notmatch '\\?') { $callUrl += '?key=' + [System.Uri]::EscapeDataString($apiKey) } else { $callUrl += '&key=' + [System.Uri]::EscapeDataString($apiKey) }`n"
         script .= "  $payload = @{ contents = @(@{ role = 'user'; parts = @(@{ text = $prompt }) }); generationConfig = @{ temperature = 0.2 } } | ConvertTo-Json -Depth 12`n"
-        script .= "  $resp = Invoke-RestMethod -Uri $callUrl -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 50`n"
         script .= "  $content = ''`n"
-        script .= "  if ($resp.candidates -and $resp.candidates.Count -gt 0 -and $resp.candidates[0].content -and $resp.candidates[0].content.parts) {`n"
-        script .= "    $parts = @()`n"
-        script .= "    foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $parts += $p.text } }`n"
-        script .= "    $content = ($parts -join [Environment]::NewLine)`n"
+        script .= "  $lastErr = ''`n"
+        script .= "  $candidates = @()`n"
+        script .= "  if (-not [string]::IsNullOrWhiteSpace($geminiModelsCsv)) { $candidates = $geminiModelsCsv.Split(',') }`n"
+        script .= "  if (-not $candidates -or $candidates.Count -eq 0) { $candidates = @($model) }`n"
+        script .= "  foreach ($m in $candidates) {`n"
+        script .= "    if ([string]::IsNullOrWhiteSpace($m)) { continue }`n"
+        script .= "    $tryUrl = [Regex]::Replace($apiUrl, '/models/[^/:?]+', '/models/' + $m, 'IgnoreCase')`n"
+        script .= "    $callUrl = $tryUrl`n"
+        script .= "    if ($callUrl -notmatch '\\?') { $callUrl += '?key=' + [System.Uri]::EscapeDataString($apiKey) } else { $callUrl += '&key=' + [System.Uri]::EscapeDataString($apiKey) }`n"
+        script .= "    try {`n"
+        script .= "      $resp = Invoke-RestMethod -Uri $callUrl -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 50`n"
+        script .= "      if ($resp.candidates -and $resp.candidates.Count -gt 0 -and $resp.candidates[0].content -and $resp.candidates[0].content.parts) {`n"
+        script .= "        $parts = @()`n"
+        script .= "        foreach ($p in $resp.candidates[0].content.parts) { if ($p.text) { $parts += $p.text } }`n"
+        script .= "        $content = ($parts -join [Environment]::NewLine)`n"
+        script .= "      }`n"
+        script .= "      if (-not [string]::IsNullOrWhiteSpace($content)) { $model = $m; $apiUrl = $tryUrl; break }`n"
+        script .= "      $lastErr = 'AI 回傳空內容'`n"
+        script .= "    } catch {`n"
+        script .= "      $lastErr = $_.Exception.Message`n"
+        script .= "      if ($lastErr -notmatch '404') { throw }`n"
+        script .= "    }`n"
+        script .= "  }`n"
+        script .= "  if ([string]::IsNullOrWhiteSpace($content)) { throw ('Gemini 候選模型皆失敗: ' + ($candidates -join ',') + ' | ' + $lastErr) }`n"
         script .= "  }`n"
     } else if (provider = "anthropic") {
         script .= "  $headers = @{ 'x-api-key' = $apiKey; 'anthropic-version' = '2023-06-01'; 'Content-Type' = 'application/json' }`n"
