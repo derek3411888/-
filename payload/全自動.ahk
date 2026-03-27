@@ -2662,13 +2662,63 @@ DetectAiProvider(apiUrl) {
     return "openai-compatible"
 }
 
+NormalizeAiApiUrl(apiUrl, provider) {
+    u := Trim(apiUrl, " `t`r`n")
+    if (u = "")
+        return u
+
+    low := StrLower(u)
+
+    if (provider = "gemini") {
+        if !InStr(low, ":generatecontent")
+            u .= ":generateContent"
+        return u
+    }
+
+    if (provider = "anthropic") {
+        if !InStr(low, "/v1/messages") {
+            u := RegExReplace(u, "/+$")
+            if InStr(StrLower(u), "/v1")
+                u .= "/messages"
+            else
+                u .= "/v1/messages"
+        }
+        return u
+    }
+
+    if (provider = "azure-openai") {
+        if (!InStr(low, "/chat/completions") && InStr(low, "/openai/deployments/"))
+            u := RegExReplace(u, "/+$") "/chat/completions"
+
+        if !InStr(StrLower(u), "api-version=") {
+            if InStr(u, "?")
+                u .= "&api-version=2024-06-01"
+            else
+                u .= "?api-version=2024-06-01"
+        }
+        return u
+    }
+
+    ; OpenAI-compatible: 若只填 base URL，自動補為 chat/completions
+    if !(InStr(low, "/chat/completions") || InStr(low, "/v1/responses")) {
+        u := RegExReplace(u, "/+$")
+        if InStr(StrLower(u), "/v1")
+            u .= "/chat/completions"
+        else
+            u .= "/v1/chat/completions"
+    }
+    return u
+}
+
 CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
     psFile := A_Temp "\ai_summary_" A_TickCount ".ps1"
     outFile := A_Temp "\ai_summary_out_" A_TickCount ".txt"
 
     provider := DetectAiProvider(apiUrl)
+    normalizedUrl := NormalizeAiApiUrl(apiUrl, provider)
+    useResponsesApi := (provider = "openai-compatible") && InStr(StrLower(normalizedUrl), "/v1/responses")
 
-    escApiUrl := PsEsc(apiUrl)
+    escApiUrl := PsEsc(normalizedUrl)
     escApiKey := PsEsc(apiKey)
     escModel := PsEsc(model)
     escPrompt := PsEsc(userPrompt)
@@ -2707,13 +2757,28 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
         } else {
             script .= "  $headers = @{ Authorization = 'Bearer ' + $apiKey; 'Content-Type' = 'application/json' }`n"
         }
-        script .= "  $payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
+        if (useResponsesApi) {
+            script .= "  $payload = @{ model = $model; input = $prompt; temperature = 0.2 } | ConvertTo-Json -Depth 12`n"
+        } else {
+            script .= "  $payload = @{ model = $model; temperature = 0.2; messages = @(@{ role = 'system'; content = '你是日誌分析助手，輸出要精簡、明確、可執行。' }, @{ role = 'user'; content = $prompt }) } | ConvertTo-Json -Depth 12`n"
+        }
         script .= "  $resp = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -TimeoutSec 50`n"
         script .= "  $content = ''`n"
-        script .= "  if ($resp.choices -and $resp.choices.Count -gt 0) {`n"
-        script .= "    if ($resp.choices[0].message -and $resp.choices[0].message.content) { $content = $resp.choices[0].message.content }`n"
-        script .= "    elseif ($resp.choices[0].text) { $content = $resp.choices[0].text }`n"
-        script .= "  }`n"
+        if (useResponsesApi) {
+            script .= "  if ($resp.output_text) { $content = $resp.output_text }`n"
+            script .= "  elseif ($resp.output) {`n"
+            script .= "    $parts = @()`n"
+            script .= "    foreach ($o in $resp.output) {`n"
+            script .= "      if ($o.content) { foreach ($c in $o.content) { if ($c.text) { $parts += $c.text } } }`n"
+            script .= "    }`n"
+            script .= "    $content = ($parts -join [Environment]::NewLine)`n"
+            script .= "  }`n"
+        } else {
+            script .= "  if ($resp.choices -and $resp.choices.Count -gt 0) {`n"
+            script .= "    if ($resp.choices[0].message -and $resp.choices[0].message.content) { $content = $resp.choices[0].message.content }`n"
+            script .= "    elseif ($resp.choices[0].text) { $content = $resp.choices[0].text }`n"
+            script .= "  }`n"
+        }
     }
 
     script .= "  if ([string]::IsNullOrWhiteSpace($content)) { Write-Output 'AI 回傳空內容'; exit 2 }`n"
@@ -2746,7 +2811,7 @@ CallAiChatByPowerShell(apiUrl, apiKey, model, userPrompt) {
 
     if (output = "")
         output := "AI API 呼叫失敗，ExitCode=" exitCode
-    return { ok: false, message: output }
+    return { ok: false, message: "provider=" provider " | url=" normalizedUrl " | " output }
 }
 
 EncryptLocalSecret(plainText) {
