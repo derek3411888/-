@@ -2759,11 +2759,18 @@ EncryptLocalSecret(plainText) {
     escPlain := PsEsc(plainText)
 
     script := "$ErrorActionPreference = 'Stop'`n"
-    script .= "Add-Type -AssemblyName System.Security`n"
     script .= "$plain = '" escPlain "'`n"
+    script .= "try {`n"
+    script .= "  $secure = ConvertTo-SecureString -String $plain -AsPlainText -Force`n"
+    script .= "  $enc = ConvertFrom-SecureString -SecureString $secure`n"
+    script .= "  Write-Output ('ss:' + $enc)`n"
+    script .= "  exit 0`n"
+    script .= "} catch {`n"
+    script .= "}`n"
+    script .= "Add-Type -AssemblyName System.Security`n"
     script .= "$bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)`n"
-    script .= "$enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
-    script .= "Write-Output ([Convert]::ToBase64String($enc))`n"
+    script .= "$enc2 = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
+    script .= "Write-Output ('dp:' + [Convert]::ToBase64String($enc2))`n"
 
     try FileDelete(psFile)
     try FileDelete(outFile)
@@ -2780,10 +2787,10 @@ EncryptLocalSecret(plainText) {
     try FileDelete(psFile)
     try FileDelete(outFile)
 
-    if (exitCode = 0)
+    if (exitCode = 0 && out != "")
         return out
 
-    WriteLog("AI API Key 加密失敗，將清空儲存值", "WARN")
+    WriteLog("AI API Key 加密失敗: " out, "WARN")
     return ""
 }
 
@@ -2797,9 +2804,17 @@ DecryptLocalSecret(encText) {
     escEnc := PsEsc(encText)
 
     script := "$ErrorActionPreference = 'Stop'`n"
+    script .= "$raw = '" escEnc "'`n"
+    script .= "if ($raw.StartsWith('ss:')) {`n"
+    script .= "  $payload = $raw.Substring(3)`n"
+    script .= "  $sec = ConvertTo-SecureString -String $payload`n"
+    script .= "  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)`n"
+    script .= "  try { Write-Output ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }`n"
+    script .= "  exit 0`n"
+    script .= "}`n"
+    script .= "if ($raw.StartsWith('dp:')) { $raw = $raw.Substring(3) }`n"
     script .= "Add-Type -AssemblyName System.Security`n"
-    script .= "$encB64 = '" escEnc "'`n"
-    script .= "$enc = [Convert]::FromBase64String($encB64)`n"
+    script .= "$enc = [Convert]::FromBase64String($raw)`n"
     script .= "$bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)`n"
     script .= "Write-Output ([System.Text.Encoding]::UTF8.GetString($bytes))`n"
 
@@ -2821,5 +2836,6 @@ DecryptLocalSecret(encText) {
     if (exitCode = 0)
         return out
 
+    WriteLog("AI API Key 解密失敗: " out, "WARN")
     return ""
 }
