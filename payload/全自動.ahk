@@ -1549,6 +1549,22 @@ MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
     Loop 3 {
         attempt := A_Index
         WriteLog("嘗試移動視窗到右上角 (第 " attempt " 次)...")
+
+        ; 遊戲初始化期間可能重建視窗，舊 hwnd 會瞬間失效，先重新校驗一次。
+        if !WinExist("ahk_id " hwnd) {
+            newHwnd := GetWutheringGameHwnd()
+            if newHwnd {
+                WriteLog("原視窗句柄失效，改用新句柄: " newHwnd, "WARN")
+                hwnd := newHwnd
+            } else {
+                WriteLog("目前找不到可用鳴潮視窗句柄，稍後重試", "WARN")
+                if (attempt < 3) {
+                    Sleep 500
+                    continue
+                }
+                return false
+            }
+        }
         
         try {
             ; 先還原視窗（避免最大化無法移動）
@@ -1600,6 +1616,13 @@ MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
             }
         } catch as e {
             WriteLog("視窗移動失敗: " e.Message, "ERROR")
+            if InStr(e.Message, "Target window not found") {
+                newHwnd := GetWutheringGameHwnd()
+                if newHwnd {
+                    WriteLog("移動時句柄失效，重抓新句柄後重試: " newHwnd, "WARN")
+                    hwnd := newHwnd
+                }
+            }
             if (attempt < 3) {
                 Sleep 500
                 continue
