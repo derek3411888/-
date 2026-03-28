@@ -1061,10 +1061,9 @@ DetectWutheringAndExit(&loginDetected := false) {
         return "no_window"
     }
 
-    ; 視窗貼齊右上角（確保在螢幕內）— 非關鍵，失敗不中斷
-    try MoveWindowTopRight(hwnd, 0, 0)
-    catch as e
-        WriteLog("視窗移動失敗（非致命）: " e.Message, "WARN")
+    ; 視窗貼齊右上角改為「持續重試直到成功」，避免遊戲初始化重建視窗時失敗後不再嘗試。
+    movedTopRight := false
+    nextMoveRetryTick := A_TickCount
 
     ; ⏱️ 至少等待 30 秒讓遊戲完全啟動（登入畫面一般需要 25-35 秒）
     earlyExitDeadline := A_TickCount + 30000
@@ -1096,6 +1095,23 @@ DetectWutheringAndExit(&loginDetected := false) {
             continue
         }
         noWindowStreak := 0
+
+        ; 持續嘗試把鳴潮視窗移到右上角（非致命），直到成功為止。
+        if (!movedTopRight && A_TickCount >= nextMoveRetryTick) {
+            okMove := false
+            try okMove := MoveWindowTopRight(hwnd, 0, 0)
+            catch as e {
+                WriteLog("視窗移動失敗（非致命）: " e.Message, "WARN")
+                okMove := false
+            }
+
+            if okMove {
+                movedTopRight := true
+                WriteLog("視窗已固定在右上角，後續不再重試移動")
+            } else {
+                nextMoveRetryTick := A_TickCount + 1500
+            }
+        }
 
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
         tempFile := A_ScriptDir "\temp_update_" A_TickCount ".png"
