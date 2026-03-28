@@ -1061,9 +1061,11 @@ DetectWutheringAndExit(&loginDetected := false) {
         return "no_window"
     }
 
-    ; 視窗貼齊右上角改為「持續重試直到成功」，避免遊戲初始化重建視窗時失敗後不再嘗試。
+    ; 視窗移動策略：先偵測到穩定目標視窗，再開始持續重試移動。
     movedTopRight := false
     nextMoveRetryTick := A_TickCount
+    foundTargetWindow := false
+    stableWindowHit := 0
 
     ; ⏱️ 至少等待 30 秒讓遊戲完全啟動（登入畫面一般需要 25-35 秒）
     earlyExitDeadline := A_TickCount + 30000
@@ -1085,6 +1087,14 @@ DetectWutheringAndExit(&loginDetected := false) {
     while (A_TickCount < deadline) {
         hwnd := GetWutheringGameHwnd()
         if !hwnd {
+            stableWindowHit := 0
+
+            ; 尚未真正抓到目標視窗前，不做 no_window 累計，避免啟動初期誤判。
+            if !foundTargetWindow {
+                Sleep 500
+                continue
+            }
+
             noWindowStreak += 1
             if (noWindowStreak >= WUTHERING_NO_WINDOW_TOLERANCE) {
                 WriteLog("檢測途中連續 " noWindowStreak " 次失去鳴潮視窗，標記為 no_window", "WARN")
@@ -1095,9 +1105,14 @@ DetectWutheringAndExit(&loginDetected := false) {
             continue
         }
         noWindowStreak := 0
+        stableWindowHit += 1
+        if !foundTargetWindow {
+            foundTargetWindow := true
+            WriteLog("已找到目標鳴潮視窗，開始準備移動到右上角")
+        }
 
-        ; 持續嘗試把鳴潮視窗移到右上角（非致命），直到成功為止。
-        if (!movedTopRight && A_TickCount >= nextMoveRetryTick) {
+        ; 需要連續命中至少 2 次同類視窗，才開始移動，降低初始化中假視窗干擾。
+        if (!movedTopRight && stableWindowHit >= 2 && A_TickCount >= nextMoveRetryTick) {
             okMove := false
             try okMove := MoveWindowTopRight(hwnd, 0, 0)
             catch as e {
