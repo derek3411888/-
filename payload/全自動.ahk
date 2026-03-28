@@ -40,6 +40,10 @@ global __WUTHERING_AUDIO_MUTED := false
 global __WUTHERING_MUTE_PENDING := false
 global WUTHERING_PROCESS_EXE := "Client-Win64-Shipping.exe"
 global LAST_RESTART_REASON := ""
+global PROCESS_DETECT_RETRY_COUNT := 6
+global PROCESS_DETECT_RETRY_DELAY_MS := 800
+global WUTHERING_STARTUP_WAIT_SEC := 45
+global WUTHERING_NO_WINDOW_TOLERANCE := 3
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -1047,6 +1051,8 @@ CrashWatcherTick() {
 ; A) 更新彈窗偵測（簡體關鍵詞）＋ OCR 算出【退出】中心點點擊
 ;    進入前：把鳴潮視窗貼齊右上角
 DetectWutheringAndExit(&loginDetected := false) {
+    global WUTHERING_NO_WINDOW_TOLERANCE
+
     loginDetected := false
     SetTitleMatchMode 2
     hwnd := WaitForWutheringGameWindow(120)
@@ -1075,13 +1081,21 @@ DetectWutheringAndExit(&loginDetected := false) {
     loginBtnKeywords := [ "點擊開始", "点击开始", "點選開始", "点选开始", "開始遊戲", "开始游戏", "點擊連接", "点击连接", "點選連接", "点选连接" ]
     ; 登入UI相關詞彙（如賬號/伺服器選擇）
     loginUIKeywords := [ "伺服器", "服务器", "賬號", "账号", "帳號", "账户" ]
+    noWindowStreak := 0
 
     while (A_TickCount < deadline) {
         hwnd := GetWutheringGameHwnd()
         if !hwnd {
-            WriteLog("檢測途中失去鳴潮視窗，標記為 no_window", "WARN")
-            return "no_window"
+            noWindowStreak += 1
+            if (noWindowStreak >= WUTHERING_NO_WINDOW_TOLERANCE) {
+                WriteLog("檢測途中連續 " noWindowStreak " 次失去鳴潮視窗，標記為 no_window", "WARN")
+                return "no_window"
+            }
+            WriteLog("檢測途中短暫找不到鳴潮視窗（" noWindowStreak "/" WUTHERING_NO_WINDOW_TOLERANCE "），等待後重試", "WARN")
+            Sleep 1200
+            continue
         }
+        noWindowStreak := 0
 
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
         tempFile := A_ScriptDir "\temp_update_" A_TickCount ".png"
@@ -1309,6 +1323,8 @@ ClickWindowCenter(hwnd) {
 
 ; F) 取得並啟動鳴潮路徑（可記憶）
 EnsureWutheringRunning() {
+    global WUTHERING_STARTUP_WAIT_SEC
+
     ; ✅ 只檢查遊戲進程是否存在，不檢查視窗尺寸
     ;    這樣防止因視窗最小化而誤判為「遊戲未運行」
     if (IsWutheringProcessRunning()) {
@@ -1327,19 +1343,59 @@ EnsureWutheringRunning() {
     catch as e {
         WriteLog("啟動鳴潮失敗: " e.Message, "ERROR")
         ShowTip("❌ 鳴潮啟動失敗", 1500)
+        return false
     }
-    Sleep 5000
+
+    ShowTip("⏳ 等待鳴潮進程初始化...", 1500)
+    if !WaitForProcessRunning("Client-Win64-Shipping.exe", WUTHERING_STARTUP_WAIT_SEC) {
+        WriteLog("鳴潮啟動後逾時，未偵測到進程（" WUTHERING_STARTUP_WAIT_SEC " 秒）", "ERROR")
+        ShowTip("❌ 鳴潮啟動逾時", 1800)
+        return false
+    }
+
+    ; 給初始化中的視窗一點緩衝，避免剛啟動就誤判 no_window。
+    Sleep 2000
+    WriteLog("已偵測到鳴潮進程，繼續後續視窗檢測")
     return true
 }
 
 ; ✅ 只檢查遊戲進程是否存在
 IsWutheringProcessRunning() {
-    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
-    if (hwndList.Length > 0)
-        return true
-    
-    hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
-    return (hwndList.Length > 0)
+    global PROCESS_DETECT_RETRY_COUNT, PROCESS_DETECT_RETRY_DELAY_MS
+
+    Loop PROCESS_DETECT_RETRY_COUNT {
+        hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+        if (hwndList.Length > 0)
+            return true
+
+        hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+        if (hwndList.Length > 0)
+            return true
+
+        if (A_Index < PROCESS_DETECT_RETRY_COUNT)
+            Sleep PROCESS_DETECT_RETRY_DELAY_MS
+    }
+
+    return false
+}
+
+WaitForProcessRunning(exeName, timeoutSec := 30) {
+    deadline := A_TickCount + timeoutSec * 1000
+    while (A_TickCount < deadline) {
+        if ProcessExist(exeName)
+            return true
+
+        ; 有些遊戲在初始化期間會先有視窗再穩定到指定 exe，這裡一起判斷。
+        if (exeName = "Client-Win64-Shipping.exe") {
+            hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe")
+            if (hwndList.Length > 0)
+                return true
+        }
+
+        Sleep 500
+    }
+
+    return false
 }
 
 GetWutheringGameHwnd() {
@@ -2573,53 +2629,128 @@ GenerateAiShutdownSummary(state) {
         return { ok: false, message: "AI API Key 為空或解密失敗" }
 
     maxChars := Integer(state.aiMaxChars ~= "^\d+$" ? state.aiMaxChars : "12000")
-    scriptLog := GetTodayScriptLogTail(maxChars)
+    ahkLogs := GetAhkFlowLogs(maxChars)
     lrmcLog := GetLrmcLogTail(maxChars)
 
-    prompt := "請用繁體中文總結以下兩份自動化日誌，輸出要精簡：`n"
-    prompt .= "注意：以下內容是直接從原始 txt/log 讀取，且只保留今天、本次流程時間區間內的內容。`n"
-    prompt .= "1) 本次流程執行摘要（3-5 點）`n"
-    prompt .= "2) 是否有錯誤/警告與可能原因`n"
-    prompt .= "3) 建議下一步（最多3點）`n"
-    prompt .= "`n[全自動腳本log]`n" scriptLog
-    prompt .= "`n`n[LRMCAI log]`n" lrmcLog
+    promptAhk := "你是 AutoHotkey 自動化流程分析助手。請只使用我提供的原始 log/txt 內容，並且必須使用繁體中文（台灣用語）。`n"
+    promptAhk .= "禁止使用簡體中文。若輸出含簡體字，請先自我修正再輸出。`n"
+    promptAhk .= "重點：只總結『本次流程時間區間』資料，不得引用區間外內容。`n"
+    promptAhk .= "請輸出：`n"
+    promptAhk .= "1) AHK 全流程摘要（5-8點，依時間順序）`n"
+    promptAhk .= "2) 關鍵錯誤/警告（含可能原因）`n"
+    promptAhk .= "3) 建議下一步（最多3點）`n"
+    promptAhk .= "`n[AHK 多腳本 log/txt 原始內容]`n" ahkLogs
 
-    aiResp := CallAiChatByPowerShell(state.aiApiUrl, apiKey, state.aiModel, prompt)
-    if !aiResp.ok
-        return aiResp
+    respAhk := CallAiChatByPowerShell(state.aiApiUrl, apiKey, state.aiModel, promptAhk)
+    if !respAhk.ok
+        return { ok: false, message: "AHK 摘要失敗: " respAhk.message }
 
-    return { ok: true, summary: aiResp.content }
+    ahkSummary := EnsureTraditionalChinese(respAhk.content, state.aiApiUrl, apiKey, state.aiModel)
+
+    promptLrmc := "你是 LRMCAI 任務稽核助手。請只使用我提供的 LRMCAI 原始 log，並且必須使用繁體中文（台灣用語）。`n"
+    promptLrmc .= "禁止使用簡體中文。重點：只分析『本次流程時間區間』資料。`n"
+    promptLrmc .= "請輸出：`n"
+    promptLrmc .= "1) 任務清單（每個任務：是否完成、依據）`n"
+    promptLrmc .= "2) 任務耗時估計（可推算就填開始/結束/耗時；無法推算請明確標註）`n"
+    promptLrmc .= "3) 錯誤與異常（含可能卡點）`n"
+    promptLrmc .= "4) 整體完成度結論（已完成/部分完成/失敗）`n"
+    promptLrmc .= "`n[LRMCAI log 原始內容]`n" lrmcLog
+
+    respLrmc := CallAiChatByPowerShell(state.aiApiUrl, apiKey, state.aiModel, promptLrmc)
+    if !respLrmc.ok
+        return { ok: false, message: "LRMCAI 摘要失敗: " respLrmc.message }
+
+    lrmcSummary := EnsureTraditionalChinese(respLrmc.content, state.aiApiUrl, apiKey, state.aiModel)
+
+    finalSummary := "【AHK 全流程總結】`n" ahkSummary
+    finalSummary .= "`n`n【LRMCAI 任務總結】`n" lrmcSummary
+    return { ok: true, summary: finalSummary }
 }
 
 GetTodayScriptLogTail(maxChars := 12000) {
+    return GetAhkFlowLogs(maxChars)
+}
+
+GetAhkFlowLogs(maxChars := 12000) {
+    paths := GetAhkLogFileList()
+    if (paths.Length = 0)
+        return "（找不到 AHK 腳本 log/txt）"
+
+    return BuildAiWindowedMultiLogText(paths, maxChars)
+}
+
+GetAhkLogFileList() {
     global logger
 
-    path := ""
+    paths := []
+    seen := Map()
+    baseDir := A_ScriptDir "\..\log"
+
+    AddPath(p) {
+        p := Trim(p, " `t`r`n")
+        if (p = "")
+            return
+        if !FileExist(p)
+            return
+        if !IsAhkRelatedLogFile(p)
+            return
+        k := StrLower(p)
+        if seen.Has(k)
+            return
+        seen[k] := 1
+        paths.Push(p)
+    }
+
     try {
         if IsObject(logger) && logger.HasOwnProp("logFile")
-            path := logger.logFile
+            AddPath(logger.logFile)
     }
 
-    if (path = "" || !FileExist(path)) {
-        ; 後備：掃描當前腳本目錄下最近一份全自動日誌
-        latest := ""
-        latestTime := ""
-        pattern := A_ScriptDir "\..\log\全自動\全自動_*.log"
-        Loop Files, pattern, "F" {
-            t := FileGetTime(A_LoopFileFullPath, "M")
-            if (latest = "" || t > latestTime) {
-                latest := A_LoopFileFullPath
-                latestTime := t
-            }
+    if DirExist(baseDir) {
+        Loop Files, baseDir "\*.*", "FR" {
+            ext := StrLower(A_LoopFileExt)
+            if (ext = "log" || ext = "txt")
+                AddPath(A_LoopFileFullPath)
         }
-        path := latest
     }
 
-    if (path = "" || !FileExist(path))
-        return "（找不到全自動腳本日誌）"
+    return paths
+}
 
-    txt := SafeReadTextFile(path)
-    return BuildAiWindowedLogText(path, txt, maxChars)
+IsAhkRelatedLogFile(path) {
+    p := StrLower(path)
+    if InStr(p, "lrmcai")
+        return false
+    return true
+}
+
+BuildAiWindowedMultiLogText(paths, maxChars := 12000) {
+    win := GetCurrentFlowWindow()
+    out := "來源範圍: AHK 多腳本 log/txt`n"
+    out .= "流程時間區間: " win.startText " ~ " win.endText "`n"
+    out .= "（以下僅保留時間區間內的原始內容）`n`n"
+
+    fileCount := paths.Length
+    perFileChars := 2000
+    if (fileCount > 0)
+        perFileChars := Max(800, Floor(maxChars / fileCount))
+
+    hit := 0
+    for path in paths {
+        txt := SafeReadTextFile(path)
+        filtered := FilterLogTextByWindow(txt, win.startTs, win.endTs)
+        if (filtered = "")
+            continue
+
+        hit += 1
+        out .= "==== 來源檔案: " path " ====`n"
+        out .= TailText(filtered, perFileChars) "`n`n"
+    }
+
+    if (hit = 0)
+        return "（AHK 多腳本檔案中，未找到任何落在本次流程時間區間的內容）"
+
+    return TailText(out, maxChars)
 }
 
 GetLrmcLogTail(maxChars := 12000) {
@@ -2636,11 +2767,11 @@ BuildAiWindowedLogText(path, txt, maxChars := 12000) {
     filtered := FilterLogTextByWindow(txt, win.startTs, win.endTs)
 
     if (filtered = "") {
-        ; 後備：若無法按時間戳切片，至少保留今日相關內容
-        filtered := FilterLogTextByDate(txt, SubStr(win.startTs, 1, 8))
+        headNone := "來源檔案: " path "`n"
+        headNone .= "流程時間區間: " win.startText " ~ " win.endText "`n"
+        headNone .= "（本檔未找到落在本次流程時間區間的時間戳內容）`n"
+        return headNone
     }
-    if (filtered = "")
-        filtered := txt
 
     head := "來源檔案: " path "`n"
     head .= "流程時間區間: " win.startText " ~ " win.endText "`n"
@@ -2736,6 +2867,30 @@ TailText(txt, maxChars := 12000) {
 
     start := StrLen(txt) - maxChars + 1
     return "（僅附上末段 " maxChars " 字）`n" SubStr(txt, start)
+}
+
+EnsureTraditionalChinese(text, apiUrl, apiKey, model) {
+    t := Trim(text, " `t`r`n")
+    if (t = "")
+        return text
+
+    if !NeedsTraditionalRewrite(t)
+        return t
+
+    prompt := "請將以下文字完整轉成繁體中文（台灣用字），禁止使用簡體中文。`n"
+    prompt .= "請保持原本段落結構與項目，不要省略資訊，也不要新增新結論。`n"
+    prompt .= "`n[原文]`n" t
+
+    rr := CallAiChatByPowerShell(apiUrl, apiKey, model, prompt)
+    if (rr.ok && Trim(rr.content, " `t`r`n") != "")
+        return rr.content
+
+    return t
+}
+
+NeedsTraditionalRewrite(text) {
+    ; 常見簡體字快速檢查（命中任一視為需要重寫）
+    return RegExMatch(text, "[国与为后发现这来时务总结级点项并线数据网络测试错誤们]")
 }
 
 DetectAiProvider(apiUrl) {
