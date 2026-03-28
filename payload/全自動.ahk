@@ -1573,17 +1573,17 @@ MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
                 return false
             }
 
-            sw := A_ScreenWidth, sh := A_ScreenHeight
-            maxW := sw  ; 完全貼邊，不保留邊距
-            maxH := sh  ; 完全貼邊，不保留邊距
+            wa := GetWorkArea()
+            maxW := wa.width - marginX
+            maxH := wa.height - marginY
             newW := (w > maxW) ? maxW : w
             newH := (h > maxH) ? maxH : h
 
-            newX := sw - newW  ; 完全貼齊右邊
-            newY := 0          ; 完全貼齊上邊
+            newX := wa.right - newW - marginX  ; 貼齊工作區右側
+            newY := wa.top + marginY           ; 貼齊工作區上側
             
             WriteLog("移動視窗: 從 (" x "," y "," w "," h ") 到 (" newX "," newY "," newW "," newH ")")
-            WinMove newX, newY, newW, newH, "ahk_id " hwnd
+            WinMove(newX, newY, newW, newH, "ahk_id " hwnd)
             Sleep 300  ; 等待視窗移動完成
             
             ; 驗證移動結果
