@@ -2090,17 +2090,6 @@ ReadCombinedConfigState() {
             err.Push("from 為空")
         if (state.mailTo = "")
             err.Push("to 為空")
-
-        if state.aiSummaryEnabled {
-            if (state.aiApiUrl = "")
-                err.Push("ai_api_url 為空")
-            if (state.aiModel = "")
-                err.Push("ai_model 為空")
-            if !(state.aiMaxChars ~= "^\d+$")
-                err.Push("ai_max_chars 不是數字")
-            if (state.aiApiKey = "")
-                err.Push("ai_api_key 未設定或解密失敗")
-        }
     }
 
     state.errors := err
@@ -2131,11 +2120,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "from: " state.mailFrom "`r`n"
     summary .= "to: " state.mailTo "`r`n"
     summary .= "send_enabled: " (state.sendEnabled ? "1(啟用)" : "0(停用)") "`r`n"
-    summary .= "ai_summary_enabled: " (state.aiSummaryEnabled ? "1(啟用)" : "0(停用)") "`r`n"
-    summary .= "ai_api_url: " state.aiApiUrl "`r`n"
-    summary .= "ai_model: " state.aiModel "`r`n"
-    summary .= "ai_api_key: " (state.aiApiKey != "" ? "已設定" : "未設定") "`r`n"
-    summary .= "ai_max_chars: " state.aiMaxChars "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     g.AddEdit("xm w720 r8 ReadOnly", summary)
 
@@ -2188,27 +2172,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("xm y+10 w120", "subject_prefix")
     edPrefix := g.AddEdit("x+10 w500", state.subjectPrefix)
 
-    g.AddText("xm y+14 w720", "【AI 摘要設定】可選。啟用後會摘要今日全自動 log 與 LRMCAI.log，失敗會自動回退原通知。")
-    cbAiSummaryEnabled := g.AddCheckbox("xm y+8", "啟用 AI 摘要（收尾寄信時附加）")
-    cbAiSummaryEnabled.Value := state.aiSummaryEnabled ? 1 : 0
-    txtAiHint := g.AddText("x+12 w500", state.aiSummaryEnabled ? "AI 摘要已啟用，請確認 API 設定完整" : "AI 摘要停用（不影響原本寄信流程）")
-
-    g.AddText("xm y+10 w120", "ai_api_url")
-    edAiApiUrl := g.AddEdit("x+10 w500", state.aiApiUrl)
-    g.AddText("xm y+4 w720 c666666", "支援 OpenAI相容 / Gemini / Anthropic / Azure OpenAI。例：OpenAI https://api.openai.com/v1/chat/completions；Gemini https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent")
-
-    g.AddText("xm y+10 w120", "ai_model")
-    edAiModel := g.AddEdit("x+10 w500", state.aiModel)
-    g.AddText("xm y+4 w720 c666666", "模型範例：OpenAI gpt-4o-mini；Gemini gemini-1.5-flash 或 gemini-2.0-flash-exp；Anthropic claude-3-5-sonnet-latest。")
-
-    g.AddText("xm y+10 w120", "ai_api_key")
-    edAiApiKey := g.AddEdit("x+10 w500 Password", "")
-    g.AddText("xm y+4 w720 c666666", "來源：AI 平台後台產生的 API Key。留空＝沿用既有；新輸入會用 Windows 帳號加密儲存。")
-
-    g.AddText("xm y+10 w120", "ai_max_chars")
-    edAiMaxChars := g.AddEdit("x+10 w120", state.aiMaxChars)
-    g.AddText("x+12 w560 c666666", "每份 log 最多送出的字數。建議 8000~15000，預設 12000。")
-
     btnSave := g.AddButton("xm y+18 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
 
@@ -2231,13 +2194,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edFrom: edFrom,
         edTo: edTo,
         edPrefix: edPrefix,
-        cbAiSummaryEnabled: cbAiSummaryEnabled,
-        txtAiHint: txtAiHint,
-        edAiApiUrl: edAiApiUrl,
-        edAiModel: edAiModel,
-        edAiApiKey: edAiApiKey,
-        edAiMaxChars: edAiMaxChars,
-        aiApiKeyEnc: state.aiApiKeyEnc,
         ddSsl: ddSsl,
         cbSendEnabled: cbSendEnabled,
         txtMailHint: txtMailHint
@@ -2249,14 +2205,12 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
     cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
-    cbAiSummaryEnabled.OnEvent("Click", OnAiSummaryEnabledChanged)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Close", OnCombinedSetupClose)
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
-    RefreshAiInputsEnabled()
 
     g.Show("AutoSize")
     while !__MAIL_SETUP.done
@@ -2334,11 +2288,6 @@ OnCombinedSetupSave(*) {
     fromVal := Trim(st.edFrom.Value, " `t`r`n")
     toVal := Trim(st.edTo.Value, " `t`r`n")
     prefixVal := Trim(st.edPrefix.Value, " `t`r`n")
-    aiSummaryEnabledVal := st.cbAiSummaryEnabled.Value ? 1 : 0
-    aiApiUrlVal := Trim(st.edAiApiUrl.Value, " `t`r`n")
-    aiModelVal := Trim(st.edAiModel.Value, " `t`r`n")
-    aiApiKeyInputVal := Trim(st.edAiApiKey.Value, " `t`r`n")
-    aiMaxCharsVal := Trim(st.edAiMaxChars.Value, " `t`r`n")
     sslVal := st.ddSsl.Text
     sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
 
@@ -2363,29 +2312,6 @@ OnCombinedSetupSave(*) {
         if !(portVal ~= "^\d+$") {
             MsgBox "smtp_port 必須是數字", "整合設定", "Iconx"
             return
-        }
-
-        if aiSummaryEnabledVal {
-            if (aiApiUrlVal = "" || aiModelVal = "") {
-                MsgBox "啟用 AI 摘要時，ai_api_url 與 ai_model 不可空白", "整合設定", "Iconx"
-                return
-            }
-            if !(InStr(StrLower(aiApiUrlVal), "https://")) {
-                MsgBox "ai_api_url 必須是 https:// 開頭的完整 URL", "整合設定", "Iconx"
-                return
-            }
-            if !(aiMaxCharsVal ~= "^\d+$") {
-                MsgBox "ai_max_chars 必須是數字", "整合設定", "Iconx"
-                return
-            }
-            if (Integer(aiMaxCharsVal) < 1000 || Integer(aiMaxCharsVal) > 50000) {
-                MsgBox "ai_max_chars 建議介於 1000 到 50000", "整合設定", "Iconx"
-                return
-            }
-            if (aiApiKeyInputVal = "" && st.aiApiKeyEnc = "") {
-                MsgBox "啟用 AI 摘要時，請輸入 ai_api_key（或先前已儲存過）", "整合設定", "Iconx"
-                return
-            }
         }
     }
 
@@ -2417,11 +2343,6 @@ OnCombinedSetupSave(*) {
 
 OnSendEnabledChanged(*) {
     RefreshMailInputsEnabled()
-    RefreshAiInputsEnabled()
-}
-
-OnAiSummaryEnabledChanged(*) {
-    RefreshAiInputsEnabled()
 }
 
 RefreshMailInputsEnabled() {
@@ -2439,25 +2360,6 @@ RefreshMailInputsEnabled() {
     __MAIL_SETUP.edPrefix.Enabled := enabled
     __MAIL_SETUP.ddSsl.Enabled := enabled
     __MAIL_SETUP.txtMailHint.Value := enabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位"
-
-    __MAIL_SETUP.cbAiSummaryEnabled.Enabled := enabled
-    if !enabled
-        __MAIL_SETUP.cbAiSummaryEnabled.Value := 0
-}
-
-RefreshAiInputsEnabled() {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP)
-        return
-
-    sendEnabled := __MAIL_SETUP.cbSendEnabled.Value ? true : false
-    aiEnabled := (__MAIL_SETUP.cbAiSummaryEnabled.Value ? true : false) && sendEnabled
-
-    __MAIL_SETUP.edAiApiUrl.Enabled := aiEnabled
-    __MAIL_SETUP.edAiModel.Enabled := aiEnabled
-    __MAIL_SETUP.edAiApiKey.Enabled := aiEnabled
-    __MAIL_SETUP.edAiMaxChars.Enabled := aiEnabled
-    __MAIL_SETUP.txtAiHint.Value := aiEnabled ? "AI 摘要已啟用：收尾寄信會附上 AI 總結（失敗自動回退原通知）" : "AI 摘要停用（不影響原本寄信流程）"
 }
 
 LoadMailNotifyEnabled() {
