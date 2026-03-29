@@ -36,6 +36,7 @@ global REWARD_MATCH_NEED_COUNT := 2
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
 global __MAIL_SETUP := ""
+global __SERVER_PREVIEW := ""
 global __WUTHERING_AUDIO_MUTED := false
 global __WUTHERING_MUTE_PENDING := false
 global WUTHERING_PROCESS_EXE := "Client-Win64-Shipping.exe"
@@ -2261,6 +2262,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     g.AddText("xm y+10 w120", "伺服器清單")
     edServerList := g.AddEdit("x+10 w500", state.serverScheduleList)
+    btnServerPreview := g.AddButton("x+8 w90", "預覽排序")
     g.AddText("xm y+4 w720 c666666", "可用逗號/分號/換行分隔，例如：HMT(HK, MO, TW), SEA, America")
 
     g.AddText("xm y+10 w120", "切服按鈕座標")
@@ -2316,6 +2318,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         cbServerScheduleEnabled: cbServerScheduleEnabled,
         txtServerHint: txtServerHint,
         edServerList: edServerList,
+        btnServerPreview: btnServerPreview,
         edServerSwitchX: edServerSwitchX,
         edServerSwitchY: edServerSwitchY,
         edHost: edHost,
@@ -2334,6 +2337,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnLrmc.OnEvent("Click", OnCombinedBrowseLrmc)
     btnWu.OnEvent("Click", OnCombinedBrowseWu)
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
+    btnServerPreview.OnEvent("Click", OnServerSchedulePreview)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
     cbServerScheduleEnabled.OnEvent("Click", OnServerScheduleEnabledChanged)
     cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
@@ -2504,6 +2508,193 @@ OnServerScheduleEnabledChanged(*) {
     RefreshServerScheduleInputsEnabled()
 }
 
+OnServerSchedulePreview(*) {
+    global __MAIL_SETUP, __SERVER_PREVIEW
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    src := Trim(__MAIL_SETUP.edServerList.Value, " `t`r`n")
+    arr := ParseServerScheduleList(src)
+    if (arr.Length = 0) {
+        MsgBox "伺服器清單是空的，請先輸入至少一個伺服器。", "伺服器清單預覽", "Iconx"
+        return
+    }
+
+    g := Gui("+AlwaysOnTop +Owner" __MAIL_SETUP.gui.Hwnd " +MinSize540x360", "伺服器清單預覽排序")
+    g.SetFont("s10", "Microsoft JhengHei UI")
+    g.AddText("xm w500", "可用【上移/下移】調整順序，或按【字母排序】後套用回主設定。")
+
+    lb := g.AddListBox("xm y+8 w500 r10", arr)
+    lb.Choose(1)
+
+    btnUp := g.AddButton("xm y+10 w90", "上移")
+    btnDown := g.AddButton("x+8 w90", "下移")
+    btnSort := g.AddButton("x+8 w110", "字母排序")
+    btnRefresh := g.AddButton("x+8 w110", "重讀清單")
+    btnApply := g.AddButton("xm y+14 w150 h32 Default", "套用回主清單")
+    btnClose := g.AddButton("x+10 w90 h32", "關閉")
+
+    __SERVER_PREVIEW := {
+        gui: g,
+        lb: lb,
+        sourceEdit: __MAIL_SETUP.edServerList,
+        sourceText: src
+    }
+
+    btnUp.OnEvent("Click", OnServerPreviewMoveUp)
+    btnDown.OnEvent("Click", OnServerPreviewMoveDown)
+    btnSort.OnEvent("Click", OnServerPreviewSort)
+    btnRefresh.OnEvent("Click", OnServerPreviewReload)
+    btnApply.OnEvent("Click", OnServerPreviewApply)
+    btnClose.OnEvent("Click", OnServerPreviewClose)
+    g.OnEvent("Close", OnServerPreviewClose)
+    g.Show("AutoSize")
+}
+
+GetServerPreviewItems() {
+    global __SERVER_PREVIEW
+    items := []
+    if !IsObject(__SERVER_PREVIEW)
+        return items
+
+    txt := __SERVER_PREVIEW.lb.Text
+    ; ListBox Text 會回傳選中項目，改用主欄位重建更穩定
+    src := Trim(__SERVER_PREVIEW.sourceEdit.Value, " `t`r`n")
+    items := ParseServerScheduleList(src)
+    if (items.Length = 0) {
+        ; 從預覽建立時的來源回退
+        items := ParseServerScheduleList(__SERVER_PREVIEW.sourceText)
+    }
+    return items
+}
+
+SetServerPreviewItems(items, selectedIndex := 1) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+    __SERVER_PREVIEW.lb.Delete()
+    for item in items
+        __SERVER_PREVIEW.lb.Add(item)
+
+    if (items.Length = 0)
+        return
+
+    if (selectedIndex < 1)
+        selectedIndex := 1
+    if (selectedIndex > items.Length)
+        selectedIndex := items.Length
+    __SERVER_PREVIEW.lb.Choose(selectedIndex)
+}
+
+OnServerPreviewMoveUp(*) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+
+    items := GetServerPreviewItems()
+    if (items.Length <= 1)
+        return
+    idx := __SERVER_PREVIEW.lb.Value
+    if (idx <= 1)
+        return
+
+    tmp := items[idx - 1]
+    items[idx - 1] := items[idx]
+    items[idx] := tmp
+    __SERVER_PREVIEW.sourceEdit.Value := JoinServerList(items)
+    SetServerPreviewItems(items, idx - 1)
+}
+
+OnServerPreviewMoveDown(*) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+
+    items := GetServerPreviewItems()
+    if (items.Length <= 1)
+        return
+    idx := __SERVER_PREVIEW.lb.Value
+    if (idx >= items.Length)
+        return
+
+    tmp := items[idx + 1]
+    items[idx + 1] := items[idx]
+    items[idx] := tmp
+    __SERVER_PREVIEW.sourceEdit.Value := JoinServerList(items)
+    SetServerPreviewItems(items, idx + 1)
+}
+
+OnServerPreviewSort(*) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+
+    items := GetServerPreviewItems()
+    if (items.Length <= 1)
+        return
+    items := SortServerList(items)
+    __SERVER_PREVIEW.sourceEdit.Value := JoinServerList(items)
+    SetServerPreviewItems(items, 1)
+}
+
+OnServerPreviewReload(*) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+
+    items := ParseServerScheduleList(__SERVER_PREVIEW.sourceEdit.Value)
+    if (items.Length = 0)
+        items := ParseServerScheduleList(__SERVER_PREVIEW.sourceText)
+    SetServerPreviewItems(items, 1)
+}
+
+OnServerPreviewApply(*) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+
+    items := GetServerPreviewItems()
+    if (items.Length = 0) {
+        MsgBox "目前沒有可套用的伺服器項目。", "伺服器清單預覽", "Iconx"
+        return
+    }
+
+    __SERVER_PREVIEW.sourceEdit.Value := JoinServerList(items)
+    ShowTip("✅ 已套用伺服器排序", 1000)
+}
+
+OnServerPreviewClose(*) {
+    global __SERVER_PREVIEW
+    if !IsObject(__SERVER_PREVIEW)
+        return
+    try __SERVER_PREVIEW.gui.Destroy()
+    __SERVER_PREVIEW := ""
+}
+
+JoinServerList(items) {
+    out := ""
+    for item in items {
+        if (out != "")
+            out .= ", "
+        out .= item
+    }
+    return out
+}
+
+SortServerList(items) {
+    buf := ""
+    for item in items
+        buf .= item "`n"
+    sorted := Sort(RTrim(buf, "`n"), "CL")
+    out := []
+    for line in StrSplit(sorted, "`n") {
+        line := Trim(line, " `t`r`n")
+        if (line != "")
+            out.Push(line)
+    }
+    return out
+}
+
 RefreshMailInputsEnabled() {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP)
@@ -2528,6 +2719,7 @@ RefreshServerScheduleInputsEnabled() {
 
     enabled := __MAIL_SETUP.cbServerScheduleEnabled.Value ? true : false
     __MAIL_SETUP.edServerList.Enabled := enabled
+    __MAIL_SETUP.btnServerPreview.Enabled := enabled
     __MAIL_SETUP.edServerSwitchX.Enabled := enabled
     __MAIL_SETUP.edServerSwitchY.Enabled := enabled
     __MAIL_SETUP.txtServerHint.Value := enabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程"
