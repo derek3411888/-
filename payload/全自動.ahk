@@ -2574,7 +2574,7 @@ SetServerPreviewItems(items, selectedIndex := 1) {
         return
     __SERVER_PREVIEW.lb.Delete()
     for item in items
-        __SERVER_PREVIEW.lb.Add(item)
+        __SERVER_PREVIEW.lb.Add([item])
 
     if (items.Length = 0)
         return
@@ -2745,20 +2745,81 @@ ParseBool01(val, defaultVal := 1) {
 ParseServerScheduleList(raw) {
     out := []
     seen := Map()
-    txt := StrReplace(StrReplace(raw, "`r", "`n"), ";", ",")
-    txt := StrReplace(txt, "|", ",")
-    txt := StrReplace(txt, "`n", ",")
-    for part in StrSplit(txt, ",") {
-        name := Trim(part, " `t`r`n")
-        if (name = "")
+    if !IsSet(raw)
+        return out
+
+    txt := StrReplace(raw, "`r", "`n")
+    token := ""
+    depth := 0
+
+    Loop Parse, txt {
+        ch := A_LoopField
+
+        if (ch = "(" || ch = "（") {
+            depth += 1
+            token .= ch
             continue
+        }
+
+        if (ch = ")" || ch = "）") {
+            if (depth > 0)
+                depth -= 1
+            token .= ch
+            continue
+        }
+
+        isSeparator := (ch = "," || ch = ";" || ch = "|" || ch = "`n")
+        if (isSeparator && depth = 0) {
+            name := Trim(token, " `t`r`n")
+            if (name != "") {
+                key := StrLower(name)
+                if !seen.Has(key) {
+                    seen[key] := 1
+                    out.Push(name)
+                }
+            }
+            token := ""
+            continue
+        }
+
+        token .= ch
+    }
+
+    name := Trim(token, " `t`r`n")
+    if (name != "") {
         key := StrLower(name)
-        if seen.Has(key)
-            continue
-        seen[key] := 1
-        out.Push(name)
+        if !seen.Has(key) {
+            seen[key] := 1
+            out.Push(name)
+        }
     }
     return out
+}
+
+NormalizeServerMatchText(s) {
+    t := StrLower(Trim(s, " `t`r`n"))
+    if (t = "")
+        return ""
+
+    ; 去除括號內容，讓「HMT(HK, MO, TW)」與「HMT」可以互相命中
+    t := RegExReplace(t, "\([^)]*\)", "")
+    t := RegExReplace(t, "（[^）]*）", "")
+
+    ; 去除常見空白與分隔符，降低 OCR 標點差異影響
+    t := RegExReplace(t, "[\s,，;；|]", "")
+    return t
+}
+
+IsServerTargetMatch(ocrText, targetText) {
+    a := NormalizeServerMatchText(ocrText)
+    b := NormalizeServerMatchText(targetText)
+    if (a = "" || b = "")
+        return false
+
+    ; 先做雙向包含，再回退到原字串包含
+    if (InStr(a, b) || InStr(b, a))
+        return true
+    return InStr(StrLower(ocrText), StrLower(targetText)) ? true : false
 }
 
 LoadServerScheduleContext(isContinueCycle := false) {
@@ -2874,7 +2935,7 @@ TrySelectScheduledServer(hwnd) {
             if (txt = "")
                 continue
 
-            if (!targetClicked && InStr(StrLower(txt), StrLower(CURRENT_SERVER_TARGET))) {
+            if (!targetClicked && IsServerTargetMatch(txt, CURRENT_SERVER_TARGET)) {
                 c := GetOcrBlockCenter(block)
                 if IsObject(c) {
                     MouseClick "left", wx + c[1], wy + c[2]
