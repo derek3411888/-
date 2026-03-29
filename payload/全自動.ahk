@@ -2830,6 +2830,22 @@ IsServerTargetMatch(ocrText, targetText) {
     return InStr(StrLower(ocrText), StrLower(targetText)) ? true : false
 }
 
+IsLikelyServerNameText(ocrText) {
+    t := NormalizeServerMatchText(ocrText)
+    if (t = "")
+        return false
+
+    ; 常見伺服器名稱或縮寫（含 OCR 常見變形）
+    if (InStr(t, "hmt") || InStr(t, "asia") || InStr(t, "sea") || InStr(t, "america") || InStr(t, "europe"))
+        return true
+
+    ; 例如 HMT(HK, MO, TW) 去括號後可能殘留 hk/mo/tw
+    if (InStr(t, "hk") || InStr(t, "mo") || InStr(t, "tw"))
+        return true
+
+    return false
+}
+
 LoadServerScheduleContext(isContinueCycle := false) {
     global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
 
@@ -2980,10 +2996,11 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     WriteLog("伺服器排程：登入畫面不是目標伺服器，需要執行切換 -> " CURRENT_SERVER_TARGET)
 
-    WriteLog("伺服器排程：準備用 OCR 找伺服器按鈕並點擊")
+    WriteLog("伺服器排程：準備用 OCR 找伺服器名稱區塊並點擊開選單")
 
     tempFile := A_Temp "\\server_menu_" A_TickCount ".png"
     serverMenuOpened := false
+    menuOpenBy := ""
     try {
         ImagePutFile("ahk_id " hwnd, tempFile)
         ocr := RapidOcr()
@@ -2991,33 +3008,37 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
         if IsObject(res) {
             for block in res {
                 txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
-                if (txt = "" || !(InStr(txt, "伺服器") || InStr(txt, "服務器") || InStr(txt, "服务器")))
+                if (txt = "")
                     continue
-                
+
                 c := GetOcrBlockCenter(block)
-                if IsObject(c) {
+                if (IsObject(c) && IsLikelyServerNameText(txt)) {
                     clkX := wx + c[1]
                     clkY := wy + c[2]
-                    WriteLog("伺服器排程：用 OCR 找到伺服器按鈕（" txt "），點擊座標=" clkX "," clkY)
+                    WriteLog("伺服器排程：找到伺服器名稱區塊（" txt "），點擊座標=" clkX "," clkY)
                     MouseClick "left", clkX, clkY
                     serverMenuOpened := true
+                    menuOpenBy := "server-name"
                     Sleep 1200
                     break
                 }
             }
         }
     } catch as e {
-        WriteLog("伺服器排程：OCR 掃伺服器按鈕失敗: " e.Message, "WARN")
+        WriteLog("伺服器排程：OCR 掃伺服器名稱區塊失敗: " e.Message, "WARN")
     }
     try FileDelete(tempFile)
 
-    ; 若 OCR 沒找到伺服器按鈕，用備用座標
+    ; 若 OCR 沒找到伺服器名稱區塊，直接用客戶區內固定座標（例如 640,549）
     if !serverMenuOpened {
-        clickX := wx + SERVER_SWITCH_POINT_X
-        clickY := wy + SERVER_SWITCH_POINT_Y
-        WriteLog("伺服器排程：OCR 未找到伺服器按鈕，改用備用座標=" clickX "," clickY)
-        MouseClick "left", clickX, clickY
+        oldMouseMode := A_CoordModeMouse
+        CoordMode "Mouse", "Client"
+        WriteLog("伺服器排程：OCR 未找到伺服器名稱區塊，改用客戶區固定座標=" SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y)
+        MouseClick "left", SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
+        CoordMode "Mouse", oldMouseMode
         Sleep 1200
+    } else {
+        WriteLog("伺服器排程：已開啟伺服器選單，方式=" menuOpenBy)
     }
 
     tempFile := A_Temp "\\server_pick_" A_TickCount ".png"
