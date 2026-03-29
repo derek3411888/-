@@ -496,6 +496,7 @@ if A_Args.Length > 0 && A_Args[1] = "restart" {
     }
 }
 
+isNextServerCycle := false
 if A_Args.Length > 0 && A_Args[1] = "nextserver" {
     isNextServerCycle := true
     WriteLog("檢測到伺服器排程續跑模式，將沿用下一個伺服器索引")
@@ -2835,6 +2836,8 @@ LoadServerScheduleContext(isContinueCycle := false) {
     rawList := Trim(IniReadSafe(CFG_FILE, "server_schedule", "list", ""), " `t`r`n")
     SERVER_SCHEDULE_LIST := ParseServerScheduleList(rawList)
 
+    WriteLog("伺服器排程狀態載入：enabled=" (SERVER_SCHEDULE_ENABLED ? "1" : "0") ", 清單=" rawList " (" SERVER_SCHEDULE_LIST.Length " 項)")
+
     sx := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_x", "640"), " `t`r`n")
     sy := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_y", "549"), " `t`r`n")
     SERVER_SWITCH_POINT_X := (sx ~= "^\d+$") ? Integer(sx) : 640
@@ -2843,6 +2846,7 @@ LoadServerScheduleContext(isContinueCycle := false) {
     if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length = 0) {
         CURRENT_SERVER_TARGET := ""
         SERVER_SCHEDULE_INDEX := 1
+        WriteLog("伺服器排程未啟用或清單為空，不執行切服")
         return
     }
 
@@ -2937,20 +2941,26 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     ; 先在登入畫面做一次 OCR：若已是目標伺服器，直接略過切換，不做任何點擊
     preMatched := false
     preTempFile := A_Temp "\\server_precheck_" A_TickCount ".png"
+    WriteLog("伺服器排程：開始預檢登入畫面是否已是目標伺服器 (" CURRENT_SERVER_TARGET ")")
     try {
         ImagePutFile("ahk_id " hwnd, preTempFile)
         preOcr := RapidOcr()
         preRes := preOcr.ocr_from_file(preTempFile, , true)
+        ocrRecognized := ""
         if IsObject(preRes) {
             for block in preRes {
                 txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
                 if (txt = "")
                     continue
+                ocrRecognized .= (ocrRecognized = "" ? "" : " | ") txt
                 if IsServerTargetMatch(txt, CURRENT_SERVER_TARGET) {
                     preMatched := true
                     break
                 }
             }
+            WriteLog("伺服器排程：預檢 OCR 辨識結果：" ocrRecognized)
+        } else {
+            WriteLog("伺服器排程：預檢 OCR 無結果（res 不是物件）", "WARN")
         }
     } catch as e {
         WriteLog("伺服器排程：預檢 OCR 失敗，改走切服流程: " e.Message, "WARN")
@@ -2958,22 +2968,20 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     try FileDelete(preTempFile)
 
     if preMatched {
-        WriteLog("伺服器排程：登入畫面已是目標伺服器，略過切換 -> " CURRENT_SERVER_TARGET)
+        WriteLog("伺服器排程：登入畫面已是目標伺服器 " CURRENT_SERVER_TARGET "，略過切換動作")
         return true
     }
 
-    mapped := MapReferencePointToClient(hwnd, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y, 1280, 720)
-    if !IsObject(mapped) {
-        WriteLog("伺服器排程：無法取得客戶區尺寸，改用舊座標模式", "WARN")
-        clickX := wx + SERVER_SWITCH_POINT_X
-        clickY := wy + SERVER_SWITCH_POINT_Y
-    } else {
-        clickX := mapped[1]
-        clickY := mapped[2]
-        WriteLog("伺服器排程：切服座標已依 1280x720 基準縮放，客戶區=" mapped[3] "x" mapped[4] "，點擊=" clickX "," clickY)
+    if (CURRENT_SERVER_TARGET = "") {
+        WriteLog("伺服器排程：目標伺服器為空，略過切換")
+        return true
     }
 
-    WriteLog("伺服器排程：開啟伺服器選單點擊座標=" clickX "," clickY)
+    WriteLog("伺服器排程：登入畫面不是目標伺服器，需要執行切換 -> " CURRENT_SERVER_TARGET)
+
+    clickX := wx + SERVER_SWITCH_POINT_X
+    clickY := wy + SERVER_SWITCH_POINT_Y
+    WriteLog("伺服器排程：使用相對座標点擊伺服器菜單，座標=" clickX "," clickY "（窗口左上=" wx "," wy "，相對=" SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y ")")
     MouseClick "left", clickX, clickY
     Sleep 1200
 
