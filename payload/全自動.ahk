@@ -2086,7 +2086,8 @@ SendShutdownNotifyMail() {
 
     nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     subject := subjectPrefix " 關閉完成通知 " nowText
-    body := "全自動收尾已完成。`r`n時間：" nowText "`r`n主機：" A_ComputerName "`r`n腳本：" A_ScriptFullPath
+    serverInfo := (CURRENT_SERVER_TARGET != "" ? "伺服器：" CURRENT_SERVER_TARGET "`r`n" : "")
+    body := "全自動收尾已完成。`r`n時間：" nowText "`r`n主機：" A_ComputerName "`r`n" serverInfo "腳本：" A_ScriptFullPath
 
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
 }
@@ -2979,11 +2980,45 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     WriteLog("伺服器排程：登入畫面不是目標伺服器，需要執行切換 -> " CURRENT_SERVER_TARGET)
 
-    clickX := wx + SERVER_SWITCH_POINT_X
-    clickY := wy + SERVER_SWITCH_POINT_Y
-    WriteLog("伺服器排程：使用相對座標点擊伺服器菜單，座標=" clickX "," clickY "（窗口左上=" wx "," wy "，相對=" SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y ")")
-    MouseClick "left", clickX, clickY
-    Sleep 1200
+    WriteLog("伺服器排程：準備用 OCR 找伺服器按鈕並點擊")
+
+    tempFile := A_Temp "\\server_menu_" A_TickCount ".png"
+    serverMenuOpened := false
+    try {
+        ImagePutFile("ahk_id " hwnd, tempFile)
+        ocr := RapidOcr()
+        res := ocr.ocr_from_file(tempFile, , true)
+        if IsObject(res) {
+            for block in res {
+                txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+                if (txt = "" || !(InStr(txt, "伺服器") || InStr(txt, "服務器") || InStr(txt, "服务器")))
+                    continue
+                
+                c := GetOcrBlockCenter(block)
+                if IsObject(c) {
+                    clkX := wx + c[1]
+                    clkY := wy + c[2]
+                    WriteLog("伺服器排程：用 OCR 找到伺服器按鈕（" txt "），點擊座標=" clkX "," clkY)
+                    MouseClick "left", clkX, clkY
+                    serverMenuOpened := true
+                    Sleep 1200
+                    break
+                }
+            }
+        }
+    } catch as e {
+        WriteLog("伺服器排程：OCR 掃伺服器按鈕失敗: " e.Message, "WARN")
+    }
+    try FileDelete(tempFile)
+
+    ; 若 OCR 沒找到伺服器按鈕，用備用座標
+    if !serverMenuOpened {
+        clickX := wx + SERVER_SWITCH_POINT_X
+        clickY := wy + SERVER_SWITCH_POINT_Y
+        WriteLog("伺服器排程：OCR 未找到伺服器按鈕，改用備用座標=" clickX "," clickY)
+        MouseClick "left", clickX, clickY
+        Sleep 1200
+    }
 
     tempFile := A_Temp "\\server_pick_" A_TickCount ".png"
     try {
@@ -2999,7 +3034,6 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     try FileDelete(tempFile)
 
     targetClicked := false
-    confirmClicked := false
 
     if IsObject(res) {
         for block in res {
@@ -3012,24 +3046,8 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
                 if IsObject(c) {
                     MouseClick "left", wx + c[1], wy + c[2]
                     targetClicked := true
-                    WriteLog("伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）")
-                    Sleep 400
-                }
-            }
-        }
-
-        for block in res {
-            txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
-            if (txt = "")
-                continue
-            if (InStr(txt, "確認") || InStr(txt, "确认") || InStr(txt, "確定") || InStr(txt, "确定")) {
-                c := GetOcrBlockCenter(block)
-                if IsObject(c) {
-                    MouseClick "left", wx + c[1], wy + c[2]
-                    confirmClicked := true
-                    WriteLog("伺服器排程：已點擊確認（OCR: " txt "）")
-                    Sleep 600
-                    break
+                    WriteLog("伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "），直接返回成功")
+                    return true
                 }
             }
         }
@@ -3037,12 +3055,6 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     if !targetClicked {
         WriteLog("伺服器排程：未在列表中找到目標伺服器文字 -> " CURRENT_SERVER_TARGET, "WARN")
-        Sleep 800
-        return TrySelectScheduledServer(hwnd, attempt + 1)
-    }
-
-    if !confirmClicked {
-        WriteLog("伺服器排程：未找到確認按鈕文字，可能仍停留選單", "WARN")
         Sleep 800
         return TrySelectScheduledServer(hwnd, attempt + 1)
     }
