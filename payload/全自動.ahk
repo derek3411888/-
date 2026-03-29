@@ -539,6 +539,7 @@ loop {
 }
 
 ; 登入畫面時：先做伺服器切換（如有設定），再交由 OKWW 接手點擊流程
+serverSwitchOk := true
 if (loginDetected) {
     hwndLogin := GetWutheringGameHwnd()
     if !hwndLogin {
@@ -547,8 +548,17 @@ if (loginDetected) {
 
     ; 先切換伺服器，再啟動 OKWW。
     if hwndLogin {
-        if !TrySelectScheduledServer(hwndLogin)
-            WriteLog("伺服器切換未完成，將沿用目前伺服器繼續流程", "WARN")
+        serverSwitchOk := TrySelectScheduledServer(hwndLogin)
+        if !serverSwitchOk
+            WriteLog("伺服器切換未完成，將停止本輪避免誤進錯服", "WARN")
+    } else {
+        serverSwitchOk := false
+        WriteLog("伺服器切換未完成：找不到鳴潮登入視窗", "WARN")
+    }
+
+    if !serverSwitchOk {
+        WriteLog("伺服器切換失敗（重試後仍未成功），改由 OKWW 繼續後續流程", "WARN")
+        ShowTip("⚠️ 切服失敗，交由 OKWW 繼續", 1200)
     }
 
     WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
@@ -2251,7 +2261,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edServerSwitchX := g.AddEdit("x+10 w90", state.serverSwitchX)
     g.AddText("x+8 w24", ",")
     edServerSwitchY := g.AddEdit("x+8 w90", state.serverSwitchY)
-    g.AddText("x+12 w460 c666666", "視窗內相對座標（登入畫面），預設 (640,549)")
+    g.AddText("x+12 w460 c666666", "以 1280x720 為基準的視窗內相對座標，會自動縮放；預設 (640,549)")
 
     g.AddText("xm y+14 w720", "【郵件設定】Gmail: smtp.gmail.com / 587 / use_ssl=1；密碼請使用應用程式密碼")
     cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
@@ -2783,6 +2793,20 @@ NormalizeServerMatchText(s) {
     if (t = "")
         return ""
 
+    ; 常見伺服器名稱別名正規化（中英互通）
+    t := StrReplace(t, "亞洲", "asia")
+    t := StrReplace(t, "亚服", "asia")
+    t := StrReplace(t, "亞服", "asia")
+    t := StrReplace(t, "東南亞", "sea")
+    t := StrReplace(t, "东南亚", "sea")
+    t := StrReplace(t, "美洲", "america")
+    t := StrReplace(t, "美服", "america")
+    t := StrReplace(t, "歐洲", "europe")
+    t := StrReplace(t, "欧洲", "europe")
+    t := StrReplace(t, "歐服", "europe")
+    t := StrReplace(t, "欧服", "europe")
+    t := StrReplace(t, "港澳台", "hmt")
+
     ; 去除括號內容，讓「HMT(HK, MO, TW)」與「HMT」可以互相命中
     t := RegExReplace(t, "\([^)]*\)", "")
     t := RegExReplace(t, "（[^）]*）", "")
@@ -2870,7 +2894,23 @@ GetOcrBlockCenter(block) {
     return ""
 }
 
-TrySelectScheduledServer(hwnd) {
+MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
+    if !hwnd
+        return ""
+
+    try WinGetClientPos(&cx, &cy, &cw, &ch, "ahk_id " hwnd)
+    catch
+        return ""
+
+    if (cw <= 0 || ch <= 0 || refW <= 0 || refH <= 0)
+        return ""
+
+    px := cx + Round((refX * cw) / refW)
+    py := cy + Round((refY * ch) / refH)
+    return [px, py, cw, ch]
+}
+
+TrySelectScheduledServer(hwnd, attempt := 1) {
     global CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
 
     if (CURRENT_SERVER_TARGET = "")
@@ -2878,7 +2918,11 @@ TrySelectScheduledServer(hwnd) {
     if !hwnd
         return false
 
-    WriteLog("伺服器排程：準備選擇伺服器 -> " CURRENT_SERVER_TARGET)
+    maxAttempts := 3
+    if (attempt > maxAttempts)
+        return false
+
+    WriteLog("伺服器排程：準備選擇伺服器 -> " CURRENT_SERVER_TARGET "（嘗試 " attempt "/" maxAttempts "）")
     try WinActivate "ahk_id " hwnd
     try WinRestore "ahk_id " hwnd
     WinWaitActive "ahk_id " hwnd, , 3
@@ -2918,8 +2962,17 @@ TrySelectScheduledServer(hwnd) {
         return true
     }
 
-    clickX := wx + SERVER_SWITCH_POINT_X
-    clickY := wy + SERVER_SWITCH_POINT_Y
+    mapped := MapReferencePointToClient(hwnd, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y, 1280, 720)
+    if !IsObject(mapped) {
+        WriteLog("伺服器排程：無法取得客戶區尺寸，改用舊座標模式", "WARN")
+        clickX := wx + SERVER_SWITCH_POINT_X
+        clickY := wy + SERVER_SWITCH_POINT_Y
+    } else {
+        clickX := mapped[1]
+        clickY := mapped[2]
+        WriteLog("伺服器排程：切服座標已依 1280x720 基準縮放，客戶區=" mapped[3] "x" mapped[4] "，點擊=" clickX "," clickY)
+    }
+
     WriteLog("伺服器排程：開啟伺服器選單點擊座標=" clickX "," clickY)
     MouseClick "left", clickX, clickY
     Sleep 1200
@@ -2932,7 +2985,8 @@ TrySelectScheduledServer(hwnd) {
     } catch as e {
         WriteLog("伺服器排程：OCR 失敗: " e.Message, "WARN")
         try FileDelete(tempFile)
-        return false
+        Sleep 800
+        return TrySelectScheduledServer(hwnd, attempt + 1)
     }
     try FileDelete(tempFile)
 
@@ -2975,12 +3029,14 @@ TrySelectScheduledServer(hwnd) {
 
     if !targetClicked {
         WriteLog("伺服器排程：未在列表中找到目標伺服器文字 -> " CURRENT_SERVER_TARGET, "WARN")
-        return false
+        Sleep 800
+        return TrySelectScheduledServer(hwnd, attempt + 1)
     }
 
     if !confirmClicked {
         WriteLog("伺服器排程：未找到確認按鈕文字，可能仍停留選單", "WARN")
-        return false
+        Sleep 800
+        return TrySelectScheduledServer(hwnd, attempt + 1)
     }
 
     WriteLog("伺服器排程：伺服器切換完成 -> " CURRENT_SERVER_TARGET)
