@@ -538,7 +538,7 @@ loop {
     break
 }
 
-; 登入畫面時：稍等並點擊視窗中央，喚醒到可操作狀態
+; 登入畫面時：先做伺服器切換（如有設定），再交由 OKWW 接手點擊流程
 if (loginDetected) {
     hwndLogin := GetWutheringGameHwnd()
     if !hwndLogin {
@@ -551,29 +551,11 @@ if (loginDetected) {
             WriteLog("伺服器切換未完成，將沿用目前伺服器繼續流程", "WARN")
     }
 
-    WriteLog("登入畫面階段啟動 OKWW，點擊視窗前先啟動")
+    WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
     StartOKWWFlow(isRestart)
     okwwStarted := true
-
-    WriteLog("檢測到登入畫面，嘗試點擊視窗中心喚醒")
-    if hwndLogin {
-        try WinRestore "ahk_id " hwndLogin
-        try WinActivate "ahk_id " hwndLogin
-        WinWaitActive "ahk_id " hwndLogin, , 3
-        Sleep 5000
-        ok := ClickWindowCenter(hwndLogin)
-        if !ok {
-            Sleep 1200
-            ClickWindowCenter(hwndLogin)
-        }
-        ; 點擊後等待遊戲進入主介面（從登入到可操作需要時間）
-        WriteLog("登入後等待遊戲載入主介面...")
-        Sleep 15000  ; 額外等待15秒讓遊戲完全進入
-        ShowTip("✅ 已點擊登入畫面中央")
-    } else {
-        WriteLog("登入畫面點擊失敗：找不到鳴潮視窗", "WARN")
-            ShowTip("❗ 找不到鳴潮視窗", 1200)
-    }
+    WriteLog("檢測到登入畫面後不再由全自動點擊遊戲視窗，等待 OKWW 執行")
+    Sleep 3000
 }
 
 ; 2) 登入後啟動 OKWW 並確認啟動成功
@@ -2906,6 +2888,34 @@ TrySelectScheduledServer(hwnd) {
     catch as e {
         WriteLog("伺服器排程：取視窗座標失敗: " e.Message, "WARN")
         return false
+    }
+
+    ; 先在登入畫面做一次 OCR：若已是目標伺服器，直接略過切換，不做任何點擊
+    preMatched := false
+    preTempFile := A_Temp "\\server_precheck_" A_TickCount ".png"
+    try {
+        ImagePutFile("ahk_id " hwnd, preTempFile)
+        preOcr := RapidOcr()
+        preRes := preOcr.ocr_from_file(preTempFile, , true)
+        if IsObject(preRes) {
+            for block in preRes {
+                txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+                if (txt = "")
+                    continue
+                if IsServerTargetMatch(txt, CURRENT_SERVER_TARGET) {
+                    preMatched := true
+                    break
+                }
+            }
+        }
+    } catch as e {
+        WriteLog("伺服器排程：預檢 OCR 失敗，改走切服流程: " e.Message, "WARN")
+    }
+    try FileDelete(preTempFile)
+
+    if preMatched {
+        WriteLog("伺服器排程：登入畫面已是目標伺服器，略過切換 -> " CURRENT_SERVER_TARGET)
+        return true
     }
 
     clickX := wx + SERVER_SWITCH_POINT_X
