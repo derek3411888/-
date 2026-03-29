@@ -2846,6 +2846,14 @@ IsLikelyServerNameText(ocrText) {
     return false
 }
 
+IsServerConfirmText(ocrText) {
+    t := Trim(StrReplace(StrReplace(ocrText, "`r", ""), "`n", ""), " `t")
+    if (t = "")
+        return false
+
+    return (InStr(t, "確認") || InStr(t, "确认") || InStr(t, "確定") || InStr(t, "确定"))
+}
+
 LoadServerScheduleContext(isContinueCycle := false) {
     global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
 
@@ -3106,8 +3114,8 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
                 if IsObject(c) {
                     ServerClickClient(hwnd, c[1], c[2], "伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）")
                     targetClicked := true
-                    WriteLog("伺服器排程：伺服器點選完成，直接返回成功")
-                    return true
+                    Sleep 500
+                    break
                 }
             }
         }
@@ -3119,8 +3127,51 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
         return TrySelectScheduledServer(hwnd, attempt + 1)
     }
 
-    WriteLog("伺服器排程：伺服器切換完成 -> " CURRENT_SERVER_TARGET)
-    return true
+    ; 點選伺服器後需再點擊「確認」
+    confirmClicked := false
+    tempFile := A_Temp "\\server_confirm_" A_TickCount ".png"
+    try {
+        ImagePutFile(hwnd, tempFile)
+        ocr := RapidOcr()
+        resConfirm := ocr.ocr_from_file(tempFile, , true)
+        if IsObject(resConfirm) {
+            for block in resConfirm {
+                txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+                if (txt = "")
+                    continue
+
+                if IsServerConfirmText(txt) {
+                    c := GetOcrBlockCenter(block)
+                    if IsObject(c) {
+                        ServerClickClient(hwnd, c[1], c[2], "伺服器排程：已點擊確認按鈕（OCR: " txt "）")
+                        confirmClicked := true
+                        Sleep 600
+                        break
+                    }
+                }
+            }
+        }
+    } catch as e {
+        WriteLog("伺服器排程：OCR 掃確認按鈕失敗: " e.Message, "WARN")
+    }
+    try FileDelete(tempFile)
+
+    if !confirmClicked {
+        confirmX := 890
+        confirmY := 543
+        ServerClickClient(hwnd, confirmX, confirmY, "伺服器排程：未找到確認文字，改用固定確認座標")
+        Sleep 600
+        confirmClicked := true
+    }
+
+    if confirmClicked {
+        WriteLog("伺服器排程：伺服器切換完成 -> " CURRENT_SERVER_TARGET)
+        return true
+    }
+
+    WriteLog("伺服器排程：確認按鈕點擊失敗，準備重試", "WARN")
+    Sleep 800
+    return TrySelectScheduledServer(hwnd, attempt + 1)
 }
 
 SetupTrayMenu() {
