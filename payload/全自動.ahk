@@ -44,6 +44,12 @@ global PROCESS_DETECT_RETRY_COUNT := 6
 global PROCESS_DETECT_RETRY_DELAY_MS := 800
 global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
+global SERVER_SCHEDULE_ENABLED := false
+global SERVER_SCHEDULE_LIST := []
+global SERVER_SCHEDULE_INDEX := 1
+global CURRENT_SERVER_TARGET := ""
+global SERVER_SWITCH_POINT_X := 640
+global SERVER_SWITCH_POINT_Y := 549
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -475,6 +481,7 @@ WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; 檢查是否為重啟模式（遊戲更新後需要重新啟動OKWW）
 isRestart := false
+isNextServerCycle := false
 if A_Args.Length > 0 && A_Args[1] = "restart" {
     isRestart := true
     WriteLog("檢測到重啟模式，遊戲更新後將重新啟動OKWW")
@@ -487,6 +494,13 @@ if A_Args.Length > 0 && A_Args[1] = "restart" {
         WriteStep("上次重啟原因", detail, "WARN")
     }
 }
+
+if A_Args.Length > 0 && A_Args[1] = "nextserver" {
+    isNextServerCycle := true
+    WriteLog("檢測到伺服器排程續跑模式，將沿用下一個伺服器索引")
+}
+
+LoadServerScheduleContext(isNextServerCycle)
 
 ; 1) 先處理鳴潮更新／登入，OKWW 之後再啟動
 maxUpdateLoops := 3
@@ -525,15 +539,22 @@ loop {
 
 ; 登入畫面時：稍等並點擊視窗中央，喚醒到可操作狀態
 if (loginDetected) {
+    hwndLogin := GetWutheringGameHwnd()
+    if !hwndLogin {
+        hwndLogin := WaitForWutheringGameWindow(20)
+    }
+
+    ; 先切換伺服器，再啟動 OKWW。
+    if hwndLogin {
+        if !TrySelectScheduledServer(hwndLogin)
+            WriteLog("伺服器切換未完成，將沿用目前伺服器繼續流程", "WARN")
+    }
+
     WriteLog("登入畫面階段啟動 OKWW，點擊視窗前先啟動")
     StartOKWWFlow(isRestart)
     okwwStarted := true
 
-    hwndLogin := GetWutheringGameHwnd()
     WriteLog("檢測到登入畫面，嘗試點擊視窗中心喚醒")
-    if !hwndLogin {
-        hwndLogin := WaitForWutheringGameWindow(20)
-    }
     if hwndLogin {
         try WinRestore "ahk_id " hwndLogin
         try WinActivate "ahk_id " hwndLogin
@@ -1792,7 +1813,7 @@ MonitorRewardAndShutdown() {
                         WriteLog("已監測到 " REWARD_MATCH_NEED_COUNT " 條『電台_一鍵領取』，" delaySec " 秒後開始關閉流程")
                         ShowTip("✅ 監測命中，" delaySec "秒後關閉程式", 2000)
                         Sleep REWARD_SHUTDOWN_DELAY_MS
-                        ShutdownGameLrmcOkww()
+                        HandleCycleFinishAndShutdown()
                         return
                     }
                 }
@@ -1817,7 +1838,7 @@ MonitorRewardAndShutdown() {
                     WriteLog("已同時監測到『點擊電台一鍵領取』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
                     ShowTip("✅ 監測到一鍵領取+無獎勵，" delaySec "秒後關閉", 2000)
                     Sleep REWARD_SHUTDOWN_DELAY_MS
-                    ShutdownGameLrmcOkww()
+                    HandleCycleFinishAndShutdown()
                     return
                 }
 
@@ -1826,7 +1847,7 @@ MonitorRewardAndShutdown() {
                     WriteLog("已同時監測到『領取每日獎勵成功』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
                     ShowTip("✅ 監測到每日獎勵成功+無獎勵，" delaySec "秒後關閉", 2000)
                     Sleep REWARD_SHUTDOWN_DELAY_MS
-                    ShutdownGameLrmcOkww()
+                    HandleCycleFinishAndShutdown()
                     return
                 }
 
@@ -1835,7 +1856,7 @@ MonitorRewardAndShutdown() {
                     WriteLog("已同時監測到『索拉獎勵領取失敗』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
                     ShowTip("✅ 監測到索拉獎勵失敗+無獎勵，" delaySec "秒後關閉", 2000)
                     Sleep REWARD_SHUTDOWN_DELAY_MS
-                    ShutdownGameLrmcOkww()
+                    HandleCycleFinishAndShutdown()
                     return
                 }
             }
@@ -1956,7 +1977,17 @@ ReadLogAppended(filePath, &lastPos) {
     }
 }
 
-ShutdownGameLrmcOkww() {
+HandleCycleFinishAndShutdown() {
+    if AdvanceServerScheduleForNextCycle() {
+        WriteLog("伺服器排程：本輪完成，關閉程式後自動啟動下一個伺服器流程", "WARN")
+        ShutdownGameLrmcOkww(true)
+        return
+    }
+
+    ShutdownGameLrmcOkww(false)
+}
+
+ShutdownGameLrmcOkww(relaunchForNextServer := false) {
     UnmuteWutheringAudio("監測到結束，開始收尾")
     WriteLog("開始關閉收尾目標程式：鳴潮、LRMCAI、OKWW")
     ShowTip("🛑 正在關閉鳴潮/LRMCAI/OKWW...", 1500)
@@ -2004,6 +2035,15 @@ ShutdownGameLrmcOkww() {
             WriteLog("收尾通知信已寄出")
         else
             WriteLog("收尾通知信寄送失敗: " mailResult.message, "WARN")
+    }
+
+    if relaunchForNextServer {
+        WriteLog("伺服器排程：準備啟動下一輪流程", "WARN")
+        ShowTip("🔁 切換下一個伺服器，準備重啟流程", 2000)
+        Sleep 1200
+        try Run('"' AhkExe '" "' A_ScriptFullPath '" nextserver')
+        catch as e
+            WriteLog("啟動下一輪伺服器流程失敗: " e.Message, "ERROR")
     }
 
     WriteLog("收尾關閉流程已完成，所有流程已停止")
@@ -2108,6 +2148,10 @@ ReadCombinedConfigState() {
     state.subjectPrefix := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "subject_prefix", "LRMCAI"), " `t`r`n")
     state.useSsl := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "use_ssl", "1"), " `t`r`n")
     state.sendEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
+    state.serverScheduleEnabled := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0)
+    state.serverScheduleList := Trim(IniReadSafe(CFG_FILE, "server_schedule", "list", ""), " `t`r`n")
+    state.serverSwitchX := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_x", "640"), " `t`r`n")
+    state.serverSwitchY := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_y", "549"), " `t`r`n")
     MAIL_NOTIFY_ENABLED := state.sendEnabled
     state.fallbackLogFile := NormalizePath(IniReadSafe(CFG_FILE, "reward_monitor", "fallback_log_file", ""))
     if (state.fallbackLogFile = "")
@@ -2146,6 +2190,16 @@ ReadCombinedConfigState() {
             err.Push("to 為空")
     }
 
+    if (state.serverScheduleEnabled) {
+        listParsed := ParseServerScheduleList(state.serverScheduleList)
+        if (listParsed.Length = 0)
+            err.Push("server_schedule.list 為空（啟用排程時必填）")
+        if !(state.serverSwitchX ~= "^\d+$")
+            err.Push("server_schedule.switch_x 不是數字")
+        if !(state.serverSwitchY ~= "^\d+$")
+            err.Push("server_schedule.switch_y 不是數字")
+    }
+
     state.errors := err
     state.needSetup := (err.Length > 0)
     state.errorText := ""
@@ -2174,6 +2228,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "from: " state.mailFrom "`r`n"
     summary .= "to: " state.mailTo "`r`n"
     summary .= "send_enabled: " (state.sendEnabled ? "1(啟用)" : "0(停用)") "`r`n"
+    summary .= "server_schedule.enabled: " (state.serverScheduleEnabled ? "1(啟用)" : "0(停用)") "`r`n"
+    summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
+    summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     g.AddEdit("xm w720 r8 ReadOnly", summary)
 
@@ -2196,6 +2253,21 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edFallbackLog := g.AddEdit("x+10 w500", state.fallbackLogFile)
     btnFallbackLog := g.AddButton("x+8 w90", "瀏覽...")
     txtFallbackHint := g.AddText("xm y+4 w720 cE6A700", "")
+
+    g.AddText("xm y+14 w720", "【伺服器排程】啟用後會在登入畫面先切服（點擊視窗內座標），每輪完成後自動重啟跑下一個伺服器。")
+    cbServerScheduleEnabled := g.AddCheckbox("xm y+8", "啟用伺服器排程")
+    cbServerScheduleEnabled.Value := state.serverScheduleEnabled ? 1 : 0
+    txtServerHint := g.AddText("x+12 w500", state.serverScheduleEnabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程")
+
+    g.AddText("xm y+10 w120", "伺服器清單")
+    edServerList := g.AddEdit("x+10 w500", state.serverScheduleList)
+    g.AddText("xm y+4 w720 c666666", "可用逗號/分號/換行分隔，例如：HMT(HK, MO, TW), SEA, America")
+
+    g.AddText("xm y+10 w120", "切服按鈕座標")
+    edServerSwitchX := g.AddEdit("x+10 w90", state.serverSwitchX)
+    g.AddText("x+8 w24", ",")
+    edServerSwitchY := g.AddEdit("x+8 w90", state.serverSwitchY)
+    g.AddText("x+12 w460 c666666", "視窗內相對座標（登入畫面），預設 (640,549)")
 
     g.AddText("xm y+14 w720", "【郵件設定】Gmail: smtp.gmail.com / 587 / use_ssl=1；密碼請使用應用程式密碼")
     cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
@@ -2241,6 +2313,11 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edWu: edWu,
         edFallbackLog: edFallbackLog,
         txtFallbackHint: txtFallbackHint,
+        cbServerScheduleEnabled: cbServerScheduleEnabled,
+        txtServerHint: txtServerHint,
+        edServerList: edServerList,
+        edServerSwitchX: edServerSwitchX,
+        edServerSwitchY: edServerSwitchY,
         edHost: edHost,
         edPort: edPort,
         edUser: edUser,
@@ -2258,6 +2335,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnWu.OnEvent("Click", OnCombinedBrowseWu)
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
+    cbServerScheduleEnabled.OnEvent("Click", OnServerScheduleEnabledChanged)
     cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
@@ -2265,6 +2343,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
+    RefreshServerScheduleInputsEnabled()
 
     g.Show("AutoSize")
     while !__MAIL_SETUP.done
@@ -2342,6 +2421,10 @@ OnCombinedSetupSave(*) {
     fromVal := Trim(st.edFrom.Value, " `t`r`n")
     toVal := Trim(st.edTo.Value, " `t`r`n")
     prefixVal := Trim(st.edPrefix.Value, " `t`r`n")
+    serverScheduleEnabledVal := st.cbServerScheduleEnabled.Value ? 1 : 0
+    serverListVal := Trim(st.edServerList.Value, " `t`r`n")
+    serverSwitchXVal := Trim(st.edServerSwitchX.Value, " `t`r`n")
+    serverSwitchYVal := Trim(st.edServerSwitchY.Value, " `t`r`n")
     sslVal := st.ddSsl.Text
     sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
 
@@ -2356,6 +2439,18 @@ OnCombinedSetupSave(*) {
     if (wuPath = "" || !FileExist(wuPath)) {
         MsgBox "鳴潮路徑空白或不存在", "整合設定", "Iconx"
         return
+    }
+
+    if serverScheduleEnabledVal {
+        parsed := ParseServerScheduleList(serverListVal)
+        if (parsed.Length = 0) {
+            MsgBox "啟用伺服器排程時，伺服器清單不可空白", "整合設定", "Iconx"
+            return
+        }
+        if !(serverSwitchXVal ~= "^\d+$") || !(serverSwitchYVal ~= "^\d+$") {
+            MsgBox "切服座標 X/Y 必須是數字", "整合設定", "Iconx"
+            return
+        }
     }
 
     if sendEnabledVal {
@@ -2378,6 +2473,12 @@ OnCombinedSetupSave(*) {
 
     IniWrite fallbackLogVal, st.cfgPath, "reward_monitor", "fallback_log_file"
 
+    IniWrite serverScheduleEnabledVal, st.cfgPath, "server_schedule", "enabled"
+    IniWrite serverListVal, st.cfgPath, "server_schedule", "list"
+    IniWrite (serverSwitchXVal = "" ? "640" : serverSwitchXVal), st.cfgPath, "server_schedule", "switch_x"
+    IniWrite (serverSwitchYVal = "" ? "549" : serverSwitchYVal), st.cfgPath, "server_schedule", "switch_y"
+    IniWrite "1", st.cfgPath, "server_schedule", "current_index"
+
     IniWrite hostVal, st.cfgPath, st.section, "smtp_host"
     IniWrite portVal, st.cfgPath, st.section, "smtp_port"
     IniWrite userVal, st.cfgPath, st.section, "smtp_user"
@@ -2399,6 +2500,10 @@ OnSendEnabledChanged(*) {
     RefreshMailInputsEnabled()
 }
 
+OnServerScheduleEnabledChanged(*) {
+    RefreshServerScheduleInputsEnabled()
+}
+
 RefreshMailInputsEnabled() {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP)
@@ -2416,6 +2521,18 @@ RefreshMailInputsEnabled() {
     __MAIL_SETUP.txtMailHint.Value := enabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位"
 }
 
+RefreshServerScheduleInputsEnabled() {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    enabled := __MAIL_SETUP.cbServerScheduleEnabled.Value ? true : false
+    __MAIL_SETUP.edServerList.Enabled := enabled
+    __MAIL_SETUP.edServerSwitchX.Enabled := enabled
+    __MAIL_SETUP.edServerSwitchY.Enabled := enabled
+    __MAIL_SETUP.txtServerHint.Value := enabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程"
+}
+
 LoadMailNotifyEnabled() {
     global CFG_FILE, MAIL_SECTION, MAIL_NOTIFY_ENABLED
     MAIL_NOTIFY_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
@@ -2431,6 +2548,180 @@ ParseBool01(val, defaultVal := 1) {
     if (s = "0" || s = "false" || s = "no" || s = "off")
         return 0
     return defaultVal
+}
+
+ParseServerScheduleList(raw) {
+    out := []
+    seen := Map()
+    txt := StrReplace(StrReplace(raw, "`r", "`n"), ";", ",")
+    txt := StrReplace(txt, "|", ",")
+    txt := StrReplace(txt, "`n", ",")
+    for part in StrSplit(txt, ",") {
+        name := Trim(part, " `t`r`n")
+        if (name = "")
+            continue
+        key := StrLower(name)
+        if seen.Has(key)
+            continue
+        seen[key] := 1
+        out.Push(name)
+    }
+    return out
+}
+
+LoadServerScheduleContext(isContinueCycle := false) {
+    global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
+
+    SERVER_SCHEDULE_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0) ? true : false
+    rawList := Trim(IniReadSafe(CFG_FILE, "server_schedule", "list", ""), " `t`r`n")
+    SERVER_SCHEDULE_LIST := ParseServerScheduleList(rawList)
+
+    sx := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_x", "640"), " `t`r`n")
+    sy := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_y", "549"), " `t`r`n")
+    SERVER_SWITCH_POINT_X := (sx ~= "^\d+$") ? Integer(sx) : 640
+    SERVER_SWITCH_POINT_Y := (sy ~= "^\d+$") ? Integer(sy) : 549
+
+    if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length = 0) {
+        CURRENT_SERVER_TARGET := ""
+        SERVER_SCHEDULE_INDEX := 1
+        return
+    }
+
+    idxRaw := Trim(IniReadSafe(CFG_FILE, "server_schedule", "current_index", "1"), " `t`r`n")
+    idx := (idxRaw ~= "^\d+$") ? Integer(idxRaw) : 1
+    if !isContinueCycle
+        idx := 1
+
+    if (idx < 1)
+        idx := 1
+    if (idx > SERVER_SCHEDULE_LIST.Length)
+        idx := 1
+
+    SERVER_SCHEDULE_INDEX := idx
+    CURRENT_SERVER_TARGET := SERVER_SCHEDULE_LIST[idx]
+    IniWrite idx, CFG_FILE, "server_schedule", "current_index"
+    WriteLog("伺服器排程已載入：第 " idx "/" SERVER_SCHEDULE_LIST.Length " 個，目標=" CURRENT_SERVER_TARGET)
+}
+
+AdvanceServerScheduleForNextCycle() {
+    global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX
+
+    if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length <= 1)
+        return false
+
+    nextIndex := SERVER_SCHEDULE_INDEX + 1
+    if (nextIndex > SERVER_SCHEDULE_LIST.Length) {
+        IniWrite "1", CFG_FILE, "server_schedule", "current_index"
+        WriteLog("伺服器排程已完成全部清單，本輪後不再續跑")
+        return false
+    }
+
+    IniWrite nextIndex, CFG_FILE, "server_schedule", "current_index"
+    WriteLog("伺服器排程切換到下一個：第 " nextIndex "/" SERVER_SCHEDULE_LIST.Length " 個")
+    return true
+}
+
+GetOcrBlockCenter(block) {
+    if (block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3) {
+        x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
+        x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
+        return [Round((x1 + x2) / 2), Round((y1 + y2) / 2)]
+    }
+    if (block.HasOwnProp("box") && IsObject(block.box) && block.box.Length >= 3) {
+        x1 := block.box[1][1], y1 := block.box[1][2]
+        x2 := block.box[3][1], y2 := block.box[3][2]
+        return [Round((x1 + x2) / 2), Round((y1 + y2) / 2)]
+    }
+    return ""
+}
+
+TrySelectScheduledServer(hwnd) {
+    global CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
+
+    if (CURRENT_SERVER_TARGET = "")
+        return true
+    if !hwnd
+        return false
+
+    WriteLog("伺服器排程：準備選擇伺服器 -> " CURRENT_SERVER_TARGET)
+    try WinActivate "ahk_id " hwnd
+    try WinRestore "ahk_id " hwnd
+    WinWaitActive "ahk_id " hwnd, , 3
+    Sleep 400
+
+    try WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
+    catch as e {
+        WriteLog("伺服器排程：取視窗座標失敗: " e.Message, "WARN")
+        return false
+    }
+
+    clickX := wx + SERVER_SWITCH_POINT_X
+    clickY := wy + SERVER_SWITCH_POINT_Y
+    WriteLog("伺服器排程：開啟伺服器選單點擊座標=" clickX "," clickY)
+    MouseClick "left", clickX, clickY
+    Sleep 1200
+
+    tempFile := A_Temp "\\server_pick_" A_TickCount ".png"
+    try {
+        ImagePutFile("ahk_id " hwnd, tempFile)
+        ocr := RapidOcr()
+        res := ocr.ocr_from_file(tempFile, , true)
+    } catch as e {
+        WriteLog("伺服器排程：OCR 失敗: " e.Message, "WARN")
+        try FileDelete(tempFile)
+        return false
+    }
+    try FileDelete(tempFile)
+
+    targetClicked := false
+    confirmClicked := false
+
+    if IsObject(res) {
+        for block in res {
+            txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+            if (txt = "")
+                continue
+
+            if (!targetClicked && InStr(StrLower(txt), StrLower(CURRENT_SERVER_TARGET))) {
+                c := GetOcrBlockCenter(block)
+                if IsObject(c) {
+                    MouseClick "left", wx + c[1], wy + c[2]
+                    targetClicked := true
+                    WriteLog("伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）")
+                    Sleep 400
+                }
+            }
+        }
+
+        for block in res {
+            txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+            if (txt = "")
+                continue
+            if (InStr(txt, "確認") || InStr(txt, "确认") || InStr(txt, "確定") || InStr(txt, "确定")) {
+                c := GetOcrBlockCenter(block)
+                if IsObject(c) {
+                    MouseClick "left", wx + c[1], wy + c[2]
+                    confirmClicked := true
+                    WriteLog("伺服器排程：已點擊確認（OCR: " txt "）")
+                    Sleep 600
+                    break
+                }
+            }
+        }
+    }
+
+    if !targetClicked {
+        WriteLog("伺服器排程：未在列表中找到目標伺服器文字 -> " CURRENT_SERVER_TARGET, "WARN")
+        return false
+    }
+
+    if !confirmClicked {
+        WriteLog("伺服器排程：未找到確認按鈕文字，可能仍停留選單", "WARN")
+        return false
+    }
+
+    WriteLog("伺服器排程：伺服器切換完成 -> " CURRENT_SERVER_TARGET)
+    return true
 }
 
 SetupTrayMenu() {
