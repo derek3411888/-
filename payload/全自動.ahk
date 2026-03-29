@@ -2902,17 +2902,69 @@ AdvanceServerScheduleForNextCycle() {
 }
 
 GetOcrBlockCenter(block) {
-    if (block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3) {
-        x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
-        x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
-        return [Round((x1 + x2) / 2), Round((y1 + y2) / 2)]
+    if (block.HasOwnProp("boxPoint") && IsObject(block.boxPoint)) {
+        minX := 2147483647, minY := 2147483647
+        maxX := -2147483648, maxY := -2147483648
+        found := false
+        for _, pt in block.boxPoint {
+            if (!IsObject(pt) || !pt.HasOwnProp("x") || !pt.HasOwnProp("y"))
+                continue
+            x := pt.x, y := pt.y
+            if (x < minX)
+                minX := x
+            if (y < minY)
+                minY := y
+            if (x > maxX)
+                maxX := x
+            if (y > maxY)
+                maxY := y
+            found := true
+        }
+        if found
+            return [Round((minX + maxX) / 2), Round((minY + maxY) / 2)]
     }
-    if (block.HasOwnProp("box") && IsObject(block.box) && block.box.Length >= 3) {
-        x1 := block.box[1][1], y1 := block.box[1][2]
-        x2 := block.box[3][1], y2 := block.box[3][2]
-        return [Round((x1 + x2) / 2), Round((y1 + y2) / 2)]
+    if (block.HasOwnProp("box") && IsObject(block.box)) {
+        minX := 2147483647, minY := 2147483647
+        maxX := -2147483648, maxY := -2147483648
+        found := false
+        for _, pt in block.box {
+            if (!IsObject(pt) || pt.Length < 2)
+                continue
+            x := pt[1], y := pt[2]
+            if (x < minX)
+                minX := x
+            if (y < minY)
+                minY := y
+            if (x > maxX)
+                maxX := x
+            if (y > maxY)
+                maxY := y
+            found := true
+        }
+        if found
+            return [Round((minX + maxX) / 2), Round((minY + maxY) / 2)]
     }
     return ""
+}
+
+ServerClickClient(hwnd, x, y, logText := "") {
+    if !hwnd
+        return false
+
+    oldMouseMode := A_CoordModeMouse
+    try WinActivate "ahk_id " hwnd
+    Sleep 100
+    CoordMode "Mouse", "Client"
+
+    MouseMove Round(x), Round(y)
+    Sleep 50
+    Click
+    Sleep 100
+
+    CoordMode "Mouse", oldMouseMode
+    if (logText != "")
+        WriteLog(logText "，點擊客戶區座標=" Round(x) "," Round(y))
+    return true
 }
 
 MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
@@ -2949,18 +3001,12 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     WinWaitActive "ahk_id " hwnd, , 3
     Sleep 400
 
-    try WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
-    catch as e {
-        WriteLog("伺服器排程：取視窗座標失敗: " e.Message, "WARN")
-        return false
-    }
-
     ; 先在登入畫面做一次 OCR：若已是目標伺服器，直接略過切換，不做任何點擊
     preMatched := false
     preTempFile := A_Temp "\\server_precheck_" A_TickCount ".png"
     WriteLog("伺服器排程：開始預檢登入畫面是否已是目標伺服器 (" CURRENT_SERVER_TARGET ")")
     try {
-        ImagePutFile("ahk_id " hwnd, preTempFile)
+        ImagePutFile(hwnd, preTempFile)
         preOcr := RapidOcr()
         preRes := preOcr.ocr_from_file(preTempFile, , true)
         ocrRecognized := ""
@@ -3002,7 +3048,7 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     serverMenuOpened := false
     menuOpenBy := ""
     try {
-        ImagePutFile("ahk_id " hwnd, tempFile)
+        ImagePutFile(hwnd, tempFile)
         ocr := RapidOcr()
         res := ocr.ocr_from_file(tempFile, , true)
         if IsObject(res) {
@@ -3013,13 +3059,10 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
                 c := GetOcrBlockCenter(block)
                 if (IsObject(c) && IsLikelyServerNameText(txt)) {
-                    clkX := wx + c[1]
-                    clkY := wy + c[2]
-                    WriteLog("伺服器排程：找到伺服器名稱區塊（" txt "），點擊座標=" clkX "," clkY)
-                    MouseClick "left", clkX, clkY
+                    ServerClickClient(hwnd, c[1], c[2], "伺服器排程：找到伺服器名稱區塊（" txt "）")
                     serverMenuOpened := true
                     menuOpenBy := "server-name"
-                    Sleep 1200
+                    Sleep 1600
                     break
                 }
             }
@@ -3031,19 +3074,15 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     ; 若 OCR 沒找到伺服器名稱區塊，直接用客戶區內固定座標（例如 640,549）
     if !serverMenuOpened {
-        oldMouseMode := A_CoordModeMouse
-        CoordMode "Mouse", "Client"
-        WriteLog("伺服器排程：OCR 未找到伺服器名稱區塊，改用客戶區固定座標=" SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y)
-        MouseClick "left", SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
-        CoordMode "Mouse", oldMouseMode
-        Sleep 1200
+        ServerClickClient(hwnd, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y, "伺服器排程：OCR 未找到伺服器名稱區塊，改用客戶區固定座標=" SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y)
+        Sleep 1600
     } else {
         WriteLog("伺服器排程：已開啟伺服器選單，方式=" menuOpenBy)
     }
 
     tempFile := A_Temp "\\server_pick_" A_TickCount ".png"
     try {
-        ImagePutFile("ahk_id " hwnd, tempFile)
+        ImagePutFile(hwnd, tempFile)
         ocr := RapidOcr()
         res := ocr.ocr_from_file(tempFile, , true)
     } catch as e {
@@ -3065,9 +3104,9 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
             if (!targetClicked && IsServerTargetMatch(txt, CURRENT_SERVER_TARGET)) {
                 c := GetOcrBlockCenter(block)
                 if IsObject(c) {
-                    MouseClick "left", wx + c[1], wy + c[2]
+                    ServerClickClient(hwnd, c[1], c[2], "伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）")
                     targetClicked := true
-                    WriteLog("伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "），直接返回成功")
+                    WriteLog("伺服器排程：伺服器點選完成，直接返回成功")
                     return true
                 }
             }
