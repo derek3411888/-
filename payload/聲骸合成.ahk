@@ -30,6 +30,7 @@ global logger := InitLogger("聲骸合成")
 RegisterLifecycleLogging("聲骸合成")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
+global TOOLTIP_SLOT := 22
 logger.log("========== 聲骸合成腳本啟動 ==========")
 
 WriteLog(msg, level := "INFO") {
@@ -44,16 +45,19 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName, 700)
+    ShowTip("📌 " stepName)
 }
 
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
-ShowTip(msg, duration := 1200) {
-    ToolTip "          " msg
+ShowTip(msg, duration := 5000) {
+    global TOOLTIP_SLOT
+    if (duration < 5000)
+        duration := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(), -duration)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
 }
 
 ; 全域變數

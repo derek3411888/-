@@ -11,6 +11,7 @@ global logger := InitLogger("開啟LRMC")
 RegisterLifecycleLogging("開啟LRMC")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
+global TOOLTIP_SLOT := 24
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
@@ -31,8 +32,8 @@ WriteStep(stepName, detail := "", level := "INFO") {
     msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
     if (detail != "")
         msg .= " | " detail
-    Log(msg, level)
-    ShowTip("📌 " stepName, 700)
+    WriteLog(msg, level)
+    ShowTip("📌 " stepName)
 }
 
 Log("LRMC 啟動腳本開始: " A_ScriptFullPath)
@@ -67,10 +68,13 @@ DirCreate dataDir
 global CFG_FILE := dataDir "\config.ini"
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
-ShowTip(msg, duration := 1200) {
-    ToolTip "          " msg
+ShowTip(msg, duration := 5000) {
+    global TOOLTIP_SLOT
+    if (duration < 5000)
+        duration := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(), -duration)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
 }
 
 ; 去除路徑前後的引號和空白

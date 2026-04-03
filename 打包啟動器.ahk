@@ -4,11 +4,15 @@ SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
 global STEP_SEQ := 0
+global TOOLTIP_SLOT := 25
 
-ShowTip(msg, duration := 900) {
-    ToolTip "          " msg
+ShowTip(msg, duration := 5000) {
+    global TOOLTIP_SLOT
+    if (duration < 5000)
+        duration := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(), -duration)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
 }
 
 WriteStep(stepName, detail := "", level := "INFO") {
@@ -18,7 +22,7 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName, 700)
+    ShowTip("📌 " stepName)
 }
 
 ; 初始化備用日誌系統（獨立實現，避免依賴外部檔案）

@@ -33,6 +33,7 @@ global STAT_SKIP := 0
 global STAT_LAST_VAR := "-"
 global STAT_START_TICK := 0
 global LOG_FILE := A_ScriptDir "\\test_log.txt"
+global TOOLTIP_SLOT := 28
 
 #Include ..\..\payload\plugin\ImagePut-1.11\ImagePut.ahk
 
@@ -73,10 +74,13 @@ HandleHotkey(name) {
     ShowTip("收到熱鍵 " name, 600)
 }
 
-ShowTip(msg, ms := 1400) {
-    ToolTip "          " msg
+ShowTip(msg, ms := 5000) {
+    global TOOLTIP_SLOT
+    if (ms < 5000)
+        ms := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (ms > 0)
-        SetTimer(() => ToolTip(), -ms)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -ms)
 }
 
 WriteLog(msg) {

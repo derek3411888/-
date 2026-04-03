@@ -26,6 +26,7 @@ RegisterLifecycleLogging("全自動")
 global RUN_ID := A_Now "@" A_TickCount
 global RUN_START_TS := A_Now
 global STEP_SEQ := 0
+global TOOLTIP_SLOT := 21
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
@@ -56,10 +57,13 @@ global SERVER_SWITCH_POINT_Y := 549
 OnExit(RestoreWutheringAudioOnExit)
 
 ; 提示工具（開頭加5個空白避免被滑鼠遮擋）
-ShowTip(msg, duration := 1200) {
-    ToolTip "          " msg
+ShowTip(msg, duration := 5000) {
+    global TOOLTIP_SLOT
+    if (duration < 5000)
+        duration := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(), -duration)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
 }
 
 ; 去除路徑前後的引號和空白
@@ -410,7 +414,13 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName, 700)
+    ShowTip("📌 " stepName)
+}
+
+WriteStepResult(stepName, ok, detail := "") {
+    level := ok ? "INFO" : "WARN"
+    status := ok ? "成功" : "失敗"
+    WriteStep(stepName, status (detail != "" ? " | " detail : ""), level)
 }
 
 WriteLog("全自動腳本啟動: " A_ScriptFullPath)
@@ -687,6 +697,7 @@ ExitApp
 
 ; ★ OKWW 啟動＋前置流程（啟動 → 等待 → F11 → 最小化）
 StartOKWWFlow(isRestart) {
+    WriteStep("OKWW流程", "入口 isRestart=" (isRestart ? "1" : "0"))
     WriteLog("啟動 OKWW 管理腳本...")
     if isRestart {
         ShowTip("🔄 重啟模式：重新啟動 OKWW", 1500)
@@ -814,17 +825,21 @@ StartOKWWFlow(isRestart) {
             }
         } catch as e {
             WriteLog("激活OKWW視窗失敗: " e.Message, "ERROR")
+            WriteStepResult("OKWW流程", false, "激活視窗失敗")
         }
     } else {
         WriteLog("無法找到 OKWW 視窗，跳過啟動", "WARN")
+        WriteStepResult("OKWW流程", false, "找不到 OKWW 視窗")
     }
     
     Sleep 1000
     MinimizeOKWWWindows()
+    WriteStepResult("OKWW流程", true, "已完成啟動與最小化")
 }
 
 ; ★ 最小化 OKWW 視窗
 MinimizeOKWWWindows() {
+    WriteStep("最小化OKWW", "入口")
     WriteLog("開始尋找並最小化 OKWW 視窗...")
     foundCount := 0
     
@@ -873,13 +888,16 @@ MinimizeOKWWWindows() {
     if (foundCount > 0) {
         WriteLog("成功最小化 " foundCount " 個 OKWW 視窗")
         ShowTip("📥 已最小化 " foundCount " 個 OKWW 視窗", 1500)
+        WriteStepResult("最小化OKWW", true, "count=" foundCount)
     } else {
         WriteLog("未找到可最小化的 OKWW 視窗", "WARN")
+        WriteStepResult("最小化OKWW", false, "count=0")
     }
 }
 
 ; ★ 啟動前檢測：關閉所有目標程式
 CheckAndCloseExistingProcesses() {
+    WriteStep("清場流程", "入口：檢測並關閉既有進程")
     WriteLog("開始檢測現有程式...")
     
     ; 定義要檢測的程式（使用實際檢測到的程式名稱）
@@ -987,8 +1005,10 @@ CheckAndCloseExistingProcesses() {
         WriteLog("等待程式完全關閉...")
         ShowTip("⏳ 等待程式完全關閉...", 3000)
         WriteLog("啟動前清理完成")
+        WriteStepResult("清場流程", true, "已有進程已清理")
     } else {
         WriteLog("沒有檢測到運行中的目標程式，可以開始主流程")
+        WriteStepResult("清場流程", true, "無需清理")
     }
 }
 
@@ -1068,11 +1088,14 @@ CrashWatcherTick() {
 DetectWutheringAndExit(&loginDetected := false) {
     global WUTHERING_NO_WINDOW_TOLERANCE
 
+    WriteStep("鳴潮檢測", "入口：更新/登入畫面辨識")
+
     loginDetected := false
     SetTitleMatchMode 2
     hwnd := WaitForWutheringGameWindow(120)
     if !hwnd {
         ShowTip("找不到「Client-Win64-Shipping.exe」遊戲視窗（逾時）。", 1200)
+        WriteStepResult("鳴潮檢測", false, "no_window")
         return "no_window"
     }
 
@@ -1113,6 +1136,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             noWindowStreak += 1
             if (noWindowStreak >= WUTHERING_NO_WINDOW_TOLERANCE) {
                 WriteLog("檢測途中連續 " noWindowStreak " 次失去鳴潮視窗，標記為 no_window", "WARN")
+                WriteStepResult("鳴潮檢測", false, "no_window_streak=" noWindowStreak)
                 return "no_window"
             }
             WriteLog("檢測途中短暫找不到鳴潮視窗（" noWindowStreak "/" WUTHERING_NO_WINDOW_TOLERANCE "），等待後重試", "WARN")
@@ -1215,6 +1239,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             ShowTip("✅ 偵測到更新完成 → 點擊按鈕", 800)
             MouseClick "left", btnCenter[1], btnCenter[2]
             ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
+            WriteStepResult("鳴潮檢測", true, "update")
             return "update"
         }
         
@@ -1225,6 +1250,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             MuteWutheringAudioAtStartup()
             TryMuteWutheringAudio("檢測到登入畫面後")
             ShowTip("✅ 檢測到登入畫面，無需更新", 1000)
+            WriteStepResult("鳴潮檢測", true, "login(btn)")
             return "login"
         }
         
@@ -1235,6 +1261,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             MuteWutheringAudioAtStartup()
             TryMuteWutheringAudio("檢測到登入UI後")
             ShowTip("✅ 檢測到登入畫面UI，無需更新", 1000)
+            WriteStepResult("鳴潮檢測", true, "login(ui)")
             return "login"
         }
         
@@ -1242,11 +1269,13 @@ DetectWutheringAndExit(&loginDetected := false) {
     }
 
     ShowTip("未檢測到更新或登入畫面，回傳 unknown。", 900)
+    WriteStepResult("鳴潮檢測", false, "unknown")
     return "unknown"
 }
 
 ; B) 去抖動主畫面模板比對（右下 ROI）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
+    WriteStep("主畫面模板驗證", "入口 timeout=" timeoutSec "s")
     oldPixelMode := A_CoordModePixel
     CoordMode "Pixel", "Screen"
 
@@ -1254,6 +1283,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
         hwnd := GetWutheringGameHwnd()
         if !hwnd {
             CoordMode "Pixel", oldPixelMode
+            WriteStepResult("主畫面模板驗證", false, "無有效視窗")
             return false
         }
     }
@@ -1263,6 +1293,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     if !FileExist(templateFile) {
         WriteLog("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
         CoordMode "Pixel", oldPixelMode
+        WriteStepResult("主畫面模板驗證", false, "模板不存在")
         return false
     }
 
@@ -1323,6 +1354,8 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             stable += 1
             ShowTip("✅ 模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）", 600)
             if (stable >= stableNeeded) {
+                CoordMode "Pixel", oldPixelMode
+                WriteStepResult("主畫面模板驗證", true, "樣本=" sampleCount " var=" matchedVar)
                 return true
             }
         } else {
@@ -1340,6 +1373,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
 
     WriteLog("模板驗證超時: 樣本=" sampleCount " 未達連續命中 " stableNeeded, "WARN")
     CoordMode "Pixel", oldPixelMode
+    WriteStepResult("主畫面模板驗證", false, "超時樣本=" sampleCount)
     return false
 }
 
@@ -1371,9 +1405,12 @@ ClickWindowCenter(hwnd) {
 EnsureWutheringRunning() {
     global WUTHERING_STARTUP_WAIT_SEC
 
+    WriteStep("啟動鳴潮", "入口")
+
     ; ✅ 只檢查遊戲進程是否存在，不檢查視窗尺寸
     ;    這樣防止因視窗最小化而誤判為「遊戲未運行」
     if (IsWutheringProcessRunning()) {
+        WriteStepResult("啟動鳴潮", true, "進程已存在")
         return true
     }
     
@@ -1381,6 +1418,7 @@ EnsureWutheringRunning() {
     if (!path) {
         WriteLog("未設定鳴潮路徑，無法啟動", "ERROR")
         MsgBox "未設定鳴潮遊戲路徑。請重新執行並選擇。"
+        WriteStepResult("啟動鳴潮", false, "未設定路徑")
         ExitApp
     }
     WriteLog("啟動鳴潮: " path)
@@ -1389,6 +1427,7 @@ EnsureWutheringRunning() {
     catch as e {
         WriteLog("啟動鳴潮失敗: " e.Message, "ERROR")
         ShowTip("❌ 鳴潮啟動失敗", 1500)
+        WriteStepResult("啟動鳴潮", false, "Run失敗")
         return false
     }
 
@@ -1396,12 +1435,14 @@ EnsureWutheringRunning() {
     if !WaitForProcessRunning("Client-Win64-Shipping.exe", WUTHERING_STARTUP_WAIT_SEC) {
         WriteLog("鳴潮啟動後逾時，未偵測到進程（" WUTHERING_STARTUP_WAIT_SEC " 秒）", "ERROR")
         ShowTip("❌ 鳴潮啟動逾時", 1800)
+        WriteStepResult("啟動鳴潮", false, "進程逾時")
         return false
     }
 
     ; 給初始化中的視窗一點緩衝，避免剛啟動就誤判 no_window。
     Sleep 2000
     WriteLog("已偵測到鳴潮進程，繼續後續視窗檢測")
+    WriteStepResult("啟動鳴潮", true, "進程已就緒")
     return true
 }
 
@@ -2994,14 +3035,20 @@ MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
 TrySelectScheduledServer(hwnd, attempt := 1) {
     global CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
 
-    if (CURRENT_SERVER_TARGET = "")
+    WriteStep("伺服器切換", "入口 target=" CURRENT_SERVER_TARGET " attempt=" attempt)
+
+    if (CURRENT_SERVER_TARGET = "") {
+        WriteStepResult("伺服器切換", true, "目標為空，略過")
         return true
+    }
     if !hwnd
         return false
 
     maxAttempts := 3
-    if (attempt > maxAttempts)
+    if (attempt > maxAttempts) {
+        WriteStepResult("伺服器切換", false, "超過最大重試")
         return false
+    }
 
     WriteLog("伺服器排程：準備選擇伺服器 -> " CURRENT_SERVER_TARGET "（嘗試 " attempt "/" maxAttempts "）")
     try WinActivate "ahk_id " hwnd
@@ -3040,11 +3087,13 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     if preMatched {
         WriteLog("伺服器排程：登入畫面已是目標伺服器 " CURRENT_SERVER_TARGET "，略過切換動作")
+        WriteStepResult("伺服器切換", true, "已是目標伺服器")
         return true
     }
 
     if (CURRENT_SERVER_TARGET = "") {
         WriteLog("伺服器排程：目標伺服器為空，略過切換")
+        WriteStepResult("伺服器切換", true, "目標為空")
         return true
     }
 
@@ -3123,6 +3172,7 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     if !targetClicked {
         WriteLog("伺服器排程：未在列表中找到目標伺服器文字 -> " CURRENT_SERVER_TARGET, "WARN")
+        WriteStepResult("伺服器切換", false, "找不到目標伺服器文字")
         Sleep 800
         return TrySelectScheduledServer(hwnd, attempt + 1)
     }
@@ -3166,10 +3216,12 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     if confirmClicked {
         WriteLog("伺服器排程：伺服器切換完成 -> " CURRENT_SERVER_TARGET)
+        WriteStepResult("伺服器切換", true, "target=" CURRENT_SERVER_TARGET)
         return true
     }
 
     WriteLog("伺服器排程：確認按鈕點擊失敗，準備重試", "WARN")
+    WriteStepResult("伺服器切換", false, "確認按鈕點擊失敗")
     Sleep 800
     return TrySelectScheduledServer(hwnd, attempt + 1)
 }

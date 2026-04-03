@@ -28,6 +28,7 @@ global logger := InitLogger("自動開啟OKWW")
 RegisterLifecycleLogging("自動開啟OKWW")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
+global TOOLTIP_SLOT := 23
 
 ; 日誌函數（使用新的日誌系統，保持RUN_ID兼容性）
 WriteLog(msg, level := "INFO") {
@@ -49,7 +50,7 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName, 700)
+    ShowTip("📌 " stepName)
 }
 
 Log("程序啟動: PID=" DllCall("GetCurrentProcessId") " 腳本=" A_ScriptFullPath)
@@ -81,10 +82,13 @@ Log("dataDir=" dataDir)
 Log("CFG_FILE=" CFG_FILE)
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
-ShowTip(msg, duration := 1200) {
-    ToolTip "          " msg
+ShowTip(msg, duration := 5000) {
+    global TOOLTIP_SLOT
+    if (duration < 5000)
+        duration := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(), -duration)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
 }
 
 ; 去除路徑前後的引號和空白

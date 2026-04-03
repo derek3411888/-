@@ -4,11 +4,15 @@ SetWorkingDir A_ScriptDir
 
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
+global TOOLTIP_SLOT := 27
 
-ShowTip(msg, duration := 900) {
-    ToolTip "          " msg
+ShowTip(msg, duration := 5000) {
+    global TOOLTIP_SLOT
+    if (duration < 5000)
+        duration := 5000
+    ToolTip "          " msg, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(), -duration)
+        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
 }
 
 WriteLog(msg, level := "INFO") {
@@ -49,7 +53,7 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName, 700)
+    ShowTip("📌 " stepName)
 }
 
 cfgPath := A_ScriptDir "\mail_config.ini"
