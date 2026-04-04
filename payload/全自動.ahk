@@ -514,6 +514,14 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
 
 LoadServerScheduleContext(isNextServerCycle)
 
+if MAIL_NOTIFY_ENABLED {
+    startMailResult := SendStartNotifyMail()
+    if startMailResult.ok
+        WriteLog("開始通知信已寄出")
+    else
+        WriteLog("開始通知信寄送失敗: " startMailResult.message, "WARN")
+}
+
 ; 1) 先處理鳴潮更新／登入，OKWW 之後再啟動
 maxUpdateLoops := 3
 updateLoops := 0
@@ -2127,10 +2135,64 @@ SendShutdownNotifyMail() {
 
     nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     subject := subjectPrefix " 關閉完成通知 " nowText
-    serverInfo := (CURRENT_SERVER_TARGET != "" ? "伺服器：" CURRENT_SERVER_TARGET "`r`n" : "")
-    body := "全自動收尾已完成。`r`n時間：" nowText "`r`n主機：" A_ComputerName "`r`n" serverInfo "腳本：" A_ScriptFullPath
+    body := BuildNotifyMailBody("全自動收尾已完成。", nowText)
 
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
+}
+
+SendStartNotifyMail() {
+    global CFG_FILE, MAIL_SECTION
+
+    state := ReadCombinedConfigState()
+    if state.needSetup {
+        WriteLog("開始寄信前偵測到設定缺漏，重新打開整合設定視窗", "WARN")
+        ok := ShowCombinedConfigSetupGui(CFG_FILE, MAIL_SECTION, state, "開始寄信前偵測到設定有空白或錯誤")
+        if !ok
+            return { ok: false, message: "使用者取消整合設定" }
+
+        state := ReadCombinedConfigState()
+        if state.needSetup
+            return { ok: false, message: "設定仍不完整: " state.errorText }
+    }
+
+    cfgPath := Trim(CFG_FILE, " `t`r`n")
+    section := Trim(MAIL_SECTION, " `t`r`n")
+    if (cfgPath = "")
+        return { ok: false, message: "CFG_FILE 未設定" }
+    if !FileExist(cfgPath)
+        return { ok: false, message: "找不到設定檔: " cfgPath }
+
+    smtpHost := Trim(IniRead(cfgPath, section, "smtp_host", ""), " `t`r`n")
+    smtpPort := Trim(IniRead(cfgPath, section, "smtp_port", "587"), " `t`r`n")
+    smtpUser := Trim(IniRead(cfgPath, section, "smtp_user", ""), " `t`r`n")
+    smtpPass := Trim(IniRead(cfgPath, section, "smtp_pass", ""), " `t`r`n")
+    if (smtpPass = "")
+        smtpPass := Trim(IniRead(cfgPath, section, "smtp_password", ""), " `t`r`n")
+    mailFrom := Trim(IniRead(cfgPath, section, "from", ""), " `t`r`n")
+    mailTo := Trim(IniRead(cfgPath, section, "to", ""), " `t`r`n")
+    subjectPrefix := Trim(IniRead(cfgPath, section, "subject_prefix", "LRMCAI"), " `t`r`n")
+    useSsl := Trim(IniRead(cfgPath, section, "use_ssl", "1"), " `t`r`n")
+
+    if (smtpHost = "" || smtpUser = "" || smtpPass = "" || mailFrom = "" || mailTo = "")
+        return { ok: false, message: "mail_config.ini 欄位不完整" }
+    if !(smtpPort ~= "^\d+$")
+        return { ok: false, message: "smtp_port 不是數字: " smtpPort }
+
+    nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    subject := subjectPrefix " 開始鋤地通知 " nowText
+    body := BuildNotifyMailBody("全自動鋤地流程已開始，請勿登入。", nowText)
+    body .= "`r`n提醒：若需要登入，請先執行停止鋤地流程。"
+
+    return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
+}
+
+BuildNotifyMailBody(prefixLine, nowText := "") {
+    if (nowText = "")
+        nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+
+    serverInfo := (CURRENT_SERVER_TARGET != "" ? "伺服器：" CURRENT_SERVER_TARGET "`r`n" : "")
+    modeInfo := "模式：" (A_Args.Length > 0 ? A_Args[1] : "normal") "`r`n"
+    return prefixLine "`r`n時間：" nowText "`r`n主機：" A_ComputerName "`r`n" modeInfo serverInfo "腳本：" A_ScriptFullPath
 }
 
 EnsureMailConfigAtStartup() {
