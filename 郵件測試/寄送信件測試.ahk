@@ -4,7 +4,7 @@ SetWorkingDir A_ScriptDir
 
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
-global TOOLTIP_SLOT := 27
+global TOOLTIP_SLOT := 7
 
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT

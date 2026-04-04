@@ -30,7 +30,7 @@ global logger := InitLogger("聲骸合成")
 RegisterLifecycleLogging("聲骸合成")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
-global TOOLTIP_SLOT := 22
+global TOOLTIP_SLOT := 2
 logger.log("========== 聲骸合成腳本啟動 ==========")
 
 WriteLog(msg, level := "INFO") {

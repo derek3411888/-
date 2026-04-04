@@ -4,7 +4,7 @@ SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
 global STEP_SEQ := 0
-global TOOLTIP_SLOT := 25
+global TOOLTIP_SLOT := 5
 
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT

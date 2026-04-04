@@ -26,7 +26,7 @@ RegisterLifecycleLogging("全自動")
 global RUN_ID := A_Now "@" A_TickCount
 global RUN_START_TS := A_Now
 global STEP_SEQ := 0
-global TOOLTIP_SLOT := 21
+global TOOLTIP_SLOT := 1
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"

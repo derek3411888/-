@@ -33,7 +33,7 @@ global STAT_SKIP := 0
 global STAT_LAST_VAR := "-"
 global STAT_START_TICK := 0
 global LOG_FILE := A_ScriptDir "\\test_log.txt"
-global TOOLTIP_SLOT := 28
+global TOOLTIP_SLOT := 8
 
 #Include ..\..\payload\plugin\ImagePut-1.11\ImagePut.ahk
 

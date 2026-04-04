@@ -11,7 +11,7 @@ global logger := InitLogger("開啟LRMC")
 RegisterLifecycleLogging("開啟LRMC")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
-global TOOLTIP_SLOT := 24
+global TOOLTIP_SLOT := 4
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
