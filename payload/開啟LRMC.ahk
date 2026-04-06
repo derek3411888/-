@@ -12,6 +12,12 @@ RegisterLifecycleLogging("開啟LRMC")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 4
+global HOTKEY_MODE := false
+
+if A_Args.Length > 0 && A_Args[1] = "hotkey" {
+    HOTKEY_MODE := true
+    Log("檢測到 hotkey 模式，將略過 OCR『副本』搜尋")
+}
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
@@ -497,6 +503,15 @@ try {
 }
 
 Sleep 2000
+
+if (HOTKEY_MODE) {
+    Log("hotkey 模式啟動，直接送出 Ctrl+F1")
+    ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+    SendCtrlF1(pid, ocrHwnd)
+    Log("已發送 Ctrl+F1")
+    Log("LRMC 啟動流程完成")
+    ExitApp
+}
 
 Log("開始 OCR 識別...")
 WriteStep("OCR", "搜尋『副本』按鈕")

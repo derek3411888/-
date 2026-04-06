@@ -493,6 +493,7 @@ WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 ; 檢查是否為重啟模式（遊戲更新後需要重新啟動OKWW）
 isRestart := false
 isNextServerCycle := false
+global CRASH_RESTART_MODE := false
 if A_Args.Length > 0 && A_Args[1] = "restart" {
     isRestart := true
     WriteLog("檢測到重啟模式，遊戲更新後將重新啟動OKWW")
@@ -504,6 +505,11 @@ if A_Args.Length > 0 && A_Args[1] = "restart" {
             detail .= " @ " prevTime
         WriteStep("上次重啟原因", detail, "WARN")
     }
+}
+
+if A_Args.Length > 1 && A_Args[1] = "restart" && A_Args[2] = "crash" {
+    CRASH_RESTART_MODE := true
+    WriteLog("檢測到崩潰重啟模式，LRMCAI 將使用快捷鍵啟動")
 }
 
 isNextServerCycle := false
@@ -686,7 +692,10 @@ try {
 ; 4) 啟動 LRMC 管理腳本（由該腳本負責LRMC的啟動與管理）
 WriteLog("啟動 LRMC 管理腳本...")
 WriteStep("啟動LRMC", "交由開啟LRMC.ahk 控制")
-Run('"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk"')
+lrmcCmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk"'
+if (CRASH_RESTART_MODE)
+    lrmcCmd .= ' hotkey'
+Run(lrmcCmd)
 ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 
 
@@ -1086,7 +1095,7 @@ CrashWatcherTick() {
         ; 以 AhkExe 重新啟動整支腳本，添加 restart 參數
         ; 重啟後將重新啟動 OKWW，確保崩潰後的完整恢復
         global AhkExe
-        Run('"' AhkExe '" "' A_ScriptFullPath '" restart')
+        Run('"' AhkExe '" "' A_ScriptFullPath '" restart crash')
         ExitApp
     } finally busy := false
 }
@@ -1748,20 +1757,22 @@ ToSimp(s) {
 }
 
 RequestRestart(reason, level := "ERROR") {
-    global LAST_RESTART_REASON
+    global LAST_RESTART_REASON, CRASH_RESTART_MODE
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
         reason := "未提供"
 
     LAST_RESTART_REASON := reason
+    if RegExMatch(reason, "i)(崩潰|閃退|crash)")
+        CRASH_RESTART_MODE := true
     WriteLog("觸發重啟請求，原因: " reason, level)
     RestartAutoScript(reason)
 }
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
 RestartAutoScript(reason := "") {
-    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON
+    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, CRASH_RESTART_MODE
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
@@ -1800,7 +1811,10 @@ RestartAutoScript(reason := "") {
     ; 重新啟動腳本
     WriteLog("重新啟動全自動腳本...")
     try {
-        Run('"' A_ScriptFullPath '"')
+        restartCmd := '"' A_ScriptFullPath '" restart'
+        if (CRASH_RESTART_MODE)
+            restartCmd .= ' crash'
+        Run(restartCmd)
         WriteLog("重啟命令已發送")
     } catch as e {
         WriteLog("重啟失敗: " e.Message, "ERROR")
