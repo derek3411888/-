@@ -296,6 +296,168 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
     }
 }
 
+; ===========================
+; 檢查並應用 Launcher 遠端更新
+; ===========================
+; 檢查 launcher exe 是否需要更新，如需要則下載、驗證、替換
+; 注意：exe 本身被占用，無法直接覆蓋，需透過批處理進行延遲替換
+TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
+    WriteLog("開始檢查 launcher 遠端更新...")
+    
+    try {
+        launcherVer := Trim(JsonGetString(manifestText, "launcher_version"), " `t`r`n")
+        launcherUrl := Trim(JsonGetString(manifestText, "launcher_url"), " `t`r`n")
+        launcherSha := StrLower(Trim(JsonGetString(manifestText, "launcher_sha256"), " `t`r`n"))
+        
+        if (launcherVer = "" || launcherUrl = "") {
+            WriteLog("manifest 未提供 launcher 更新資訊，跳過更新檢查")
+            return false
+        }
+        
+        currentVerFile := dataDir "\\launcher_current_version.txt"
+        currentVer := ""
+        if FileExist(currentVerFile) {
+            try currentVer := Trim(FileRead(currentVerFile, "UTF-8"), " `t`r`n")
+        }
+        
+        if (launcherVer = currentVer) {
+            WriteLog("launcher 版本一致，無需更新：" launcherVer)
+            return false
+        }
+        
+        WriteLog("檢測到 launcher 新版本：" currentVer " -> " launcherVer)
+        
+        ; 下載新 launcher exe
+        exeTmp := A_Temp "\\launcher_update_" A_TickCount ".exe"
+        try {
+            WriteLog("正在下載新 launcher 版本 " launcherVer)
+            HttpDownloadFile(launcherUrl, exeTmp)
+        } catch as e {
+            WriteLog("下載 launcher 更新失敗: " e.Message, "WARN")
+            return false
+        }
+        
+        ; 驗證 SHA256（如果提供了的話）
+        if (launcherSha != "") {
+            gotSha := GetFileSha256(exeTmp)
+            if (gotSha = "") {
+                WriteLog("無法計算 launcher 更新包 SHA256", "WARN")
+                try FileDelete(exeTmp)
+                return false
+            }
+            
+            if (gotSha != launcherSha) {
+                WriteLog("launcher 更新包 SHA256 不符，預期=" launcherSha " 實際=" gotSha, "WARN")
+                try FileDelete(exeTmp)
+                return false
+            }
+            
+            WriteLog("launcher 更新包 SHA256 驗證通過")
+        }
+        
+        ; 儲存待替換的 exe 路徑用於下一次重啟後處理
+        launcherBackupFile := dataDir "\\launcher_pending_update.tmp"
+        try {
+            FileAppend(exeTmp, launcherBackupFile, "UTF-8")
+            WriteLog("launcher 待替換檔案已暫存：" exeTmp)
+        } catch as e {
+            WriteLog("無法儲存待替換檔案路徑: " e.Message, "WARN")
+            try FileDelete(exeTmp)
+            return false
+        }
+        
+        ; 記錄新版本號
+        versionBackupFile := dataDir "\\launcher_pending_version.txt"
+        try {
+            FileAppend(launcherVer, versionBackupFile, "UTF-8")
+            WriteLog("已記錄待更新版本號：" launcherVer)
+        } catch {
+            ; 版本號記錄失敗不影響更新流程
+        }
+        
+        return true
+    } catch as e {
+        WriteLog("檢查 launcher 更新時發生異常: " e.Message, "WARN")
+        return false
+    }
+}
+
+; 應用待處理的 launcher 更新（如存在）
+; 此函數在啟動時被調用，用於檢查是否存在上一次下載的新 exe
+ApplyPendingLauncherUpdate(workDir, dataDir) {
+    WriteLog("檢查是否有待應用的 launcher 更新...")
+    
+    launcherBackupFile := dataDir "\\launcher_pending_update.tmp"
+    versionBackupFile := dataDir "\\launcher_pending_version.txt"
+    
+    if !FileExist(launcherBackupFile) {
+        WriteLog("無待應用的 launcher 更新")
+        return false
+    }
+    
+    try {
+        newExePath := Trim(FileRead(launcherBackupFile, "UTF-8"), " `t`r`n")
+        if !FileExist(newExePath) {
+            WriteLog("待替換 exe 檔案不存在，清理狀態檔", "WARN")
+            try FileDelete(launcherBackupFile)
+            try FileDelete(versionBackupFile)
+            return false
+        }
+        
+        currentExePath := A_ScriptFullPath
+        if !FileExist(currentExePath) {
+            WriteLog("當前 exe 路徑無效", "WARN")
+            try FileDelete(launcherBackupFile)
+            return false
+        }
+        
+        ; 使用 PowerShell 進行受限的文件替換（需管理員權限）
+        if !A_IsAdmin {
+            WriteLog("警告：無法應用待更新的 launcher，因無管理員權限", "WARN")
+            return false
+        }
+        
+        ; 嘗試直接替換（如果當前 exe 能被關閉）
+        WriteLog("準備替換 launcher exe...")
+        replaceBat := workDir "\\launcher_replace_" A_TickCount ".bat"
+        
+        ; 使用更清晰的字符串拼接方式，避免複雜的雙引號
+        batLines := []
+        batLines.Push("@echo off")
+        batLines.Push("setlocal enabledelayedexpansion")
+        batLines.Push("timeout /t 2 /nobreak")
+        batLines.Push("if exist " . QuoteForBat(currentExePath) . " (")
+        batLines.Push("  del /f /q " . QuoteForBat(currentExePath) . " 2>nul")
+        batLines.Push(")")
+        batLines.Push("move /y " . QuoteForBat(newExePath) . " " . QuoteForBat(currentExePath) . " >nul 2>&1")
+        batLines.Push("if !errorlevel! equ 0 (")
+        batLines.Push("  " . QuoteForBat(versionBackupFile) . " was updated successfully")
+        batLines.Push(")")
+        batLines.Push("del /f /q " . QuoteForBat(replaceBat) . " 2>nul")
+        
+        batContent := ""
+        for _, line in batLines {
+            batContent .= line "`r`n"
+        }
+        
+        try FileAppend(batContent, replaceBat, "UTF-8")
+        
+        ; 後台執行替換批處理，不等待完成
+        try Run(replaceBat, , "Hide")
+        
+        WriteLog("launcher 更新批處理已提交後台執行")
+        return true
+    } catch as e {
+        WriteLog("應用待更新 launcher 時發生異常: " e.Message, "WARN")
+        return false
+    }
+}
+
+; 為批處理腳本中的路徑添加引號
+QuoteForBat(path) {
+    return "`"" path "`""
+}
+
 ; 設置進程優先級為普通，減少系統負擔
 try {
     ProcessSetPriority("Normal", DllCall("GetCurrentProcessId"))
@@ -531,6 +693,10 @@ remotePreparedVersion := ""
 payloadMainPath := APP_DIR "\" MAIN_FILE
 payloadHealthy := DirExist(APP_DIR) && FileExist(payloadMainPath)
 
+; ========== 檢查 Launcher 更新 ==========
+; 首先嘗試應用上次下載的待更新 launcher（如存在）
+ApplyPendingLauncherUpdate(WORK_DIR, DATA_DIR)
+
 ; 若本地 payload 缺檔，優先嘗試從遠端重抓同版本內容修復
 if !payloadHealthy {
     needUnpack := true
@@ -543,6 +709,31 @@ if !payloadHealthy {
 } else if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion) {
     needUnpack := true
     WriteLog("遠端更新已準備完成，強制執行解壓更新")
+    
+    ; 同時檢查 launcher 更新（必須在成功獲取 payload 後，因為需要 manifest 內容）
+    ; 注意：此處需要重新讀取 manifest 以取得 launcher 資訊
+    try {
+        cfgFile := DATA_DIR "\\config.ini"
+        defaultManifestUrl := "https://api.github.com/repos/derek3411888/-/contents/update_manifest.example.json?ref=main"
+        manifestUrl := Trim(IniReadSafe(cfgFile, "updater", "manifest_url", defaultManifestUrl), ' "')
+        
+        if (manifestUrl != "") {
+            try {
+                manifestApiUrl := ConvertToGitHubApiUrl(manifestUrl)
+                manifestText := HttpGetText(manifestApiUrl, Map("Accept", "application/vnd.github.raw+v3"))
+                
+                if (manifestText != "") {
+                    if TryPrepareRemoteLauncherUpdate(WORK_DIR, DATA_DIR, manifestText) {
+                        WriteLog("檢測到 launcher 新版本，已準備下載並待下次重啟時應用")
+                    }
+                }
+            } catch as e {
+                WriteLog("檢查 launcher 更新時失敗: " e.Message, "WARN")
+            }
+        }
+    } catch {
+        ; launcher 更新檢查失敗不應中斷主流程
+    }
 }
 
 ; 如果有命令列參數 --force-update，強制重新解壓
