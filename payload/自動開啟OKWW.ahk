@@ -60,10 +60,13 @@ WriteStep("啟動", "AHK=" A_AhkVersion)
 ; ⛑️ 自動提權（提權前也先記一筆）
 if !A_IsAdmin {
     Log("需要管理員權限，嘗試提權", "INFO")
-    if FileExist(BUNDLED_AHK_EXE)
-        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
-    else
+    if FileExist(BUNDLED_AHK_EXE) {
+        try {
+            Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+        }
+    } else {
         MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
+    }
     ExitApp
 }
 

@@ -5,10 +5,13 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
 ; 🛡️ 自動提權
 if !A_IsAdmin {
-    if FileExist(BUNDLED_AHK_EXE)
-        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
-    else
+    if FileExist(BUNDLED_AHK_EXE) {
+        try {
+            Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+        }
+    } else {
         MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
+    }
     ExitApp
 }
 

@@ -57,10 +57,13 @@ try {
 ; 管理員提權
 if !A_IsAdmin {
     Log("需要管理員權限，嘗試提權...")
-    if FileExist(BUNDLED_AHK_EXE)
-        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
-    else
+    if FileExist(BUNDLED_AHK_EXE) {
+        try {
+            Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+        }
+    } else {
         MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
+    }
     ExitApp
 }
 
