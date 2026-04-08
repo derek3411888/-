@@ -3,6 +3,7 @@
 #Warn
 SetWorkingDir A_ScriptDir
 #Warn LocalSameAsGlobal, Off
+global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
@@ -59,7 +60,10 @@ WriteStep("啟動", "AHK=" A_AhkVersion)
 ; ⛑️ 自動提權（提權前也先記一筆）
 if !A_IsAdmin {
     Log("需要管理員權限，嘗試提權", "INFO")
-    try Run('*RunAs "' A_ScriptFullPath '"')
+    if FileExist(BUNDLED_AHK_EXE)
+        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+    else
+        MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
     ExitApp
 }
 
@@ -94,6 +98,25 @@ ShowTip(msg, duration := 5000) {
 ; 去除路徑前後的引號和空白
 NormalizePath(p) {
     return Trim(p, ' "')
+}
+
+ResolveBundledAhkExe() {
+    candidates := []
+    candidates.Push(A_ScriptDir "\..\AutoHotkey64.exe")
+    candidates.Push(A_ScriptDir "\AutoHotkey64.exe")
+
+    packAppDir := EnvGet("PACK_APP_DIR")
+    if (packAppDir != "") {
+        candidates.Push(StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe")
+        candidates.Push(packAppDir "\AutoHotkey64.exe")
+    }
+
+    for _, candidate in candidates {
+        path := Trim(candidate, ' "')
+        if (path != "" && FileExist(path))
+            return path
+    }
+    return ""
 }
 
 ; ===== 快捷鍵 =====

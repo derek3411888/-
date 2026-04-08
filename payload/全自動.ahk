@@ -1,10 +1,14 @@
 ﻿#Requires AutoHotkey v2.0+
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
+global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
 ; 🛡️ 自動提權
 if !A_IsAdmin {
-    try Run('*RunAs "' A_ScriptFullPath '"')
+    if FileExist(BUNDLED_AHK_EXE)
+        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+    else
+        MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
     ExitApp
 }
 
@@ -69,6 +73,25 @@ ShowTip(msg, duration := 5000) {
 ; 去除路徑前後的引號和空白
 NormalizePath(p) {
     return Trim(p, ' "')
+}
+
+ResolveBundledAhkExe() {
+    candidates := []
+    candidates.Push(A_ScriptDir "\..\AutoHotkey64.exe")
+    candidates.Push(A_ScriptDir "\AutoHotkey64.exe")
+
+    packAppDir := EnvGet("PACK_APP_DIR")
+    if (packAppDir != "") {
+        candidates.Push(StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe")
+        candidates.Push(packAppDir "\AutoHotkey64.exe")
+    }
+
+    for _, candidate in candidates {
+        path := Trim(candidate, ' "')
+        if (path != "" && FileExist(path))
+            return path
+    }
+    return ""
 }
 
 MuteWutheringAudioAtStartup() {
@@ -433,25 +456,15 @@ SetKeyDelay 40, 40
 
 
 ; === 使用啟動器解壓的位置 ===
-; 現在AutoHotkey64.exe位於工作目錄的上層（自動鋤地資料夾）
-AhkExe := A_ScriptDir "\..\AutoHotkey64.exe"
+; 現在 AutoHotkey64.exe 位於工作目錄的上層（自動鋤地資料夾）
+AhkExe := BUNDLED_AHK_EXE
 WriteLog("嘗試使用 AutoHotkey: " AhkExe)
 if !FileExist(AhkExe) {
-    WriteLog("未找到預設位置的 AutoHotkey，嘗試從環境變數獲取", "WARN")
-    ; 如果找不到，嘗試從環境變數獲取
-    packAppDir := EnvGet("PACK_APP_DIR")
-    if (packAppDir != "") {
-        AhkExe := StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe"
-        WriteLog("從環境變數嘗試路徑: " AhkExe)
-    }
-    if !FileExist(AhkExe) {
-        WriteLog("找不到任何 AutoHotkey 執行檔: " AhkExe, "ERROR")
-        MsgBox "找不到 AutoHotkey64.exe：`n" AhkExe "`n請先執行「打包啟動器」完成解壓。"
-        ExitApp
-    }
-} else {
-    WriteLog("成功找到 AutoHotkey: " AhkExe)
+    WriteLog("找不到任何 AutoHotkey 執行檔: " AhkExe, "ERROR")
+    MsgBox "找不到 AutoHotkey64.exe：`n" AhkExe "`n請先執行「打包啟動器」完成解壓。"
+    ExitApp
 }
+WriteLog("成功找到 AutoHotkey: " AhkExe)
 
 ; ★ 啟動 UE4 崩潰全域監看（獨立 UE4-Client 視窗）
 StartCrashWatcher()
@@ -2407,6 +2420,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     g.AddText("xm y+10 w120", "to")
     edTo := g.AddEdit("x+10 w500", state.mailTo)
+    g.AddText("x+12 w220 c666666", "可多位：逗號/分號/換行分隔")
 
     g.AddText("xm y+10 w120", "subject_prefix")
     edPrefix := g.AddEdit("x+10 w500", state.subjectPrefix)
@@ -3343,12 +3357,22 @@ OnCombinedSetupClose(*) {
 SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl := "1") {
     psFile := A_Temp "\send_mail_main_" A_TickCount ".ps1"
     errFile := A_Temp "\send_mail_main_err_" A_TickCount ".txt"
+    recipients := ParseMailRecipients(mailTo)
+    if (recipients.Length = 0)
+        return { ok: false, message: "收件者為空，請在 to 填入至少一位收件者" }
+
+    mailToCsv := ""
+    for idx, addr in recipients {
+        if (idx > 1)
+            mailToCsv .= ","
+        mailToCsv .= addr
+    }
 
     escHost := PsEsc(smtpHost)
     escUser := PsEsc(smtpUser)
     escPass := PsEsc(smtpPass)
     escFrom := PsEsc(mailFrom)
-    escTo := PsEsc(mailTo)
+    escToCsv := PsEsc(mailToCsv)
     escSubject := PsEsc(subject)
     escBody := PsEsc(body)
 
@@ -3359,14 +3383,15 @@ SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, s
     script .= "$smtpUser = '" escUser "'`n"
     script .= "$smtpPass = '" escPass "'`n"
     script .= "$mailFrom = '" escFrom "'`n"
-    script .= "$mailTo = '" escTo "'`n"
+    script .= "$mailToCsv = '" escToCsv "'`n"
     script .= "$subject = '" escSubject "'`n"
     script .= "$body = '" escBody "'`n"
     script .= "$useSsl = " ((useSsl = "1" || StrLower(useSsl) = "true") ? "$true" : "$false") "`n"
     script .= "try {`n"
     script .= "  $msg = New-Object System.Net.Mail.MailMessage`n"
     script .= "  $msg.From = $mailFrom`n"
-    script .= "  $msg.To.Add($mailTo)`n"
+    script .= "  $mailToList = $mailToCsv.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }`n"
+    script .= "  foreach ($to in $mailToList) { $msg.To.Add($to) }`n"
     script .= "  $msg.Subject = $subject`n"
     script .= "  $msg.Body = $body`n"
     script .= "  $msg.BodyEncoding = [System.Text.Encoding]::UTF8`n"
@@ -3405,6 +3430,20 @@ SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, s
     if (errMsg = "")
         errMsg := "PowerShell SMTP 呼叫失敗，ExitCode=" exitCode
     return { ok: false, message: errMsg }
+}
+
+ParseMailRecipients(mailToText) {
+    text := StrReplace(mailToText, "`r`n", ",")
+    text := StrReplace(text, "`n", ",")
+    text := StrReplace(text, ";", ",")
+
+    recipients := []
+    for _, part in StrSplit(text, ",") {
+        addr := Trim(part, " `t`r`n")
+        if (addr != "")
+            recipients.Push(addr)
+    }
+    return recipients
 }
 
 PsEsc(text) {

@@ -480,29 +480,9 @@ try {
         WriteLog("發現現有的 AutoHotkey64.exe: " ahkPath)
         ; 繼續使用現有檔案，不重設 ahkPath
     } else {
-        ; 如果本地沒有，尋找系統安裝的版本
-        systemPaths := [
-            A_ProgramFiles "\AutoHotkey\AutoHotkey.exe",
-            "C:\Program Files\AutoHotkey\AutoHotkey.exe",
-            "C:\AutoHotkey\AutoHotkey.exe"
-        ]
-        
-        foundSystemAhk := ""
-        for sysPath in systemPaths {
-            if FileExist(sysPath) {
-                foundSystemAhk := sysPath
-                WriteLog("找到系統安裝的 AutoHotkey: " sysPath)
-                break
-            }
-        }
-        
-        if foundSystemAhk {
-            ahkPath := foundSystemAhk
-        } else {
-            WriteLog("找不到任何可用的 AutoHotkey 執行檔", "ERROR")
-            MsgBox("錯誤：找不到 AutoHotkey 執行檔！`n`n請確保：`n1. AutoHotkey64.exe 已內嵌到程式中`n2. 或系統已安裝 AutoHotkey v2`n`n下載網址：https://www.autohotkey.com", "缺少AutoHotkey", 16)
-            ExitApp
-        }
+        WriteLog("找不到任何可用的 AutoHotkey64.exe", "ERROR")
+        MsgBox("錯誤：找不到 AutoHotkey64.exe！`n`n請確認程式檔案完整（需包含內附 AutoHotkey64.exe）。", "缺少AutoHotkey", 16)
+        ExitApp
     }
 }
 
@@ -820,7 +800,7 @@ if needUnpack {
 ; 確認 AutoHotkey 執行檔可用
 if !FileExist(ahkPath) {
     WriteLog("錯誤：AutoHotkey 執行檔不存在: " ahkPath, "ERROR")
-    MsgBox("錯誤：找不到 AutoHotkey 執行檔！`n`n請確保：`n1. AutoHotkey64.exe 已包含在程式中`n2. 或系統已安裝 AutoHotkey v2`n`n下載網址：https://www.autohotkey.com", "缺少AutoHotkey", 16)
+    MsgBox("錯誤：找不到 AutoHotkey64.exe！`n`n請確認程式檔案完整（需包含內附 AutoHotkey64.exe）。", "缺少AutoHotkey", 16)
     ExitApp
 }
 

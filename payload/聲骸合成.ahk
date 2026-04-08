@@ -5,10 +5,14 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
+global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
 ; 自動提權
 if !A_IsAdmin {
-    try Run('*RunAs "' A_ScriptFullPath '"')
+    if FileExist(BUNDLED_AHK_EXE)
+        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+    else
+        MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
     ExitApp
 }
 
@@ -24,6 +28,25 @@ catch
 #Include LogManager.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include plugin\RapidOcr\RapidOcr.ahk
+
+ResolveBundledAhkExe() {
+    candidates := []
+    candidates.Push(A_ScriptDir "\..\AutoHotkey64.exe")
+    candidates.Push(A_ScriptDir "\AutoHotkey64.exe")
+
+    packAppDir := EnvGet("PACK_APP_DIR")
+    if (packAppDir != "") {
+        candidates.Push(StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe")
+        candidates.Push(packAppDir "\AutoHotkey64.exe")
+    }
+
+    for _, candidate in candidates {
+        path := Trim(candidate, ' "')
+        if (path != "" && FileExist(path))
+            return path
+    }
+    return ""
+}
 
 ; 初始化日誌
 global logger := InitLogger("聲骸合成")

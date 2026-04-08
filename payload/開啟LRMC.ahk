@@ -13,6 +13,7 @@ global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 4
 global HOTKEY_MODE := false
+global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
 if A_Args.Length > 0 && A_Args[1] = "hotkey" {
     HOTKEY_MODE := true
@@ -56,7 +57,10 @@ try {
 ; 管理員提權
 if !A_IsAdmin {
     Log("需要管理員權限，嘗試提權...")
-    try Run('*RunAs "' A_ScriptFullPath '"')
+    if FileExist(BUNDLED_AHK_EXE)
+        try Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+    else
+        MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
     ExitApp
 }
 
@@ -86,6 +90,25 @@ ShowTip(msg, duration := 5000) {
 ; 去除路徑前後的引號和空白
 NormalizePath(p) {
     return Trim(p, ' "')
+}
+
+ResolveBundledAhkExe() {
+    candidates := []
+    candidates.Push(A_ScriptDir "\..\AutoHotkey64.exe")
+    candidates.Push(A_ScriptDir "\AutoHotkey64.exe")
+
+    packAppDir := EnvGet("PACK_APP_DIR")
+    if (packAppDir != "") {
+        candidates.Push(StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe")
+        candidates.Push(packAppDir "\AutoHotkey64.exe")
+    }
+
+    for _, candidate in candidates {
+        path := Trim(candidate, ' "')
+        if (path != "" && FileExist(path))
+            return path
+    }
+    return ""
 }
 
 CaptureWindowVisibleRegionForOcr(hwnd, outFile) {
@@ -385,17 +408,13 @@ if !targetHwnd {
     ; 重新啟動開啟LRMC.ahk腳本
     Log("重新啟動開啟LRMC.ahk腳本... (第 " newRestartCount " 次重啟)")
     try {
-        ; 尋找 AutoHotkey 執行檔
-        ahkExe := A_ScriptDir "\..\AutoHotkey64.exe"
-        if !FileExist(ahkExe) {
-            packAppDir := EnvGet("PACK_APP_DIR")
-            if (packAppDir != "") {
-                ahkExe := StrReplace(packAppDir, "\payload", "") "\AutoHotkey64.exe"
-            }
-        }
+        ahkExe := BUNDLED_AHK_EXE
         
         if FileExist(ahkExe) {
-            Run('"' ahkExe '" "' A_ScriptFullPath '"')
+            restartCmd := '"' ahkExe '" "' A_ScriptFullPath '"'
+            if (HOTKEY_MODE)
+                restartCmd .= ' hotkey'
+            Run(restartCmd)
             Log("已重新啟動開啟LRMC.ahk腳本 (第 " newRestartCount " 次)")
         } else {
             Log("找不到 AutoHotkey 執行檔，無法重啟", "ERROR")
