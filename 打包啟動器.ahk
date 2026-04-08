@@ -33,6 +33,19 @@ WriteLog(msg, level := "INFO") {
     try FileAppend(line, A_ScriptDir "\打包啟動器_fallback.log", "UTF-8")
 }
 
+ResolveBundledAhkExeForLauncher() {
+    candidates := []
+    candidates.Push(A_ScriptDir "\AutoHotkey64.exe")
+    candidates.Push(A_ScriptDir "\..\AutoHotkey64.exe")
+
+    for _, candidate in candidates {
+        p := Trim(candidate, ' "')
+        if (p != "" && FileExist(p))
+            return p
+    }
+    return ""
+}
+
 JoinArray(items, sep := ",") {
     out := ""
     for idx, v in items {
@@ -294,7 +307,17 @@ try {
 ; 需要系統管理員（若無權限，提權後結束當前執行）
 if !A_IsAdmin {
     WriteLog("需要管理員權限，嘗試提權...")
-    try Run('*RunAs "' A_ScriptFullPath '"')
+    if A_IsCompiled {
+        ; EXE 直接提權重啟自身，不依賴 .ahk 關聯。
+        try Run('*RunAs "' A_ScriptFullPath '"')
+    } else {
+        bundledAhk := ResolveBundledAhkExeForLauncher()
+        if FileExist(bundledAhk) {
+            try Run('*RunAs "' bundledAhk '" "' A_ScriptFullPath '"')
+        } else {
+            MsgBox("錯誤：找不到 AutoHotkey64.exe！`n`n請確認程式檔案完整（需包含內附 AutoHotkey64.exe）。", "缺少AutoHotkey", 16)
+        }
+    }
     ExitApp
 }
 
