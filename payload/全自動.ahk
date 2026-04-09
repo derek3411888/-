@@ -41,6 +41,7 @@ global REWARD_START_DELAY_MS := 60000
 global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
+global REWARD_INVALID_HWND_NEED_COUNT := 6
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
 global __MAIL_SETUP := ""
@@ -533,6 +534,9 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
     isNextServerCycle := true
     WriteLog("檢測到伺服器排程續跑模式，將沿用下一個伺服器索引")
 }
+
+if (!isRestart && !isNextServerCycle)
+    ResetRestartTrackingOnFreshStart()
 
 LoadServerScheduleContext(isNextServerCycle)
 
@@ -1842,7 +1846,7 @@ RestartAutoScript(reason := "") {
 }
 
 MonitorRewardAndShutdown() {
-    global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS, REWARD_MATCH_NEED_COUNT
+    global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS, REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT
 
     logPath := ResolveRewardLogPath()
     if (logPath = "") {
@@ -1866,6 +1870,7 @@ MonitorRewardAndShutdown() {
     seenNoReward := false
     seenDailyRewardSuccess := false
     seenSolaraRewardFail := false
+    invalidHwndHits := 0
     WriteLog("開始持續監測『最新新增』日誌，起始偏移: " lastPos)
     ShowTip("🧭 開始監測最新日誌...", 1200)
 
@@ -1876,6 +1881,17 @@ MonitorRewardAndShutdown() {
                 line := Trim(line, "`r`t ")
                 if (line = "")
                     continue
+
+                if IsInvalidWindowHandleLogLine(line) {
+                    invalidHwndHits += 1
+                    WriteLog("監測命中『無效視窗控制代碼』累計次數: " invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT " | " line, "WARN")
+                    if (invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
+                        WriteLog("偵測到大量無效視窗控制代碼，判定為遊戲閃退，觸發重啟", "ERROR")
+                        ShowTip("❌ 偵測遊戲閃退，準備重啟流程", 2500)
+                        RequestRestart("LRMCAI 日誌大量無效視窗控制代碼，疑似遊戲閃退")
+                        return
+                    }
+                }
 
                 if (line ~= "i)(电台.*一键领取|電台.*一鍵領取)") {
                     seenClickReward := true
@@ -2048,6 +2064,23 @@ ReadLogAppended(filePath, &lastPos) {
     } catch {
         return ""
     }
+}
+
+IsInvalidWindowHandleLogLine(line) {
+    return (line ~= "i)(無效(的)?視窗控制代碼|无效(的)?窗口控制代码|无效(的)?视窗控制代码|無效(的)?視窗句柄|无效(的)?窗口句柄|无效(的)?窗口控件句柄|invalid\s+(window\s+)?(handle|hwnd))")
+}
+
+ResetRestartTrackingOnFreshStart() {
+    global CFG_FILE, restartCount, LAST_RESTART_REASON, CRASH_RESTART_MODE
+
+    restartCount := 0
+    LAST_RESTART_REASON := ""
+    CRASH_RESTART_MODE := false
+
+    IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_reason"
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_time"
+    WriteLog("正常首次啟動：已重置重啟計數器與重啟原因")
 }
 
 HandleCycleFinishAndShutdown() {
