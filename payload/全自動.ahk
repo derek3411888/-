@@ -53,6 +53,7 @@ global LAST_RESTART_REASON := ""
 global PROCESS_DETECT_RETRY_COUNT := 6
 global PROCESS_DETECT_RETRY_DELAY_MS := 800
 global WUTHERING_STARTUP_WAIT_SEC := 45
+global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 120
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global SERVER_SCHEDULE_ENABLED := false
 global SERVER_SCHEDULE_LIST := []
@@ -563,7 +564,21 @@ loop {
     if (detectState = "update") {
         updateLoops++
         WriteLog("偵測到鳴潮更新，等待遊戲自動重啟後再次檢測 (" updateLoops "/" maxUpdateLoops ")")
-        Sleep 8000
+            if WaitForWutheringGameWindow(WUTHERING_UPDATE_RECOVERY_WAIT_SEC) {
+                WriteLog("更新後已重新抓到鳴潮視窗，繼續後續檢測")
+                Sleep 8000
+                continue
+            }
+
+            WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，改跑啟動遊戲流程", "WARN")
+            ShowTip("⚠️ 更新後視窗未回來，重跑遊戲啟動", 1800)
+            if LaunchWutheringGameFlowAfterUpdate() {
+                WriteLog("已重新啟動鳴潮，稍後再次檢測")
+                Sleep 5000
+            } else {
+                WriteLog("鳴潮啟動流程未成功，持續等待下一輪檢測", "WARN")
+                Sleep 3000
+            }
         if (updateLoops >= maxUpdateLoops) {
             WriteLog("鳴潮更新檢測達上限，停止自動迴圈，繼續後續流程", "WARN")
             break
@@ -1481,6 +1496,18 @@ EnsureWutheringRunning() {
     WriteLog("已偵測到鳴潮進程，繼續後續視窗檢測")
     WriteStepResult("啟動鳴潮", true, "進程已就緒")
     return true
+}
+
+LaunchWutheringGameFlowAfterUpdate() {
+    WriteLog("準備重新執行鳴潮啟動流程（更新後視窗逾時）")
+    ShowTip("🎮 重新啟動鳴潮中...", 1500)
+
+    try ProcessClose("Client-Win64-Shipping.exe")
+    catch
+        try Run("taskkill /F /IM Client-Win64-Shipping.exe", , "Hide")
+
+    Sleep 1500
+    return EnsureWutheringRunning()
 }
 
 ; ✅ 只檢查遊戲進程是否存在
