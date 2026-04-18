@@ -1,9 +1,9 @@
 ﻿{
-    "version":  "3.31",
+    "version":  "3.32",
     "payload_url":  "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip",
-    "payload_sha256":  "621C3945C7279A32C8099EADA2D3FDF30FDDCE0988DAACFFB400779E8785C181",
+    "payload_sha256":  "035B0CA8E4DE8AF322ED1938072EE541A589FC4EBB78A1812D6BD8C9AC0083C9",
     
-    "launcher_version":  "1.4",
+    "launcher_version":  "1.5",
     "launcher_url":  "https://raw.githubusercontent.com/derek3411888/-/main/全自動鋤地.exe",
-    "launcher_sha256":  "D86E07003DCFF5A386CB2FE6449758A69DD90FD8CDFFB89119CDE6AA36B20FBB"
+    "launcher_sha256":  "8AF34DD0B7D4DD7746B892AC6C7E95C66185D13E5E4001518079BC9C26D177BF"
 }

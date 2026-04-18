@@ -554,6 +554,8 @@ maxUpdateLoops := 3
 updateLoops := 0
 loginDetected := false
 okwwStarted := false
+updateRecoveryActive := false
+updateRecoveryStartTick := 0
 
 EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
@@ -564,21 +566,12 @@ loop {
     if (detectState = "update") {
         updateLoops++
         WriteLog("偵測到鳴潮更新，等待遊戲自動重啟後再次檢測 (" updateLoops "/" maxUpdateLoops ")")
-            if WaitForWutheringGameWindow(WUTHERING_UPDATE_RECOVERY_WAIT_SEC) {
-                WriteLog("更新後已重新抓到鳴潮視窗，繼續後續檢測")
-                Sleep 8000
-                continue
-            }
 
-            WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，改跑啟動遊戲流程", "WARN")
-            ShowTip("⚠️ 更新後視窗未回來，重跑遊戲啟動", 1800)
-            if LaunchWutheringGameFlowAfterUpdate() {
-                WriteLog("已重新啟動鳴潮，稍後再次檢測")
-                Sleep 5000
-            } else {
-                WriteLog("鳴潮啟動流程未成功，持續等待下一輪檢測", "WARN")
-                Sleep 3000
-            }
+        ; 啟用更新後恢復追蹤：若後續長時間 no_window，就主動重跑啟動流程。
+        updateRecoveryActive := true
+        updateRecoveryStartTick := A_TickCount
+        Sleep 8000
+
         if (updateLoops >= maxUpdateLoops) {
             WriteLog("鳴潮更新檢測達上限，停止自動迴圈，繼續後續流程", "WARN")
             break
@@ -587,6 +580,24 @@ loop {
     }
 
     if (detectState = "no_window") {
+        if (updateRecoveryActive) {
+            elapsedSec := Floor((A_TickCount - updateRecoveryStartTick) / 1000)
+            if (elapsedSec >= WUTHERING_UPDATE_RECOVERY_WAIT_SEC) {
+                WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，改跑啟動遊戲流程", "WARN")
+                ShowTip("⚠️ 更新後視窗未回來，重跑遊戲啟動", 1800)
+                if LaunchWutheringGameFlowAfterUpdate() {
+                    WriteLog("已重新啟動鳴潮，稍後再次檢測")
+                    updateRecoveryStartTick := A_TickCount
+                    Sleep 5000
+                } else {
+                    WriteLog("鳴潮啟動流程未成功，持續等待下一輪檢測", "WARN")
+                    Sleep 3000
+                }
+                continue
+            }
+            WriteLog("更新後恢復等待中（" elapsedSec "/" WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒），暫不重啟", "WARN")
+        }
+
         WriteLog("鳴潮視窗尚未就緒（no_window），避免誤判登入，等待後重試", "WARN")
         Sleep 3000
         continue
@@ -595,6 +606,8 @@ loop {
     if (detectState = "unknown") {
         WriteLog("鳴潮狀態尚未明確（unknown），不提前判定登入", "WARN")
     }
+
+    updateRecoveryActive := false
     break
 }
 
