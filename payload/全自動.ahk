@@ -34,6 +34,8 @@ global RUN_ID := A_Now "@" A_TickCount
 global RUN_START_TS := A_Now
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 1
+global TOOLTIP_UNTIL_TICK := 0
+global TOOLTIP_CONTENT := ""
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
@@ -55,6 +57,7 @@ global PROCESS_DETECT_RETRY_DELAY_MS := 800
 global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 120
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
+global WUTHERING_NO_WINDOW_RESTART_SEC := 180
 global SERVER_SCHEDULE_ENABLED := false
 global SERVER_SCHEDULE_LIST := []
 global SERVER_SCHEDULE_INDEX := 1
@@ -67,12 +70,32 @@ OnExit(RestoreWutheringAudioOnExit)
 
 ; 提示工具（開頭加5個空白避免被滑鼠遮擋）
 ShowTip(msg, duration := 5000) {
-    global TOOLTIP_SLOT
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
     if (duration < 5000)
         duration := 5000
-    ToolTip "          " msg, , , TOOLTIP_SLOT
+    msg := StrReplace(msg, "`r", "")
+
+    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
+        TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
+    else
+        TOOLTIP_CONTENT := msg
+
+    display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")
+    TOOLTIP_UNTIL_TICK := A_TickCount + duration
+    expireTick := TOOLTIP_UNTIL_TICK
+
+    ToolTip display, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
+        SetTimer(() => ClearTipIfMatched(expireTick), -duration)
+}
+
+ClearTipIfMatched(expireTick) {
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (TOOLTIP_UNTIL_TICK = expireTick) {
+        ToolTip(, , , TOOLTIP_SLOT)
+        TOOLTIP_UNTIL_TICK := 0
+        TOOLTIP_CONTENT := ""
+    }
 }
 
 ; 去除路徑前後的引號和空白
@@ -556,6 +579,8 @@ loginDetected := false
 okwwStarted := false
 updateRecoveryActive := false
 updateRecoveryStartTick := 0
+noWindowLoopCount := 0
+noWindowSinceTick := 0
 
 EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
@@ -580,28 +605,36 @@ loop {
     }
 
     if (detectState = "no_window") {
+        noWindowLoopCount += 1
+        if (noWindowSinceTick = 0)
+            noWindowSinceTick := A_TickCount
+
         if (updateRecoveryActive) {
             elapsedSec := Floor((A_TickCount - updateRecoveryStartTick) / 1000)
             if (elapsedSec >= WUTHERING_UPDATE_RECOVERY_WAIT_SEC) {
-                WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，改跑啟動遊戲流程", "WARN")
-                ShowTip("⚠️ 更新後視窗未回來，重跑遊戲啟動", 1800)
-                if LaunchWutheringGameFlowAfterUpdate() {
-                    WriteLog("已重新啟動鳴潮，稍後再次檢測")
-                    updateRecoveryStartTick := A_TickCount
-                    Sleep 5000
-                } else {
-                    WriteLog("鳴潮啟動流程未成功，持續等待下一輪檢測", "WARN")
-                    Sleep 3000
-                }
-                continue
+                WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，執行完整重啟流程", "ERROR")
+                ShowTip("⚠️ 更新後超時未啟動，完整重啟流程", 2200)
+                RequestRestart("遊戲更新後點擊確認，等待2分鐘仍未啟動（疑似閃退/當機）")
+                return
             }
             WriteLog("更新後恢復等待中（" elapsedSec "/" WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒），暫不重啟", "WARN")
         }
 
-        WriteLog("鳴潮視窗尚未就緒（no_window），避免誤判登入，等待後重試", "WARN")
+        elapsedNoWindowSec := Floor((A_TickCount - noWindowSinceTick) / 1000)
+        if (elapsedNoWindowSec >= WUTHERING_NO_WINDOW_RESTART_SEC) {
+            WriteLog("鳴潮長時間 no_window（" elapsedNoWindowSec " 秒），判定當機/閃退，執行完整重啟", "ERROR")
+            ShowTip("❌ 鳴潮長時間無視窗，完整重啟流程", 2200)
+            RequestRestart("鳴潮長時間無視窗（疑似閃退/當機）")
+            return
+        }
+
+        WriteLog("鳴潮視窗尚未就緒（no_window），等待後重試（連續=" noWindowLoopCount "，累計=" elapsedNoWindowSec " 秒）", "WARN")
         Sleep 3000
         continue
     }
+
+    noWindowLoopCount := 0
+    noWindowSinceTick := 0
 
     if (detectState = "unknown") {
         WriteLog("鳴潮狀態尚未明確（unknown），不提前判定登入", "WARN")
@@ -1824,7 +1857,7 @@ RequestRestart(reason, level := "ERROR") {
         reason := "未提供"
 
     LAST_RESTART_REASON := reason
-    if RegExMatch(reason, "i)(崩潰|閃退|crash)")
+    if RegExMatch(reason, "i)(崩潰|閃退|當機|卡死|crash|hang)")
         CRASH_RESTART_MODE := true
     WriteLog("觸發重啟請求，原因: " reason, level)
     RestartAutoScript(reason)
