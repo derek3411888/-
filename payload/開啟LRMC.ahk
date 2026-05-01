@@ -311,6 +311,45 @@ findWindow() {
     return 0
 }
 
+; 更健壯的視窗尋找：若依 PID 找不到，嘗試依 exe 名稱或標題關鍵字回退
+findWindowWithFallback() {
+    maxAttempts := 12
+    attempt := 0
+
+    while (attempt < maxAttempts) {
+        attempt++
+        try {
+            ; 優先：同 PID 的視窗
+            for hwnd in WinGetList("ahk_pid " pid) {
+                if (WinGetPID(hwnd) == pid)
+                    return hwnd
+            }
+        } catch {
+        }
+
+        try {
+            ; 回退一：以 exe 名稱搜尋（常見情況：.lnk 會啟動另一個 exe）
+            for hwnd in WinGetList("ahk_exe LRMCAI.exe") {
+                return hwnd
+            }
+        } catch {
+        }
+
+        try {
+            ; 回退二：以標題內含 LRMCAI 的視窗
+            for hwnd in WinGetList() {
+                title := WinGetTitle(hwnd)
+                if InStr(title, "LRMCAI")
+                    return hwnd
+            }
+        } catch {
+        }
+
+        Sleep 500
+    }
+    return 0
+}
+
 targetHwnd := findWindow()
 if !targetHwnd {
     MsgBox "❌ 找不到應用程式視窗"
