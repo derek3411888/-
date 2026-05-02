@@ -57,6 +57,7 @@ RegisterLifecycleLogging("聲骸合成")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 2
+global DATA_DIR := GetDataDir()
 logger.log("========== 聲骸合成腳本啟動 ==========")
 
 WriteLog(msg, level := "INFO") {
@@ -115,14 +116,22 @@ Main() {
         
         ; 開始聲骸合成流程
         WriteStep("聲骸合成流程", "開始執行")
-        RunSynthesisLoop()
-        
-        logger.log("========== 聲骸合成完成 ==========")
-        ShowTip("✅ 聲骸合成流程已完成！", 3000)
-        Sleep 3000
+        success := RunSynthesisLoop()
+
+        if (success) {
+            logger.log("========== 聲骸合成完成 ==========")
+            ShowTip("✅ 聲骸合成流程已完成！", 3000)
+            Sleep 3000
+        } else {
+            logger.log("========== 聲骸合成失敗 ==========", "ERROR")
+            SignalSynthesisFailure("流程中斷：主選單/面板步驟未達成")
+            ShowTip("⚠️ 聲骸合成失敗，已請求主流程重啟", 3000)
+            Sleep 3000
+        }
         
     } catch as e {
         logger.log("執行錯誤: " e.Message, "ERROR")
+        SignalSynthesisFailure("例外: " e.Message)
         ShowTip("⚠️ 執行過程中發生錯誤：" e.Message, 3000)
         Sleep 3000
     }
@@ -138,19 +147,19 @@ RunSynthesisLoop() {
     ; 步驟1：按 Esc 打開主選單（圖2）
     if !OpenMainMenu() {
         logger.log("無法打開主選單", "ERROR")
-        return
+        return false
     }
     
     ; 步驟2：點擊數據屋（圖2 → 圖3）
     if !ClickDataWarehouse() {
         logger.log("無法點擊數據屋", "ERROR")
-        return
+        return false
     }
     
     ; 步驟3：點擊圖3紅框（圖3 → 圖4）
     if !ClickStep3Icon() {
         logger.log("無法點擊圖3目標", "ERROR")
-        return
+        return false
     }
     
     ; 驗證是否正確進入背包面板
@@ -158,7 +167,7 @@ RunSynthesisLoop() {
         logger.log("未正確進入背包面板，流程終止", "ERROR")
         ShowTip("⚠️ 未能正確進入背包面板，請檢查遊戲狀態。", 3000)
         Sleep 3000
-        return
+        return false
     }
     
     ; 進入主迴圈（第16步開始，圖4開始循環）
@@ -263,6 +272,7 @@ RunSynthesisLoop() {
     }
     
     logger.log("批量融合迴圈結束")
+    return true
 }
 
 ; ==================== 各步驟函數 ====================
@@ -287,30 +297,62 @@ FindGameWindow() {
 
 OpenMainMenu() {
     global logger
-    logger.log("按 Esc 打開主選單")
-    ActivateGame()
-    
-    ; 按 Esc
-    Send "{Esc}"
-    Sleep 1500
-    
-    ; 驗證是否打開（OCR 檢測「數據屋」等關鍵字）
+    logger.log("按 Esc 打開主選單（含重試）")
+
+    ; 最多重試 4 次，避免剛進遊戲時 UI 尚未穩定
+    Loop 4 {
+        if !ActivateGame() {
+            logger.log("ActivateGame 失敗，第 " A_Index " 次重試", "WARN")
+            Sleep 800
+            continue
+        }
+
+        ; 若已在主選單，直接成功
+        if IsMainMenuVisible() {
+            logger.log("主選單已打開（進入前已在主選單）")
+            return true
+        }
+
+        ; 先用前景送鍵
+        Send "{Esc}"
+        Sleep 1800
+        if IsMainMenuVisible() {
+            logger.log("主選單已打開（Send Esc）")
+            return true
+        }
+
+        ; 再用 ControlSend 補一次
+        try ControlSend("{Esc}", , "ahk_id " gameWindow)
+        Sleep 1200
+        if IsMainMenuVisible() {
+            logger.log("主選單已打開（ControlSend Esc）")
+            return true
+        }
+
+        logger.log("第 " A_Index " 次嘗試未檢測到主選單", "WARN")
+        Sleep 800
+    }
+
+    logger.log("未檢測到主選單（重試後仍失敗）", "WARN")
+    return false
+}
+
+IsMainMenuVisible() {
+    global logger
+
+    ; OCR 檢測「數據屋」等關鍵字
     result := OCRWindow()
     if !result
         return false
-    
+
     keywords := ["数据坞", "數據屋", "终端", "終端", "设置", "設置"]
     for block in result {
         text := CleanText(block.text)
         for kw in keywords {
-            if InStr(text, kw) {
-                logger.log("主選單已打開")
+            if InStr(text, kw)
                 return true
-            }
         }
     }
-    
-    logger.log("未檢測到主選單", "WARN")
     return false
 }
 
@@ -774,9 +816,39 @@ VerifyBackpackPanel() {
 
 ActivateGame() {
     global gameWindow
-    if gameWindow {
-        WinActivate "ahk_id " gameWindow
-        Sleep 200
+    if !IsValidHwnd(gameWindow) {
+        if !FindGameWindow() || !IsValidHwnd(gameWindow)
+            return false
+    }
+
+    try WinActivate "ahk_id " gameWindow
+    try WinWaitActive "ahk_id " gameWindow, , 0.8
+    Sleep 250
+    return true
+}
+
+GetDataDir() {
+    dataDir := EnvGet("PACK_DATA_DIR")
+    if (dataDir = "") {
+        dataDir := A_ScriptDir "\..\config"
+        if !DirExist(dataDir)
+            dataDir := A_Temp "\okww_runtime\config"
+    }
+    DirCreate dataDir
+    return dataDir
+}
+
+SignalSynthesisFailure(reason := "") {
+    global logger, DATA_DIR
+    flagFile := DATA_DIR "\synthesis_restart.flag"
+    try {
+        FileDelete(flagFile)
+    }
+    try {
+        FileAppend("1|" reason "|" FormatTime(, "yyyy-MM-dd HH:mm:ss"), flagFile, "UTF-8")
+        logger.log("已寫入重啟旗標: " flagFile " reason=" reason, "WARN")
+    } catch as e {
+        logger.log("寫入重啟旗標失敗: " e.Message, "ERROR")
     }
 }
 
