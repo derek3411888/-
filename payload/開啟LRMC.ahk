@@ -350,9 +350,25 @@ findWindowWithFallback() {
     return 0
 }
 
-targetHwnd := findWindow()
+targetHwnd := findWindowWithFallback()
 if !targetHwnd {
-    MsgBox "❌ 找不到應用程式視窗"
+    ; 額外給 UI 緩衝時間，避免剛啟動就誤判失敗
+    Log("首輪未找到 LRMC 視窗，進入延長等待重試...", "WARN")
+    Loop 8 {
+        Sleep 1000
+        targetHwnd := findWindowWithFallback()
+        if (targetHwnd)
+            break
+    }
+}
+
+if !targetHwnd {
+    ; 補充進程狀態，方便辨識是視窗慢啟動還是程式秒退
+    hasProc := ProcessExist("LRMCAI.exe")
+    if (hasProc)
+        MsgBox "❌ 找不到應用程式視窗（LRMCAI 進程存在，但 UI 尚未就緒）"
+    else
+        MsgBox "❌ 找不到應用程式視窗（LRMCAI 可能啟動失敗或秒退）"
     ExitApp
 }
 WriteStep("主窗口定位", "hwnd=" targetHwnd)
@@ -370,6 +386,16 @@ MouseClick "left", NumGet(pt, 0, "int"), NumGet(pt, 4, "int")
 Sleep 300
 
 ; 送出 Enter 鍵
+if !WinExist("ahk_id " targetHwnd) {
+    Log("送 Enter 前視窗已失效，重新定位視窗...", "WARN")
+    targetHwnd := findWindowWithFallback()
+}
+
+if !targetHwnd || !WinExist("ahk_id " targetHwnd) {
+    MsgBox "❌ 目標視窗失效，請重試啟動 LRMCAI"
+    ExitApp
+}
+
 PostMessage 0x100, 0x0D, 0, , targetHwnd
 Sleep 200
 PostMessage 0x101, 0x0D, 0, , targetHwnd
