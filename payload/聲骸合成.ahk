@@ -296,7 +296,7 @@ FindGameWindow() {
 }
 
 OpenMainMenu() {
-    global logger
+    global logger, gameWindow
     logger.log("按 Esc 打開主選單（含重試）")
 
     ; 最多重試 4 次，避免剛進遊戲時 UI 尚未穩定
@@ -329,7 +329,26 @@ OpenMainMenu() {
             return true
         }
 
-        logger.log("第 " A_Index " 次嘗試未檢測到主選單", "WARN")
+        logger.log("第 " A_Index " 次嘗試未檢測到主選單，嘗試鼠標焦點恢復", "WARN")
+        
+        ; 若 Esc 失敗，用鼠標點擊獲得焦點
+        if A_Index < 4 {
+            logger.log("點擊遊戲窗口以恢復焦點（第 1 下）")
+            MouseClick("left", 640, 360)  ; 點擊遊戲視窗中心
+            Sleep 2000
+            logger.log("點擊遊戲窗口以恢復焦點（第 2 下）")
+            MouseClick("left", 640, 360)  ; 再點一下確保焦點
+            Sleep 1500
+            
+            ; 再試一次 Esc
+            Send "{Esc}"
+            Sleep 1800
+            if IsMainMenuVisible() {
+                logger.log("主選單已打開（鼠標焦點恢復後 Esc）")
+                return true
+            }
+        }
+        
         Sleep 800
     }
 
