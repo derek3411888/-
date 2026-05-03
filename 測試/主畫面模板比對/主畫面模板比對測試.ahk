@@ -264,7 +264,7 @@ DrawBoundingBox(x, y, w, h, color := "00FF00", thickness := 3, duration := 2000)
     box.Add("Text", "x" (w - thickness) " y0 w" thickness " h" h, "")
     
     ; 背景填滿為黑色（透明）
-    for ctrl in box.Children
+    for ctrl in box.Controls
         ctrl.Opt("+BackgroundTrans")
     
     box.Show("x" x " y" y " w" w " h" h " NoActivate")
