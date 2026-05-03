@@ -34,6 +34,7 @@ global STAT_LAST_VAR := "-"
 global STAT_START_TICK := 0
 global LOG_FILE := A_ScriptDir "\\test_log.txt"
 global TOOLTIP_SLOT := 8
+global ACTIVE_BOX := 0  ; 目前活動的邊框 GUI
 
 #Include ..\..\payload\plugin\ImagePut-1.11\ImagePut.ahk
 
@@ -128,7 +129,7 @@ ShowContinuousSummary(showMsgBox := false) {
 }
 
 ContinuousCheckTick() {
-    global CONTINUOUS_MODE, STAT_TOTAL, STAT_HIT, STAT_MISS, STAT_SKIP, STAT_LAST_VAR
+    global CONTINUOUS_MODE, STAT_TOTAL, STAT_HIT, STAT_MISS, STAT_SKIP, STAT_LAST_VAR, ROI_WIDTH, ROI_HEIGHT
 
     if !CONTINUOUS_MODE
         return
@@ -149,6 +150,9 @@ ContinuousCheckTick() {
     if ok {
         STAT_HIT += 1
         STAT_LAST_VAR := v
+        
+        ; 檢測到時繪製邊框
+        DrawBoundingBox(x, y, ROI_WIDTH, ROI_HEIGHT, "00FF00", 2, 800)
     } else {
         STAT_MISS += 1
         STAT_LAST_VAR := "-"
@@ -229,6 +233,75 @@ TryFindMainIcon(&hitX := 0, &hitY := 0, &usedTemplate := "", &usedVar := 0) {
     return false
 }
 
+DrawBoundingBox(x, y, w, h, color := "00FF00", thickness := 3, duration := 2000) {
+    global ACTIVE_BOX
+    
+    ; 若已有活動邊框，先關閉
+    if (ACTIVE_BOX != 0) {
+        try {
+            ACTIVE_BOX.Destroy()
+        }
+    }
+    
+    ; 建立透明 GUI 視窗作為邊框層
+    box := Gui()
+    box.Opt("-Caption +AlwaysOnTop +ToolWindow -DPIScale +LastFound")
+    
+    ; 直接使用指定顏色作為背景
+    box.BackColor := color
+    
+    ; 實際 RGB 顏色（綠色=00FF00）
+    WinSetTransColor("000000")
+    
+    ; 畫邊框（上、下、左、右四條線）
+    ; 上邊
+    box.Add("Text", "x0 y0 w" w " h" thickness, "")
+    ; 下邊
+    box.Add("Text", "x0 y" (h - thickness) " w" w " h" thickness, "")
+    ; 左邊
+    box.Add("Text", "x0 y0 w" thickness " h" h, "")
+    ; 右邊
+    box.Add("Text", "x" (w - thickness) " y0 w" thickness " h" h, "")
+    
+    ; 背景填滿為黑色（透明）
+    for ctrl in box.Children
+        ctrl.Opt("+BackgroundTrans")
+    
+    box.Show("x" x " y" y " w" w " h" h " NoActivate")
+    
+    ACTIVE_BOX := box
+    
+    ; 保存到全域以供定時器使用
+    global PENDING_BOX := box
+    global PENDING_BOX_DURATION := duration
+    SetTimer(DestroyPendingBox, 100)
+}
+
+DestroyPendingBox() {
+    global PENDING_BOX, PENDING_BOX_DURATION, ACTIVE_BOX
+    
+    if (PENDING_BOX == 0)
+        return
+    
+    if !IsSet(PENDING_BOX_START_TIME) {
+        global PENDING_BOX_START_TIME := A_TickCount
+    }
+    
+    elapsedMs := A_TickCount - PENDING_BOX_START_TIME
+    
+    if (elapsedMs >= PENDING_BOX_DURATION) {
+        try {
+            if (ACTIVE_BOX == PENDING_BOX) {
+                PENDING_BOX.Destroy()
+                ACTIVE_BOX := 0
+            }
+        } catch {
+        }
+        PENDING_BOX := 0
+        SetTimer(DestroyPendingBox, 0)
+    }
+}
+
 TestMainScreenOnce() {
     if !FindGameWindow() {
         ShowTip("找不到遊戲視窗（鳴潮/鸣潮）", 2200)
@@ -244,6 +317,15 @@ TestMainScreenOnce() {
     ok := TryFindMainIcon(&x, &y, &tpl, &v)
     if ok {
         ShowTip("✅ 在主畫面 (" v ")", 1800)
+        
+        ; 估算模板大小（可根據 ROI 調整）
+        global ROI_WIDTH, ROI_HEIGHT
+        templateW := ROI_WIDTH
+        templateH := ROI_HEIGHT
+        
+        ; 繪製邊框框出檢測位置
+        DrawBoundingBox(x, y, templateW, templateH, "00FF00", 3, 3000)
+        
         MsgBox "判定結果：在主畫面`n位置: " x ", " y "`n模板: " tpl "`nVariation: " v
     } else {
         ; 失敗時保存 ROI 截圖，方便檢查
