@@ -251,7 +251,7 @@ DrawBoundingBox(x, y, w, h, color := "00FF00", thickness := 3, duration := 2000)
     box.BackColor := color
     
     ; 實際 RGB 顏色（綠色=00FF00）
-    WinSetTransColor("000000")
+    WinSetTransColor("00FF00")
     
     ; 畫邊框（上、下、左、右四條線）
     ; 上邊
@@ -262,10 +262,6 @@ DrawBoundingBox(x, y, w, h, color := "00FF00", thickness := 3, duration := 2000)
     box.Add("Text", "x0 y0 w" thickness " h" h, "")
     ; 右邊
     box.Add("Text", "x" (w - thickness) " y0 w" thickness " h" h, "")
-    
-    ; 背景填滿為黑色（透明）
-    for ctrl in box.Controls
-        ctrl.Opt("+BackgroundTrans")
     
     box.Show("x" x " y" y " w" w " h" h " NoActivate")
     
