@@ -337,8 +337,8 @@ OpenMainMenu() {
             WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " gameWindow)
             
             ; 計算窗口內部的中心座標
-            clickX := wx + ww / 2
-            clickY := wy + wh / 2
+            clickX := Round(wx + ww / 2)
+            clickY := Round(wy + wh / 2)
             
             logger.log("點擊遊戲窗口內部以恢復焦點（第 1 下）座標: " clickX ", " clickY)
             MouseClick("left", clickX, clickY)
@@ -346,13 +346,29 @@ OpenMainMenu() {
             logger.log("點擊遊戲窗口內部以恢復焦點（第 2 下）")
             MouseClick("left", clickX, clickY)
             Sleep 1500
+
+            ; 點擊後再次強制啟用視窗，避免 Esc 送到其他視窗
+            if !ActivateGame() {
+                logger.log("鼠標焦點恢復後 ActivateGame 失敗", "WARN")
+            }
             
-            ; 再試一次 Esc
-            Send "{Esc}"
-            Sleep 1800
-            if IsMainMenuVisible() {
-                logger.log("主選單已打開（鼠標焦點恢復後 Esc）")
-                return true
+            ; 點擊後要持續嘗試 Esc（前景 + ControlSend）
+            Loop 3 {
+                logger.log("鼠標焦點恢復後，第 " A_Index " 次 Send Esc")
+                Send "{Esc}"
+                Sleep 1200
+                if IsMainMenuVisible() {
+                    logger.log("主選單已打開（鼠標焦點恢復後 Send Esc，第 " A_Index " 次）")
+                    return true
+                }
+
+                logger.log("鼠標焦點恢復後，第 " A_Index " 次 ControlSend Esc")
+                try ControlSend("{Esc}", , "ahk_id " gameWindow)
+                Sleep 1200
+                if IsMainMenuVisible() {
+                    logger.log("主選單已打開（鼠標焦點恢復後 ControlSend Esc，第 " A_Index " 次）")
+                    return true
+                }
             }
         }
         

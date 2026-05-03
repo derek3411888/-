@@ -64,6 +64,7 @@ global SERVER_SCHEDULE_INDEX := 1
 global CURRENT_SERVER_TARGET := ""
 global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
+global LRMCAI_FLOW_STARTED := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -773,6 +774,7 @@ try {
 ; 4) 啟動 LRMC 管理腳本（由該腳本負責LRMC的啟動與管理）
 WriteLog("啟動 LRMC 管理腳本...")
 WriteStep("啟動LRMC", "交由開啟LRMC.ahk 控制")
+LRMCAI_FLOW_STARTED := true
 lrmcCmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk"'
 if (CRASH_RESTART_MODE)
     lrmcCmd .= ' hotkey'
@@ -1173,10 +1175,13 @@ CrashWatcherTick() {
             try ProcessClose "OK-WW.exe"
         Sleep 2000
 
-        ; 以 AhkExe 重新啟動整支腳本，添加 restart 參數
-        ; 重啟後將重新啟動 OKWW，確保崩潰後的完整恢復
+        ; 以 AhkExe 重新啟動整支腳本。
+        ; 僅在 LRMCAI 已啟動後發生崩潰時，才帶 crash 參數進入快捷鍵模式。
         global AhkExe
-        Run('"' AhkExe '" "' A_ScriptFullPath '" restart crash')
+        restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
+        if ShouldUseCrashRestartHotkey("UE4-Client 崩潰重啟")
+            restartCmd .= ' crash'
+        Run(restartCmd)
         ExitApp
     } finally busy := false
 }
@@ -1857,10 +1862,24 @@ RequestRestart(reason, level := "ERROR") {
         reason := "未提供"
 
     LAST_RESTART_REASON := reason
-    if RegExMatch(reason, "i)(崩潰|閃退|當機|卡死|crash|hang)")
+    if ShouldUseCrashRestartHotkey(reason)
         CRASH_RESTART_MODE := true
+    else
+        CRASH_RESTART_MODE := false
     WriteLog("觸發重啟請求，原因: " reason, level)
     RestartAutoScript(reason)
+}
+
+ShouldUseCrashRestartHotkey(reason) {
+    global LRMCAI_FLOW_STARTED
+
+    if !LRMCAI_FLOW_STARTED
+        return false
+
+    ; 僅允許「LRMCAI 已啟動後的遊戲閃退」走 hotkey 模式
+    ; 來源1: UE4 崩潰監看
+    ; 來源2: LRMCAI 日誌連續無效視窗控制代碼
+    return RegExMatch(reason, "i)(UE4-Client|無效視窗控制代碼|LRMCAI.*閃退|遊戲閃退)")
 }
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
