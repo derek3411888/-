@@ -333,11 +333,18 @@ OpenMainMenu() {
         
         ; 若 Esc 失敗，用鼠標點擊獲得焦點
         if A_Index < 4 {
-            logger.log("點擊遊戲窗口以恢復焦點（第 1 下）")
-            MouseClick("left", 640, 360)  ; 點擊遊戲視窗中心
+            ; 獲取遊戲窗口的位置和大小
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " gameWindow)
+            
+            ; 計算窗口內部的中心座標
+            clickX := wx + ww / 2
+            clickY := wy + wh / 2
+            
+            logger.log("點擊遊戲窗口內部以恢復焦點（第 1 下）座標: " clickX ", " clickY)
+            MouseClick("left", clickX, clickY)
             Sleep 2000
-            logger.log("點擊遊戲窗口以恢復焦點（第 2 下）")
-            MouseClick("left", 640, 360)  ; 再點一下確保焦點
+            logger.log("點擊遊戲窗口內部以恢復焦點（第 2 下）")
+            MouseClick("left", clickX, clickY)
             Sleep 1500
             
             ; 再試一次 Esc
