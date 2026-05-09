@@ -1923,7 +1923,8 @@ RestartAutoScript(reason := "") {
     ; 重新啟動腳本
     WriteLog("重新啟動全自動腳本...")
     try {
-        restartCmd := '"' A_ScriptFullPath '" restart'
+        global AhkExe
+        restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
         if (CRASH_RESTART_MODE)
             restartCmd .= ' crash'
         Run(restartCmd)
