@@ -65,6 +65,7 @@ global CURRENT_SERVER_TARGET := ""
 global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
 global LRMCAI_FLOW_STARTED := false
+global SERVER_COMPLETED_CYCLE_MAP := {}  ; 記錄各伺服器在當日循環的完成狀態
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -787,6 +788,12 @@ IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
 WriteLog("流程成功完成，已重置重啟計數器")
 WriteStep("主流程完成", "重啟計數已歸零")
 
+; 新增：標記當前伺服器為已完成
+global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
+if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
+    MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET)
+}
+
 WriteLog("全自動流程完成，進入收尾監測（等待電台一鍵領取達標）")
 WriteStep("收尾監測", "等待電台一鍵領取條件")
 MonitorRewardAndShutdown()
@@ -1291,12 +1298,35 @@ DetectWutheringAndExit(&loginDetected := false) {
         foundUpdate := false
         foundLoginBtn := false
         foundLoginUI := false
+        foundCloseBtn := false  ; 新增：叉叉/關閉按鈕
         btnCenter := ""
+        closeBtnCenter := ""    ; 新增：叉叉按鈕的中心座標
 
         if IsObject(res) {
             for block in res {
                 clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", "")
                 clean := StrReplace(clean, " ", "")
+                
+                ; 新增：檢測關閉/叉叉按鈕（×、✕、✗、關閉、关闭等）
+                ; 單個叉叉符號
+                if (InStr(clean, "×") || InStr(clean, "✕") || InStr(clean, "✗")) && 
+                   block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
+                    foundCloseBtn := true
+                    x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
+                    x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
+                    closeBtnCenter := [ Round((x1 + x2) / 2), Round((y1 + y2) / 2) ]
+                    WriteLog("檢測到叉叉按鈕符號: " clean " 位置: " closeBtnCenter[1] "," closeBtnCenter[2])
+                }
+                
+                ; 關閉按鈕文字（中文/簡體）
+                if !foundCloseBtn && (InStr(clean, "關閉") || InStr(clean, "关闭")) && 
+                   block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
+                    foundCloseBtn := true
+                    x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
+                    x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
+                    closeBtnCenter := [ Round((x1 + x2) / 2), Round((y1 + y2) / 2) ]
+                    WriteLog("檢測到關閉按鈕文字: " clean " 位置: " closeBtnCenter[1] "," closeBtnCenter[2])
+                }
                 
                 ; 檢測更新相關文字
                 if InStr(clean, kwUpdate1) || InStr(clean, kwUpdate2) || InStr(clean, kwUpdate3) || InStr(clean, kwUpdate4)
@@ -1344,6 +1374,15 @@ DetectWutheringAndExit(&loginDetected := false) {
             ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
             WriteStepResult("鳴潮檢測", true, "update")
             return "update"
+        }
+        
+        ; 新增：檢測並點擊叉叉/關閉按鈕（在登入檢測之前處理）
+        if (foundCloseBtn && IsObject(closeBtnCenter)) {
+            ShowTip("✅ 檢測到叉叉提示 → 自動點擊", 800)
+            MouseClick "left", closeBtnCenter[1], closeBtnCenter[2]
+            WriteLog("已點擊叉叉按鈕，準備重試登入檢測", "INFO")
+            Sleep 1000
+            continue
         }
         
         ; ✅ 優化：檢測到登入按鈕相關文字，且超過最小等待時間（30秒）才判定為登入畫面
@@ -1854,6 +1893,130 @@ ToSimp(s) {
     return s
 }
 
+; ======================== 伺服器完成記錄機制 ========================
+
+; 判斷兩個時間是否在同一日循環（上午4點～隔天上午4點）
+IsSameDayCircle(time1Str, time2Str) {
+    ; 解析時間字串 "yyyy-MM-dd HH:mm:ss"
+    if (time1Str = "" || time2Str = "")
+        return false
+
+    try {
+        ; 轉換為分鐘數（以上午4點為循環起點）
+        GetDayCircleMinutes(t) {
+            parts := StrSplit(t, A_Space)
+            if (parts.Length < 2)
+                return -1
+            
+            timeParts := StrSplit(parts[2], ":")
+            if (timeParts.Length < 2)
+                return -1
+            
+            hour := Integer(timeParts[1])
+            minute := Integer(timeParts[2])
+            
+            ; 上午4點前（0-3點）算上一天的循環
+            if (hour < 4) {
+                ; 換算成分鐘，並加上前一天24小時
+                return (hour * 60 + minute) + 1440
+            } else {
+                ; 正常換算
+                return hour * 60 + minute
+            }
+        }
+        
+        min1 := GetDayCircleMinutes(time1Str)
+        min2 := GetDayCircleMinutes(time2Str)
+        
+        if (min1 < 0 || min2 < 0)
+            return false
+        
+        ; 判斷兩個時間是否在同一天
+        parts1 := StrSplit(time1Str, A_Space)
+        parts2 := StrSplit(time2Str, A_Space)
+        
+        date1 := parts1[1]
+        date2 := parts2[1]
+        
+        ; 如果日期相同，直接算同一循環
+        if (date1 = date2)
+            return true
+        
+        ; 日期不同，檢查是否跨越上午4點
+        ; 例：4月1日3點59分 和 4月2日4點01分 不在同一循環
+        ; 但 4月2日3點59分 和 4月1日8點00分 在同一循環
+        
+        ; 簡化：比較 time1 的分鐘數和 time2 的分鐘數
+        ; 如果 time1 是 >= 1440（即前一天的0-3點），time2 也是 >= 1440，則同循環
+        ; 或都 < 1440，則同循環
+        return ((min1 >= 1440 && min2 >= 1440) || (min1 < 1440 && min2 < 1440))
+    } catch as e {
+        WriteLog("IsSameDayCircle 時間判斷失敗: " e.Message, "WARN")
+        return false
+    }
+}
+
+; 檢查伺服器是否在當日循環已完成
+IsServerCompletedInCurrentCycle(server, currentTime := "") {
+    global SERVER_COMPLETED_CYCLE_MAP, CFG_FILE
+    
+    if (server = "")
+        return false
+    
+    if (currentTime = "")
+        currentTime := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    
+    ; 首先檢查內存 Map
+    if SERVER_COMPLETED_CYCLE_MAP.Has(server) {
+        completedTime := SERVER_COMPLETED_CYCLE_MAP[server]
+        if (completedTime != "") {
+            if IsSameDayCircle(completedTime, currentTime) {
+                WriteLog("伺服器『" server "』已在當日循環完成過（完成於 " completedTime "）", "INFO")
+                return true
+            } else {
+                WriteLog("伺服器『" server "』的完成時間不在當日循環（完成於 " completedTime "）", "INFO")
+                return false
+            }
+        }
+    }
+    
+    ; 檢查設定檔
+    savedTime := Trim(IniReadSafe(CFG_FILE, "server_completed", server, ""), " `t`r`n")
+    if (savedTime != "") {
+        if IsSameDayCircle(savedTime, currentTime) {
+            SERVER_COMPLETED_CYCLE_MAP[server] := savedTime
+            WriteLog("伺服器『" server "』已在當日循環完成過（從設定檔讀取，完成於 " savedTime "）", "INFO")
+            return true
+        } else {
+            WriteLog("伺服器『" server "』的完成時間不在當日循環（從設定檔讀取，完成於 " savedTime "）", "INFO")
+            return false
+        }
+    }
+    
+    return false
+}
+
+; 標記伺服器為當日循環已完成
+MarkServerCompletedInCurrentCycle(server, completedTime := "") {
+    global SERVER_COMPLETED_CYCLE_MAP, CFG_FILE
+    
+    if (server = "")
+        return false
+    
+    if (completedTime = "")
+        completedTime := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    
+    SERVER_COMPLETED_CYCLE_MAP[server] := completedTime
+    try {
+        IniWrite completedTime, CFG_FILE, "server_completed", server
+        WriteLog("已標記伺服器『" server "』為當日循環完成（時間: " completedTime "）", "INFO")
+        return true
+    } catch as e {
+        WriteLog("標記伺服器『" server "』完成時寫入設定檔失敗: " e.Message, "WARN")
+        return false
+    }
+}
+
 RequestRestart(reason, level := "ERROR") {
     global LAST_RESTART_REASON, CRASH_RESTART_MODE
 
@@ -1913,6 +2076,39 @@ RestartAutoScript(reason := "") {
     
     ; 儲存重啟計數
     IniWrite restartCount, CFG_FILE, "restart_tracking", "auto_restart_count"
+    
+    ; 檢查當前伺服器是否已在當日循環完成過
+    global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
+    if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
+        if IsServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET) {
+            WriteLog("伺服器『" CURRENT_SERVER_TARGET "』已在當日循環完成過，將跳過重新執行該伺服器，轉到下一個伺服器", "WARN")
+            ShowTip("⏭️ 伺服器已完成，轉向下一個", 2000)
+            Sleep 2000
+            
+            ; 嘗試切換到下一個伺服器
+            if AdvanceServerScheduleForNextCycle() {
+                WriteLog("已切換到下一個伺服器，使用 nextserver 模式重啟", "WARN")
+                CheckAndCloseExistingProcesses()
+                Sleep 2000
+                
+                try {
+                    global AhkExe
+                    restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" nextserver'
+                    Run(restartCmd)
+                    WriteLog("nextserver 重啟命令已發送")
+                } catch as e {
+                    WriteLog("nextserver 重啟失敗: " e.Message, "ERROR")
+                }
+                Sleep 1000
+                ExitApp
+            } else {
+                WriteLog("無更多伺服器可切換，停止執行", "WARN")
+                ShowTip("✅ 所有伺服器今日循環已完成", 3000)
+                Sleep 3000
+                ExitApp
+            }
+        }
+    }
     
     ; 關閉所有相關進程
     WriteLog("關閉所有相關進程...")
