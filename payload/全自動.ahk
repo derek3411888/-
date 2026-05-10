@@ -1277,6 +1277,23 @@ DetectWutheringAndExit(&loginDetected := false) {
             }
         }
 
+        ; 首先用模板檢測叉叉按鈕（不涉及 OCR，更快速）
+        closeIconPath := A_ScriptDir "\0510.png"
+        if FileExist(closeIconPath) {
+            try {
+                ImageSearch &foundX, &foundY, 0, 0, 1920, 1440, closeIconPath
+                if (foundX > 0 && foundY > 0) {
+                    ShowTip("✅ 檢測到叉叉提示 → 自動點擊", 800)
+                    MouseClick "left", foundX, foundY
+                    WriteLog("已點擊叉叉按鈕 位置:" foundX "," foundY, "INFO")
+                    Sleep 1000
+                    continue
+                }
+            } catch as e {
+                WriteLog("模板檢測叉叉失敗: " e.Message, "WARN")
+            }
+        }
+
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
         tempFile := A_ScriptDir "\temp_update_" A_TickCount ".png"
         try {
@@ -1298,35 +1315,13 @@ DetectWutheringAndExit(&loginDetected := false) {
         foundUpdate := false
         foundLoginBtn := false
         foundLoginUI := false
-        foundCloseBtn := false  ; 新增：叉叉/關閉按鈕
         btnCenter := ""
-        closeBtnCenter := ""    ; 新增：叉叉按鈕的中心座標
 
         if IsObject(res) {
             for block in res {
                 clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", "")
                 clean := StrReplace(clean, " ", "")
                 
-                ; 新增：檢測關閉/叉叉按鈕（×、✕、✗、關閉、关闭等）
-                ; 單個叉叉符號
-                if (InStr(clean, "×") || InStr(clean, "✕") || InStr(clean, "✗")) && 
-                   block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
-                    foundCloseBtn := true
-                    x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
-                    x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
-                    closeBtnCenter := [ Round((x1 + x2) / 2), Round((y1 + y2) / 2) ]
-                    WriteLog("檢測到叉叉按鈕符號: " clean " 位置: " closeBtnCenter[1] "," closeBtnCenter[2])
-                }
-                
-                ; 關閉按鈕文字（中文/簡體）
-                if !foundCloseBtn && (InStr(clean, "關閉") || InStr(clean, "关闭")) && 
-                   block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
-                    foundCloseBtn := true
-                    x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
-                    x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
-                    closeBtnCenter := [ Round((x1 + x2) / 2), Round((y1 + y2) / 2) ]
-                    WriteLog("檢測到關閉按鈕文字: " clean " 位置: " closeBtnCenter[1] "," closeBtnCenter[2])
-                }
                 
                 ; 檢測更新相關文字
                 if InStr(clean, kwUpdate1) || InStr(clean, kwUpdate2) || InStr(clean, kwUpdate3) || InStr(clean, kwUpdate4)
@@ -1376,14 +1371,6 @@ DetectWutheringAndExit(&loginDetected := false) {
             return "update"
         }
         
-        ; 新增：檢測並點擊叉叉/關閉按鈕（在登入檢測之前處理）
-        if (foundCloseBtn && IsObject(closeBtnCenter)) {
-            ShowTip("✅ 檢測到叉叉提示 → 自動點擊", 800)
-            MouseClick "left", closeBtnCenter[1], closeBtnCenter[2]
-            WriteLog("已點擊叉叉按鈕，準備重試登入檢測", "INFO")
-            Sleep 1000
-            continue
-        }
         
         ; ✅ 優化：檢測到登入按鈕相關文字，且超過最小等待時間（30秒）才判定為登入畫面
         if (foundLoginBtn && A_TickCount >= earlyExitDeadline) {
