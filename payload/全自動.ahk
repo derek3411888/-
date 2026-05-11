@@ -65,7 +65,7 @@ global CURRENT_SERVER_TARGET := ""
 global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
 global LRMCAI_FLOW_STARTED := false
-global SERVER_COMPLETED_CYCLE_MAP := {}  ; 記錄各伺服器在當日循環的完成狀態
+global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
