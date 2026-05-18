@@ -670,6 +670,7 @@ if (loginDetected) {
     }
 
     WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
+    ClickTemplateIfFound(A_ScriptDir "\0510.png")
     StartOKWWFlow(isRestart)
     okwwStarted := true
     WriteLog("檢測到登入畫面後不再由全自動點擊遊戲視窗，等待 OKWW 執行")
@@ -697,6 +698,7 @@ WriteStep("遊戲可操作驗證", "模板比對通過")
 if !okwwStarted {
     WriteLog("遊戲已可操作，開始啟動 OKWW...")
     WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
+    ClickTemplateIfFound(A_ScriptDir "\0510.png")
     StartOKWWFlow(isRestart)
     okwwStarted := true
 }
@@ -2226,6 +2228,7 @@ MonitorRewardAndShutdown() {
                 }
             }
         }
+        ClickTemplateIfFound(A_ScriptDir "\0510.png")
         Sleep REWARD_CHECK_INTERVAL_MS
     }
 }
@@ -3762,3 +3765,20 @@ PsEsc(text) {
     return StrReplace(text, "'", "''")
 }
 
+
+; =========================================================
+; 額外模板檢測與點擊邏輯
+; =========================================================
+ClickTemplateIfFound(templatePath) {
+    x := 0
+    y := 0
+    try {
+        if ImageSearch(&x, &y, 0, 0, A_ScreenWidth, A_ScreenHeight, templatePath) {
+            Click x, y
+            WriteLog("模板檢測到並點擊: " . templatePath)
+            return true
+        }
+    }
+    WriteLog("模板未檢測到: " . templatePath, "INFO")
+    return false
+}
