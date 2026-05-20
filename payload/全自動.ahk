@@ -671,6 +671,7 @@ if (loginDetected) {
 
     WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
+    ClickTemplateIfFound(A_ScriptDir "\登入.png")
     StartOKWWFlow(isRestart)
     okwwStarted := true
     WriteLog("檢測到登入畫面後不再由全自動點擊遊戲視窗，等待 OKWW 執行")
@@ -699,6 +700,7 @@ if !okwwStarted {
     WriteLog("遊戲已可操作，開始啟動 OKWW...")
     WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
+    ClickTemplateIfFound(A_ScriptDir "\登入.png")
     StartOKWWFlow(isRestart)
     okwwStarted := true
 }
@@ -2228,7 +2230,7 @@ MonitorRewardAndShutdown() {
                 }
             }
         }
-        ClickTemplateIfFound(A_ScriptDir "\0510.png")
+        ClickTemplateIfFound(A_ScriptDir "\登入.png")
         Sleep REWARD_CHECK_INTERVAL_MS
     }
 }
@@ -3778,6 +3780,10 @@ ClickTemplateIfFound(templatePath) {
             WriteLog("模板檢測到並點擊: " . templatePath)
             return true
         }
+    } catch as e {
+        ; 可選檢測：任何錯誤都不影響主流程。
+        WriteLog("模板檢測略過（不影響主流程）: " . templatePath . " | " . e.Message, "WARN")
+        return false
     }
     WriteLog("模板未檢測到: " . templatePath, "INFO")
     return false
