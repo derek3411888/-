@@ -46,6 +46,11 @@ global REWARD_MATCH_NEED_COUNT := 2
 global REWARD_INVALID_HWND_NEED_COUNT := 6
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
+global SCREEN_RECORDING_ENABLED := 0
+global SCREEN_RECORDING_SECTION := "screen_recording"
+global __SCREEN_RECORDING_ACTIVE := false
+global __RESTART_IN_PROGRESS := false
+global __NEXTSERVER_RESTART := false
 global __MAIL_SETUP := ""
 global __SERVER_PREVIEW := ""
 global __WUTHERING_AUDIO_MUTED := false
@@ -175,6 +180,11 @@ UnmuteWutheringAudio(reason := "") {
 }
 
 RestoreWutheringAudioOnExit(exitReason, exitCode) {
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+    if (!__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+        TryStopScreenRecording("腳本結束保底")
+    else
+        WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
     UnmuteWutheringAudio("腳本結束保底")
 }
 
@@ -517,6 +527,7 @@ WriteLog("dataDir=" dataDir)
 WriteLog("CFG_FILE=" CFG_FILE)
 WriteStep("載入設定", "config=" CFG_FILE)
 LoadMailNotifyEnabled()
+LoadScreenRecordingEnabled()
 SetupTrayMenu()
 
 ; ★ 流程開始前統一檢查：程式路徑 + 郵件通知設定
@@ -584,6 +595,10 @@ updateRecoveryStartTick := 0
 noWindowLoopCount := 0
 noWindowSinceTick := 0
 
+if !isRestart
+    TryStartScreenRecording("主流程開始")
+else
+    WriteLog("重啟模式：保留既有錄影，不重新觸發 Alt+F9")
 EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
 
@@ -2038,13 +2053,16 @@ ShouldUseCrashRestartHotkey(reason) {
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
 RestartAutoScript(reason := "") {
-    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, CRASH_RESTART_MODE
+    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
         reason := Trim(LAST_RESTART_REASON, " `t`r`n")
     if (reason = "")
         reason := "未提供"
+
+    __RESTART_IN_PROGRESS := true
+    __NEXTSERVER_RESTART := false
     
     ; 增加重啟計數
     restartCount++
@@ -2079,6 +2097,8 @@ RestartAutoScript(reason := "") {
             ; 嘗試切換到下一個伺服器
             if AdvanceServerScheduleForNextCycle() {
                 WriteLog("已切換到下一個伺服器，使用 nextserver 模式重啟", "WARN")
+                __NEXTSERVER_RESTART := true
+                TryStopScreenRecording("切換下一個伺服器")
                 CheckAndCloseExistingProcesses()
                 Sleep 2000
                 
@@ -2366,6 +2386,10 @@ ResetRestartTrackingOnFreshStart() {
 
 HandleCycleFinishAndShutdown() {
     if AdvanceServerScheduleForNextCycle() {
+        global __NEXTSERVER_RESTART, __RESTART_IN_PROGRESS
+        __RESTART_IN_PROGRESS := true
+        __NEXTSERVER_RESTART := true
+        TryStopScreenRecording("切換下一個伺服器")
         WriteLog("伺服器排程：本輪完成，關閉程式後自動啟動下一個伺服器流程", "WARN")
         ShutdownGameLrmcOkww(true)
         return
@@ -2572,7 +2596,7 @@ EnsureAllConfigAtStartup(force := false, reason := "") {
 }
 
 ReadCombinedConfigState() {
-    global CFG_FILE, MAIL_NOTIFY_ENABLED, MAIL_SECTION, REWARD_LOG_FILE
+    global CFG_FILE, MAIL_NOTIFY_ENABLED, MAIL_SECTION, REWARD_LOG_FILE, SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_SECTION
 
     state := {}
     state.okwwPath := NormalizePath(IniReadSafe(CFG_FILE, "paths", "OKWW", ""))
@@ -2590,11 +2614,13 @@ ReadCombinedConfigState() {
     state.subjectPrefix := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "subject_prefix", "LRMCAI"), " `t`r`n")
     state.useSsl := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "use_ssl", "1"), " `t`r`n")
     state.sendEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
+    state.screenRecordingEnabled := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
     state.serverScheduleEnabled := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0)
     state.serverScheduleList := Trim(IniReadSafe(CFG_FILE, "server_schedule", "list", ""), " `t`r`n")
     state.serverSwitchX := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_x", "640"), " `t`r`n")
     state.serverSwitchY := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_y", "549"), " `t`r`n")
     MAIL_NOTIFY_ENABLED := state.sendEnabled
+    SCREEN_RECORDING_ENABLED := state.screenRecordingEnabled
     state.fallbackLogFile := NormalizePath(IniReadSafe(CFG_FILE, "reward_monitor", "fallback_log_file", ""))
     if (state.fallbackLogFile = "")
         state.fallbackLogFile := Trim(REWARD_LOG_FILE, ' "')
@@ -2670,6 +2696,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "from: " state.mailFrom "`r`n"
     summary .= "to: " state.mailTo "`r`n"
     summary .= "send_enabled: " (state.sendEnabled ? "1(啟用)" : "0(停用)") "`r`n"
+    summary .= "screen_recording.enabled: " (state.screenRecordingEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "server_schedule.enabled: " (state.serverScheduleEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
     summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
@@ -2716,6 +2743,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
     cbSendEnabled.Value := state.sendEnabled ? 1 : 0
     txtMailHint := g.AddText("x+12 w420", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
+
+    g.AddText("xm y+12 w720", "【螢幕錄影】啟用時會在主流程開始後送出 Alt+F9 開始錄影，收尾檢測到結束時再送一次 Alt+F9 停止。")
+    cbScreenRecordingEnabled := g.AddCheckbox("xm y+8", "啟用螢幕錄影（Alt+F9）")
+    cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
 
     g.AddText("xm y+10 w120", "smtp_host")
     edHost := g.AddEdit("x+10 w500", state.smtpHost)
@@ -2772,6 +2803,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edPrefix: edPrefix,
         ddSsl: ddSsl,
         cbSendEnabled: cbSendEnabled,
+        cbScreenRecordingEnabled: cbScreenRecordingEnabled,
         txtMailHint: txtMailHint
     }
 
@@ -2852,7 +2884,7 @@ RefreshFallbackLogHint() {
 }
 
 OnCombinedSetupSave(*) {
-    global __MAIL_SETUP, MAIL_NOTIFY_ENABLED
+    global __MAIL_SETUP, MAIL_NOTIFY_ENABLED, SCREEN_RECORDING_ENABLED
     st := __MAIL_SETUP
 
     okwwPath := NormalizePath(st.edOkww.Value)
@@ -2873,6 +2905,7 @@ OnCombinedSetupSave(*) {
     serverSwitchYVal := Trim(st.edServerSwitchY.Value, " `t`r`n")
     sslVal := st.ddSsl.Text
     sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
+    screenRecordingEnabledVal := st.cbScreenRecordingEnabled.Value ? 1 : 0
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
         MsgBox "OKWW 路徑空白或不存在", "整合設定", "Iconx"
@@ -2934,8 +2967,10 @@ OnCombinedSetupSave(*) {
     IniWrite (prefixVal = "" ? "LRMCAI" : prefixVal), st.cfgPath, st.section, "subject_prefix"
     IniWrite sslVal, st.cfgPath, st.section, "use_ssl"
     IniWrite sendEnabledVal, st.cfgPath, st.section, "send_enabled"
+    IniWrite screenRecordingEnabledVal, st.cfgPath, "screen_recording", "enabled"
 
     MAIL_NOTIFY_ENABLED := sendEnabledVal
+    SCREEN_RECORDING_ENABLED := screenRecordingEnabledVal
 
     __MAIL_SETUP.saved := true
     __MAIL_SETUP.done := true
@@ -3171,6 +3206,56 @@ LoadMailNotifyEnabled() {
     global CFG_FILE, MAIL_SECTION, MAIL_NOTIFY_ENABLED
     MAIL_NOTIFY_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
     WriteLog("郵件通知開關(send_enabled)=" MAIL_NOTIFY_ENABLED)
+}
+
+LoadScreenRecordingEnabled() {
+    global CFG_FILE, SCREEN_RECORDING_SECTION, SCREEN_RECORDING_ENABLED
+    SCREEN_RECORDING_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
+    WriteLog("螢幕錄影開關(enabled)=" SCREEN_RECORDING_ENABLED)
+}
+
+TryStartScreenRecording(reason := "") {
+    global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
+
+    if !SCREEN_RECORDING_ENABLED {
+        WriteLog("螢幕錄影未啟用，略過開始", "INFO")
+        return false
+    }
+    if __SCREEN_RECORDING_ACTIVE
+        return true
+
+    try {
+        Send "!{F9}"
+        __SCREEN_RECORDING_ACTIVE := true
+        msg := "已送出 Alt+F9 開始螢幕錄影"
+        if (reason != "")
+            msg .= "（" reason "）"
+        WriteLog(msg)
+        return true
+    } catch as e {
+        WriteLog("開始螢幕錄影失敗: " e.Message, "WARN")
+        return false
+    }
+}
+
+TryStopScreenRecording(reason := "") {
+    global __SCREEN_RECORDING_ACTIVE
+
+    if !__SCREEN_RECORDING_ACTIVE
+        return false
+
+    try {
+        Send "!{F9}"
+        __SCREEN_RECORDING_ACTIVE := false
+        msg := "已送出 Alt+F9 停止螢幕錄影"
+        if (reason != "")
+            msg .= "（" reason "）"
+        WriteLog(msg)
+        return true
+    } catch as e {
+        WriteLog("停止螢幕錄影失敗: " e.Message, "WARN")
+        return false
+    }
 }
 
 ParseBool01(val, defaultVal := 1) {
@@ -3650,6 +3735,7 @@ OpenSettingsFromTray(*) {
     ok := ShowCombinedConfigSetupGui(CFG_FILE, MAIL_SECTION, state, "由系統匣手動開啟設定")
     if ok {
         LoadMailNotifyEnabled()
+        LoadScreenRecordingEnabled()
         WriteLog("系統匣設定已儲存")
         ShowTip("✅ 設定已儲存", 1200)
     } else {
