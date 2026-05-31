@@ -414,7 +414,7 @@ ClickDataWarehouse() {
                         cy := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
                         logger.log("用OCR找到數據屋，座標: " cx ", " cy)
                         ClickRelative(cx, cy)
-                        Sleep 1000
+                        Sleep 1500
                         return true
                     }
                 }
@@ -430,7 +430,7 @@ ClickDataWarehouse() {
     cy := (273 + 418) / 2
     
     ClickRelative(cx, cy)
-    Sleep 1000
+    Sleep 1500
     
     return true
 }
@@ -444,7 +444,7 @@ ClickStep3Icon() {
     cy := (356 + 437) / 2
     
     ClickRelative(cx, cy)
-    Sleep 1000
+    Sleep 1500
     
     return true
 }
@@ -820,7 +820,7 @@ VerifyBackpackPanel() {
     global logger
     logger.log("驗證背包面板是否正確開啟")
     
-    Sleep 1000  ; 等待界面穩定
+    Sleep 1500  ; 等待界面穩定
     
     ; OCR 檢測特定關鍵字
     result := OCRWindow()

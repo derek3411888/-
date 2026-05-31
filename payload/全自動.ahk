@@ -48,7 +48,11 @@ global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
 global SCREEN_RECORDING_ENABLED := 0
 global SCREEN_RECORDING_SECTION := "screen_recording"
+global SCREEN_RECORDING_STOP_MODE := "exit"
+global SCREEN_RECORDING_STOP_TEMPLATE := "login"
+global SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := ""
 global __SCREEN_RECORDING_ACTIVE := false
+global __SCREEN_RECORDING_TEMPLATE_WARNED := false
 global __RESTART_IN_PROGRESS := false
 global __NEXTSERVER_RESTART := false
 global __MAIL_SETUP := ""
@@ -726,7 +730,7 @@ WriteStep("啟動聲骸合成", "等待完成或重啟標記")
 ShowTip("🔧 正在執行聲骸合成...", 1500)
 ; 額外等待確保OKWW啟動後鳴潮完全穩定
 WriteLog("等待OKWW初始化完成，確保遊戲穩定...")
-Sleep 5000  ; 再等5秒，確保鳴潮完全穩定
+Sleep 20000  ; 再等20秒，確保鳴潮完全穩定
 try {
     Run('"' AhkExe '" "' A_ScriptDir '\聲骸合成.ahk"')
     WriteLog("聲骸合成腳本已啟動")
@@ -761,6 +765,7 @@ try {
         if (!found) {
             WriteLog("聲骸合成已完成")
             ShowTip("✅ 聲骸合成已完成", 2000)
+            TryStopScreenRecordingByMode("synthesis_end")
             
             ; 檢查是否有重啟標記
             flagFile := dataDir "\synthesis_restart.flag"
@@ -773,6 +778,8 @@ try {
             }
             break
         }
+
+        TryStopScreenRecordingByTemplate()
         
         Sleep 2000  ; 每2秒檢查一次
     }
@@ -2250,6 +2257,7 @@ MonitorRewardAndShutdown() {
                 }
             }
         }
+        TryStopScreenRecordingByTemplate()
         ClickTemplateIfFound(A_ScriptDir "\登入.png")
         Sleep REWARD_CHECK_INTERVAL_MS
     }
@@ -2385,6 +2393,8 @@ ResetRestartTrackingOnFreshStart() {
 }
 
 HandleCycleFinishAndShutdown() {
+    TryStopScreenRecordingByMode("reward_end")
+
     if AdvanceServerScheduleForNextCycle() {
         global __NEXTSERVER_RESTART, __RESTART_IN_PROGRESS
         __RESTART_IN_PROGRESS := true
@@ -2597,6 +2607,7 @@ EnsureAllConfigAtStartup(force := false, reason := "") {
 
 ReadCombinedConfigState() {
     global CFG_FILE, MAIL_NOTIFY_ENABLED, MAIL_SECTION, REWARD_LOG_FILE, SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_SECTION
+    global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM
 
     state := {}
     state.okwwPath := NormalizePath(IniReadSafe(CFG_FILE, "paths", "OKWW", ""))
@@ -2615,12 +2626,18 @@ ReadCombinedConfigState() {
     state.useSsl := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "use_ssl", "1"), " `t`r`n")
     state.sendEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
     state.screenRecordingEnabled := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
+    state.screenRecordingStopMode := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "exit"))
+    state.screenRecordingStopTemplate := NormalizeScreenRecordingStopTemplate(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template", "login"))
+    state.screenRecordingStopTemplateCustom := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template_custom", ""))
     state.serverScheduleEnabled := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0)
     state.serverScheduleList := Trim(IniReadSafe(CFG_FILE, "server_schedule", "list", ""), " `t`r`n")
     state.serverSwitchX := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_x", "640"), " `t`r`n")
     state.serverSwitchY := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_y", "549"), " `t`r`n")
     MAIL_NOTIFY_ENABLED := state.sendEnabled
     SCREEN_RECORDING_ENABLED := state.screenRecordingEnabled
+    SCREEN_RECORDING_STOP_MODE := state.screenRecordingStopMode
+    SCREEN_RECORDING_STOP_TEMPLATE := state.screenRecordingStopTemplate
+    SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := state.screenRecordingStopTemplateCustom
     state.fallbackLogFile := NormalizePath(IniReadSafe(CFG_FILE, "reward_monitor", "fallback_log_file", ""))
     if (state.fallbackLogFile = "")
         state.fallbackLogFile := Trim(REWARD_LOG_FILE, ' "')
@@ -2697,6 +2714,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "to: " state.mailTo "`r`n"
     summary .= "send_enabled: " (state.sendEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "screen_recording.enabled: " (state.screenRecordingEnabled ? "1(啟用)" : "0(停用)") "`r`n"
+    summary .= "screen_recording.stop_mode: " state.screenRecordingStopMode "`r`n"
+    summary .= "screen_recording.stop_template: " state.screenRecordingStopTemplate "`r`n"
+    summary .= "screen_recording.stop_template_custom: " state.screenRecordingStopTemplateCustom "`r`n"
     summary .= "server_schedule.enabled: " (state.serverScheduleEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
     summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
@@ -2747,6 +2767,17 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("xm y+12 w720", "【螢幕錄影】啟用時會在主流程開始後送出 Alt+F9 開始錄影，收尾檢測到結束時再送一次 Alt+F9 停止。")
     cbScreenRecordingEnabled := g.AddCheckbox("xm y+8", "啟用螢幕錄影（Alt+F9）")
     cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
+
+    g.AddText("xm y+8 w120", "停止時機")
+    ddScreenRecordingStopMode := g.AddDropDownList("x+10 w300", ["exit:腳本結束時", "synthesis_end:聲骸合成結束時", "reward_end:收尾監測達標時", "template:模板命中時"])
+    ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "synthesis_end") ? 2 : (state.screenRecordingStopMode = "reward_end") ? 3 : (state.screenRecordingStopMode = "template") ? 4 : 1)
+
+    g.AddText("xm y+8 w120", "模板來源")
+    ddScreenRecordingStopTemplate := g.AddDropDownList("x+10 w220", ["login:登入.png", "close:0510.png", "custom:自訂模板"])
+    ddScreenRecordingStopTemplate.Choose((state.screenRecordingStopTemplate = "close") ? 2 : (state.screenRecordingStopTemplate = "custom") ? 3 : 1)
+    edScreenRecordingStopTemplateCustom := g.AddEdit("x+8 w272", state.screenRecordingStopTemplateCustom)
+    btnScreenRecordingStopTemplateCustom := g.AddButton("x+8 w90", "瀏覽模板")
+    txtScreenRecordingHint := g.AddText("xm y+4 w720 c666666", "提示：選擇 template:模板命中時 才會啟用模板停止；自訂模板可填絕對路徑或相對於 payload 的路徑。")
 
     g.AddText("xm y+10 w120", "smtp_host")
     edHost := g.AddEdit("x+10 w500", state.smtpHost)
@@ -2804,6 +2835,11 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         ddSsl: ddSsl,
         cbSendEnabled: cbSendEnabled,
         cbScreenRecordingEnabled: cbScreenRecordingEnabled,
+        ddScreenRecordingStopMode: ddScreenRecordingStopMode,
+        ddScreenRecordingStopTemplate: ddScreenRecordingStopTemplate,
+        edScreenRecordingStopTemplateCustom: edScreenRecordingStopTemplateCustom,
+        btnScreenRecordingStopTemplateCustom: btnScreenRecordingStopTemplateCustom,
+        txtScreenRecordingHint: txtScreenRecordingHint,
         txtMailHint: txtMailHint
     }
 
@@ -2815,6 +2851,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
     cbServerScheduleEnabled.OnEvent("Click", OnServerScheduleEnabledChanged)
     cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
+    cbScreenRecordingEnabled.OnEvent("Click", OnScreenRecordingSettingChanged)
+    ddScreenRecordingStopMode.OnEvent("Change", OnScreenRecordingSettingChanged)
+    ddScreenRecordingStopTemplate.OnEvent("Change", OnScreenRecordingSettingChanged)
+    btnScreenRecordingStopTemplateCustom.OnEvent("Click", OnBrowseScreenRecordingTemplate)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Close", OnCombinedSetupClose)
@@ -2822,6 +2862,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
     RefreshServerScheduleInputsEnabled()
+    RefreshScreenRecordingInputsEnabled()
 
     g.Show("AutoSize")
     while !__MAIL_SETUP.done
@@ -2885,6 +2926,7 @@ RefreshFallbackLogHint() {
 
 OnCombinedSetupSave(*) {
     global __MAIL_SETUP, MAIL_NOTIFY_ENABLED, SCREEN_RECORDING_ENABLED
+    global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM
     st := __MAIL_SETUP
 
     okwwPath := NormalizePath(st.edOkww.Value)
@@ -2906,6 +2948,9 @@ OnCombinedSetupSave(*) {
     sslVal := st.ddSsl.Text
     sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
     screenRecordingEnabledVal := st.cbScreenRecordingEnabled.Value ? 1 : 0
+    stopModeVal := NormalizeScreenRecordingStopMode(StrSplit(st.ddScreenRecordingStopMode.Text, ":")[1])
+    stopTemplateVal := NormalizeScreenRecordingStopTemplate(StrSplit(st.ddScreenRecordingStopTemplate.Text, ":")[1])
+    stopTemplateCustomVal := NormalizePath(st.edScreenRecordingStopTemplateCustom.Value)
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
         MsgBox "OKWW 路徑空白或不存在", "整合設定", "Iconx"
@@ -2943,6 +2988,15 @@ OnCombinedSetupSave(*) {
         }
     }
 
+    if (screenRecordingEnabledVal && stopModeVal = "template") {
+        if (stopTemplateVal = "custom") {
+            if (stopTemplateCustomVal = "") {
+                MsgBox "錄影停止條件為模板命中時，自訂模板路徑不可空白", "整合設定", "Iconx"
+                return
+            }
+        }
+    }
+
     IniWrite okwwPath, st.cfgPath, "paths", "OKWW"
     IniWrite "1", st.cfgPath, "flags", "OKWW_remember"
     IniWrite lrmcPath, st.cfgPath, "paths", "LRMC"
@@ -2968,9 +3022,15 @@ OnCombinedSetupSave(*) {
     IniWrite sslVal, st.cfgPath, st.section, "use_ssl"
     IniWrite sendEnabledVal, st.cfgPath, st.section, "send_enabled"
     IniWrite screenRecordingEnabledVal, st.cfgPath, "screen_recording", "enabled"
+    IniWrite stopModeVal, st.cfgPath, "screen_recording", "stop_mode"
+    IniWrite stopTemplateVal, st.cfgPath, "screen_recording", "stop_template"
+    IniWrite stopTemplateCustomVal, st.cfgPath, "screen_recording", "stop_template_custom"
 
     MAIL_NOTIFY_ENABLED := sendEnabledVal
     SCREEN_RECORDING_ENABLED := screenRecordingEnabledVal
+    SCREEN_RECORDING_STOP_MODE := stopModeVal
+    SCREEN_RECORDING_STOP_TEMPLATE := stopTemplateVal
+    SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := stopTemplateCustomVal
 
     __MAIL_SETUP.saved := true
     __MAIL_SETUP.done := true
@@ -2981,8 +3041,51 @@ OnSendEnabledChanged(*) {
     RefreshMailInputsEnabled()
 }
 
+OnScreenRecordingSettingChanged(*) {
+    RefreshScreenRecordingInputsEnabled()
+}
+
+OnBrowseScreenRecordingTemplate(*) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    p := FileSelect(, "", "選擇錄影停止模板", "圖片檔 (*.png;*.jpg;*.jpeg;*.bmp;*.webp)")
+    if (p)
+        __MAIL_SETUP.edScreenRecordingStopTemplateCustom.Value := p
+}
+
 OnServerScheduleEnabledChanged(*) {
     RefreshServerScheduleInputsEnabled()
+}
+
+RefreshScreenRecordingInputsEnabled() {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    enabled := __MAIL_SETUP.cbScreenRecordingEnabled.Value ? true : false
+    __MAIL_SETUP.ddScreenRecordingStopMode.Enabled := enabled
+
+    modeKey := NormalizeScreenRecordingStopMode(StrSplit(__MAIL_SETUP.ddScreenRecordingStopMode.Text, ":")[1])
+    useTemplateMode := enabled && (modeKey = "template")
+    __MAIL_SETUP.ddScreenRecordingStopTemplate.Enabled := useTemplateMode
+
+    templateKey := NormalizeScreenRecordingStopTemplate(StrSplit(__MAIL_SETUP.ddScreenRecordingStopTemplate.Text, ":")[1])
+    useCustom := useTemplateMode && (templateKey = "custom")
+    __MAIL_SETUP.edScreenRecordingStopTemplateCustom.Enabled := useCustom
+    __MAIL_SETUP.btnScreenRecordingStopTemplateCustom.Enabled := useCustom
+
+    if !enabled
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：螢幕錄影目前停用。"
+    else if (modeKey = "template")
+        __MAIL_SETUP.txtScreenRecordingHint.Value := useCustom ? "提示：請提供自訂模板檔路徑。" : "提示：目前使用預設模板作為停止條件。"
+    else if (modeKey = "synthesis_end")
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在聲骸合成結束時停止錄影。"
+    else if (modeKey = "reward_end")
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在收尾監測達標時停止錄影。"
+    else
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在腳本結束時停止錄影。"
 }
 
 OnServerSchedulePreview(*) {
@@ -3209,9 +3312,14 @@ LoadMailNotifyEnabled() {
 }
 
 LoadScreenRecordingEnabled() {
-    global CFG_FILE, SCREEN_RECORDING_SECTION, SCREEN_RECORDING_ENABLED
+    global CFG_FILE, SCREEN_RECORDING_SECTION, SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, __SCREEN_RECORDING_TEMPLATE_WARNED
     SCREEN_RECORDING_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
+    SCREEN_RECORDING_STOP_MODE := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "exit"))
+    SCREEN_RECORDING_STOP_TEMPLATE := NormalizeScreenRecordingStopTemplate(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template", "login"))
+    SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template_custom", ""))
+    __SCREEN_RECORDING_TEMPLATE_WARNED := false
     WriteLog("螢幕錄影開關(enabled)=" SCREEN_RECORDING_ENABLED)
+    WriteLog("螢幕錄影停止條件 stop_mode=" SCREEN_RECORDING_STOP_MODE " stop_template=" SCREEN_RECORDING_STOP_TEMPLATE)
 }
 
 TryStartScreenRecording(reason := "") {
@@ -3256,6 +3364,93 @@ TryStopScreenRecording(reason := "") {
         WriteLog("停止螢幕錄影失敗: " e.Message, "WARN")
         return false
     }
+}
+
+NormalizeScreenRecordingStopMode(val) {
+    s := StrLower(Trim(val, " `t`r`n"))
+    if (s = "exit" || s = "synthesis_end" || s = "reward_end" || s = "template")
+        return s
+    return "exit"
+}
+
+NormalizeScreenRecordingStopTemplate(val) {
+    s := StrLower(Trim(val, " `t`r`n"))
+    if (s = "login" || s = "close" || s = "custom")
+        return s
+    return "login"
+}
+
+ResolveScreenRecordingStopTemplatePath() {
+    global SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM
+
+    if (SCREEN_RECORDING_STOP_TEMPLATE = "login")
+        return A_ScriptDir "\登入.png"
+    if (SCREEN_RECORDING_STOP_TEMPLATE = "close")
+        return A_ScriptDir "\0510.png"
+
+    p := NormalizePath(SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM)
+    if (p = "")
+        return ""
+
+    if RegExMatch(p, "i)^[a-z]:\\")
+        return p
+    if (SubStr(p, 1, 2) = "\\\\")
+        return p
+    return A_ScriptDir "\" p
+}
+
+TryStopScreenRecordingByMode(stage) {
+    global SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_STOP_MODE
+
+    if !SCREEN_RECORDING_ENABLED
+        return false
+    if (SCREEN_RECORDING_STOP_MODE = "synthesis_end" && stage = "synthesis_end")
+        return TryStopScreenRecording("聲骸合成結束")
+    if (SCREEN_RECORDING_STOP_MODE = "reward_end" && stage = "reward_end")
+        return TryStopScreenRecording("收尾監測達標")
+    return false
+}
+
+TryStopScreenRecordingByTemplate() {
+    global SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_STOP_MODE, __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_TEMPLATE_WARNED
+
+    if !SCREEN_RECORDING_ENABLED
+        return false
+    if !__SCREEN_RECORDING_ACTIVE
+        return false
+    if (SCREEN_RECORDING_STOP_MODE != "template")
+        return false
+
+    templatePath := ResolveScreenRecordingStopTemplatePath()
+    if (templatePath = "") {
+        if !__SCREEN_RECORDING_TEMPLATE_WARNED {
+            WriteLog("螢幕錄影模板停止條件未設定有效模板路徑", "WARN")
+            __SCREEN_RECORDING_TEMPLATE_WARNED := true
+        }
+        return false
+    }
+    if !FileExist(templatePath) {
+        if !__SCREEN_RECORDING_TEMPLATE_WARNED {
+            WriteLog("螢幕錄影模板檔不存在: " templatePath, "WARN")
+            __SCREEN_RECORDING_TEMPLATE_WARNED := true
+        }
+        return false
+    }
+
+    x := 0
+    y := 0
+    try {
+        if ImageSearch(&x, &y, 0, 0, A_ScreenWidth, A_ScreenHeight, templatePath) {
+            WriteLog("螢幕錄影停止模板命中: " templatePath " @" x "," y)
+            return TryStopScreenRecording("模板命中")
+        }
+    } catch as e {
+        if !__SCREEN_RECORDING_TEMPLATE_WARNED {
+            WriteLog("螢幕錄影模板檢測失敗: " e.Message, "WARN")
+            __SCREEN_RECORDING_TEMPLATE_WARNED := true
+        }
+    }
+    return false
 }
 
 ParseBool01(val, defaultVal := 1) {
