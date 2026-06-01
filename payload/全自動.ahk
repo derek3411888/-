@@ -44,6 +44,7 @@ global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
 global REWARD_INVALID_HWND_NEED_COUNT := 6
+global REWARD_LRMCAI_RESTART_COOLDOWN_MS := 15000
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
 global SCREEN_RECORDING_ENABLED := 0
@@ -55,6 +56,7 @@ global SCREEN_RECORDING_STOP_LRMC_TASK := ""
 global __SCREEN_RECORDING_ACTIVE := false
 global __SCREEN_RECORDING_TEMPLATE_WARNED := false
 global __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
+global __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := 0
 global __RESTART_IN_PROGRESS := false
 global __NEXTSERVER_RESTART := false
 global __MAIL_SETUP := ""
@@ -2184,6 +2186,8 @@ MonitorRewardAndShutdown() {
     ShowTip("🧭 開始監測最新日誌...", 1200)
 
     loop {
+        TryRecoverLrmcDuringRewardMonitor()
+
         chunk := ReadLogAppended(logPath, &lastPos)
         if (chunk != "") {
             for line in StrSplit(chunk, "`n") {
@@ -2300,6 +2304,37 @@ ResolveRewardLogPath() {
     }
 
     return ""
+}
+
+TryRecoverLrmcDuringRewardMonitor() {
+    global REWARD_LRMCAI_RESTART_COOLDOWN_MS, __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK, AhkExe
+
+    if ProcessExist("LRMCAI.exe") {
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := 0
+        return false
+    }
+
+    if (__REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK > 0 && (A_TickCount - __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK) < REWARD_LRMCAI_RESTART_COOLDOWN_MS)
+        return false
+
+    if (!IsSet(AhkExe) || AhkExe = "" || !FileExist(AhkExe)) {
+        WriteLog("收尾監測：LRMCAI 已退出，但找不到可用 AutoHotkey 執行檔，無法重啟", "ERROR")
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
+        return false
+    }
+
+    cmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk" hotkey'
+    try {
+        Run(cmd)
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
+        WriteLog("收尾監測：偵測 LRMCAI 已退出，已用 hotkey 模式重啟（不走 OCR）", "WARN")
+        ShowTip("⚠️ LRMCAI 退出，已自動 hotkey 重啟", 1200)
+        return true
+    } catch as e {
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
+        WriteLog("收尾監測：LRMCAI hotkey 重啟失敗: " e.Message, "ERROR")
+        return false
+    }
 }
 
 ResolveLrmcPathForLog(pathVal) {
@@ -2701,7 +2736,7 @@ ReadCombinedConfigState() {
 }
 
 ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
-    g := Gui("+AlwaysOnTop +MinSize760x760", "整合設定（程式路徑 + 郵件通知）")
+    g := Gui("+AlwaysOnTop +Resize +MinSize640x520", "整合設定（程式路徑 + 郵件通知）")
     g.SetFont("s10", "Microsoft JhengHei UI")
 
     g.AddText("w720", "【觸發原因】" reason)
@@ -2877,13 +2912,42 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     RefreshServerScheduleInputsEnabled()
     RefreshScreenRecordingInputsEnabled()
 
-    g.Show("AutoSize")
+    ShowGuiFitToScreen(g)
     while !__MAIL_SETUP.done
         Sleep 50
 
     saved := __MAIL_SETUP.saved
     __MAIL_SETUP := ""
     return saved
+}
+
+ShowGuiFitToScreen(g, margin := 24) {
+    g.Show("AutoSize Center")
+
+    try {
+        WinGetPos(&x, &y, &w, &h, "ahk_id " g.Hwnd)
+        maxW := A_ScreenWidth - (margin * 2)
+        maxH := A_ScreenHeight - (margin * 2)
+
+        if (maxW < 640)
+            maxW := 640
+        if (maxH < 520)
+            maxH := 520
+
+        newW := (w > maxW) ? maxW : w
+        newH := (h > maxH) ? maxH : h
+
+        if (newW != w || newH != h) {
+            newX := Floor((A_ScreenWidth - newW) / 2)
+            newY := Floor((A_ScreenHeight - newH) / 2)
+            if (newX < margin)
+                newX := margin
+            if (newY < margin)
+                newY := margin
+            WinMove(newX, newY, newW, newH, "ahk_id " g.Hwnd)
+        }
+    } catch {
+    }
 }
 
 OnCombinedBrowseOkww(*) {
@@ -3454,6 +3518,10 @@ NormalizeZhTaskText(s) {
     t := StrReplace(t, "終", "终")
     t := StrReplace(t, "點", "点")
     t := StrReplace(t, "時", "时")
+    t := StrReplace(t, "領", "领")
+    t := StrReplace(t, "獎", "奖")
+    t := StrReplace(t, "體", "体")
+    t := StrReplace(t, "經", "经")
 
     t := RegExReplace(t, "[\s\-_:：，,。.!！？()（）\[\]{}]+", "")
     return t
@@ -3464,6 +3532,13 @@ IsLrmcArrivalLine(line) {
     if (t = "")
         return false
     return (InStr(t, "到达终点") || InStr(t, "判定为到达终点"))
+}
+
+IsLrmcRewardOrStaminaLine(line) {
+    t := NormalizeZhTaskText(line)
+    if (t = "")
+        return false
+    return InStr(t, "已经领取奖励或体力不足了") ? true : false
 }
 
 ParseLrmcTaskPackageName(line) {
@@ -3506,6 +3581,12 @@ TryStopScreenRecordingByLrmcTaskLine(line) {
     if IsLrmcArrivalLine(line) {
         __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := true
         WriteLog("錄影任務停止：已偵測到到達終點，等待任務包行", "INFO")
+        return false
+    }
+
+    if IsLrmcRewardOrStaminaLine(line) {
+        __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := true
+        WriteLog("錄影任務停止：已偵測到領獎/體力不足，等待任務包行", "INFO")
         return false
     }
 
