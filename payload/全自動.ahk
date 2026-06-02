@@ -91,6 +91,7 @@ global SERVER_SWITCH_POINT_Y := 549
 global LRMCAI_FLOW_STARTED := false
 global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
 global REMOTE_CONTROL_ACTIVE := false
+global REMOTE_PAUSE_WAITING := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -591,14 +592,39 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
 
 OnRemoteControlStateChanged(state) {
     if (state = "PAUSE") {
-        try Pause(1)
         WriteLog("遠端控制：收到 PAUSE（軟停模式）", "WARN")
         ShowTip("⏸ 已切換為遠端暫停", 1500)
     } else {
-        try Pause(0)
         WriteLog("遠端控制：收到 RUN（恢復執行）")
         ShowTip("▶ 已切換為遠端執行", 1500)
     }
+}
+
+; 軟暫停：主流程在 Sleep 檢查點停住，但遠端監控計時器仍可繼續心跳與收命令。
+Sleep(delayMs) {
+    global REMOTE_CONTROL_ACTIVE, REMOTE_PAUSE_WAITING
+
+    ms := 0
+    try ms := Integer(delayMs)
+    if (ms < 0)
+        ms := 0
+
+    if (REMOTE_CONTROL_ACTIVE) {
+        while RC_IsPaused() {
+            if !REMOTE_PAUSE_WAITING {
+                REMOTE_PAUSE_WAITING := true
+                WriteLog("遠端控制：主流程已進入軟暫停，等待 RUN 指令")
+            }
+            DllCall("Sleep", "UInt", 250)
+        }
+
+        if REMOTE_PAUSE_WAITING {
+            REMOTE_PAUSE_WAITING := false
+            WriteLog("遠端控制：收到 RUN，主流程恢復")
+        }
+    }
+
+    DllCall("Sleep", "UInt", ms)
 }
 
 GetWutheringAudioTargets() {

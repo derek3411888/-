@@ -60,8 +60,8 @@ function renderClients() {
     rows.push({
       id,
       online,
-      displayName: readField(data, "displayName", id),
       computerName: readField(data, "computerName", ""),
+      displayName: readField(data, "displayName", id),
       status: readField(data, "status", "UNKNOWN"),
       lastHeartbeat: hb,
       nonce: Number(readField(data, "nonce", 0)),
@@ -79,7 +79,8 @@ function renderClients() {
     const opt = document.createElement("option");
     opt.value = r.id;
     const onlineTag = r.online ? "在線" : "離線";
-    opt.textContent = `${r.displayName} (${r.status} / ${onlineTag})`;
+    const labelName = r.computerName || r.displayName || r.id;
+    opt.textContent = `${labelName} (${r.status} / ${onlineTag})`;
     pcDropdown.appendChild(opt);
   }
 
