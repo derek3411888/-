@@ -5,6 +5,7 @@ global RC_ENABLED := false
 global RC_PROJECT_ID := ""
 global RC_API_KEY := ""
 global RC_COLLECTION := "ahk_clients"
+global RC_CFG_PATH := ""
 global RC_UID := ""
 global RC_DISPLAY_NAME := ""
 global RC_CONTROL_SECRET := ""
@@ -19,11 +20,12 @@ global RC_LAST_ERROR_MSG := ""
 global RC_ON_STATE_CHANGED := ""
 
 RC_Init(cfgPath, onStateChangedCallback := "") {
-    global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_UID, RC_DISPLAY_NAME
+    global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME
     global RC_CONTROL_SECRET, RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
     global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE
 
     RC_EnsureRemoteControlDefaults(cfgPath)
+    RC_CFG_PATH := cfgPath
 
     enabled := RC_ParseBool01(RC_IniReadSafe(cfgPath, "remote_control", "enabled", "0"), 0)
     RC_ENABLED := enabled ? true : false
@@ -58,9 +60,29 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
     RC_REMOTE_DESIRED_STATE := "RUN"
     RC_LAST_NONCE := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "last_nonce", "0"), 0, 0, 2147483647)
 
+    RC_StartupDefaultRun()
+
     RC_Log("RemoteControl initialized. uid=" RC_UID " collection=" RC_COLLECTION)
     RC_Start()
     return true
+}
+
+RC_StartupDefaultRun() {
+    global RC_LAST_NONCE, RC_REMOTE_DESIRED_STATE, RC_CFG_PATH
+
+    ; 每次啟動都先回到 RUN，且把現有文件 nonce 視為已讀，避免重放舊命令。
+    RC_REMOTE_DESIRED_STATE := "RUN"
+    RC_SetPausedFlag(false)
+
+    resp := RC_FirestoreGetClientDoc()
+    if (resp != "") {
+        docNonce := RC_JsonGetInteger(resp, "nonce", 0)
+        if (docNonce > RC_LAST_NONCE)
+            RC_LAST_NONCE := docNonce
+    }
+
+    try IniWrite(RC_LAST_NONCE, RC_CFG_PATH, "remote_control", "last_nonce")
+    RC_Log("Startup default RUN. command cursor=" RC_LAST_NONCE)
 }
 
 RC_Start() {
@@ -117,13 +139,16 @@ RC_PollCommandTick() {
 }
 
 RC_ApplyRemoteState(desired, nonce) {
-    global RC_REMOTE_DESIRED_STATE, RC_ON_STATE_CHANGED
+    global RC_REMOTE_DESIRED_STATE, RC_ON_STATE_CHANGED, RC_CFG_PATH
     d := StrUpper(Trim(desired, " `t`r`n"))
     if (d != "PAUSE")
         d := "RUN"
 
     RC_REMOTE_DESIRED_STATE := d
     RC_SetPausedFlag(d = "PAUSE")
+
+    ; 命令游標持久化，避免重啟後重新套用舊命令。
+    try IniWrite(nonce, RC_CFG_PATH, "remote_control", "last_nonce")
 
     if (RC_ON_STATE_CHANGED != "") {
         try %RC_ON_STATE_CHANGED%(d)

@@ -11,7 +11,7 @@ const FIREBASE_CONFIG = {
 const CONTROL_PASSWORD = "123456789";
 const CONTROL_SECRET = "ww-control-a3988-shared-2026";
 const COLLECTION = "ahk_clients";
-const OFFLINE_THRESHOLD_MS = 10 * 60_000;
+const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const REFRESH_MS = 5_000;
 
 const app = initializeApp(FIREBASE_CONFIG);
@@ -38,6 +38,18 @@ function fmtTs(ms) {
   return d.toLocaleString("zh-TW", { hour12: false });
 }
 
+function fmtAge(ms) {
+  if (!ms) return "-";
+  const ageMs = Math.max(0, Date.now() - Number(ms));
+  const sec = Math.floor(ageMs / 1000);
+  if (sec < 60) return `${sec} 秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分鐘前`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return `${hr} 小時 ${remMin} 分鐘前`;
+}
+
 function readField(docData, key, def = "") {
   if (!(key in docData)) return def;
   return docData[key];
@@ -54,7 +66,9 @@ function renderClients() {
 
   for (const [id, data] of cache.entries()) {
     const hb = Number(readField(data, "lastHeartbeat", 0));
-    const online = now - hb <= OFFLINE_THRESHOLD_MS;
+    const status = String(readField(data, "status", "UNKNOWN")).toUpperCase();
+    const onlineByHeartbeat = now - hb <= OFFLINE_THRESHOLD_MS;
+    const online = status !== "OFFLINE" && onlineByHeartbeat;
     if (online) onlineCount += 1;
 
     rows.push({
@@ -62,7 +76,7 @@ function renderClients() {
       online,
       computerName: readField(data, "computerName", ""),
       displayName: readField(data, "displayName", id),
-      status: readField(data, "status", "UNKNOWN"),
+      status,
       lastHeartbeat: hb,
       nonce: Number(readField(data, "nonce", 0)),
       lastAckNonce: Number(readField(data, "lastAckNonce", 0)),
@@ -107,6 +121,7 @@ function refreshMeta() {
     `電腦: ${readField(d, "computerName", "-")}`,
     `狀態: ${readField(d, "status", "-")}`,
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
+    `距今: ${fmtAge(readField(d, "lastHeartbeat", 0))}`,
     `最後 ACK: nonce=${readField(d, "lastAckNonce", 0)} state=${readField(d, "lastAckState", "-")} at=${fmtTs(readField(d, "lastAckAt", 0))}`,
   ];
   for (const t of lines) {
