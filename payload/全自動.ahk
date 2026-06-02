@@ -208,6 +208,12 @@ FormatBytesMB(bytes) {
     return Format("{1:.1f} MB", bytes / 1048576)
 }
 
+FormatSpeedMBps(bytesPerSec) {
+    if (bytesPerSec <= 0)
+        return "0.0 MB/s"
+    return Format("{1:.1f} MB/s", bytesPerSec / 1048576)
+}
+
 DownloadFileWithProgress(url, outPath, title := "下載中") {
     SplitPath outPath, , &outDir
     if (outDir != "")
@@ -220,7 +226,7 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
 
     psUrl := StrReplace(url, "'", "''")
     psOut := StrReplace(outPath, "'", "''")
-    psCmd := "$ProgressPreference=`"SilentlyContinue`"; Invoke-WebRequest -Uri '" psUrl "' -OutFile '" psOut "'"
+    psCmd := "$ProgressPreference=`"SilentlyContinue`"; $u='" psUrl "'; $o='" psOut "'; try { Import-Module BitsTransfer -ErrorAction Stop; Start-BitsTransfer -Source $u -Destination $o -ErrorAction Stop } catch { Invoke-WebRequest -Uri $u -OutFile $o }"
     cmd := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psCmd Chr(34)
 
     pid := 0
@@ -238,9 +244,24 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
     g.Show("AutoSize Center")
 
     spin := 0
+    startTick := A_TickCount
+    lastTick := startTick
+    lastSize := 0
+    speedBps := 0.0
     while ProcessExist(pid) {
         size := 0
         try size := FileGetSize(outPath)
+
+        nowTick := A_TickCount
+        dt := nowTick - lastTick
+        if (dt >= 400) {
+            ds := size - lastSize
+            if (ds < 0)
+                ds := 0
+            speedBps := (ds * 1000.0) / dt
+            lastTick := nowTick
+            lastSize := size
+        }
 
         if (total > 0) {
             pct := Floor((size * 100) / total)
@@ -250,14 +271,14 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
                 pct := 99
             bar.Value := pct
             txt.Value := "正在下載 FFmpeg... " pct "%"
-            hint.Value := FormatBytesMB(size) " / " FormatBytesMB(total)
+            hint.Value := FormatBytesMB(size) " / " FormatBytesMB(total) "  (" FormatSpeedMBps(speedBps) ")"
         } else {
             spin += 4
             if (spin > 100)
                 spin := 0
             bar.Value := spin
             txt.Value := "正在下載 FFmpeg..."
-            hint.Value := FormatBytesMB(size)
+            hint.Value := FormatBytesMB(size) "  (" FormatSpeedMBps(speedBps) ")"
         }
         Sleep 200
     }
@@ -435,6 +456,22 @@ BuildScreenRecordingFfmpegArgsBySimple(qualityPreset, fpsVal, crfVal) {
         crf := ToIntRange(crfVal, 23, 0, 51)
 
     return "-y -f gdigrab -framerate " fps " -i desktop -c:v libx264 -preset veryfast -crf " crf " -pix_fmt yuv420p"
+}
+
+GetScreenRecordingQualityHint(qualityPreset, crfText := "") {
+    q := NormalizeScreenRecordingQualityPreset(qualityPreset)
+    if (q = "high")
+        return "高畫質：固定 CRF 18（畫質高、檔案較大）"
+    if (q = "balanced")
+        return "平衡：固定 CRF 23（預設建議）"
+    if (q = "low")
+        return "小檔案：固定 CRF 28（畫質較低、檔案較小）"
+
+    if RegExMatch(Trim(crfText, " `t`r`n"), "^\d+$") {
+        c := ToIntRange(crfText, 23, 0, 51)
+        return "自訂 CRF：" c "（數字越小畫質越高、檔案越大；建議 18~28）"
+    }
+    return "自訂 CRF：數字越小畫質越高、檔案越大；建議 18~28"
 }
 
 MuteWutheringAudioAtStartup() {
@@ -3163,6 +3200,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edScreenRecordingFps := g.AddEdit("x+8 w70", state.screenRecordingFps)
     g.AddText("x+12 w60", "CRF")
     edScreenRecordingCrf := g.AddEdit("x+8 w70", state.screenRecordingCrf)
+    txtScreenRecordingQualityHint := g.AddText("xm y+4 w720 c666666", GetScreenRecordingQualityHint(state.screenRecordingQualityPreset, state.screenRecordingCrf))
 
     g.AddText("xm y+8 w120", "ffmpeg 參數")
     edScreenRecordingFfmpegArgs := g.AddEdit("x+10 w600", state.screenRecordingFfmpegArgs)
@@ -3254,6 +3292,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         ddScreenRecordingQualityPreset: ddScreenRecordingQualityPreset,
         edScreenRecordingFps: edScreenRecordingFps,
         edScreenRecordingCrf: edScreenRecordingCrf,
+        txtScreenRecordingQualityHint: txtScreenRecordingQualityHint,
         edScreenRecordingFfmpegArgs: edScreenRecordingFfmpegArgs,
         txtScreenRecordingArgsHint: txtScreenRecordingArgsHint,
         edScreenRecordingOutputDir: edScreenRecordingOutputDir,
@@ -3457,8 +3496,10 @@ OnCombinedSetupSave(*) {
     allowFallbackVal := st.cbScreenRecordingAllowFallback.Value ? 1 : 0
     useSimpleParamsVal := st.cbScreenRecordingUseSimpleParams.Value ? 1 : 0
     qualityPresetVal := NormalizeScreenRecordingQualityPreset(StrSplit(st.ddScreenRecordingQualityPreset.Text, ":")[1])
-    fpsVal := ToIntRange(st.edScreenRecordingFps.Value, 30, 10, 120)
-    crfVal := ToIntRange(st.edScreenRecordingCrf.Value, 23, 0, 51)
+    fpsText := Trim(st.edScreenRecordingFps.Value, " `t`r`n")
+    crfText := Trim(st.edScreenRecordingCrf.Value, " `t`r`n")
+    fpsVal := ToIntRange(fpsText, 30, 10, 120)
+    crfVal := ToIntRange(crfText, 23, 0, 51)
     ffmpegExeVal := NormalizePath(st.edScreenRecordingFfmpegExe.Value)
     ffmpegArgsVal := Trim(st.edScreenRecordingFfmpegArgs.Value, " `t`r`n")
     outputDirVal := NormalizePath(st.edScreenRecordingOutputDir.Value)
@@ -3520,6 +3561,17 @@ OnCombinedSetupSave(*) {
     }
 
     if (screenRecordingEnabledVal && recordingEngineVal = "ffmpeg") {
+        if useSimpleParamsVal {
+            if !RegExMatch(fpsText, "^\d+$") {
+                MsgBox "FPS 必須是數字（建議 30 或 60）", "整合設定", "Iconx"
+                return
+            }
+            if (qualityPresetVal = "custom") && !RegExMatch(crfText, "^\d+$") {
+                MsgBox "自訂 CRF 必須是數字（0~51，建議 18~28）", "整合設定", "Iconx"
+                return
+            }
+        }
+
         if useSimpleParamsVal
             ffmpegArgsVal := BuildScreenRecordingFfmpegArgsBySimple(qualityPresetVal, fpsVal, crfVal)
 
@@ -3649,6 +3701,7 @@ RefreshScreenRecordingInputsEnabled() {
     __MAIL_SETUP.edScreenRecordingFps.Enabled := useSimple
     qualityKey := NormalizeScreenRecordingQualityPreset(StrSplit(__MAIL_SETUP.ddScreenRecordingQualityPreset.Text, ":")[1])
     __MAIL_SETUP.edScreenRecordingCrf.Enabled := useSimple && (qualityKey = "custom")
+    __MAIL_SETUP.txtScreenRecordingQualityHint.Value := GetScreenRecordingQualityHint(qualityKey, __MAIL_SETUP.edScreenRecordingCrf.Value)
     __MAIL_SETUP.edScreenRecordingFfmpegArgs.Enabled := useFfmpeg && !useSimple
     __MAIL_SETUP.edScreenRecordingOutputDir.Enabled := useFfmpeg
     __MAIL_SETUP.btnScreenRecordingOutputDir.Enabled := useFfmpeg
@@ -3657,8 +3710,6 @@ RefreshScreenRecordingInputsEnabled() {
     if useSimple {
         fpsVal := ToIntRange(__MAIL_SETUP.edScreenRecordingFps.Value, 30, 10, 120)
         crfVal := ToIntRange(__MAIL_SETUP.edScreenRecordingCrf.Value, 23, 0, 51)
-        __MAIL_SETUP.edScreenRecordingFps.Value := fpsVal
-        __MAIL_SETUP.edScreenRecordingCrf.Value := crfVal
         __MAIL_SETUP.edScreenRecordingFfmpegArgs.Value := BuildScreenRecordingFfmpegArgsBySimple(qualityKey, fpsVal, crfVal)
         __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "簡易模式已啟用：會自動用畫質/FPS/CRF 組合 ffmpeg 參數。"
     } else
