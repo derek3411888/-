@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AHK 遠端控制台</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>AHK 遠端控制台</h1>
+    <p class="sub">Firestore 多機控制（MVP）</p>
+
+    <section class="card" id="gateCard">
+      <label for="gatePwd">控制密碼</label>
+      <div class="row">
+        <input id="gatePwd" type="password" placeholder="輸入密碼後解鎖" />
+        <button id="btnUnlock">解鎖</button>
+      </div>
+      <p id="gateMsg" class="msg"></p>
+    </section>
+
+    <section class="card locked" id="controlCard">
+      <label for="pcDropdown">在線電腦</label>
+      <select id="pcDropdown"></select>
+
+      <div class="row buttons">
+        <button id="btnPause" class="warn">暫停</button>
+        <button id="btnRun" class="ok">啟動</button>
+      </div>
+
+      <p id="statusMsg" class="msg"></p>
+      <ul id="clientMeta"></ul>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

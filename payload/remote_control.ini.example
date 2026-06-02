@@ -1,0 +1,30 @@
+[remote_control]
+; 0=停用, 1=啟用
+enabled=0
+
+; Firestore project ID 與 Web API key
+project_id=ww-control-a3988
+api_key=AIzaSyDqWHdBixVQPt4OiTi50hseInFxPtk0hf0
+
+; Firestore collection 名稱
+collection=ahk_clients
+
+; 第一次可留空，腳本會自動生成（A_ComputerName + MAC）
+uid=
+
+; 顯示名稱（下拉選單可見）
+display_name=
+
+; 簡單共享密碼（需與 web app.js 的 CONTROL_SECRET 一致）
+control_secret=ww-control-a3988-shared-2026
+
+; 心跳/輪詢/HTTP timeout（毫秒）
+heartbeat_interval_ms=30000
+poll_interval_ms=5000
+http_timeout_ms=2500
+
+; 結束時標記 OFFLINE（目前採 patch 狀態）
+delete_on_exit=0
+
+; 命令去重（可留 0）
+last_nonce=0

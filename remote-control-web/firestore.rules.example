@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // MVP：先只開放 ahk_clients 集合，方便前端讀取狀態與下發指令。
+    // 這仍然是寬鬆規則，只適合先做連線測試，之後要再收緊。
+    match /ahk_clients/{uid} {
+      allow read, write: if request.time < timestamp.date(2026, 7, 2);
+    }
+  }
+}

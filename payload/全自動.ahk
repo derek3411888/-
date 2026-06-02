@@ -26,6 +26,7 @@ catch
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
+#Include RemoteControlFirestore.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -89,6 +90,7 @@ global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
 global LRMCAI_FLOW_STARTED := false
 global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
+global REMOTE_CONTROL_ACTIVE := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -579,11 +581,24 @@ UnmuteWutheringAudio(reason := "") {
 
 RestoreWutheringAudioOnExit(exitReason, exitCode) {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+    try RC_Shutdown()
     if (!__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
         TryStopScreenRecording("腳本結束保底")
     else
         WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
     UnmuteWutheringAudio("腳本結束保底")
+}
+
+OnRemoteControlStateChanged(state) {
+    if (state = "PAUSE") {
+        try Pause(1)
+        WriteLog("遠端控制：收到 PAUSE（軟停模式）", "WARN")
+        ShowTip("⏸ 已切換為遠端暫停", 1500)
+    } else {
+        try Pause(0)
+        WriteLog("遠端控制：收到 RUN（恢復執行）")
+        ShowTip("▶ 已切換為遠端執行", 1500)
+    }
 }
 
 GetWutheringAudioTargets() {
@@ -926,6 +941,11 @@ WriteLog("CFG_FILE=" CFG_FILE)
 WriteStep("載入設定", "config=" CFG_FILE)
 LoadMailNotifyEnabled()
 LoadScreenRecordingEnabled()
+REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged")
+if REMOTE_CONTROL_ACTIVE
+    WriteLog("遠端控制：已啟用")
+else
+    WriteLog("遠端控制：未啟用")
 SetupTrayMenu()
 
 ; ★ 流程開始前統一檢查：程式路徑 + 郵件通知設定
