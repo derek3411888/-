@@ -147,6 +147,9 @@ RC_ApplyRemoteState(desired, nonce) {
     RC_REMOTE_DESIRED_STATE := d
     RC_SetPausedFlag(d = "PAUSE")
 
+    ; 命令套用後立即同步狀態，避免要等下一次心跳才反映在網頁。
+    RC_PatchClientState(d, false)
+
     ; 命令游標持久化，避免重啟後重新套用舊命令。
     try IniWrite(nonce, RC_CFG_PATH, "remote_control", "last_nonce")
 

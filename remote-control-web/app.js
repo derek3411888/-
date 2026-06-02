@@ -66,7 +66,7 @@ function renderClients() {
 
   for (const [id, data] of cache.entries()) {
     const hb = Number(readField(data, "lastHeartbeat", 0));
-    const status = String(readField(data, "status", "UNKNOWN")).toUpperCase();
+    const status = String(readField(data, "status", "UNKNOWN")).trim().toUpperCase();
     const onlineByHeartbeat = now - hb <= OFFLINE_THRESHOLD_MS;
     const online = status !== "OFFLINE" && onlineByHeartbeat;
     if (online) onlineCount += 1;
