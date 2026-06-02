@@ -189,6 +189,96 @@ ExtractZipByShell(zipPath, destDir) {
     }
 }
 
+GetUrlContentLength(url) {
+    try {
+        req := ComObject("WinHttp.WinHttpRequest.5.1")
+        req.Open("HEAD", url, false)
+        req.Send()
+        v := req.GetResponseHeader("Content-Length")
+        n := Integer(Trim(v, " `t`r`n"))
+        return (n > 0) ? n : 0
+    } catch {
+        return 0
+    }
+}
+
+FormatBytesMB(bytes) {
+    if (bytes <= 0)
+        return "0.0 MB"
+    return Format("{1:.1f} MB", bytes / 1048576)
+}
+
+DownloadFileWithProgress(url, outPath, title := "下載中") {
+    SplitPath outPath, , &outDir
+    if (outDir != "")
+        try DirCreate(outDir)
+
+    if FileExist(outPath)
+        try FileDelete(outPath)
+
+    total := GetUrlContentLength(url)
+
+    psUrl := StrReplace(url, "'", "''")
+    psOut := StrReplace(outPath, "'", "''")
+    psCmd := "$ProgressPreference=`"SilentlyContinue`"; Invoke-WebRequest -Uri '" psUrl "' -OutFile '" psOut "'"
+    cmd := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psCmd Chr(34)
+
+    pid := 0
+    try Run(cmd, "", "Hide", &pid)
+    catch as e {
+        WriteLog("啟動下載進程失敗: " e.Message, "WARN")
+        return false
+    }
+
+    g := Gui("+ToolWindow -MinimizeBox -MaximizeBox", title)
+    g.SetFont("s10", "Microsoft JhengHei UI")
+    txt := g.AddText("xm w420", "正在下載，請稍候...")
+    bar := g.AddProgress("xm y+8 w420 h18", 0)
+    hint := g.AddText("xm y+6 w420", "0.0 MB")
+    g.Show("AutoSize Center")
+
+    spin := 0
+    while ProcessExist(pid) {
+        size := 0
+        try size := FileGetSize(outPath)
+
+        if (total > 0) {
+            pct := Floor((size * 100) / total)
+            if (pct < 0)
+                pct := 0
+            if (pct > 99)
+                pct := 99
+            bar.Value := pct
+            txt.Value := "正在下載 FFmpeg... " pct "%"
+            hint.Value := FormatBytesMB(size) " / " FormatBytesMB(total)
+        } else {
+            spin += 4
+            if (spin > 100)
+                spin := 0
+            bar.Value := spin
+            txt.Value := "正在下載 FFmpeg..."
+            hint.Value := FormatBytesMB(size)
+        }
+        Sleep 200
+    }
+
+    ok := false
+    try {
+        sz := FileGetSize(outPath)
+        ok := (sz > 0)
+    }
+
+    if ok {
+        bar.Value := 100
+        txt.Value := "下載完成"
+        hint.Value := FormatBytesMB(sz)
+        Sleep 300
+    }
+
+    g.Destroy()
+    return ok
+}
+
 TryBootstrapBundledFfmpeg() {
     global SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD, SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL
     global __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED
@@ -217,7 +307,11 @@ TryBootstrapBundledFfmpeg() {
     try DirCreate(tmpRoot)
 
     try {
-        Download(SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL, zipPath)
+        WriteLog("未找到本地 ffmpeg，開始自動下載: " SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL)
+        if !DownloadFileWithProgress(SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL, zipPath, "FFmpeg 自動下載") {
+            WriteLog("FFmpeg 自動下載失敗: 檔案未完成", "WARN")
+            return ""
+        }
         WriteLog("FFmpeg 自動下載完成: " zipPath)
     } catch as e {
         WriteLog("FFmpeg 自動下載失敗: " e.Message, "WARN")
@@ -286,6 +380,61 @@ ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
     if FileExist(candidate)
         return candidate
     return raw
+}
+
+NormalizeScreenRecordingQualityPreset(val) {
+    s := StrLower(Trim(val, " `t`r`n"))
+    if (s = "high" || s = "balanced" || s = "low" || s = "custom")
+        return s
+    return "balanced"
+}
+
+ToIntRange(val, defaultVal, minVal, maxVal) {
+    n := defaultVal
+    try n := Integer(Trim(val, " `t`r`n"))
+    if (n < minVal)
+        n := minVal
+    if (n > maxVal)
+        n := maxVal
+    return n
+}
+
+ParseScreenRecordingSimpleSettingsFromArgs(args) {
+    txt := " " Trim(args, " `t`r`n") " "
+    fps := 30
+    crf := 23
+
+    if RegExMatch(txt, "i)\s-framerate\s+(\d+)", &m1)
+        fps := ToIntRange(m1[1], 30, 10, 120)
+    if RegExMatch(txt, "i)\s-crf\s+(\d+)", &m2)
+        crf := ToIntRange(m2[1], 23, 0, 51)
+
+    quality := "balanced"
+    if (crf <= 20)
+        quality := "high"
+    else if (crf >= 27)
+        quality := "low"
+
+    return {
+        fps: fps,
+        crf: crf,
+        quality: quality
+    }
+}
+
+BuildScreenRecordingFfmpegArgsBySimple(qualityPreset, fpsVal, crfVal) {
+    q := NormalizeScreenRecordingQualityPreset(qualityPreset)
+    fps := ToIntRange(fpsVal, 30, 10, 120)
+    crf := 23
+
+    if (q = "high")
+        crf := 18
+    else if (q = "low")
+        crf := 28
+    else if (q = "custom")
+        crf := ToIntRange(crfVal, 23, 0, 51)
+
+    return "-y -f gdigrab -framerate " fps " -i desktop -c:v libx264 -preset veryfast -crf " crf " -pix_fmt yuv420p"
 }
 
 MuteWutheringAudioAtStartup() {
@@ -2825,6 +2974,11 @@ ReadCombinedConfigState() {
     state.screenRecordingFfmpegArgs := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"), " `t`r`n")
     if (state.screenRecordingFfmpegArgs = "")
         state.screenRecordingFfmpegArgs := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+    parsedSimple := ParseScreenRecordingSimpleSettingsFromArgs(state.screenRecordingFfmpegArgs)
+    state.screenRecordingUseSimpleParams := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "use_simple_params", "1"), 1)
+    state.screenRecordingQualityPreset := NormalizeScreenRecordingQualityPreset(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "quality_preset", parsedSimple.quality))
+    state.screenRecordingFps := ToIntRange(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "fps", parsedSimple.fps), parsedSimple.fps, 10, 120)
+    state.screenRecordingCrf := ToIntRange(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "crf", parsedSimple.crf), parsedSimple.crf, 0, 51)
     state.screenRecordingOutputDir := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
     if (state.screenRecordingOutputDir = "")
         state.screenRecordingOutputDir := "recordings"
@@ -2904,7 +3058,7 @@ ReadCombinedConfigState() {
 }
 
 ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
-    g := Gui("+AlwaysOnTop +Resize +MinSize640x520", "整合設定（程式路徑 + 郵件通知）")
+    g := Gui("+Resize +MinSize640x520", "整合設定（程式路徑 + 郵件通知）")
     g.SetFont("s10", "Microsoft JhengHei UI")
 
     g.AddText("w720", "【觸發原因】" reason)
@@ -2925,6 +3079,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "screen_recording.enabled: " (state.screenRecordingEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "screen_recording.engine: " state.screenRecordingEngine "`r`n"
     summary .= "screen_recording.allow_hotkey_fallback: " state.screenRecordingAllowHotkeyFallback "`r`n"
+    summary .= "screen_recording.use_simple_params: " state.screenRecordingUseSimpleParams "`r`n"
+    summary .= "screen_recording.quality_preset: " state.screenRecordingQualityPreset "`r`n"
+    summary .= "screen_recording.fps: " state.screenRecordingFps "`r`n"
+    summary .= "screen_recording.crf: " state.screenRecordingCrf "`r`n"
     summary .= "screen_recording.ffmpeg_exe: " state.screenRecordingFfmpegExe "`r`n"
     summary .= "screen_recording.ffmpeg_args: " state.screenRecordingFfmpegArgs "`r`n"
     summary .= "screen_recording.output_dir: " state.screenRecordingOutputDir "`r`n"
@@ -2994,8 +3152,21 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edScreenRecordingFfmpegExe := g.AddEdit("x+10 w500", state.screenRecordingFfmpegExe)
     btnScreenRecordingFfmpegExe := g.AddButton("x+8 w90", "瀏覽...")
 
+    cbScreenRecordingUseSimpleParams := g.AddCheckbox("xm y+8", "使用簡易錄影參數（建議）")
+    cbScreenRecordingUseSimpleParams.Value := state.screenRecordingUseSimpleParams ? 1 : 0
+
+    g.AddText("xm y+8 w120", "畫質等級")
+    ddScreenRecordingQualityPreset := g.AddDropDownList("x+10 w220", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
+    ddScreenRecordingQualityPreset.Choose((state.screenRecordingQualityPreset = "high") ? 2 : (state.screenRecordingQualityPreset = "low") ? 3 : (state.screenRecordingQualityPreset = "custom") ? 4 : 1)
+
+    g.AddText("x+12 w60", "FPS")
+    edScreenRecordingFps := g.AddEdit("x+8 w70", state.screenRecordingFps)
+    g.AddText("x+12 w60", "CRF")
+    edScreenRecordingCrf := g.AddEdit("x+8 w70", state.screenRecordingCrf)
+
     g.AddText("xm y+8 w120", "ffmpeg 參數")
     edScreenRecordingFfmpegArgs := g.AddEdit("x+10 w600", state.screenRecordingFfmpegArgs)
+    txtScreenRecordingArgsHint := g.AddText("xm y+4 w720 c666666", "簡易模式：用畫質/FPS/CRF 自動生成參數；進階模式：可手動編輯完整 ffmpeg 參數。")
 
     g.AddText("xm y+8 w120", "輸出資料夾")
     edScreenRecordingOutputDir := g.AddEdit("x+10 w500", state.screenRecordingOutputDir)
@@ -3079,7 +3250,12 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         cbScreenRecordingAllowFallback: cbScreenRecordingAllowFallback,
         edScreenRecordingFfmpegExe: edScreenRecordingFfmpegExe,
         btnScreenRecordingFfmpegExe: btnScreenRecordingFfmpegExe,
+        cbScreenRecordingUseSimpleParams: cbScreenRecordingUseSimpleParams,
+        ddScreenRecordingQualityPreset: ddScreenRecordingQualityPreset,
+        edScreenRecordingFps: edScreenRecordingFps,
+        edScreenRecordingCrf: edScreenRecordingCrf,
         edScreenRecordingFfmpegArgs: edScreenRecordingFfmpegArgs,
+        txtScreenRecordingArgsHint: txtScreenRecordingArgsHint,
         edScreenRecordingOutputDir: edScreenRecordingOutputDir,
         btnScreenRecordingOutputDir: btnScreenRecordingOutputDir,
         ddScreenRecordingStopMode: ddScreenRecordingStopMode,
@@ -3102,6 +3278,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbScreenRecordingEnabled.OnEvent("Click", OnScreenRecordingSettingChanged)
     ddScreenRecordingEngine.OnEvent("Change", OnScreenRecordingSettingChanged)
     cbScreenRecordingAllowFallback.OnEvent("Click", OnScreenRecordingSettingChanged)
+    cbScreenRecordingUseSimpleParams.OnEvent("Click", OnScreenRecordingSettingChanged)
+    ddScreenRecordingQualityPreset.OnEvent("Change", OnScreenRecordingSettingChanged)
+    edScreenRecordingFps.OnEvent("Change", OnScreenRecordingSettingChanged)
+    edScreenRecordingCrf.OnEvent("Change", OnScreenRecordingSettingChanged)
     ddScreenRecordingStopMode.OnEvent("Change", OnScreenRecordingSettingChanged)
     ddScreenRecordingStopTemplate.OnEvent("Change", OnScreenRecordingSettingChanged)
     btnScreenRecordingFfmpegExe.OnEvent("Click", OnBrowseScreenRecordingFfmpegExe)
@@ -3275,6 +3455,10 @@ OnCombinedSetupSave(*) {
     screenRecordingEnabledVal := st.cbScreenRecordingEnabled.Value ? 1 : 0
     recordingEngineVal := NormalizeScreenRecordingEngine(StrSplit(st.ddScreenRecordingEngine.Text, ":")[1])
     allowFallbackVal := st.cbScreenRecordingAllowFallback.Value ? 1 : 0
+    useSimpleParamsVal := st.cbScreenRecordingUseSimpleParams.Value ? 1 : 0
+    qualityPresetVal := NormalizeScreenRecordingQualityPreset(StrSplit(st.ddScreenRecordingQualityPreset.Text, ":")[1])
+    fpsVal := ToIntRange(st.edScreenRecordingFps.Value, 30, 10, 120)
+    crfVal := ToIntRange(st.edScreenRecordingCrf.Value, 23, 0, 51)
     ffmpegExeVal := NormalizePath(st.edScreenRecordingFfmpegExe.Value)
     ffmpegArgsVal := Trim(st.edScreenRecordingFfmpegArgs.Value, " `t`r`n")
     outputDirVal := NormalizePath(st.edScreenRecordingOutputDir.Value)
@@ -3336,6 +3520,9 @@ OnCombinedSetupSave(*) {
     }
 
     if (screenRecordingEnabledVal && recordingEngineVal = "ffmpeg") {
+        if useSimpleParamsVal
+            ffmpegArgsVal := BuildScreenRecordingFfmpegArgsBySimple(qualityPresetVal, fpsVal, crfVal)
+
         if (ffmpegArgsVal = "") {
             MsgBox "使用 FFmpeg 錄影時，ffmpeg 參數不可空白", "整合設定", "Iconx"
             return
@@ -3373,6 +3560,10 @@ OnCombinedSetupSave(*) {
     IniWrite screenRecordingEnabledVal, st.cfgPath, "screen_recording", "enabled"
     IniWrite recordingEngineVal, st.cfgPath, "screen_recording", "engine"
     IniWrite allowFallbackVal, st.cfgPath, "screen_recording", "allow_hotkey_fallback"
+    IniWrite useSimpleParamsVal, st.cfgPath, "screen_recording", "use_simple_params"
+    IniWrite qualityPresetVal, st.cfgPath, "screen_recording", "quality_preset"
+    IniWrite fpsVal, st.cfgPath, "screen_recording", "fps"
+    IniWrite crfVal, st.cfgPath, "screen_recording", "crf"
     IniWrite (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal), st.cfgPath, "screen_recording", "ffmpeg_exe"
     IniWrite (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p" : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
     IniWrite (outputDirVal = "" ? "recordings" : outputDirVal), st.cfgPath, "screen_recording", "output_dir"
@@ -3448,14 +3639,30 @@ RefreshScreenRecordingInputsEnabled() {
     enabled := __MAIL_SETUP.cbScreenRecordingEnabled.Value ? true : false
     engineKey := NormalizeScreenRecordingEngine(StrSplit(__MAIL_SETUP.ddScreenRecordingEngine.Text, ":")[1])
     useFfmpeg := enabled && (engineKey = "ffmpeg")
+    useSimple := useFfmpeg && (__MAIL_SETUP.cbScreenRecordingUseSimpleParams.Value ? true : false)
     __MAIL_SETUP.ddScreenRecordingEngine.Enabled := enabled
     __MAIL_SETUP.cbScreenRecordingAllowFallback.Enabled := useFfmpeg
     __MAIL_SETUP.edScreenRecordingFfmpegExe.Enabled := useFfmpeg
     __MAIL_SETUP.btnScreenRecordingFfmpegExe.Enabled := useFfmpeg
-    __MAIL_SETUP.edScreenRecordingFfmpegArgs.Enabled := useFfmpeg
+    __MAIL_SETUP.cbScreenRecordingUseSimpleParams.Enabled := useFfmpeg
+    __MAIL_SETUP.ddScreenRecordingQualityPreset.Enabled := useSimple
+    __MAIL_SETUP.edScreenRecordingFps.Enabled := useSimple
+    qualityKey := NormalizeScreenRecordingQualityPreset(StrSplit(__MAIL_SETUP.ddScreenRecordingQualityPreset.Text, ":")[1])
+    __MAIL_SETUP.edScreenRecordingCrf.Enabled := useSimple && (qualityKey = "custom")
+    __MAIL_SETUP.edScreenRecordingFfmpegArgs.Enabled := useFfmpeg && !useSimple
     __MAIL_SETUP.edScreenRecordingOutputDir.Enabled := useFfmpeg
     __MAIL_SETUP.btnScreenRecordingOutputDir.Enabled := useFfmpeg
     __MAIL_SETUP.ddScreenRecordingStopMode.Enabled := enabled
+
+    if useSimple {
+        fpsVal := ToIntRange(__MAIL_SETUP.edScreenRecordingFps.Value, 30, 10, 120)
+        crfVal := ToIntRange(__MAIL_SETUP.edScreenRecordingCrf.Value, 23, 0, 51)
+        __MAIL_SETUP.edScreenRecordingFps.Value := fpsVal
+        __MAIL_SETUP.edScreenRecordingCrf.Value := crfVal
+        __MAIL_SETUP.edScreenRecordingFfmpegArgs.Value := BuildScreenRecordingFfmpegArgsBySimple(qualityKey, fpsVal, crfVal)
+        __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "簡易模式已啟用：會自動用畫質/FPS/CRF 組合 ffmpeg 參數。"
+    } else
+        __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "進階模式：你可直接手動編輯完整 ffmpeg 參數。"
 
     modeKey := NormalizeScreenRecordingStopMode(StrSplit(__MAIL_SETUP.ddScreenRecordingStopMode.Text, ":")[1])
     useTemplateMode := enabled && (modeKey = "template")
@@ -3496,7 +3703,7 @@ OnServerSchedulePreview(*) {
         return
     }
 
-    g := Gui("+AlwaysOnTop +Owner" __MAIL_SETUP.gui.Hwnd " +MinSize540x360", "伺服器清單預覽排序")
+    g := Gui("+Owner" __MAIL_SETUP.gui.Hwnd " +MinSize540x360", "伺服器清單預覽排序")
     g.SetFont("s10", "Microsoft JhengHei UI")
     g.AddText("xm w500", "可用【上移/下移】調整順序，或按【字母排序】後套用回主設定。")
 
@@ -3887,14 +4094,34 @@ StopFfmpegScreenRecording(pid) {
     if (pid <= 0)
         return false
 
-    try ProcessClose(pid)
+    ; 先嘗試溫和關閉，盡量讓 ffmpeg 寫完檔案尾端索引（避免 mp4 損毀）
+    try {
+        hwnd := WinExist("ahk_pid " pid)
+        if hwnd
+            WinClose("ahk_id " hwnd)
+    }
 
-    deadline := A_TickCount + 3000
-    while (A_TickCount < deadline) {
+    try RunWait('taskkill /PID ' pid, , "Hide")
+
+    deadlineSoft := A_TickCount + 3000
+    while (A_TickCount < deadlineSoft) {
         if !ProcessExist(pid)
             return true
         Sleep 100
     }
+
+    ; 若溫和關閉失敗，再走強制關閉保底
+    try ProcessClose(pid)
+
+    deadlineHard := A_TickCount + 2000
+    while (A_TickCount < deadlineHard) {
+        if !ProcessExist(pid)
+            return true
+        Sleep 100
+    }
+
+    try RunWait('taskkill /F /PID ' pid, , "Hide")
+    Sleep 150
     return !ProcessExist(pid)
 }
 
