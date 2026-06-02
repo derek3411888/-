@@ -13,6 +13,7 @@ const CONTROL_SECRET = "ww-control-a3988-shared-2026";
 const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const REFRESH_MS = 5_000;
+const WEB_BUILD = "20260603-4";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -182,7 +183,7 @@ btnUnlock.addEventListener("click", () => {
     return;
   }
   unlocked = true;
-  gateMsg.textContent = "已解鎖";
+  gateMsg.textContent = `已解鎖（v${WEB_BUILD}）`;
   lockUi(false);
   loadClients();
 });
