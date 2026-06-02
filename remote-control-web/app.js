@@ -8,7 +8,7 @@ const FIREBASE_CONFIG = {
   projectId: "ww-control-a3988",
 };
 
-const CONTROL_PASSWORD = "okww-control-2026";
+const CONTROL_PASSWORD = "123456789";
 const CONTROL_SECRET = "ww-control-a3988-shared-2026";
 const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 10 * 60_000;

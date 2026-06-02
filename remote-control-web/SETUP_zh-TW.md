@@ -5,7 +5,7 @@
 - authDomain = ww-control-a3988.firebaseapp.com
 
 ## 目前預設值
-1. CONTROL_PASSWORD = okww-control-2026
+1. CONTROL_PASSWORD = 123456789
 2. CONTROL_SECRET = ww-control-a3988-shared-2026
 
 ## 你要做的事
@@ -76,7 +76,7 @@ last_nonce=0
 
 ## 目前直接可測
 1. Web API key 已填進範例檔
-2. 網頁密碼：okww-control-2026
+2. 網頁密碼：123456789
 3. 共享密鑰：ww-control-a3988-shared-2026
 
 建議先測通，再改成你自己的密碼。
