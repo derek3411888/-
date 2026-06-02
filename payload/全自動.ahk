@@ -54,6 +54,9 @@ global SCREEN_RECORDING_FFMPEG_EXE := ""
 global SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
 global SCREEN_RECORDING_OUTPUT_DIR := "recordings"
 global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 1
+global SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD := 1
+global SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL := "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+global __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED := false
 global SCREEN_RECORDING_STOP_MODE := "exit"
 global SCREEN_RECORDING_STOP_TEMPLATE := "login"
 global SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := ""
@@ -166,6 +169,97 @@ ResolveDefaultScreenRecordingFfmpegExe() {
     return "ffmpeg"
 }
 
+ExtractZipByShell(zipPath, destDir) {
+    try {
+        shell := ComObject("Shell.Application")
+        src := shell.NameSpace(zipPath)
+        if !IsObject(src)
+            return false
+
+        try DirCreate(destDir)
+        dst := shell.NameSpace(destDir)
+        if !IsObject(dst)
+            return false
+
+        ; 16 = no UI, 4 = no progress box
+        dst.CopyHere(src.Items, 16 + 4)
+        return true
+    } catch {
+        return false
+    }
+}
+
+TryBootstrapBundledFfmpeg() {
+    global SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD, SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL
+    global __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED
+
+    if !SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD
+        return ""
+
+    if __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED
+        return ""
+    __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED := true
+
+    targetDir := A_ScriptDir "\\tools\\ffmpeg\\bin"
+    targetExe := targetDir "\\ffmpeg.exe"
+    if FileExist(targetExe)
+        return targetExe
+
+    tmpRoot := A_Temp "\\wuthering_ffmpeg_bootstrap"
+    zipPath := tmpRoot "\\ffmpeg-release-essentials.zip"
+    extractDir := tmpRoot "\\extract"
+
+    try {
+        if DirExist(tmpRoot)
+            DirDelete(tmpRoot, true)
+    }
+
+    try DirCreate(tmpRoot)
+
+    try {
+        Download(SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL, zipPath)
+        WriteLog("FFmpeg 自動下載完成: " zipPath)
+    } catch as e {
+        WriteLog("FFmpeg 自動下載失敗: " e.Message, "WARN")
+        return ""
+    }
+
+    if !ExtractZipByShell(zipPath, extractDir) {
+        WriteLog("FFmpeg 自動解壓失敗（Shell.Application）", "WARN")
+        return ""
+    }
+
+    found := ""
+    deadline := A_TickCount + 120000
+    while (A_TickCount < deadline) {
+        Loop Files, extractDir "\\ffmpeg.exe", "R" {
+            found := A_LoopFileFullPath
+            break
+        }
+        if (found != "")
+            break
+        Sleep 200
+    }
+
+    if (found = "") {
+        WriteLog("FFmpeg 自動解壓後未找到 ffmpeg.exe", "WARN")
+        return ""
+    }
+
+    try DirCreate(targetDir)
+    try {
+        FileCopy(found, targetExe, true)
+        if FileExist(targetExe) {
+            WriteLog("FFmpeg 已自動安裝到: " targetExe)
+            return targetExe
+        }
+    } catch as e {
+        WriteLog("FFmpeg 安裝到目標資料夾失敗: " e.Message, "WARN")
+    }
+
+    return ""
+}
+
 ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
     raw := NormalizePath(configuredValue)
     if (raw = "")
@@ -174,7 +268,13 @@ ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
 
     if (raw = "" || raw = "ffmpeg" || raw = "ffmpeg.exe") {
         bundled := FindBundledFfmpegExe()
-        return (bundled != "") ? bundled : "ffmpeg"
+        if (bundled != "")
+            return bundled
+
+        bootstrapped := TryBootstrapBundledFfmpeg()
+        if (bootstrapped != "")
+            return bootstrapped
+        return "ffmpeg"
     }
 
     if RegExMatch(raw, "i)^[a-z]:\\")
@@ -3371,7 +3471,7 @@ RefreshScreenRecordingInputsEnabled() {
     if !enabled
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：螢幕錄影目前停用。"
     else if (engineKey = "ffmpeg")
-        __MAIL_SETUP.txtScreenRecordingHint.Value := __MAIL_SETUP.cbScreenRecordingAllowFallback.Value ? "提示：目前使用 FFmpeg 錄影；失敗時可退回 Alt+F9。" : "提示：目前使用 FFmpeg 錄影；失敗時不退回 Alt+F9。"
+        __MAIL_SETUP.txtScreenRecordingHint.Value := __MAIL_SETUP.cbScreenRecordingAllowFallback.Value ? "提示：目前使用 FFmpeg；找不到 ffmpeg 會嘗試自動下載，失敗時可退回 Alt+F9。" : "提示：目前使用 FFmpeg；找不到 ffmpeg 會嘗試自動下載，失敗時不退回 Alt+F9。"
     else if (modeKey = "template")
         __MAIL_SETUP.txtScreenRecordingHint.Value := useCustom ? "提示：請提供自訂模板檔路徑。" : "提示：目前使用預設模板作為停止條件。"
     else if (modeKey = "lrmc_task_end")
