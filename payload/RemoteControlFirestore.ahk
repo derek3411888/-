@@ -23,6 +23,8 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
     global RC_CONTROL_SECRET, RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
     global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE
 
+    RC_EnsureRemoteControlDefaults(cfgPath)
+
     enabled := RC_ParseBool01(RC_IniReadSafe(cfgPath, "remote_control", "enabled", "0"), 0)
     RC_ENABLED := enabled ? true : false
     RC_ON_STATE_CHANGED := onStateChangedCallback
@@ -302,6 +304,38 @@ RC_IniReadSafe(file, section, key, default := "") {
     } catch {
         return default
     }
+}
+
+RC_EnsureRemoteControlDefaults(cfgPath) {
+    defaults := Map(
+        "enabled", "1",
+        "project_id", "ww-control-a3988",
+        "api_key", "AIzaSyDqWHdBixVQPt4OiTi50hseInFxPtk0hf0",
+        "collection", "ahk_clients",
+        "uid", "",
+        "display_name", "",
+        "control_secret", "ww-control-a3988-shared-2026",
+        "heartbeat_interval_ms", "30000",
+        "poll_interval_ms", "5000",
+        "http_timeout_ms", "2500",
+        "delete_on_exit", "0",
+        "last_nonce", "0"
+    )
+
+    wrote := 0
+    sentinel := "__RC_MISSING__"
+    for key, defaultVal in defaults {
+        cur := RC_IniReadSafe(cfgPath, "remote_control", key, sentinel)
+        if (cur = sentinel) {
+            try {
+                IniWrite(defaultVal, cfgPath, "remote_control", key)
+                wrote += 1
+            }
+        }
+    }
+
+    if (wrote > 0)
+        RC_Log("首次啟動：已自動補齊 remote_control 設定項目=" wrote)
 }
 
 RC_ParseBool01(val, defaultVal := 0) {
