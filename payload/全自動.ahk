@@ -4147,6 +4147,7 @@ TryStopScreenRecording(reason := "") {
             if (reason != "")
                 msg .= "（" reason "）"
             WriteLog(msg)
+            PruneScreenRecordingFiles(5)
             __SCREEN_RECORDING_OUTPUT_PATH := ""
             return true
         }
@@ -4194,6 +4195,35 @@ ResolveScreenRecordingOutputDir() {
     if (SubStr(p, 1, 2) = "\\\\")
         return p
     return A_ScriptDir "\\" p
+}
+
+PruneScreenRecordingFiles(keepCount := 5) {
+    outDir := ResolveScreenRecordingOutputDir()
+    if !DirExist(outDir)
+        return 0
+
+    files := []
+    Loop Files, outDir "\\*.mp4", "F" {
+        files.Push({ path: A_LoopFileFullPath, modified: A_LoopFileTimeModified })
+    }
+
+    if (files.Length <= keepCount)
+        return 0
+
+    files.Sort((a, b) => (a.modified = b.modified) ? 0 : ((a.modified > b.modified) ? -1 : 1))
+
+    deleted := 0
+    Loop (files.Length - keepCount) {
+        target := files[keepCount + A_Index]
+        try {
+            FileDelete(target.path)
+            deleted += 1
+        }
+    }
+
+    if (deleted > 0)
+        WriteLog("錄影檔清理完成，僅保留最新 " keepCount " 個，已刪除 " deleted " 個舊檔")
+    return deleted
 }
 
 StartFfmpegScreenRecording(&outPath, &pid) {
