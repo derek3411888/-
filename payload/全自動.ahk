@@ -147,8 +147,25 @@ ResolveBundledAhkExe() {
     return ""
 }
 
+ResolvePersistentToolsRoot() {
+    packAppDir := NormalizePath(EnvGet("PACK_APP_DIR"))
+    if (packAppDir != "") {
+        if RegExMatch(packAppDir, "i)\\payload$")
+            return RegExReplace(packAppDir, "i)\\payload$", "")
+        return packAppDir
+    }
+
+    return NormalizePath(A_ScriptDir "\\..")
+}
+
 FindBundledFfmpegExe() {
     candidates := []
+    persistentRoot := ResolvePersistentToolsRoot()
+    if (persistentRoot != "") {
+        candidates.Push(persistentRoot "\\tools\\ffmpeg\\bin\\ffmpeg.exe")
+        candidates.Push(persistentRoot "\\ffmpeg\\bin\\ffmpeg.exe")
+        candidates.Push(persistentRoot "\\ffmpeg.exe")
+    }
     candidates.Push(A_ScriptDir "\\tools\\ffmpeg\\bin\\ffmpeg.exe")
     candidates.Push(A_ScriptDir "\\ffmpeg\\bin\\ffmpeg.exe")
     candidates.Push(A_ScriptDir "\\plugin\\ffmpeg\\bin\\ffmpeg.exe")
@@ -353,7 +370,11 @@ TryBootstrapBundledFfmpeg() {
         return ""
     __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED := true
 
-    targetDir := A_ScriptDir "\\tools\\ffmpeg\\bin"
+    persistentRoot := ResolvePersistentToolsRoot()
+    if (persistentRoot = "")
+        persistentRoot := A_ScriptDir
+
+    targetDir := persistentRoot "\\tools\\ffmpeg\\bin"
     targetExe := targetDir "\\ffmpeg.exe"
     if FileExist(targetExe)
         return targetExe
