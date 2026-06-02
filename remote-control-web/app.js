@@ -55,6 +55,12 @@ function readField(docData, key, def = "") {
   return docData[key];
 }
 
+function normalizeStatus(v) {
+  const s = String(v ?? "UNKNOWN").toUpperCase().replace(/[^A-Z]/g, "");
+  if (s === "RUN" || s === "PAUSE" || s === "OFFLINE") return s;
+  return "UNKNOWN";
+}
+
 function lockUi(flag) {
   controlCard.classList.toggle("locked", flag);
 }
@@ -66,7 +72,7 @@ function renderClients() {
 
   for (const [id, data] of cache.entries()) {
     const hb = Number(readField(data, "lastHeartbeat", 0));
-    const status = String(readField(data, "status", "UNKNOWN")).trim().toUpperCase();
+    const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
     const onlineByHeartbeat = now - hb <= OFFLINE_THRESHOLD_MS;
     const online = status !== "OFFLINE" && onlineByHeartbeat;
     if (online) onlineCount += 1;
