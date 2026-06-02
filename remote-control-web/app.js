@@ -11,7 +11,7 @@ const FIREBASE_CONFIG = {
 const CONTROL_PASSWORD = "okww-control-2026";
 const CONTROL_SECRET = "ww-control-a3988-shared-2026";
 const COLLECTION = "ahk_clients";
-const OFFLINE_THRESHOLD_MS = 60_000;
+const OFFLINE_THRESHOLD_MS = 10 * 60_000;
 const REFRESH_MS = 5_000;
 
 const app = initializeApp(FIREBASE_CONFIG);
@@ -50,14 +50,16 @@ function lockUi(flag) {
 function renderClients() {
   const now = Date.now();
   const rows = [];
+  let onlineCount = 0;
 
   for (const [id, data] of cache.entries()) {
     const hb = Number(readField(data, "lastHeartbeat", 0));
     const online = now - hb <= OFFLINE_THRESHOLD_MS;
-    if (!online) continue;
+    if (online) onlineCount += 1;
 
     rows.push({
       id,
+      online,
       displayName: readField(data, "displayName", id),
       computerName: readField(data, "computerName", ""),
       status: readField(data, "status", "UNKNOWN"),
@@ -76,19 +78,21 @@ function renderClients() {
   for (const r of rows) {
     const opt = document.createElement("option");
     opt.value = r.id;
-    opt.textContent = `${r.displayName} (${r.status})`;
+    const onlineTag = r.online ? "在線" : "離線";
+    opt.textContent = `${r.displayName} (${r.status} / ${onlineTag})`;
     pcDropdown.appendChild(opt);
   }
 
   if (rows.length === 0) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "無在線電腦";
+    opt.textContent = "無可見電腦";
     pcDropdown.appendChild(opt);
   } else if (rows.some((r) => r.id === keep)) {
     pcDropdown.value = keep;
   }
 
+  statusMsg.textContent = `可見 ${rows.length} 台，在線 ${onlineCount} 台`;
   refreshMeta();
 }
 
@@ -118,7 +122,6 @@ async function loadClients() {
     cache.clear();
     snap.forEach((s) => cache.set(s.id, s.data()));
     renderClients();
-    statusMsg.textContent = `已更新清單：${cache.size} 台（含離線）`;
   } catch (e) {
     statusMsg.textContent = `讀取失敗：${e.message}`;
   }
