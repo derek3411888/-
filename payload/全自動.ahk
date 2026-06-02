@@ -166,10 +166,6 @@ FindBundledFfmpegExe() {
         candidates.Push(persistentRoot "\\ffmpeg\\bin\\ffmpeg.exe")
         candidates.Push(persistentRoot "\\ffmpeg.exe")
     }
-    candidates.Push(A_ScriptDir "\\tools\\ffmpeg\\bin\\ffmpeg.exe")
-    candidates.Push(A_ScriptDir "\\ffmpeg\\bin\\ffmpeg.exe")
-    candidates.Push(A_ScriptDir "\\plugin\\ffmpeg\\bin\\ffmpeg.exe")
-    candidates.Push(A_ScriptDir "\\ffmpeg.exe")
 
     for _, candidate in candidates {
         p := NormalizePath(candidate)
@@ -183,7 +179,7 @@ ResolveDefaultScreenRecordingFfmpegExe() {
     bundled := FindBundledFfmpegExe()
     if (bundled != "")
         return bundled
-    return "ffmpeg"
+    return ""
 }
 
 ExtractZipByShell(zipPath, destDir) {
@@ -203,6 +199,27 @@ ExtractZipByShell(zipPath, destDir) {
         return true
     } catch {
         return false
+    }
+}
+
+ExtractZipByPowerShell(zipPath, destDir) {
+    psZip := StrReplace(zipPath, "'", "''")
+    psDest := StrReplace(destDir, "'", "''")
+    psCmd := "$ErrorActionPreference='Stop'; $zip='" psZip "'; $dest='" psDest "'; if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }; New-Item -ItemType Directory -Path $dest -Force | Out-Null; Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force"
+    cmd := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psCmd Chr(34)
+    try {
+        return (RunWait(cmd, , "Hide") = 0)
+    } catch {
+        return false
+    }
+}
+
+CleanupBootstrapTempDir(tmpRoot) {
+    if (tmpRoot = "")
+        return
+    try {
+        if DirExist(tmpRoot)
+            DirDelete(tmpRoot, true)
     }
 }
 
@@ -383,10 +400,7 @@ TryBootstrapBundledFfmpeg() {
     zipPath := tmpRoot "\\ffmpeg-release-essentials.zip"
     extractDir := tmpRoot "\\extract"
 
-    try {
-        if DirExist(tmpRoot)
-            DirDelete(tmpRoot, true)
-    }
+    CleanupBootstrapTempDir(tmpRoot)
 
     try DirCreate(tmpRoot)
 
@@ -394,17 +408,23 @@ TryBootstrapBundledFfmpeg() {
         WriteLog("未找到本地 ffmpeg，開始自動下載: " SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL)
         if !DownloadFileWithProgress(SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL, zipPath, "FFmpeg 自動下載") {
             WriteLog("FFmpeg 自動下載失敗: 檔案未完成", "WARN")
+            CleanupBootstrapTempDir(tmpRoot)
             return ""
         }
         WriteLog("FFmpeg 自動下載完成: " zipPath)
     } catch as e {
         WriteLog("FFmpeg 自動下載失敗: " e.Message, "WARN")
+        CleanupBootstrapTempDir(tmpRoot)
         return ""
     }
 
     if !ExtractZipByShell(zipPath, extractDir) {
-        WriteLog("FFmpeg 自動解壓失敗（Shell.Application）", "WARN")
-        return ""
+        WriteLog("FFmpeg 自動解壓失敗（Shell.Application），改用 Expand-Archive", "WARN")
+        if !ExtractZipByPowerShell(zipPath, extractDir) {
+            WriteLog("FFmpeg 自動解壓失敗（Expand-Archive）", "WARN")
+            CleanupBootstrapTempDir(tmpRoot)
+            return ""
+        }
     }
 
     found := ""
@@ -421,6 +441,7 @@ TryBootstrapBundledFfmpeg() {
 
     if (found = "") {
         WriteLog("FFmpeg 自動解壓後未找到 ffmpeg.exe", "WARN")
+        CleanupBootstrapTempDir(tmpRoot)
         return ""
     }
 
@@ -429,16 +450,20 @@ TryBootstrapBundledFfmpeg() {
         FileCopy(found, targetExe, true)
         if FileExist(targetExe) {
             WriteLog("FFmpeg 已自動安裝到: " targetExe)
+            CleanupBootstrapTempDir(tmpRoot)
             return targetExe
         }
     } catch as e {
         WriteLog("FFmpeg 安裝到目標資料夾失敗: " e.Message, "WARN")
     }
 
+    CleanupBootstrapTempDir(tmpRoot)
+
     return ""
 }
 
 ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
+    rootDir := ResolvePersistentToolsRoot()
     raw := NormalizePath(configuredValue)
     if (raw = "")
         raw := SCREEN_RECORDING_FFMPEG_EXE
@@ -452,7 +477,7 @@ ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
         bootstrapped := TryBootstrapBundledFfmpeg()
         if (bootstrapped != "")
             return bootstrapped
-        return "ffmpeg"
+        return ""
     }
 
     if RegExMatch(raw, "i)^[a-z]:\\")
@@ -460,10 +485,10 @@ ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
     if (SubStr(raw, 1, 2) = "\\\\")
         return raw
 
-    candidate := A_ScriptDir "\\" raw
+    candidate := (rootDir != "") ? (rootDir "\\" raw) : (A_ScriptDir "\\" raw)
     if FileExist(candidate)
         return candidate
-    return raw
+    return ""
 }
 
 NormalizeScreenRecordingQualityPreset(val) {
@@ -4178,6 +4203,10 @@ StartFfmpegScreenRecording(&outPath, &pid) {
     pid := 0
 
     ffmpegExe := ResolveScreenRecordingFfmpegExePath(SCREEN_RECORDING_FFMPEG_EXE)
+    if (ffmpegExe = "") {
+        WriteLog("主程式資料夾內找不到 ffmpeg.exe", "WARN")
+        return false
+    }
 
     outDir := ResolveScreenRecordingOutputDir()
     try DirCreate(outDir)
