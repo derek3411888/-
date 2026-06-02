@@ -260,10 +260,7 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
 
     psUrl := StrReplace(url, "'", "''")
     psOut := StrReplace(outPath, "'", "''")
-
-    psBits := "$ProgressPreference=`"SilentlyContinue`"; $u='" psUrl "'; $o='" psOut "'; Import-Module BitsTransfer -ErrorAction Stop; Start-BitsTransfer -Source $u -Destination $o -ErrorAction Stop"
     psIwr := "$ProgressPreference=`"SilentlyContinue`"; $u='" psUrl "'; $o='" psOut "'; Invoke-WebRequest -Uri $u -OutFile $o"
-    cmdBits := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psBits Chr(34)
     cmdIwr := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psIwr Chr(34)
 
     g := Gui("+ToolWindow -MinimizeBox -MaximizeBox", title)
@@ -273,92 +270,60 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
     hint := g.AddText("xm y+6 w420", "0.0 MB")
     g.Show("AutoSize Center")
 
+    pid := 0
+    try Run(cmdIwr, "", "Hide", &pid)
+    catch as e {
+        g.Destroy()
+        WriteLog("啟動下載進程失敗(IWR): " e.Message, "WARN")
+        return false
+    }
+
+    WriteLog("FFmpeg 下載模式: IWR")
+    spin := 0
+    startTick := A_TickCount
+    lastTick := startTick
+    lastSize := 0
+    speedBps := 0.0
+    while ProcessExist(pid) {
+        size := 0
+        try size := FileGetSize(outPath)
+
+        nowTick := A_TickCount
+        dt := nowTick - lastTick
+        if (dt >= 400) {
+            ds := size - lastSize
+            if (ds < 0)
+                ds := 0
+            speedBps := (ds * 1000.0) / dt
+            lastTick := nowTick
+            lastSize := size
+        }
+
+        if (total > 0) {
+            pct := Floor((size * 100) / total)
+            if (pct < 0)
+                pct := 0
+            if (pct > 99)
+                pct := 99
+            bar.Value := pct
+            txt.Value := "正在下載 FFmpeg... " pct "%"
+            hint.Value := FormatBytesMB(size) " / " FormatBytesMB(total) "  (" FormatSpeedMBps(speedBps) ")"
+        } else {
+            spin += 4
+            if (spin > 100)
+                spin := 0
+            bar.Value := spin
+            txt.Value := "正在下載 FFmpeg..."
+            hint.Value := FormatBytesMB(size) "  (" FormatSpeedMBps(speedBps) ")"
+        }
+        Sleep 200
+    }
+
     ok := false
     finalSize := 0
-    modes := ["BITS", "IWR"]
-    for _, mode in modes {
-        if FileExist(outPath)
-            try FileDelete(outPath)
-
-        cmd := (mode = "BITS") ? cmdBits : cmdIwr
-        pid := 0
-        try Run(cmd, "", "Hide", &pid)
-        catch as e {
-            WriteLog("啟動下載進程失敗(" mode "): " e.Message, "WARN")
-            continue
-        }
-
-        WriteLog("FFmpeg 下載模式: " mode)
-        spin := 0
-        startTick := A_TickCount
-        lastTick := startTick
-        lastSize := 0
-        lastGrowTick := startTick
-        speedBps := 0.0
-        stalled := false
-
-        while ProcessExist(pid) {
-            size := 0
-            try size := FileGetSize(outPath)
-
-            nowTick := A_TickCount
-            dt := nowTick - lastTick
-            if (dt >= 400) {
-                ds := size - lastSize
-                if (ds < 0)
-                    ds := 0
-                if (ds > 0)
-                    lastGrowTick := nowTick
-                speedBps := (ds * 1000.0) / dt
-                lastTick := nowTick
-                lastSize := size
-            }
-
-            if (total > 0) {
-                pct := Floor((size * 100) / total)
-                if (pct < 0)
-                    pct := 0
-                if (pct > 99)
-                    pct := 99
-                bar.Value := pct
-                txt.Value := "正在下載 FFmpeg(" mode ")... " pct "%"
-                hint.Value := FormatBytesMB(size) " / " FormatBytesMB(total) "  (" FormatSpeedMBps(speedBps) ")"
-            } else {
-                spin += 4
-                if (spin > 100)
-                    spin := 0
-                bar.Value := spin
-                txt.Value := "正在下載 FFmpeg(" mode ")..."
-                hint.Value := FormatBytesMB(size) "  (" FormatSpeedMBps(speedBps) ")"
-            }
-
-            if (mode = "BITS") {
-                noGrowthMs := nowTick - lastGrowTick
-                ; BITS 若超過 12 秒都沒有任何位元組進度，判定卡住，改走 IWR
-                if (noGrowthMs >= 12000) {
-                    stalled := true
-                    break
-                }
-            }
-
-            Sleep 200
-        }
-
-        if stalled {
-            WriteLog("BITS 下載 12 秒無進度，改用 Invoke-WebRequest 重試", "WARN")
-            txt.Value := "BITS 無進度，切換下載模式..."
-            try ProcessClose(pid)
-            Sleep 250
-            continue
-        }
-
-        try {
-            finalSize := FileGetSize(outPath)
-            ok := (finalSize > 0)
-        }
-
-        if ok
-            break
+    try {
+        finalSize := FileGetSize(outPath)
+        ok := (finalSize > 0)
     }
 
     if ok {

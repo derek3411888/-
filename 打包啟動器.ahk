@@ -77,6 +77,20 @@ OnExit(LifecycleOnExit)
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 WriteStep("工作目錄", A_WorkingDir)
 
+CleanupLauncherReplaceBatFiles(baseDir) {
+    if (baseDir = "" || !DirExist(baseDir))
+        return 0
+
+    deleted := 0
+    Loop Files, baseDir "\launcher_replace_*.bat", "F" {
+        try {
+            FileDelete(A_LoopFileFullPath)
+            deleted += 1
+        }
+    }
+    return deleted
+}
+
 IniReadSafe(file, section, key, default := "") {
     try {
         return IniRead(file, section, key, default)
@@ -419,7 +433,7 @@ ApplyPendingLauncherUpdate(workDir, dataDir) {
         
         ; 嘗試直接替換（如果當前 exe 能被關閉）
         WriteLog("準備替換 launcher exe...")
-        replaceBat := workDir "\\launcher_replace_" A_TickCount ".bat"
+        replaceBat := A_Temp "\\launcher_replace_" A_TickCount ".bat"
         
         ; 使用更清晰的字符串拼接方式，避免複雜的雙引號
         batLines := []
@@ -440,7 +454,7 @@ ApplyPendingLauncherUpdate(workDir, dataDir) {
             batContent .= line "`r`n"
         }
         
-        try FileAppend(batContent, replaceBat, "UTF-8")
+        try FileAppend(batContent, replaceBat, "UTF-8-RAW")
         
         ; 後台執行替換批處理，不等待完成
         try Run(replaceBat, , "Hide")
@@ -614,6 +628,10 @@ STAMP     := WORK_DIR "\.version"      ; 版本戳
 REMOTE_VER_FILE := DATA_DIR "\payload_remote_version.txt"
 
 WriteLog("工作目錄設定為：" WORK_DIR)
+
+oldReplaceBatCount := CleanupLauncherReplaceBatFiles(WORK_DIR)
+if (oldReplaceBatCount > 0)
+    WriteLog("已清理工作目錄殘留的 launcher_replace 批次檔: " oldReplaceBatCount " 個")
 
 ; =========================
 ; Ahk2Exe 打包指令（編譯時加入）
