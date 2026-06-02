@@ -27,6 +27,7 @@ const btnUnlock = document.getElementById("btnUnlock");
 const pcDropdown = document.getElementById("pcDropdown");
 const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
+const btnStop = document.getElementById("btnStop");
 const statusMsg = document.getElementById("statusMsg");
 const clientMeta = document.getElementById("clientMeta");
 
@@ -58,7 +59,7 @@ function readField(docData, key, def = "") {
 
 function normalizeStatus(v) {
   const s = String(v ?? "UNKNOWN").toUpperCase().replace(/[^A-Z]/g, "");
-  if (s === "RUN" || s === "PAUSE" || s === "OFFLINE") return s;
+  if (s === "RUN" || s === "PAUSE" || s === "STOP" || s === "OFFLINE") return s;
   return "UNKNOWN";
 }
 
@@ -75,7 +76,7 @@ function renderClients() {
     const hb = Number(readField(data, "lastHeartbeat", 0));
     const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
     const onlineByHeartbeat = now - hb <= OFFLINE_THRESHOLD_MS;
-    const online = status !== "OFFLINE" && onlineByHeartbeat;
+    const online = status !== "OFFLINE" && status !== "STOP" && onlineByHeartbeat;
     if (online) onlineCount += 1;
 
     rows.push({
@@ -190,6 +191,10 @@ btnUnlock.addEventListener("click", () => {
 
 btnPause.addEventListener("click", () => sendCommand("PAUSE"));
 btnRun.addEventListener("click", () => sendCommand("RUN"));
+btnStop.addEventListener("click", () => {
+  if (!confirm("確定要遠端關閉腳本並完整關閉遊戲/OKWW/LRMCAI？")) return;
+  sendCommand("STOP");
+});
 pcDropdown.addEventListener("change", refreshMeta);
 
 lockUi(true);

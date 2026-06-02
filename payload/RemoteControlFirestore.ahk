@@ -141,7 +141,7 @@ RC_PollCommandTick() {
 RC_ApplyRemoteState(desired, nonce) {
     global RC_REMOTE_DESIRED_STATE, RC_ON_STATE_CHANGED, RC_CFG_PATH
     d := StrUpper(Trim(desired, " `t`r`n"))
-    if (d != "PAUSE")
+    if (d != "RUN" && d != "PAUSE" && d != "STOP")
         d := "RUN"
 
     RC_REMOTE_DESIRED_STATE := d
@@ -153,11 +153,13 @@ RC_ApplyRemoteState(desired, nonce) {
     ; 命令游標持久化，避免重啟後重新套用舊命令。
     try IniWrite(nonce, RC_CFG_PATH, "remote_control", "last_nonce")
 
+    ; 先回 ACK，避免 STOP 直接觸發退出時遺失回覆。
+    RC_PatchCommandAck(nonce, d)
+
     if (RC_ON_STATE_CHANGED != "") {
         try %RC_ON_STATE_CHANGED%(d)
     }
 
-    RC_PatchCommandAck(nonce, d)
     RC_Log("Remote command applied: state=" d " nonce=" nonce)
 }
 

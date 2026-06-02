@@ -65,6 +65,7 @@ button {
 
 button.ok { color: var(--ok); border-color: #a8d8c3; }
 button.warn { color: var(--warn); border-color: #e6b9a6; }
+button.danger { color: #a01616; border-color: #e6a6a6; }
 
 .msg {
   min-height: 24px;

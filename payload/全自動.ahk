@@ -92,6 +92,8 @@ global LRMCAI_FLOW_STARTED := false
 global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
 global REMOTE_CONTROL_ACTIVE := false
 global REMOTE_PAUSE_WAITING := false
+global EXITING_FROM_TRAY := false
+global REMOTE_STOP_IN_PROGRESS := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -581,7 +583,8 @@ UnmuteWutheringAudio(reason := "") {
 }
 
 RestoreWutheringAudioOnExit(exitReason, exitCode) {
-    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, TOOLTIP_SLOT
+    try ToolTip(, , , TOOLTIP_SLOT)
     try RC_Shutdown()
     if (!__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
         TryStopScreenRecording("腳本結束保底")
@@ -591,6 +594,18 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
 }
 
 OnRemoteControlStateChanged(state) {
+    global REMOTE_STOP_IN_PROGRESS
+    if (state = "STOP") {
+        if REMOTE_STOP_IN_PROGRESS
+            return
+        REMOTE_STOP_IN_PROGRESS := true
+        try RC_SetPausedFlag(false)
+        WriteLog("遠端控制：收到 STOP，開始完整關閉流程", "WARN")
+        ShowTip("⏹ 遠端關閉中：腳本/遊戲/OKWW/LRMCAI", 1800)
+        SetTimer(() => ShutdownGameLrmcOkww(false), -50)
+        return
+    }
+
     if (state = "PAUSE") {
         WriteLog("遠端控制：收到 PAUSE（軟停模式）", "WARN")
         ShowTip("⏸ 已切換為遠端暫停", 1500)
@@ -4968,9 +4983,25 @@ SetupTrayMenu() {
     try {
         A_TrayMenu.Delete("開啟設定 UI")
     }
+    try {
+        A_TrayMenu.Delete("離開腳本（立即）")
+    }
 
     A_TrayMenu.Add("開啟設定 UI", OpenSettingsFromTray)
+    A_TrayMenu.Add("離開腳本（立即）", ExitFromTrayNow)
     A_TrayMenu.Add()
+}
+
+ExitFromTrayNow(*) {
+    global EXITING_FROM_TRAY, REMOTE_PAUSE_WAITING
+    if EXITING_FROM_TRAY
+        return
+
+    EXITING_FROM_TRAY := true
+    REMOTE_PAUSE_WAITING := false
+    try RC_SetPausedFlag(false)
+    try WriteLog("系統匣：使用者請求立即離開")
+    ExitApp
 }
 
 OpenSettingsFromTray(*) {
