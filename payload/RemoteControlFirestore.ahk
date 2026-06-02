@@ -8,7 +8,7 @@ global RC_COLLECTION := "ahk_clients"
 global RC_UID := ""
 global RC_DISPLAY_NAME := ""
 global RC_CONTROL_SECRET := ""
-global RC_HEARTBEAT_INTERVAL_MS := 30000
+global RC_HEARTBEAT_INTERVAL_MS := 90000
 global RC_POLL_INTERVAL_MS := 5000
 global RC_TIMEOUT_MS := 2500
 global RC_LAST_NONCE := 0
@@ -39,7 +39,7 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
         RC_COLLECTION := "ahk_clients"
 
     RC_CONTROL_SECRET := Trim(RC_IniReadSafe(cfgPath, "remote_control", "control_secret", ""), " `t`r`n")
-    RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "heartbeat_interval_ms", "30000"), 30000, 3000, 300000)
+    RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "heartbeat_interval_ms", "90000"), 90000, 3000, 300000)
     RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "poll_interval_ms", "5000"), 5000, 1000, 30000)
     RC_TIMEOUT_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "http_timeout_ms", "2500"), 2500, 800, 10000)
 
@@ -315,7 +315,7 @@ RC_EnsureRemoteControlDefaults(cfgPath) {
         "uid", "",
         "display_name", "",
         "control_secret", "ww-control-a3988-shared-2026",
-        "heartbeat_interval_ms", "30000",
+        "heartbeat_interval_ms", "90000",
         "poll_interval_ms", "5000",
         "http_timeout_ms", "2500",
         "delete_on_exit", "0",

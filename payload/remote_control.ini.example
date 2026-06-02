@@ -19,7 +19,7 @@ display_name=
 control_secret=ww-control-a3988-shared-2026
 
 ; 心跳/輪詢/HTTP timeout（毫秒）
-heartbeat_interval_ms=30000
+heartbeat_interval_ms=90000
 poll_interval_ms=5000
 http_timeout_ms=2500
 
