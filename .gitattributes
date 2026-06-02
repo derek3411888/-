@@ -1,3 +1,0 @@
-payload.zip filter=lfs diff=lfs merge=lfs -text
-全自動鋤地.exe filter=lfs diff=lfs merge=lfs -text
-payload/tools/ffmpeg/bin/*.exe filter=lfs diff=lfs merge=lfs -text
