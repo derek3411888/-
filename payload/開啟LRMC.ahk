@@ -67,16 +67,8 @@ if !A_IsAdmin {
     ExitApp
 }
 
-; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
-dataDir := EnvGet("PACK_DATA_DIR")
-if (dataDir = "") {
-    ; 如果沒有環境變數，嘗試使用新的位置
-    dataDir := A_ScriptDir "\..\config"
-    if !DirExist(dataDir) {
-        ; 向後兼容舊位置
-        dataDir := A_Temp "\okww_runtime\config"
-    }
-}
+; ===== 路徑處理（固定使用程式資料夾內 config）=====
+dataDir := A_ScriptDir "\..\config"
 DirCreate dataDir
 global CFG_FILE := dataDir "\config.ini"
 EnsureIniFileUnicode(CFG_FILE)

@@ -163,6 +163,66 @@ ResolvePersistentToolsRoot() {
     return NormalizePath(A_ScriptDir "\\..")
 }
 
+ResolvePreferredConfigDir() {
+    return NormalizePath(A_ScriptDir "\\..\\config")
+}
+
+DiscoverNearbyLegacyConfigDir() {
+    root := NormalizePath(A_ScriptDir "\\..\\..")
+    if (root = "" || !DirExist(root))
+        return ""
+
+    bestDir := ""
+    bestTime := ""
+    Loop Files, root "\\*\\config\\config.ini", "F" {
+        try t := FileGetTime(A_LoopFileFullPath, "M")
+        catch
+            t := ""
+        if (t = "")
+            continue
+        if (bestTime = "" || t > bestTime) {
+            bestTime := t
+            bestDir := NormalizePath(A_LoopFileDir)
+        }
+    }
+    return bestDir
+}
+
+TryRecoverLegacyConfig(targetDir) {
+    targetDir := NormalizePath(targetDir)
+    if (targetDir = "")
+        return ""
+
+    targetFile := targetDir "\\config.ini"
+    if FileExist(targetFile)
+        return ""
+
+    legacyDirs := []
+    legacyDirs.Push(NormalizePath(A_ScriptDir "\\..\\config"))
+    legacyDirs.Push(NormalizePath(A_ScriptDir "\\config"))
+    nearbyLegacy := DiscoverNearbyLegacyConfigDir()
+    if (nearbyLegacy != "")
+        legacyDirs.Push(nearbyLegacy)
+    legacyDirs.Push(NormalizePath(A_Temp "\\okww_runtime\\config"))
+
+    for _, d in legacyDirs {
+        if (d = "" || d = targetDir)
+            continue
+        src := d "\\config.ini"
+        if !FileExist(src)
+            continue
+
+        try {
+            DirCreate(targetDir)
+            FileCopy(src, targetFile, 1)
+            return src
+        } catch {
+            continue
+        }
+    }
+    return ""
+}
+
 FindBundledFfmpegExe() {
     candidates := []
     persistentRoot := ResolvePersistentToolsRoot()
@@ -966,16 +1026,11 @@ StartCrashWatcher()
 okwwExe := "OK-WW.exe"   ; 由工作管理員確認
 
 ; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
-dataDir := EnvGet("PACK_DATA_DIR")
-if (dataDir = "") {
-    ; 如果沒有環境變數，嘗試使用新的位置
-    dataDir := A_ScriptDir "\..\config"
-    if !DirExist(dataDir) {
-        ; 向後兼容舊位置
-        dataDir := A_Temp "\okww_runtime\config"
-    }
-}
+dataDir := ResolvePreferredConfigDir()
 DirCreate dataDir
+recoveredFrom := TryRecoverLegacyConfig(dataDir)
+if (recoveredFrom != "")
+    WriteLog("已從舊設定檔還原 config.ini: " recoveredFrom " -> " dataDir "\\config.ini", "WARN")
 global CFG_FILE := dataDir "\config.ini"
 if EnsureIniFileUnicode(CFG_FILE)
     WriteLog("設定檔已正規化為 Unicode 編碼")
