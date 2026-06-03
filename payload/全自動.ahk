@@ -20,7 +20,7 @@ ProcessSetPriority("Normal")
 
 ; DPI 感知（避免縮放改變座標/影像）
 try DllCall("SetProcessDpiAwarenessContext", "ptr", -4)  ; PER_MONITOR_AWARE_V2
-catch 
+catch
     try DllCall("shcore\SetProcessDpiAwareness", "int", 2)
 
 #Include plugin\RapidOcr\RapidOcr.ahk
@@ -3586,7 +3586,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     sbScroll.OnEvent("Change", OnCombinedSetupScrollBarChanged)
     g.OnEvent("Size", OnCombinedSetupGuiSize)
     g.OnEvent("Close", OnCombinedSetupClose)
-    OnMessage(0x020A, OnCombinedSetupMouseWheel)
+    OnMessage(0x020A, OnCombinedSetupMouseWheelV2)
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
@@ -3682,6 +3682,7 @@ InitCombinedSetupScrolling(g, scrollItems) {
         return
 
     __MAIL_SETUP.scrollItems := scrollItems
+    __MAIL_SETUP.scrollBaseState := CaptureCombinedSetupScrollBaseState(g, scrollItems)
     __MAIL_SETUP.scrollState := Map()
     __MAIL_SETUP.scrollOffset := 0
     __MAIL_SETUP.scrollMax := 0
@@ -3691,6 +3692,22 @@ InitCombinedSetupScrolling(g, scrollItems) {
     RefreshCombinedSetupScrollingLayout(0, 0)
     __MAIL_SETUP.scrollReady := true
     ApplyCombinedSetupScroll(0)
+}
+
+CaptureCombinedSetupScrollBaseState(g, scrollItems) {
+    base := Map()
+    for _, ctrl in scrollItems {
+        if !IsObject(ctrl)
+            continue
+
+        try {
+            ControlGetPos(&x, &y, &w, &h, "ahk_id " ctrl.Hwnd, "ahk_id " g.Hwnd)
+            base[ctrl.Hwnd] := { x: x, y: y, w: w, h: h }
+        } catch {
+            continue
+        }
+    }
+    return base
 }
 
 BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
@@ -3725,7 +3742,9 @@ BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
         try ControlGetPos(, &y, , , "ahk_id " childHwnd, "ahk_id " g.Hwnd)
         catch
             continue
-        if (y >= anchorY)
+        If (!IsSet(y))
+            Continue
+        If (y >= anchorY)
             items.Push(ctrl)
     }
     return items
@@ -3735,6 +3754,8 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
         return
+    if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
+        return
 
     if (width <= 0 || height <= 0) {
         try WinGetClientPos(, , &width, &height, "ahk_id " __MAIL_SETUP.gui.Hwnd)
@@ -3743,7 +3764,8 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
         return
 
     margin := 16
-    footerReserve := 78
+    btnH := 34
+    footerReserve := 0
     minY := 2147483647
     maxBottom := 0
 
@@ -3751,17 +3773,14 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
         if !IsObject(ctrl)
             continue
 
-        try {
-            ControlGetPos(&x, &y, &w, &h, "ahk_id " ctrl.Hwnd, "ahk_id " __MAIL_SETUP.gui.Hwnd)
-        } catch {
+        state := __MAIL_SETUP.scrollBaseState.Has(ctrl.Hwnd) ? __MAIL_SETUP.scrollBaseState[ctrl.Hwnd] : 0
+        if !IsObject(state)
             continue
-        }
 
-        __MAIL_SETUP.scrollState[ctrl.Hwnd] := { x: x, y: y, w: w, h: h }
-        if (y < minY)
-            minY := y
-        if (y + h > maxBottom)
-            maxBottom := y + h
+        if (state.y < minY)
+            minY := state.y
+        if (state.y + state.h > maxBottom)
+            maxBottom := state.y + state.h
     }
 
     if (minY = 2147483647)
@@ -3769,7 +3788,11 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
 
     __MAIL_SETUP.scrollTop := minY
     __MAIL_SETUP.scrollBottom := maxBottom
-    viewBottom := height - footerReserve
+
+    footerTop := height - margin - btnH
+    if (footerTop < (minY + 120))
+        footerTop := minY + 120
+    viewBottom := footerTop - 12
     if (viewBottom < (minY + 120))
         viewBottom := minY + 120
 
@@ -3804,7 +3827,7 @@ ApplyCombinedSetupScroll(offset := 0) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
         return
-    if !HasProp(__MAIL_SETUP, "scrollState") || !IsObject(__MAIL_SETUP.scrollState)
+    if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
         return
 
     if (offset < 0)
@@ -3823,7 +3846,7 @@ ApplyCombinedSetupScroll(offset := 0) {
     for _, ctrl in __MAIL_SETUP.scrollItems {
         if !IsObject(ctrl)
             continue
-        state := __MAIL_SETUP.scrollState.Has(ctrl.Hwnd) ? __MAIL_SETUP.scrollState[ctrl.Hwnd] : 0
+        state := __MAIL_SETUP.scrollBaseState.Has(ctrl.Hwnd) ? __MAIL_SETUP.scrollBaseState[ctrl.Hwnd] : 0
         if !IsObject(state)
             continue
         try ctrl.Move(state.x, state.y - offset, state.w, state.h)
@@ -3839,11 +3862,47 @@ OnCombinedSetupScrollBarChanged(ctrl, *) {
     ApplyCombinedSetupScroll(ctrl.Value)
 }
 
+OnCombinedSetupMouseWheelV2(wParam, lParam, msg, hwnd) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollReady") || !__MAIL_SETUP.scrollReady
+        return 0
+    if !HasProp(__MAIL_SETUP, "gui") || !IsObject(__MAIL_SETUP.gui)
+        return 0
+
+    target := hwnd
+    while (target && target != __MAIL_SETUP.gui.Hwnd) {
+        try target := DllCall("GetParent", "ptr", target, "ptr")
+        catch {
+            target := 0
+        }
+    }
+    if (target != __MAIL_SETUP.gui.Hwnd)
+        return 0
+
+    delta := (wParam >> 16) & 0xFFFF
+    if (delta & 0x8000)
+        delta -= 0x10000
+    if (delta = 0)
+        return 0
+
+    step := GetKeyState("Shift", "P") ? 140 : 60
+    nextOffset := __MAIL_SETUP.scrollOffset + ((delta > 0) ? -step : step)
+    ApplyCombinedSetupScroll(nextOffset)
+    return 1
+}
+
 OnCombinedSetupMouseWheel(wParam, lParam, msg, hwnd) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollReady") || !__MAIL_SETUP.scrollReady
         return 0
-    if (hwnd != __MAIL_SETUP.gui.Hwnd)
+    guiHwnd := __MAIL_SETUP.gui.Hwnd
+    targetRoot := hwnd
+    if (targetRoot != guiHwnd) {
+        try targetRoot := DllCall("GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+    }
+    if (targetRoot != guiHwnd)
+        return 0
+    if (__MAIL_SETUP.scrollMax <= 0)
         return 0
 
     delta := (wParam >> 16) & 0xFFFF
@@ -5364,7 +5423,7 @@ OpenSettingsFromTray(*) {
 
 OnCombinedSetupCancel(*) {
     global __MAIL_SETUP
-    OnMessage(0x020A, OnCombinedSetupMouseWheel, 0)
+    OnMessage(0x020A, OnCombinedSetupMouseWheelV2, 0)
     __MAIL_SETUP.saved := false
     __MAIL_SETUP.done := true
     try __MAIL_SETUP.gui.Destroy()
@@ -5372,7 +5431,7 @@ OnCombinedSetupCancel(*) {
 
 OnCombinedSetupClose(*) {
     global __MAIL_SETUP
-    OnMessage(0x020A, OnCombinedSetupMouseWheel, 0)
+    OnMessage(0x020A, OnCombinedSetupMouseWheelV2, 0)
     __MAIL_SETUP.saved := false
     __MAIL_SETUP.done := true
 }
