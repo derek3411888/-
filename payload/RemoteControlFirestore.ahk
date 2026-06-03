@@ -24,6 +24,7 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
     global RC_CONTROL_SECRET, RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
     global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE
 
+    RC_EnsureIniFileUnicode(cfgPath)
     RC_EnsureRemoteControlDefaults(cfgPath)
     RC_CFG_PATH := cfgPath
 
@@ -334,6 +335,118 @@ RC_IniReadSafe(file, section, key, default := "") {
     } catch {
         return default
     }
+}
+
+RC_EnsureIniFileUnicode(filePath) {
+    if !FileExist(filePath)
+        return false
+    if RC_IniFileHasUnicodeBom(filePath)
+        return false
+
+    text := RC_ReadIniTextBestEffort(filePath)
+    if (text = "")
+        return false
+
+    tmpPath := filePath ".unicode.tmp"
+    try {
+        stream := ComObject("ADODB.Stream")
+        stream.Type := 2
+        stream.Charset := "unicode"
+        stream.Open()
+        stream.WriteText(text)
+        stream.SaveToFile(tmpPath, 2)
+        stream.Close()
+        FileMove(tmpPath, filePath, 1)
+        return true
+    } catch {
+        try FileDelete(tmpPath)
+        return false
+    }
+}
+
+RC_IniFileHasUnicodeBom(filePath) {
+    try {
+        f := FileOpen(filePath, "r")
+        if !IsObject(f)
+            return false
+        bom := Buffer(3, 0)
+        read := f.RawRead(bom, 3)
+        f.Close()
+        if (read >= 2) {
+            b0 := NumGet(bom, 0, "UChar")
+            b1 := NumGet(bom, 1, "UChar")
+            if ((b0 = 0xFF && b1 = 0xFE) || (b0 = 0xFE && b1 = 0xFF))
+                return true
+        }
+        if (read >= 3) {
+            b0 := NumGet(bom, 0, "UChar")
+            b1 := NumGet(bom, 1, "UChar")
+            b2 := NumGet(bom, 2, "UChar")
+            if (b0 = 0xEF && b1 = 0xBB && b2 = 0xBF)
+                return true
+        }
+    }
+    return false
+}
+
+RC_ReadIniTextBestEffort(filePath) {
+    bestText := ""
+    bestScore := -2147483647
+    for charset in ["utf-8", "gb2312", "big5"] {
+        text := RC_ReadTextFileWithCharset(filePath, charset)
+        score := RC_ScoreIniDecodedText(text)
+        if (score > bestScore) {
+            bestScore := score
+            bestText := text
+        }
+    }
+    return bestText
+}
+
+RC_ReadTextFileWithCharset(filePath, charset) {
+    try {
+        stream := ComObject("ADODB.Stream")
+        stream.Type := 2
+        stream.Charset := charset
+        stream.Open()
+        stream.LoadFromFile(filePath)
+        text := stream.ReadText(-1)
+        stream.Close()
+        return text
+    } catch {
+        return ""
+    }
+}
+
+RC_ScoreIniDecodedText(text) {
+    if (text = "")
+        return -2147483647
+
+    score := 0
+    for token in ["�", "锟", "嚙", "ｽ", "", "�"] {
+        count := 0
+        StrReplace(text, token, "", &count)
+        score -= count * 25
+    }
+
+    Loop Parse, text {
+        ch := A_LoopField
+        code := Ord(ch)
+        if (code = 0) {
+            score -= 100
+        } else if (code = 9 || code = 10 || code = 13) {
+            continue
+        } else if (code >= 32 && code <= 126) {
+            score += 1
+        } else if ((code >= 0x3400 && code <= 0x4DBF) || (code >= 0x4E00 && code <= 0x9FFF)) {
+            score += 2
+        } else if (code >= 0xE000 && code <= 0xF8FF) {
+            score -= 3
+        } else {
+            score -= 1
+        }
+    }
+    return score
 }
 
 RC_EnsureRemoteControlDefaults(cfgPath) {

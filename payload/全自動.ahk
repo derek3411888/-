@@ -977,6 +977,8 @@ if (dataDir = "") {
 }
 DirCreate dataDir
 global CFG_FILE := dataDir "\config.ini"
+if EnsureIniFileUnicode(CFG_FILE)
+    WriteLog("設定檔已正規化為 Unicode 編碼")
 WriteLog("dataDir=" dataDir)
 WriteLog("CFG_FILE=" CFG_FILE)
 WriteStep("載入設定", "config=" CFG_FILE)
@@ -2231,6 +2233,118 @@ IniReadSafe(file, section, key, default) {
     } catch {
         return default
     }
+}
+
+EnsureIniFileUnicode(filePath) {
+    if !FileExist(filePath)
+        return false
+    if IniFileHasUnicodeBom(filePath)
+        return false
+
+    text := ReadIniTextBestEffort(filePath)
+    if (text = "")
+        return false
+
+    tmpPath := filePath ".unicode.tmp"
+    try {
+        stream := ComObject("ADODB.Stream")
+        stream.Type := 2
+        stream.Charset := "unicode"
+        stream.Open()
+        stream.WriteText(text)
+        stream.SaveToFile(tmpPath, 2)
+        stream.Close()
+        FileMove(tmpPath, filePath, 1)
+        return true
+    } catch {
+        try FileDelete(tmpPath)
+        return false
+    }
+}
+
+IniFileHasUnicodeBom(filePath) {
+    try {
+        f := FileOpen(filePath, "r")
+        if !IsObject(f)
+            return false
+        bom := Buffer(3, 0)
+        read := f.RawRead(bom, 3)
+        f.Close()
+        if (read >= 2) {
+            b0 := NumGet(bom, 0, "UChar")
+            b1 := NumGet(bom, 1, "UChar")
+            if ((b0 = 0xFF && b1 = 0xFE) || (b0 = 0xFE && b1 = 0xFF))
+                return true
+        }
+        if (read >= 3) {
+            b0 := NumGet(bom, 0, "UChar")
+            b1 := NumGet(bom, 1, "UChar")
+            b2 := NumGet(bom, 2, "UChar")
+            if (b0 = 0xEF && b1 = 0xBB && b2 = 0xBF)
+                return true
+        }
+    }
+    return false
+}
+
+ReadIniTextBestEffort(filePath) {
+    bestText := ""
+    bestScore := -2147483647
+    for charset in ["utf-8", "gb2312", "big5"] {
+        text := ReadTextFileWithCharset(filePath, charset)
+        score := ScoreIniDecodedText(text)
+        if (score > bestScore) {
+            bestScore := score
+            bestText := text
+        }
+    }
+    return bestText
+}
+
+ReadTextFileWithCharset(filePath, charset) {
+    try {
+        stream := ComObject("ADODB.Stream")
+        stream.Type := 2
+        stream.Charset := charset
+        stream.Open()
+        stream.LoadFromFile(filePath)
+        text := stream.ReadText(-1)
+        stream.Close()
+        return text
+    } catch {
+        return ""
+    }
+}
+
+ScoreIniDecodedText(text) {
+    if (text = "")
+        return -2147483647
+
+    score := 0
+    for token in ["�", "锟", "嚙", "ｽ", "", "�"] {
+        count := 0
+        StrReplace(text, token, "", &count)
+        score -= count * 25
+    }
+
+    Loop Parse, text {
+        ch := A_LoopField
+        code := Ord(ch)
+        if (code = 0) {
+            score -= 100
+        } else if (code = 9 || code = 10 || code = 13) {
+            continue
+        } else if (code >= 32 && code <= 126) {
+            score += 1
+        } else if ((code >= 0x3400 && code <= 0x4DBF) || (code >= 0x4E00 && code <= 0x9FFF)) {
+            score += 2
+        } else if (code >= 0xE000 && code <= 0xF8FF) {
+            score -= 3
+        } else {
+            score -= 1
+        }
+    }
+    return score
 }
 
 ; 獲取工作區域信息（排除工作列）
