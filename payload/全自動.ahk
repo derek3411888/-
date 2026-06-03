@@ -3506,6 +3506,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     btnSave := g.AddButton("xm y+18 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
+    sbScroll := g.AddSlider("x+12 w16 h220 Vertical Range0-0", 0)
 
     global __MAIL_SETUP
     __MAIL_SETUP := {
@@ -3514,6 +3515,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         gui: g,
         btnSave: btnSave,
         btnCancel: btnCancel,
+        sbScroll: sbScroll,
         cfgPath: cfgPath,
         section: section,
         edOkww: edOkww,
@@ -3581,10 +3583,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnScreenRecordingStopTemplateCustom.OnEvent("Click", OnBrowseScreenRecordingTemplate)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
+    sbScroll.OnEvent("Change", OnCombinedSetupScrollBarChanged)
     g.OnEvent("Size", OnCombinedSetupGuiSize)
     g.OnEvent("Close", OnCombinedSetupClose)
     OnMessage(0x020A, OnCombinedSetupMouseWheel)
-    scrollItems := BuildCombinedSetupScrollItems(g, edOkww, [btnSave, btnCancel])
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
@@ -3592,6 +3594,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     RefreshScreenRecordingInputsEnabled()
 
     ShowGuiFitToScreen(g)
+    scrollItems := BuildCombinedSetupScrollItems(g, edOkww, [btnSave, btnCancel, sbScroll])
     ReflowCombinedSetupFooterButtons()
     InitCombinedSetupScrolling(g, scrollItems)
     while !__MAIL_SETUP.done
@@ -3706,7 +3709,10 @@ BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
         }
     }
 
-    hwndList := WinGetControlsHwnd("ahk_id " g.Hwnd)
+    hwndList := []
+    try hwndList := WinGetControlsHwnd("ahk_id " g.Hwnd)
+    catch
+        return items
     for _, childHwnd in hwndList {
         if excluded.Has(childHwnd)
             continue
@@ -3769,12 +3775,33 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
         maxScroll := 0
 
     __MAIL_SETUP.scrollMax := maxScroll
+
+    if HasProp(__MAIL_SETUP, "sbScroll") && IsObject(__MAIL_SETUP.sbScroll) {
+        sbW := 16
+        sbX := width - margin - sbW
+        sbY := minY
+        sbH := viewBottom - minY
+        if (sbH < 120)
+            sbH := 120
+        try __MAIL_SETUP.sbScroll.Move(sbX, sbY, sbW, sbH)
+        try __MAIL_SETUP.sbScroll.Opt("Range0-" maxScroll)
+        __MAIL_SETUP.scrollSyncing := true
+        try __MAIL_SETUP.sbScroll.Value := __MAIL_SETUP.scrollOffset
+        __MAIL_SETUP.scrollSyncing := false
+        if (maxScroll > 0)
+            try __MAIL_SETUP.sbScroll.Visible := true
+        else
+            try __MAIL_SETUP.sbScroll.Visible := false
+    }
+
     ApplyCombinedSetupScroll(__MAIL_SETUP.scrollOffset)
 }
 
 ApplyCombinedSetupScroll(offset := 0) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
+        return
+    if !HasProp(__MAIL_SETUP, "scrollState") || !IsObject(__MAIL_SETUP.scrollState)
         return
 
     if (offset < 0)
@@ -3783,6 +3810,13 @@ ApplyCombinedSetupScroll(offset := 0) {
         offset := __MAIL_SETUP.scrollMax
 
     __MAIL_SETUP.scrollOffset := offset
+
+    if HasProp(__MAIL_SETUP, "sbScroll") && IsObject(__MAIL_SETUP.sbScroll) {
+        __MAIL_SETUP.scrollSyncing := true
+        try __MAIL_SETUP.sbScroll.Value := offset
+        __MAIL_SETUP.scrollSyncing := false
+    }
+
     for _, ctrl in __MAIL_SETUP.scrollItems {
         if !IsObject(ctrl)
             continue
@@ -3791,6 +3825,15 @@ ApplyCombinedSetupScroll(offset := 0) {
             continue
         try ctrl.Move(state.x, state.y - offset, state.w, state.h)
     }
+}
+
+OnCombinedSetupScrollBarChanged(ctrl, *) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+    if HasProp(__MAIL_SETUP, "scrollSyncing") && __MAIL_SETUP.scrollSyncing
+        return
+    ApplyCombinedSetupScroll(ctrl.Value)
 }
 
 OnCombinedSetupMouseWheel(wParam, lParam, msg, hwnd) {
