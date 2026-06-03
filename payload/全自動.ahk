@@ -3209,13 +3209,15 @@ ReadCombinedConfigState() {
 }
 
 ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
-    g := Gui("+Resize +MinSize640x520", "整合設定（程式路徑 + 郵件通知）")
+    ; 加寬最小視窗尺寸以容納雙欄 (原本是 640x520，改為 780x760)
+    g := Gui("+Resize +MinSize780x760", "整合設定（程式路徑 + 郵件通知）")
     g.SetFont("s10", "Microsoft JhengHei UI")
 
-    g.AddText("w720", "【觸發原因】" reason)
-    g.AddText("w720", "【設定檔位置】" cfgPath)
-    g.AddText("w720", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
-    g.AddText("w720", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
+    ; === 頂部共用區域 (全寬) ===
+    g.AddText("w740", "【觸發原因】" reason)
+    g.AddText("w740", "【設定檔位置】" cfgPath)
+    g.AddText("w740", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
+    g.AddText("w740", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
 
     summary := "目前偵測值：`r`n"
     summary .= "OKWW: " state.okwwPath "`r`n"
@@ -3245,127 +3247,137 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
     summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
-    g.AddEdit("xm w720 r8 ReadOnly", summary)
+    g.AddEdit("xm w740 r8 ReadOnly", summary)
 
     if (state.needSetup)
-        g.AddEdit("xm y+8 w720 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
+        g.AddEdit("xm y+8 w740 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
 
-    g.AddText("xm y+12 w120", "OKWW 路徑")
-    edOkww := g.AddEdit("x+10 w500", state.okwwPath)
-    btnOkww := g.AddButton("x+8 w90", "瀏覽...")
+    ; ==========================================
+    ; === 左欄開始 (使用 Section 建立錨點) ===
+    ; ==========================================
+    g.AddText("xm y+15 Section w350", "【基本路徑設定】")
 
-    g.AddText("xm y+10 w120", "LRMCAI 路徑")
-    edLrmc := g.AddEdit("x+10 w500", state.lrmcPath)
-    btnLrmc := g.AddButton("x+8 w90", "瀏覽...")
+    g.AddText("xs y+10 w80", "OKWW")
+    edOkww := g.AddEdit("x+5 w180", state.okwwPath)
+    btnOkww := g.AddButton("x+5 w70", "瀏覽...")
 
-    g.AddText("xm y+10 w120", "鳴潮 路徑")
-    edWu := g.AddEdit("x+10 w500", state.wuPath)
-    btnWu := g.AddButton("x+8 w90", "瀏覽...")
+    g.AddText("xs y+10 w80", "LRMCAI")
+    edLrmc := g.AddEdit("x+5 w180", state.lrmcPath)
+    btnLrmc := g.AddButton("x+5 w70", "瀏覽...")
 
-    g.AddText("xm y+10 w120", "後備 log 路徑")
-    edFallbackLog := g.AddEdit("x+10 w500", state.fallbackLogFile)
-    btnFallbackLog := g.AddButton("x+8 w90", "瀏覽...")
-    txtFallbackHint := g.AddText("xm y+4 w720 cE6A700", "")
+    g.AddText("xs y+10 w80", "鳴潮")
+    edWu := g.AddEdit("x+5 w180", state.wuPath)
+    btnWu := g.AddButton("x+5 w70", "瀏覽...")
 
-    g.AddText("xm y+14 w720", "【伺服器排程】啟用後會在登入畫面先切服（點擊視窗內座標），每輪完成後自動重啟跑下一個伺服器。")
-    cbServerScheduleEnabled := g.AddCheckbox("xm y+8", "啟用伺服器排程")
+    g.AddText("xs y+10 w80", "後備 log")
+    edFallbackLog := g.AddEdit("x+5 w180", state.fallbackLogFile)
+    btnFallbackLog := g.AddButton("x+5 w70", "瀏覽...")
+    txtFallbackHint := g.AddText("xs y+4 w340 cE6A700", "")
+
+    g.AddText("xs y+15 w350", "【伺服器排程】")
+    cbServerScheduleEnabled := g.AddCheckbox("xs y+8 w340", "啟用伺服器排程")
     cbServerScheduleEnabled.Value := state.serverScheduleEnabled ? 1 : 0
-    txtServerHint := g.AddText("x+12 w500", state.serverScheduleEnabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程")
+    txtServerHint := g.AddText("xs y+4 w340 c666666", state.serverScheduleEnabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程")
 
-    g.AddText("xm y+10 w120", "伺服器清單")
-    edServerList := g.AddEdit("x+10 w500", state.serverScheduleList)
-    btnServerPreview := g.AddButton("x+8 w90", "預覽排序")
-    g.AddText("xm y+4 w720 c666666", "可用逗號/分號/換行分隔，例如：HMT(HK, MO, TW), SEA, America")
+    g.AddText("xs y+8 w80", "伺服器清單")
+    edServerList := g.AddEdit("x+5 w180", state.serverScheduleList)
+    btnServerPreview := g.AddButton("x+5 w70", "預覽")
 
-    g.AddText("xm y+10 w120", "切服按鈕座標")
-    edServerSwitchX := g.AddEdit("x+10 w90", state.serverSwitchX)
-    g.AddText("x+8 w24", ",")
-    edServerSwitchY := g.AddEdit("x+8 w90", state.serverSwitchY)
-    g.AddText("x+12 w460 c666666", "以 1280x720 為基準的視窗內相對座標，會自動縮放；預設 (640,549)")
+    g.AddText("xs y+8 w80", "切服座標")
+    edServerSwitchX := g.AddEdit("x+5 w50", state.serverSwitchX)
+    g.AddText("x+5 w15", ",")
+    edServerSwitchY := g.AddEdit("x+5 w50", state.serverSwitchY)
+    g.AddText("x+10 w115 c666666", "預設(640,549)")
 
-    g.AddText("xm y+14 w720", "【郵件設定】Gmail: smtp.gmail.com / 587 / use_ssl=1；密碼請使用應用程式密碼")
-    cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
+    g.AddText("xs y+15 w350", "【郵件設定】")
+    cbSendEnabled := g.AddCheckbox("xs y+8 w340", "啟用收尾通知寄信")
     cbSendEnabled.Value := state.sendEnabled ? 1 : 0
-    txtMailHint := g.AddText("x+12 w420", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
+    txtMailHint := g.AddText("xs y+4 w340 c666666", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
 
-    g.AddText("xm y+12 w720", "【螢幕錄影】預設使用 FFmpeg（建議），也可回退 Alt+F9 快捷鍵模式。")
-    cbScreenRecordingEnabled := g.AddCheckbox("xm y+8", "啟用螢幕錄影")
-    cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
+    g.AddText("xs y+8 w80", "smtp_host")
+    edHost := g.AddEdit("x+5 w255", state.smtpHost)
 
-    g.AddText("xm y+8 w120", "錄影引擎")
-    ddScreenRecordingEngine := g.AddDropDownList("x+10 w300", ["ffmpeg:跨電腦建議", "hotkey:Alt+F9"])
-    ddScreenRecordingEngine.Choose((state.screenRecordingEngine = "hotkey") ? 2 : 1)
-
-    cbScreenRecordingAllowFallback := g.AddCheckbox("x+12", "FFmpeg 失敗時退回 Alt+F9")
-    cbScreenRecordingAllowFallback.Value := state.screenRecordingAllowHotkeyFallback ? 1 : 0
-
-    g.AddText("xm y+8 w120", "ffmpeg.exe")
-    edScreenRecordingFfmpegExe := g.AddEdit("x+10 w500", state.screenRecordingFfmpegExe)
-    btnScreenRecordingFfmpegExe := g.AddButton("x+8 w90", "瀏覽...")
-
-    cbScreenRecordingUseSimpleParams := g.AddCheckbox("xm y+8", "使用簡易錄影參數（建議）")
-    cbScreenRecordingUseSimpleParams.Value := state.screenRecordingUseSimpleParams ? 1 : 0
-
-    g.AddText("xm y+8 w120", "畫質等級")
-    ddScreenRecordingQualityPreset := g.AddDropDownList("x+10 w220", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
-    ddScreenRecordingQualityPreset.Choose((state.screenRecordingQualityPreset = "high") ? 2 : (state.screenRecordingQualityPreset = "low") ? 3 : (state.screenRecordingQualityPreset = "custom") ? 4 : 1)
-
-    g.AddText("x+12 w60", "FPS")
-    edScreenRecordingFps := g.AddEdit("x+8 w70", state.screenRecordingFps)
-    g.AddText("x+12 w60", "CRF")
-    edScreenRecordingCrf := g.AddEdit("x+8 w70", state.screenRecordingCrf)
-    txtScreenRecordingQualityHint := g.AddText("xm y+4 w720 c666666", GetScreenRecordingQualityHint(state.screenRecordingQualityPreset, state.screenRecordingCrf))
-
-    g.AddText("xm y+8 w120", "ffmpeg 參數")
-    edScreenRecordingFfmpegArgs := g.AddEdit("x+10 w600", state.screenRecordingFfmpegArgs)
-    txtScreenRecordingArgsHint := g.AddText("xm y+4 w720 c666666", "簡易模式：用畫質/FPS/CRF 自動生成參數；進階模式：可手動編輯完整 ffmpeg 參數。")
-
-    g.AddText("xm y+8 w120", "輸出資料夾")
-    edScreenRecordingOutputDir := g.AddEdit("x+10 w500", state.screenRecordingOutputDir)
-    btnScreenRecordingOutputDir := g.AddButton("x+8 w90", "瀏覽...")
-
-    g.AddText("xm y+8 w120", "停止時機")
-    ddScreenRecordingStopMode := g.AddDropDownList("x+10 w300", ["exit:腳本結束時", "synthesis_end:聲骸合成結束時", "reward_end:收尾監測達標時", "template:模板命中時", "lrmc_task_end:LRMCAI任務完成時"])
-    ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "synthesis_end") ? 2 : (state.screenRecordingStopMode = "reward_end") ? 3 : (state.screenRecordingStopMode = "template") ? 4 : (state.screenRecordingStopMode = "lrmc_task_end") ? 5 : 1)
-
-    g.AddText("xm y+8 w120", "模板來源")
-    ddScreenRecordingStopTemplate := g.AddDropDownList("x+10 w220", ["login:登入.png", "close:0510.png", "custom:自訂模板"])
-    ddScreenRecordingStopTemplate.Choose((state.screenRecordingStopTemplate = "close") ? 2 : (state.screenRecordingStopTemplate = "custom") ? 3 : 1)
-    edScreenRecordingStopTemplateCustom := g.AddEdit("x+8 w272", state.screenRecordingStopTemplateCustom)
-    btnScreenRecordingStopTemplateCustom := g.AddButton("x+8 w90", "瀏覽模板")
-
-    g.AddText("xm y+8 w120", "任務名稱")
-    edScreenRecordingStopLrmcTask := g.AddEdit("x+10 w500", state.screenRecordingStopLrmcTask)
-    g.AddText("x+12 w200 c666666", "例如：七丘05 或 07落日堤嶼")
-
-    txtScreenRecordingHint := g.AddText("xm y+4 w720 c666666", "提示：選擇 template:模板命中時 才會啟用模板停止；自訂模板可填絕對路徑或相對於 payload 的路徑。")
-
-    g.AddText("xm y+10 w120", "smtp_host")
-    edHost := g.AddEdit("x+10 w500", state.smtpHost)
-
-    g.AddText("xm y+10 w120", "smtp_port")
-    edPort := g.AddEdit("x+10 w120", state.smtpPort)
-    g.AddText("x+12 w120", "use_ssl")
-    ddSsl := g.AddDropDownList("x+10 w80", ["1", "0"])
+    g.AddText("xs y+8 w80", "smtp_port")
+    edPort := g.AddEdit("x+5 w80", state.smtpPort)
+    g.AddText("x+15 w50", "SSL")
+    ddSsl := g.AddDropDownList("x+5 w100", ["1", "0"])
     ddSsl.Value := (state.useSsl = "0") ? 2 : 1
 
-    g.AddText("xm y+10 w120", "smtp_user")
-    edUser := g.AddEdit("x+10 w500", state.smtpUser)
+    g.AddText("xs y+8 w80", "smtp_user")
+    edUser := g.AddEdit("x+5 w255", state.smtpUser)
 
-    g.AddText("xm y+10 w120", "smtp_pass")
-    edPass := g.AddEdit("x+10 w500 Password", state.smtpPass)
+    g.AddText("xs y+8 w80", "smtp_pass")
+    edPass := g.AddEdit("x+5 w255 Password", state.smtpPass)
 
-    g.AddText("xm y+10 w120", "from")
-    edFrom := g.AddEdit("x+10 w500", state.mailFrom)
+    g.AddText("xs y+8 w80", "from")
+    edFrom := g.AddEdit("x+5 w255", state.mailFrom)
 
-    g.AddText("xm y+10 w120", "to")
-    edTo := g.AddEdit("x+10 w500", state.mailTo)
-    g.AddText("x+12 w220 c666666", "可多位：逗號/分號/換行分隔")
+    g.AddText("xs y+8 w80", "to")
+    edTo := g.AddEdit("x+5 w255", state.mailTo)
 
-    g.AddText("xm y+10 w120", "subject_prefix")
-    edPrefix := g.AddEdit("x+10 w500", state.subjectPrefix)
+    g.AddText("xs y+8 w80", "prefix")
+    edPrefix := g.AddEdit("x+5 w255", state.subjectPrefix)
 
-    btnSave := g.AddButton("xm y+18 w170 h34 Default", "儲存全部並繼續")
+    ; ==========================================
+    ; === 右欄開始 (ys 對齊左欄頂部，新 Section) ===
+    ; ==========================================
+    g.AddText("x430 ys Section w340", "【螢幕錄影設定】")
+    cbScreenRecordingEnabled := g.AddCheckbox("xs y+10 w340", "啟用螢幕錄影")
+    cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
+
+    g.AddText("xs y+10 w80", "錄影引擎")
+    ddScreenRecordingEngine := g.AddDropDownList("x+5 w255", ["ffmpeg:跨電腦建議", "hotkey:Alt+F9"])
+    ddScreenRecordingEngine.Choose((state.screenRecordingEngine = "hotkey") ? 2 : 1)
+
+    cbScreenRecordingAllowFallback := g.AddCheckbox("xs y+8 w340", "FFmpeg 失敗時退回 Alt+F9")
+    cbScreenRecordingAllowFallback.Value := state.screenRecordingAllowHotkeyFallback ? 1 : 0
+
+    g.AddText("xs y+10 w80", "ffmpeg.exe")
+    edScreenRecordingFfmpegExe := g.AddEdit("x+5 w180", state.screenRecordingFfmpegExe)
+    btnScreenRecordingFfmpegExe := g.AddButton("x+5 w70", "瀏覽...")
+
+    cbScreenRecordingUseSimpleParams := g.AddCheckbox("xs y+8 w340", "使用簡易錄影參數（建議）")
+    cbScreenRecordingUseSimpleParams.Value := state.screenRecordingUseSimpleParams ? 1 : 0
+
+    g.AddText("xs y+8 w80", "畫質等級")
+    ddScreenRecordingQualityPreset := g.AddDropDownList("x+5 w255", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
+    ddScreenRecordingQualityPreset.Choose((state.screenRecordingQualityPreset = "high") ? 2 : (state.screenRecordingQualityPreset = "low") ? 3 : (state.screenRecordingQualityPreset = "custom") ? 4 : 1)
+
+    g.AddText("xs y+8 w40", "FPS")
+    edScreenRecordingFps := g.AddEdit("x+5 w60", state.screenRecordingFps)
+    g.AddText("x+10 w40", "CRF")
+    edScreenRecordingCrf := g.AddEdit("x+5 w60", state.screenRecordingCrf)
+
+    txtScreenRecordingQualityHint := g.AddText("xs y+4 w340 c666666", GetScreenRecordingQualityHint(state.screenRecordingQualityPreset, state.screenRecordingCrf))
+
+    g.AddText("xs y+8 w80", "ffmpeg參數")
+    edScreenRecordingFfmpegArgs := g.AddEdit("x+5 w255", state.screenRecordingFfmpegArgs)
+
+    txtScreenRecordingArgsHint := g.AddText("xs y+4 w340 c666666", "簡易模式會自動生成，進階可手動修改")
+
+    g.AddText("xs y+8 w80", "輸出資料夾")
+    edScreenRecordingOutputDir := g.AddEdit("x+5 w180", state.screenRecordingOutputDir)
+    btnScreenRecordingOutputDir := g.AddButton("x+5 w70", "瀏覽...")
+
+    g.AddText("xs y+8 w80", "停止時機")
+    ddScreenRecordingStopMode := g.AddDropDownList("x+5 w255", ["exit:腳本結束時", "synthesis_end:聲骸合成結束時", "reward_end:收尾監測達標時", "template:模板命中時", "lrmc_task_end:LRMCAI任務完成時"])
+    ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "synthesis_end") ? 2 : (state.screenRecordingStopMode = "reward_end") ? 3 : (state.screenRecordingStopMode = "template") ? 4 : (state.screenRecordingStopMode = "lrmc_task_end") ? 5 : 1)
+
+    g.AddText("xs y+8 w80", "模板來源")
+    ddScreenRecordingStopTemplate := g.AddDropDownList("x+5 w255", ["login:登入.png", "close:0510.png", "custom:自訂模板"])
+    ddScreenRecordingStopTemplate.Choose((state.screenRecordingStopTemplate = "close") ? 2 : (state.screenRecordingStopTemplate = "custom") ? 3 : 1)
+
+    g.AddText("xs y+8 w80", "自訂模板")
+    edScreenRecordingStopTemplateCustom := g.AddEdit("x+5 w180", state.screenRecordingStopTemplateCustom)
+    btnScreenRecordingStopTemplateCustom := g.AddButton("x+5 w70", "瀏覽...")
+
+    g.AddText("xs y+8 w80", "任務名稱")
+    edScreenRecordingStopLrmcTask := g.AddEdit("x+5 w255", state.screenRecordingStopLrmcTask)
+
+    txtScreenRecordingHint := g.AddText("xs y+8 w340 c666666 h30", "") ; 多行提示區
+
+    ; === 底部按鈕區 ===
+    btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
 
     global __MAIL_SETUP
@@ -4236,7 +4248,20 @@ PruneScreenRecordingFiles(keepCount := 5) {
     if (files.Length <= keepCount)
         return 0
 
-    files.Sort((a, b) => (a.modified = b.modified) ? 0 : ((a.modified > b.modified) ? -1 : 1))
+    ; AHK v2.0.19 的 Array 沒有 Sort 方法，這裡用簡單交換排序（新->舊）。
+    i := 1
+    while (i <= files.Length - 1) {
+        j := i + 1
+        while (j <= files.Length) {
+            if (files[i].modified < files[j].modified) {
+                tmp := files[i]
+                files[i] := files[j]
+                files[j] := tmp
+            }
+            j += 1
+        }
+        i += 1
+    }
 
     deleted := 0
     Loop (files.Length - keepCount) {
