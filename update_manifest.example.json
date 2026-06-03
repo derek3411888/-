@@ -1,9 +1,9 @@
 ﻿{
-    "version":  "3.74",
-    "payload_url":  "https://raw.githubusercontent.com/derek3411888/-/6a91842/payload.zip",
-    "payload_sha256":  "31AB316E1F718BBACD9EF2F51A838E1958FCB107B1A63F8CEAA3BA81406CFE2C",
+    "version":  "3.75",
+    "payload_url":  "https://raw.githubusercontent.com/derek3411888/-/52fd606/payload.zip",
+    "payload_sha256":  "75C38E1A01E17C5F3B92BDABCB8DD28C447FE5FFB3E087CB41D251669982CB09",
     
-    "launcher_version":  "4.15",
-    "launcher_url":  "https://raw.githubusercontent.com/derek3411888/-/6a91842/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe",
-    "launcher_sha256":  "751222594E3572B1DA8218ABD9E447EE9B314D2A17823B1B9D1BE92364908516"
+    "launcher_version":  "4.16",
+    "launcher_url":  "https://raw.githubusercontent.com/derek3411888/-/52fd606/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe",
+    "launcher_sha256":  "B8CFAAE31DFB7D80E4CD5C9C3E7BBBAE0D8BE75DA19F17600017A7852512D224"
 }
