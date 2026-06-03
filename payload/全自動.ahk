@@ -3721,7 +3721,10 @@ BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
         if !IsObject(ctrl)
             continue
 
+        y := -2147483648
         try ControlGetPos(, &y, , , "ahk_id " childHwnd, "ahk_id " g.Hwnd)
+        catch
+            continue
         if (y >= anchorY)
             items.Push(ctrl)
     }
