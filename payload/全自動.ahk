@@ -3584,36 +3584,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.OnEvent("Size", OnCombinedSetupGuiSize)
     g.OnEvent("Close", OnCombinedSetupClose)
     OnMessage(0x020A, OnCombinedSetupMouseWheel)
-
-    scrollItems := [
-        edOkww, btnOkww, txtOkwwHint,
-        edLrmc, btnLrmc, txtLrmcHint,
-        edWu, btnWu, txtWuHint,
-        edFallbackLog, btnFallbackLog, txtFallbackHint,
-        cbServerScheduleEnabled, txtServerHint, txtServerEnableHint,
-        edServerList, btnServerPreview,
-        edServerSwitchX, edServerSwitchY,
-        cbSendEnabled, txtMailHint, txtMailEnableHint,
-        cbScreenRecordingEnabled, txtRecordingEnableHint,
-        ddScreenRecordingEngine, cbScreenRecordingAllowFallback, txtRecordingEngineHint,
-        edScreenRecordingFfmpegExe, btnScreenRecordingFfmpegExe, txtFfmpegExeHint,
-        cbScreenRecordingUseSimpleParams, txtSimpleParamsHint,
-        ddScreenRecordingQualityPreset, edScreenRecordingFps, edScreenRecordingCrf, txtScreenRecordingQualityHint, txtQualityPresetHint,
-        edScreenRecordingFfmpegArgs, txtScreenRecordingArgsHint, txtFfmpegArgsHint,
-        edScreenRecordingOutputDir, btnScreenRecordingOutputDir, txtOutputDirHint,
-        ddScreenRecordingStopMode, txtStopModeHint,
-        ddScreenRecordingStopTemplate, edScreenRecordingStopTemplateCustom, btnScreenRecordingStopTemplateCustom, txtStopTemplateHint,
-        edScreenRecordingStopLrmcTask, txtScreenRecordingHint, txtStopTaskHint,
-        edHost, txtSmtpHostHint,
-        edPort, ddSsl, txtSmtpPortHint,
-        edUser, txtSmtpUserHint,
-        edPass, txtSmtpPassHint,
-        edFrom, txtFromHint,
-        edTo, txtToHint,
-        edPrefix, txtPrefixHint
-    ]
-    if IsObject(edNeedSetup)
-        scrollItems.Push(edNeedSetup)
+    scrollItems := BuildCombinedSetupScrollItems(g, edOkww, [btnSave, btnCancel])
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
@@ -3717,6 +3688,38 @@ InitCombinedSetupScrolling(g, scrollItems) {
     RefreshCombinedSetupScrollingLayout(0, 0)
     __MAIL_SETUP.scrollReady := true
     ApplyCombinedSetupScroll(0)
+}
+
+BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
+    items := []
+    if !IsObject(anchorCtrl)
+        return items
+
+    anchorY := 0
+    try ControlGetPos(, &anchorY, , , "ahk_id " anchorCtrl.Hwnd, "ahk_id " g.Hwnd)
+
+    excluded := Map()
+    if IsObject(excludeCtrls) {
+        for _, c in excludeCtrls {
+            if IsObject(c)
+                excluded[c.Hwnd] := true
+        }
+    }
+
+    hwndList := WinGetControlsHwnd("ahk_id " g.Hwnd)
+    for _, childHwnd in hwndList {
+        if excluded.Has(childHwnd)
+            continue
+
+        ctrl := GuiCtrlFromHwnd(childHwnd)
+        if !IsObject(ctrl)
+            continue
+
+        try ControlGetPos(, &y, , , "ahk_id " childHwnd, "ahk_id " g.Hwnd)
+        if (y >= anchorY)
+            items.Push(ctrl)
+    }
+    return items
 }
 
 RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
@@ -5315,6 +5318,7 @@ OpenSettingsFromTray(*) {
 
 OnCombinedSetupCancel(*) {
     global __MAIL_SETUP
+    OnMessage(0x020A, OnCombinedSetupMouseWheel, 0)
     __MAIL_SETUP.saved := false
     __MAIL_SETUP.done := true
     try __MAIL_SETUP.gui.Destroy()
@@ -5322,6 +5326,7 @@ OnCombinedSetupCancel(*) {
 
 OnCombinedSetupClose(*) {
     global __MAIL_SETUP
+    OnMessage(0x020A, OnCombinedSetupMouseWheel, 0)
     __MAIL_SETUP.saved := false
     __MAIL_SETUP.done := true
 }
