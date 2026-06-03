@@ -3326,10 +3326,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g := Gui("+Resize +MinSize640x520", "整合設定（程式路徑 + 郵件通知）")
     g.SetFont("s10", "Microsoft JhengHei UI")
 
-    g.AddText("w720", "【觸發原因】" reason)
-    g.AddText("w720", "【設定檔位置】" cfgPath)
-    g.AddText("w720", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
-    g.AddText("w720", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
+    txtTrigger := g.AddText("w720", "【觸發原因】" reason)
+    txtCfgPath := g.AddText("w720", "【設定檔位置】" cfgPath)
+    txtIntro := g.AddText("w720", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
+    txtRequirement := g.AddText("w720", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
 
     summary := "目前偵測值：`r`n"
     summary .= "OKWW: " state.okwwPath "`r`n"
@@ -3359,22 +3359,28 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
     summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
-    g.AddEdit("xm w720 r8 ReadOnly", summary)
+    edSummary := g.AddEdit("xm w720 r8 ReadOnly", summary)
+    txtScrollTip := g.AddText("xm y+4 w720 c666666", "提示：可用滑鼠滾輪或 PgUp/PgDn 上下捲動；視窗縮放時，底部儲存/取消會固定在下方。")
 
     if (state.needSetup)
-        g.AddEdit("xm y+8 w720 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
+        edNeedSetup := g.AddEdit("xm y+8 w720 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
+    else
+        edNeedSetup := 0
 
     g.AddText("xm y+12 w120", "OKWW 路徑")
     edOkww := g.AddEdit("x+10 w500", state.okwwPath)
     btnOkww := g.AddButton("x+8 w90", "瀏覽...")
+    txtOkwwHint := g.AddText("xm y+4 w720 c666666", "OKWW 主程式或捷徑路徑，會用來啟動與回填設定。")
 
     g.AddText("xm y+10 w120", "LRMCAI 路徑")
     edLrmc := g.AddEdit("x+10 w500", state.lrmcPath)
     btnLrmc := g.AddButton("x+8 w90", "瀏覽...")
+    txtLrmcHint := g.AddText("xm y+4 w720 c666666", "LRMCAI 主程式或捷徑路徑，錄影停止與重啟流程都會用到。")
 
     g.AddText("xm y+10 w120", "鳴潮 路徑")
     edWu := g.AddEdit("x+10 w500", state.wuPath)
     btnWu := g.AddButton("x+8 w90", "瀏覽...")
+    txtWuHint := g.AddText("xm y+4 w720 c666666", "鳴潮遊戲主程式路徑，用於自動開啟與切服流程。")
 
     g.AddText("xm y+10 w120", "後備 log 路徑")
     edFallbackLog := g.AddEdit("x+10 w500", state.fallbackLogFile)
@@ -3385,6 +3391,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbServerScheduleEnabled := g.AddCheckbox("xm y+8", "啟用伺服器排程")
     cbServerScheduleEnabled.Value := state.serverScheduleEnabled ? 1 : 0
     txtServerHint := g.AddText("x+12 w500", state.serverScheduleEnabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程")
+    txtServerEnableHint := g.AddText("xm y+4 w720 c666666", "勾選後，會依下方伺服器清單逐一切服，跑完自動換下一組。")
 
     g.AddText("xm y+10 w120", "伺服器清單")
     edServerList := g.AddEdit("x+10 w500", state.serverScheduleList)
@@ -3401,14 +3408,17 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
     cbSendEnabled.Value := state.sendEnabled ? 1 : 0
     txtMailHint := g.AddText("x+12 w420", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
+    txtMailEnableHint := g.AddText("xm y+4 w720 c666666", "啟用後，流程結束時會寄送通知信；欄位不完整時不會強制儲存。")
 
     g.AddText("xm y+12 w720", "【螢幕錄影】預設使用 FFmpeg（建議），也可回退 Alt+F9 快捷鍵模式。")
     cbScreenRecordingEnabled := g.AddCheckbox("xm y+8", "啟用螢幕錄影")
     cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
+    txtRecordingEnableHint := g.AddText("xm y+4 w720 c666666", "啟用後，才會依下方引擎、參數與停止條件開始錄影。")
 
     g.AddText("xm y+8 w120", "錄影引擎")
     ddScreenRecordingEngine := g.AddDropDownList("x+10 w300", ["ffmpeg:跨電腦建議", "hotkey:Alt+F9"])
     ddScreenRecordingEngine.Choose((state.screenRecordingEngine = "hotkey") ? 2 : 1)
+    txtRecordingEngineHint := g.AddText("xm y+4 w720 c666666", "ffmpeg 最穩定；hotkey 只作備援或沒有 ffmpeg 時使用。")
 
     cbScreenRecordingAllowFallback := g.AddCheckbox("x+12", "FFmpeg 失敗時退回 Alt+F9")
     cbScreenRecordingAllowFallback.Value := state.screenRecordingAllowHotkeyFallback ? 1 : 0
@@ -3416,9 +3426,11 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("xm y+8 w120", "ffmpeg.exe")
     edScreenRecordingFfmpegExe := g.AddEdit("x+10 w500", state.screenRecordingFfmpegExe)
     btnScreenRecordingFfmpegExe := g.AddButton("x+8 w90", "瀏覽...")
+    txtFfmpegExeHint := g.AddText("xm y+4 w720 c666666", "可填內建 ffmpeg、系統 PATH 名稱，或指定完整路徑。")
 
     cbScreenRecordingUseSimpleParams := g.AddCheckbox("xm y+8", "使用簡易錄影參數（建議）")
     cbScreenRecordingUseSimpleParams.Value := state.screenRecordingUseSimpleParams ? 1 : 0
+    txtSimpleParamsHint := g.AddText("xm y+4 w720 c666666", "勾選後會依畫質等級、自動 FPS 與 CRF 生成參數。")
 
     g.AddText("xm y+8 w120", "畫質等級")
     ddScreenRecordingQualityPreset := g.AddDropDownList("x+10 w220", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
@@ -3429,55 +3441,68 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("x+12 w60", "CRF")
     edScreenRecordingCrf := g.AddEdit("x+8 w70", state.screenRecordingCrf)
     txtScreenRecordingQualityHint := g.AddText("xm y+4 w720 c666666", GetScreenRecordingQualityHint(state.screenRecordingQualityPreset, state.screenRecordingCrf))
+    txtQualityPresetHint := g.AddText("xm y+4 w720 c666666", "balanced 通常最適合；high 檔案較大更清楚；low 檔案更小；custom 會手動吃 CRF。")
 
     g.AddText("xm y+8 w120", "ffmpeg 參數")
     edScreenRecordingFfmpegArgs := g.AddEdit("x+10 w600", state.screenRecordingFfmpegArgs)
     txtScreenRecordingArgsHint := g.AddText("xm y+4 w720 c666666", "簡易模式：用畫質/FPS/CRF 自動生成參數；進階模式：可手動編輯完整 ffmpeg 參數。")
+    txtFfmpegArgsHint := g.AddText("xm y+4 w720 c666666", "若手動編輯，請保留輸出編碼與像素格式，避免錄影檔無法播放。")
 
     g.AddText("xm y+8 w120", "輸出資料夾")
     edScreenRecordingOutputDir := g.AddEdit("x+10 w500", state.screenRecordingOutputDir)
     btnScreenRecordingOutputDir := g.AddButton("x+8 w90", "瀏覽...")
+    txtOutputDirHint := g.AddText("xm y+4 w720 c666666", "錄影檔會存到這個資料夾，建議使用有寫入權限的本機磁碟。")
 
     g.AddText("xm y+8 w120", "停止時機")
     ddScreenRecordingStopMode := g.AddDropDownList("x+10 w300", ["exit:腳本結束時", "synthesis_end:聲骸合成結束時", "reward_end:收尾監測達標時", "template:模板命中時", "lrmc_task_end:LRMCAI任務完成時"])
     ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "synthesis_end") ? 2 : (state.screenRecordingStopMode = "reward_end") ? 3 : (state.screenRecordingStopMode = "template") ? 4 : (state.screenRecordingStopMode = "lrmc_task_end") ? 5 : 1)
+    txtStopModeHint := g.AddText("xm y+4 w720 c666666", "決定何時自動停止錄影；exit 最單純，其他模式會依流程或模板條件停止。")
 
     g.AddText("xm y+8 w120", "模板來源")
     ddScreenRecordingStopTemplate := g.AddDropDownList("x+10 w220", ["login:登入.png", "close:0510.png", "custom:自訂模板"])
     ddScreenRecordingStopTemplate.Choose((state.screenRecordingStopTemplate = "close") ? 2 : (state.screenRecordingStopTemplate = "custom") ? 3 : 1)
     edScreenRecordingStopTemplateCustom := g.AddEdit("x+8 w272", state.screenRecordingStopTemplateCustom)
     btnScreenRecordingStopTemplateCustom := g.AddButton("x+8 w90", "瀏覽模板")
+    txtStopTemplateHint := g.AddText("xm y+4 w720 c666666", "只有 stop_mode=template 時才會用到；custom 需填模板圖片路徑。")
 
     g.AddText("xm y+8 w120", "任務名稱")
     edScreenRecordingStopLrmcTask := g.AddEdit("x+10 w500", state.screenRecordingStopLrmcTask)
     g.AddText("x+12 w200 c666666", "例如：七丘05 或 07落日堤嶼")
+    txtStopTaskHint := g.AddText("xm y+4 w720 c666666", "只有 stop_mode=lrmc_task_end 時才會用到，名稱需與畫面任務文字一致。")
 
     txtScreenRecordingHint := g.AddText("xm y+4 w720 c666666", "提示：選擇 template:模板命中時 才會啟用模板停止；自訂模板可填絕對路徑或相對於 payload 的路徑。")
 
     g.AddText("xm y+10 w120", "smtp_host")
     edHost := g.AddEdit("x+10 w500", state.smtpHost)
+    txtSmtpHostHint := g.AddText("xm y+4 w720 c666666", "SMTP 主機名稱，例如 smtp.gmail.com 或你的郵件伺服器。")
 
     g.AddText("xm y+10 w120", "smtp_port")
     edPort := g.AddEdit("x+10 w120", state.smtpPort)
     g.AddText("x+12 w120", "use_ssl")
     ddSsl := g.AddDropDownList("x+10 w80", ["1", "0"])
     ddSsl.Value := (state.useSsl = "0") ? 2 : 1
+    txtSmtpPortHint := g.AddText("xm y+4 w720 c666666", "smtp_port 是連接埠；use_ssl=1 表示使用 SSL/TLS。")
 
     g.AddText("xm y+10 w120", "smtp_user")
     edUser := g.AddEdit("x+10 w500", state.smtpUser)
+    txtSmtpUserHint := g.AddText("xm y+4 w720 c666666", "SMTP 登入帳號，Gmail 通常是完整 Email。")
 
     g.AddText("xm y+10 w120", "smtp_pass")
     edPass := g.AddEdit("x+10 w500 Password", state.smtpPass)
+    txtSmtpPassHint := g.AddText("xm y+4 w720 c666666", "請填應用程式密碼或郵件服務提供的專用密碼，不要填一般登入密碼。")
 
     g.AddText("xm y+10 w120", "from")
     edFrom := g.AddEdit("x+10 w500", state.mailFrom)
+    txtFromHint := g.AddText("xm y+4 w720 c666666", "寄件者地址，通常與 smtp_user 相同或為別名。")
 
     g.AddText("xm y+10 w120", "to")
     edTo := g.AddEdit("x+10 w500", state.mailTo)
     g.AddText("x+12 w220 c666666", "可多位：逗號/分號/換行分隔")
+    txtToHint := g.AddText("xm y+4 w720 c666666", "收件者可填多個，程式會自動拆分並逐一加入。")
 
     g.AddText("xm y+10 w120", "subject_prefix")
     edPrefix := g.AddEdit("x+10 w500", state.subjectPrefix)
+    txtPrefixHint := g.AddText("xm y+4 w720 c666666", "信件主旨前綴，例如 LRMCAI。")
 
     btnSave := g.AddButton("xm y+18 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
@@ -3558,6 +3583,37 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Size", OnCombinedSetupGuiSize)
     g.OnEvent("Close", OnCombinedSetupClose)
+    OnMessage(0x020A, OnCombinedSetupMouseWheel)
+
+    scrollItems := [
+        edOkww, btnOkww, txtOkwwHint,
+        edLrmc, btnLrmc, txtLrmcHint,
+        edWu, btnWu, txtWuHint,
+        edFallbackLog, btnFallbackLog, txtFallbackHint,
+        cbServerScheduleEnabled, txtServerHint, txtServerEnableHint,
+        edServerList, btnServerPreview,
+        edServerSwitchX, edServerSwitchY,
+        cbSendEnabled, txtMailHint, txtMailEnableHint,
+        cbScreenRecordingEnabled, txtRecordingEnableHint,
+        ddScreenRecordingEngine, cbScreenRecordingAllowFallback, txtRecordingEngineHint,
+        edScreenRecordingFfmpegExe, btnScreenRecordingFfmpegExe, txtFfmpegExeHint,
+        cbScreenRecordingUseSimpleParams, txtSimpleParamsHint,
+        ddScreenRecordingQualityPreset, edScreenRecordingFps, edScreenRecordingCrf, txtScreenRecordingQualityHint, txtQualityPresetHint,
+        edScreenRecordingFfmpegArgs, txtScreenRecordingArgsHint, txtFfmpegArgsHint,
+        edScreenRecordingOutputDir, btnScreenRecordingOutputDir, txtOutputDirHint,
+        ddScreenRecordingStopMode, txtStopModeHint,
+        ddScreenRecordingStopTemplate, edScreenRecordingStopTemplateCustom, btnScreenRecordingStopTemplateCustom, txtStopTemplateHint,
+        edScreenRecordingStopLrmcTask, txtScreenRecordingHint, txtStopTaskHint,
+        edHost, txtSmtpHostHint,
+        edPort, ddSsl, txtSmtpPortHint,
+        edUser, txtSmtpUserHint,
+        edPass, txtSmtpPassHint,
+        edFrom, txtFromHint,
+        edTo, txtToHint,
+        edPrefix, txtPrefixHint
+    ]
+    if IsObject(edNeedSetup)
+        scrollItems.Push(edNeedSetup)
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
@@ -3566,6 +3622,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     ShowGuiFitToScreen(g)
     ReflowCombinedSetupFooterButtons()
+    InitCombinedSetupScrolling(g, scrollItems)
     while !__MAIL_SETUP.done
         Sleep 50
 
@@ -3605,6 +3662,7 @@ ShowGuiFitToScreen(g, margin := 24) {
 
 OnCombinedSetupGuiSize(thisGui, minMax, width, height) {
     ReflowCombinedSetupFooterButtons(width, height)
+    RefreshCombinedSetupScrollingLayout(width, height)
 }
 
 ReflowCombinedSetupFooterButtons(width := 0, height := 0) {
@@ -3642,6 +3700,113 @@ ReflowCombinedSetupFooterButtons(width := 0, height := 0) {
     x2 := x1 + saveW + gap
     __MAIL_SETUP.btnSave.Move(x1, y, saveW, btnH)
     __MAIL_SETUP.btnCancel.Move(x2, y, cancelW, btnH)
+}
+
+InitCombinedSetupScrolling(g, scrollItems) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+
+    __MAIL_SETUP.scrollItems := scrollItems
+    __MAIL_SETUP.scrollState := Map()
+    __MAIL_SETUP.scrollOffset := 0
+    __MAIL_SETUP.scrollMax := 0
+    __MAIL_SETUP.scrollTop := 0
+    __MAIL_SETUP.scrollBottom := 0
+    __MAIL_SETUP.scrollReady := false
+    RefreshCombinedSetupScrollingLayout(0, 0)
+    __MAIL_SETUP.scrollReady := true
+    ApplyCombinedSetupScroll(0)
+}
+
+RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP) || !IsObject(__MAIL_SETUP.scrollItems)
+        return
+
+    if (width <= 0 || height <= 0) {
+        try WinGetClientPos(, , &width, &height, "ahk_id " __MAIL_SETUP.gui.Hwnd)
+    }
+    if (width <= 0 || height <= 0)
+        return
+
+    margin := 16
+    footerReserve := 78
+    minY := 2147483647
+    maxBottom := 0
+
+    for _, ctrl in __MAIL_SETUP.scrollItems {
+        if !IsObject(ctrl)
+            continue
+
+        try {
+            ControlGetPos(&x, &y, &w, &h, "ahk_id " ctrl.Hwnd, "ahk_id " __MAIL_SETUP.gui.Hwnd)
+        } catch {
+            continue
+        }
+
+        __MAIL_SETUP.scrollState[ctrl.Hwnd] := { x: x, y: y, w: w, h: h }
+        if (y < minY)
+            minY := y
+        if (y + h > maxBottom)
+            maxBottom := y + h
+    }
+
+    if (minY = 2147483647)
+        return
+
+    __MAIL_SETUP.scrollTop := minY
+    __MAIL_SETUP.scrollBottom := maxBottom
+    viewBottom := height - footerReserve
+    if (viewBottom < (minY + 120))
+        viewBottom := minY + 120
+
+    maxScroll := maxBottom - viewBottom
+    if (maxScroll < 0)
+        maxScroll := 0
+
+    __MAIL_SETUP.scrollMax := maxScroll
+    ApplyCombinedSetupScroll(__MAIL_SETUP.scrollOffset)
+}
+
+ApplyCombinedSetupScroll(offset := 0) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP) || !IsObject(__MAIL_SETUP.scrollItems)
+        return
+
+    if (offset < 0)
+        offset := 0
+    if (offset > __MAIL_SETUP.scrollMax)
+        offset := __MAIL_SETUP.scrollMax
+
+    __MAIL_SETUP.scrollOffset := offset
+    for _, ctrl in __MAIL_SETUP.scrollItems {
+        if !IsObject(ctrl)
+            continue
+        state := __MAIL_SETUP.scrollState.Has(ctrl.Hwnd) ? __MAIL_SETUP.scrollState[ctrl.Hwnd] : 0
+        if !IsObject(state)
+            continue
+        try ctrl.Move(state.x, state.y - offset, state.w, state.h)
+    }
+}
+
+OnCombinedSetupMouseWheel(wParam, lParam, msg, hwnd) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP) || !__MAIL_SETUP.scrollReady
+        return 0
+    if (hwnd != __MAIL_SETUP.gui.Hwnd)
+        return 0
+
+    delta := (wParam >> 16) & 0xFFFF
+    if (delta & 0x8000)
+        delta -= 0x10000
+    if (delta = 0)
+        return 0
+
+    step := GetKeyState("Shift", "P") ? 140 : 60
+    nextOffset := __MAIL_SETUP.scrollOffset + ((delta > 0) ? -step : step)
+    ApplyCombinedSetupScroll(nextOffset)
+    return 1
 }
 
 OnCombinedBrowseOkww(*) {
