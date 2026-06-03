@@ -3719,7 +3719,6 @@ CaptureCombinedSetupScrollBaseState(g, scrollItems) {
 }
 
 BuildCombinedSetupTwoColumnBaseState(rawBaseState, width) {
-    global __MAIL_SETUP
     if !IsObject(rawBaseState)
         return rawBaseState
     if (width <= 0)
@@ -3730,54 +3729,50 @@ BuildCombinedSetupTwoColumnBaseState(rawBaseState, width) {
     if (width < 980)
         return rawBaseState
 
+    ys := []
     leftMinX := 2147483647
     leftMaxRight := -2147483648
-    splitY := 2147483647
-
-    if IsObject(__MAIL_SETUP)
-        try {
-            if HasProp(__MAIL_SETUP, "cbSendEnabled") && IsObject(__MAIL_SETUP.cbSendEnabled) {
-                mk := __MAIL_SETUP.cbSendEnabled.Hwnd
-                if rawBaseState.Has(mk)
-                    splitY := rawBaseState[mk].y
-            }
-        }
-
-    if (splitY = 2147483647) {
-        ys := []
-        for _, st in rawBaseState {
-            if IsObject(st)
-                ys.Push(st.y)
-        }
-        if (ys.Length = 0)
-            return rawBaseState
-        n := ys.Length
-        loop n - 1 {
-            i := A_Index
-            loop n - i {
-                j := i + A_Index
-                if (ys[j] < ys[i]) {
-                    tmp := ys[i]
-                    ys[i] := ys[j]
-                    ys[j] := tmp
-                }
-            }
-        }
-        splitY := ys[Floor((n + 1) / 2)]
+    topY := 2147483647
+    for _, st in rawBaseState {
+        if !IsObject(st)
+            continue
+        ys.Push(st.y)
+        if (st.y < topY)
+            topY := st.y
+        if (st.x < leftMinX)
+            leftMinX := st.x
     }
+    if (ys.Length = 0 || topY = 2147483647 || leftMinX = 2147483647)
+        return rawBaseState
+
+    n := ys.Length
+    loop n - 1 {
+        i := A_Index
+        loop n - i {
+            j := i + A_Index
+            if (ys[j] < ys[i]) {
+                tmp := ys[i]
+                ys[i] := ys[j]
+                ys[j] := tmp
+            }
+        }
+    }
+
+    splitY := ys[Floor((n + 1) / 2)]
+    rightTopY := 2147483647
 
     for hwnd, st in rawBaseState {
         if !IsObject(st)
             continue
-        if (st.x < leftMinX)
-            leftMinX := st.x
         if (st.y < splitY && (st.x + st.w) > leftMaxRight)
             leftMaxRight := st.x + st.w
+        else if (st.y >= splitY && st.y < rightTopY)
+            rightTopY := st.y
     }
-    if (leftMinX = 2147483647)
-        return rawBaseState
     if (leftMaxRight = -2147483648)
         leftMaxRight := leftMinX + 520
+    if (rightTopY = 2147483647)
+        return rawBaseState
 
     colGap := 24
     col2X := leftMaxRight + colGap
@@ -3787,20 +3782,23 @@ BuildCombinedSetupTwoColumnBaseState(rawBaseState, width) {
         return rawBaseState
 
     shiftX := col2X - leftMinX
+    shiftY := rightTopY - topY
     newBase := Map()
 
     for hwnd, st in rawBaseState {
         if !IsObject(st)
             continue
         nx := st.x
+        ny := st.y
         nw := st.w
         if (st.y >= splitY) {
             nx := st.x + shiftX
+            ny := st.y - shiftY
             rightLimit := width - rightPadding
             if (nx + nw > rightLimit)
                 nw := Max(120, rightLimit - nx)
         }
-        newBase[hwnd] := { x: nx, y: st.y, w: nw, h: st.h }
+        newBase[hwnd] := { x: nx, y: ny, w: nw, h: st.h }
     }
 
     return newBase
