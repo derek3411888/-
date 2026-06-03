@@ -3721,7 +3721,7 @@ InitCombinedSetupScrolling(g, scrollItems) {
 
 RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
     global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !IsObject(__MAIL_SETUP.scrollItems)
+    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
         return
 
     if (width <= 0 || height <= 0) {
@@ -3771,7 +3771,7 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
 
 ApplyCombinedSetupScroll(offset := 0) {
     global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !IsObject(__MAIL_SETUP.scrollItems)
+    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
         return
 
     if (offset < 0)
@@ -3792,7 +3792,7 @@ ApplyCombinedSetupScroll(offset := 0) {
 
 OnCombinedSetupMouseWheel(wParam, lParam, msg, hwnd) {
     global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !__MAIL_SETUP.scrollReady
+    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollReady") || !__MAIL_SETUP.scrollReady
         return 0
     if (hwnd != __MAIL_SETUP.gui.Hwnd)
         return 0
