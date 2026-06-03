@@ -3789,9 +3789,9 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
         try __MAIL_SETUP.sbScroll.Value := __MAIL_SETUP.scrollOffset
         __MAIL_SETUP.scrollSyncing := false
         if (maxScroll > 0)
-            try __MAIL_SETUP.sbScroll.Visible := true
+            __MAIL_SETUP.sbScroll.Visible := true
         else
-            try __MAIL_SETUP.sbScroll.Visible := false
+            __MAIL_SETUP.sbScroll.Visible := false
     }
 
     ApplyCombinedSetupScroll(__MAIL_SETUP.scrollOffset)
