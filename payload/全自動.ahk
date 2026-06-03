@@ -20,7 +20,7 @@ ProcessSetPriority("Normal")
 
 ; DPI 感知（避免縮放改變座標/影像）
 try DllCall("SetProcessDpiAwarenessContext", "ptr", -4)  ; PER_MONITOR_AWARE_V2
-catch
+catch 
     try DllCall("shcore\SetProcessDpiAwareness", "int", 2)
 
 #Include plugin\RapidOcr\RapidOcr.ahk
@@ -161,66 +161,6 @@ ResolvePersistentToolsRoot() {
     }
 
     return NormalizePath(A_ScriptDir "\\..")
-}
-
-ResolvePreferredConfigDir() {
-    return NormalizePath(A_ScriptDir "\\..\\config")
-}
-
-DiscoverNearbyLegacyConfigDir() {
-    root := NormalizePath(A_ScriptDir "\\..\\..")
-    if (root = "" || !DirExist(root))
-        return ""
-
-    bestDir := ""
-    bestTime := ""
-    Loop Files, root "\\*\\config\\config.ini", "F" {
-        try t := FileGetTime(A_LoopFileFullPath, "M")
-        catch
-            t := ""
-        if (t = "")
-            continue
-        if (bestTime = "" || t > bestTime) {
-            bestTime := t
-            bestDir := NormalizePath(A_LoopFileDir)
-        }
-    }
-    return bestDir
-}
-
-TryRecoverLegacyConfig(targetDir) {
-    targetDir := NormalizePath(targetDir)
-    if (targetDir = "")
-        return ""
-
-    targetFile := targetDir "\\config.ini"
-    if FileExist(targetFile)
-        return ""
-
-    legacyDirs := []
-    legacyDirs.Push(NormalizePath(A_ScriptDir "\\..\\config"))
-    legacyDirs.Push(NormalizePath(A_ScriptDir "\\config"))
-    nearbyLegacy := DiscoverNearbyLegacyConfigDir()
-    if (nearbyLegacy != "")
-        legacyDirs.Push(nearbyLegacy)
-    legacyDirs.Push(NormalizePath(A_Temp "\\okww_runtime\\config"))
-
-    for _, d in legacyDirs {
-        if (d = "" || d = targetDir)
-            continue
-        src := d "\\config.ini"
-        if !FileExist(src)
-            continue
-
-        try {
-            DirCreate(targetDir)
-            FileCopy(src, targetFile, 1)
-            return src
-        } catch {
-            continue
-        }
-    }
-    return ""
 }
 
 FindBundledFfmpegExe() {
@@ -1026,14 +966,17 @@ StartCrashWatcher()
 okwwExe := "OK-WW.exe"   ; 由工作管理員確認
 
 ; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
-dataDir := ResolvePreferredConfigDir()
+dataDir := EnvGet("PACK_DATA_DIR")
+if (dataDir = "") {
+    ; 如果沒有環境變數，嘗試使用新的位置
+    dataDir := A_ScriptDir "\..\config"
+    if !DirExist(dataDir) {
+        ; 向後兼容舊位置
+        dataDir := A_Temp "\okww_runtime\config"
+    }
+}
 DirCreate dataDir
-recoveredFrom := TryRecoverLegacyConfig(dataDir)
-if (recoveredFrom != "")
-    WriteLog("已從舊設定檔還原 config.ini: " recoveredFrom " -> " dataDir "\\config.ini", "WARN")
 global CFG_FILE := dataDir "\config.ini"
-if EnsureIniFileUnicode(CFG_FILE)
-    WriteLog("設定檔已正規化為 Unicode 編碼")
 WriteLog("dataDir=" dataDir)
 WriteLog("CFG_FILE=" CFG_FILE)
 WriteStep("載入設定", "config=" CFG_FILE)
@@ -2290,118 +2233,6 @@ IniReadSafe(file, section, key, default) {
     }
 }
 
-EnsureIniFileUnicode(filePath) {
-    if !FileExist(filePath)
-        return false
-    if IniFileHasUnicodeBom(filePath)
-        return false
-
-    text := ReadIniTextBestEffort(filePath)
-    if (text = "")
-        return false
-
-    tmpPath := filePath ".unicode.tmp"
-    try {
-        stream := ComObject("ADODB.Stream")
-        stream.Type := 2
-        stream.Charset := "unicode"
-        stream.Open()
-        stream.WriteText(text)
-        stream.SaveToFile(tmpPath, 2)
-        stream.Close()
-        FileMove(tmpPath, filePath, 1)
-        return true
-    } catch {
-        try FileDelete(tmpPath)
-        return false
-    }
-}
-
-IniFileHasUnicodeBom(filePath) {
-    try {
-        f := FileOpen(filePath, "r")
-        if !IsObject(f)
-            return false
-        bom := Buffer(3, 0)
-        read := f.RawRead(bom, 3)
-        f.Close()
-        if (read >= 2) {
-            b0 := NumGet(bom, 0, "UChar")
-            b1 := NumGet(bom, 1, "UChar")
-            if ((b0 = 0xFF && b1 = 0xFE) || (b0 = 0xFE && b1 = 0xFF))
-                return true
-        }
-        if (read >= 3) {
-            b0 := NumGet(bom, 0, "UChar")
-            b1 := NumGet(bom, 1, "UChar")
-            b2 := NumGet(bom, 2, "UChar")
-            if (b0 = 0xEF && b1 = 0xBB && b2 = 0xBF)
-                return true
-        }
-    }
-    return false
-}
-
-ReadIniTextBestEffort(filePath) {
-    bestText := ""
-    bestScore := -2147483647
-    for charset in ["utf-8", "gb2312", "big5"] {
-        text := ReadTextFileWithCharset(filePath, charset)
-        score := ScoreIniDecodedText(text)
-        if (score > bestScore) {
-            bestScore := score
-            bestText := text
-        }
-    }
-    return bestText
-}
-
-ReadTextFileWithCharset(filePath, charset) {
-    try {
-        stream := ComObject("ADODB.Stream")
-        stream.Type := 2
-        stream.Charset := charset
-        stream.Open()
-        stream.LoadFromFile(filePath)
-        text := stream.ReadText(-1)
-        stream.Close()
-        return text
-    } catch {
-        return ""
-    }
-}
-
-ScoreIniDecodedText(text) {
-    if (text = "")
-        return -2147483647
-
-    score := 0
-    for token in ["�", "锟", "嚙", "ｽ", "", "�"] {
-        count := 0
-        StrReplace(text, token, "", , &count)
-        score -= count * 25
-    }
-
-    Loop Parse, text {
-        ch := A_LoopField
-        code := Ord(ch)
-        if (code = 0) {
-            score -= 100
-        } else if (code = 9 || code = 10 || code = 13) {
-            continue
-        } else if (code >= 32 && code <= 126) {
-            score += 1
-        } else if ((code >= 0x3400 && code <= 0x4DBF) || (code >= 0x4E00 && code <= 0x9FFF)) {
-            score += 2
-        } else if (code >= 0xE000 && code <= 0xF8FF) {
-            score -= 3
-        } else {
-            score -= 1
-        }
-    }
-    return score
-}
-
 ; 獲取工作區域信息（排除工作列）
 GetWorkArea() {
     rect := Buffer(16)
@@ -3381,10 +3212,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g := Gui("+Resize +MinSize640x520", "整合設定（程式路徑 + 郵件通知）")
     g.SetFont("s10", "Microsoft JhengHei UI")
 
-    txtTrigger := g.AddText("w720", "【觸發原因】" reason)
-    txtCfgPath := g.AddText("w720", "【設定檔位置】" cfgPath)
-    txtIntro := g.AddText("w720", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
-    txtRequirement := g.AddText("w720", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
+    g.AddText("w720", "【觸發原因】" reason)
+    g.AddText("w720", "【設定檔位置】" cfgPath)
+    g.AddText("w720", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
+    g.AddText("w720", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
 
     summary := "目前偵測值：`r`n"
     summary .= "OKWW: " state.okwwPath "`r`n"
@@ -3414,28 +3245,22 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
     summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
-    edSummary := g.AddEdit("xm w720 r8 ReadOnly", summary)
-    txtScrollTip := g.AddText("xm y+4 w720 c666666", "提示：可用滑鼠滾輪或 PgUp/PgDn 上下捲動；視窗縮放時，底部儲存/取消會固定在下方。")
+    g.AddEdit("xm w720 r8 ReadOnly", summary)
 
     if (state.needSetup)
-        edNeedSetup := g.AddEdit("xm y+8 w720 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
-    else
-        edNeedSetup := 0
+        g.AddEdit("xm y+8 w720 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
 
     g.AddText("xm y+12 w120", "OKWW 路徑")
     edOkww := g.AddEdit("x+10 w500", state.okwwPath)
     btnOkww := g.AddButton("x+8 w90", "瀏覽...")
-    txtOkwwHint := g.AddText("xm y+4 w720 c666666", "OKWW 主程式或捷徑路徑，會用來啟動與回填設定。")
 
     g.AddText("xm y+10 w120", "LRMCAI 路徑")
     edLrmc := g.AddEdit("x+10 w500", state.lrmcPath)
     btnLrmc := g.AddButton("x+8 w90", "瀏覽...")
-    txtLrmcHint := g.AddText("xm y+4 w720 c666666", "LRMCAI 主程式或捷徑路徑，錄影停止與重啟流程都會用到。")
 
     g.AddText("xm y+10 w120", "鳴潮 路徑")
     edWu := g.AddEdit("x+10 w500", state.wuPath)
     btnWu := g.AddButton("x+8 w90", "瀏覽...")
-    txtWuHint := g.AddText("xm y+4 w720 c666666", "鳴潮遊戲主程式路徑，用於自動開啟與切服流程。")
 
     g.AddText("xm y+10 w120", "後備 log 路徑")
     edFallbackLog := g.AddEdit("x+10 w500", state.fallbackLogFile)
@@ -3446,7 +3271,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbServerScheduleEnabled := g.AddCheckbox("xm y+8", "啟用伺服器排程")
     cbServerScheduleEnabled.Value := state.serverScheduleEnabled ? 1 : 0
     txtServerHint := g.AddText("x+12 w500", state.serverScheduleEnabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程")
-    txtServerEnableHint := g.AddText("xm y+4 w720 c666666", "勾選後，會依下方伺服器清單逐一切服，跑完自動換下一組。")
 
     g.AddText("xm y+10 w120", "伺服器清單")
     edServerList := g.AddEdit("x+10 w500", state.serverScheduleList)
@@ -3463,17 +3287,14 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbSendEnabled := g.AddCheckbox("xm y+8", "啟用收尾通知寄信")
     cbSendEnabled.Value := state.sendEnabled ? 1 : 0
     txtMailHint := g.AddText("x+12 w420", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
-    txtMailEnableHint := g.AddText("xm y+4 w720 c666666", "啟用後，流程結束時會寄送通知信；欄位不完整時不會強制儲存。")
 
     g.AddText("xm y+12 w720", "【螢幕錄影】預設使用 FFmpeg（建議），也可回退 Alt+F9 快捷鍵模式。")
     cbScreenRecordingEnabled := g.AddCheckbox("xm y+8", "啟用螢幕錄影")
     cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
-    txtRecordingEnableHint := g.AddText("xm y+4 w720 c666666", "啟用後，才會依下方引擎、參數與停止條件開始錄影。")
 
     g.AddText("xm y+8 w120", "錄影引擎")
     ddScreenRecordingEngine := g.AddDropDownList("x+10 w300", ["ffmpeg:跨電腦建議", "hotkey:Alt+F9"])
     ddScreenRecordingEngine.Choose((state.screenRecordingEngine = "hotkey") ? 2 : 1)
-    txtRecordingEngineHint := g.AddText("xm y+4 w720 c666666", "ffmpeg 最穩定；hotkey 只作備援或沒有 ffmpeg 時使用。")
 
     cbScreenRecordingAllowFallback := g.AddCheckbox("x+12", "FFmpeg 失敗時退回 Alt+F9")
     cbScreenRecordingAllowFallback.Value := state.screenRecordingAllowHotkeyFallback ? 1 : 0
@@ -3481,11 +3302,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("xm y+8 w120", "ffmpeg.exe")
     edScreenRecordingFfmpegExe := g.AddEdit("x+10 w500", state.screenRecordingFfmpegExe)
     btnScreenRecordingFfmpegExe := g.AddButton("x+8 w90", "瀏覽...")
-    txtFfmpegExeHint := g.AddText("xm y+4 w720 c666666", "可填內建 ffmpeg、系統 PATH 名稱，或指定完整路徑。")
 
     cbScreenRecordingUseSimpleParams := g.AddCheckbox("xm y+8", "使用簡易錄影參數（建議）")
     cbScreenRecordingUseSimpleParams.Value := state.screenRecordingUseSimpleParams ? 1 : 0
-    txtSimpleParamsHint := g.AddText("xm y+4 w720 c666666", "勾選後會依畫質等級、自動 FPS 與 CRF 生成參數。")
 
     g.AddText("xm y+8 w120", "畫質等級")
     ddScreenRecordingQualityPreset := g.AddDropDownList("x+10 w220", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
@@ -3496,72 +3315,58 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("x+12 w60", "CRF")
     edScreenRecordingCrf := g.AddEdit("x+8 w70", state.screenRecordingCrf)
     txtScreenRecordingQualityHint := g.AddText("xm y+4 w720 c666666", GetScreenRecordingQualityHint(state.screenRecordingQualityPreset, state.screenRecordingCrf))
-    txtQualityPresetHint := g.AddText("xm y+4 w720 c666666", "balanced 通常最適合；high 檔案較大更清楚；low 檔案更小；custom 會手動吃 CRF。")
 
     g.AddText("xm y+8 w120", "ffmpeg 參數")
     edScreenRecordingFfmpegArgs := g.AddEdit("x+10 w600", state.screenRecordingFfmpegArgs)
     txtScreenRecordingArgsHint := g.AddText("xm y+4 w720 c666666", "簡易模式：用畫質/FPS/CRF 自動生成參數；進階模式：可手動編輯完整 ffmpeg 參數。")
-    txtFfmpegArgsHint := g.AddText("xm y+4 w720 c666666", "若手動編輯，請保留輸出編碼與像素格式，避免錄影檔無法播放。")
 
     g.AddText("xm y+8 w120", "輸出資料夾")
     edScreenRecordingOutputDir := g.AddEdit("x+10 w500", state.screenRecordingOutputDir)
     btnScreenRecordingOutputDir := g.AddButton("x+8 w90", "瀏覽...")
-    txtOutputDirHint := g.AddText("xm y+4 w720 c666666", "錄影檔會存到這個資料夾，建議使用有寫入權限的本機磁碟。")
 
     g.AddText("xm y+8 w120", "停止時機")
     ddScreenRecordingStopMode := g.AddDropDownList("x+10 w300", ["exit:腳本結束時", "synthesis_end:聲骸合成結束時", "reward_end:收尾監測達標時", "template:模板命中時", "lrmc_task_end:LRMCAI任務完成時"])
     ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "synthesis_end") ? 2 : (state.screenRecordingStopMode = "reward_end") ? 3 : (state.screenRecordingStopMode = "template") ? 4 : (state.screenRecordingStopMode = "lrmc_task_end") ? 5 : 1)
-    txtStopModeHint := g.AddText("xm y+4 w720 c666666", "決定何時自動停止錄影；exit 最單純，其他模式會依流程或模板條件停止。")
 
     g.AddText("xm y+8 w120", "模板來源")
     ddScreenRecordingStopTemplate := g.AddDropDownList("x+10 w220", ["login:登入.png", "close:0510.png", "custom:自訂模板"])
     ddScreenRecordingStopTemplate.Choose((state.screenRecordingStopTemplate = "close") ? 2 : (state.screenRecordingStopTemplate = "custom") ? 3 : 1)
     edScreenRecordingStopTemplateCustom := g.AddEdit("x+8 w272", state.screenRecordingStopTemplateCustom)
     btnScreenRecordingStopTemplateCustom := g.AddButton("x+8 w90", "瀏覽模板")
-    txtStopTemplateHint := g.AddText("xm y+4 w720 c666666", "只有 stop_mode=template 時才會用到；custom 需填模板圖片路徑。")
 
     g.AddText("xm y+8 w120", "任務名稱")
     edScreenRecordingStopLrmcTask := g.AddEdit("x+10 w500", state.screenRecordingStopLrmcTask)
     g.AddText("x+12 w200 c666666", "例如：七丘05 或 07落日堤嶼")
-    txtStopTaskHint := g.AddText("xm y+4 w720 c666666", "只有 stop_mode=lrmc_task_end 時才會用到，名稱需與畫面任務文字一致。")
 
     txtScreenRecordingHint := g.AddText("xm y+4 w720 c666666", "提示：選擇 template:模板命中時 才會啟用模板停止；自訂模板可填絕對路徑或相對於 payload 的路徑。")
 
     g.AddText("xm y+10 w120", "smtp_host")
     edHost := g.AddEdit("x+10 w500", state.smtpHost)
-    txtSmtpHostHint := g.AddText("xm y+4 w720 c666666", "SMTP 主機名稱，例如 smtp.gmail.com 或你的郵件伺服器。")
 
     g.AddText("xm y+10 w120", "smtp_port")
     edPort := g.AddEdit("x+10 w120", state.smtpPort)
     g.AddText("x+12 w120", "use_ssl")
     ddSsl := g.AddDropDownList("x+10 w80", ["1", "0"])
     ddSsl.Value := (state.useSsl = "0") ? 2 : 1
-    txtSmtpPortHint := g.AddText("xm y+4 w720 c666666", "smtp_port 是連接埠；use_ssl=1 表示使用 SSL/TLS。")
 
     g.AddText("xm y+10 w120", "smtp_user")
     edUser := g.AddEdit("x+10 w500", state.smtpUser)
-    txtSmtpUserHint := g.AddText("xm y+4 w720 c666666", "SMTP 登入帳號，Gmail 通常是完整 Email。")
 
     g.AddText("xm y+10 w120", "smtp_pass")
     edPass := g.AddEdit("x+10 w500 Password", state.smtpPass)
-    txtSmtpPassHint := g.AddText("xm y+4 w720 c666666", "請填應用程式密碼或郵件服務提供的專用密碼，不要填一般登入密碼。")
 
     g.AddText("xm y+10 w120", "from")
     edFrom := g.AddEdit("x+10 w500", state.mailFrom)
-    txtFromHint := g.AddText("xm y+4 w720 c666666", "寄件者地址，通常與 smtp_user 相同或為別名。")
 
     g.AddText("xm y+10 w120", "to")
     edTo := g.AddEdit("x+10 w500", state.mailTo)
     g.AddText("x+12 w220 c666666", "可多位：逗號/分號/換行分隔")
-    txtToHint := g.AddText("xm y+4 w720 c666666", "收件者可填多個，程式會自動拆分並逐一加入。")
 
     g.AddText("xm y+10 w120", "subject_prefix")
     edPrefix := g.AddEdit("x+10 w500", state.subjectPrefix)
-    txtPrefixHint := g.AddText("xm y+4 w720 c666666", "信件主旨前綴，例如 LRMCAI。")
 
     btnSave := g.AddButton("xm y+18 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
-    sbScroll := g.AddSlider("x+12 w16 h220 Vertical Range0-0", 0)
 
     global __MAIL_SETUP
     __MAIL_SETUP := {
@@ -3570,7 +3375,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         gui: g,
         btnSave: btnSave,
         btnCancel: btnCancel,
-        sbScroll: sbScroll,
         cfgPath: cfgPath,
         section: section,
         edOkww: edOkww,
@@ -3638,10 +3442,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnScreenRecordingStopTemplateCustom.OnEvent("Click", OnBrowseScreenRecordingTemplate)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
-    sbScroll.OnEvent("Change", OnCombinedSetupScrollBarChanged)
     g.OnEvent("Size", OnCombinedSetupGuiSize)
     g.OnEvent("Close", OnCombinedSetupClose)
-    OnMessage(0x020A, OnCombinedSetupMouseWheelV2)
 
     RefreshFallbackLogHint()
     RefreshMailInputsEnabled()
@@ -3649,9 +3451,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     RefreshScreenRecordingInputsEnabled()
 
     ShowGuiFitToScreen(g)
-    scrollItems := BuildCombinedSetupScrollItems(g, edOkww, [btnSave, btnCancel, sbScroll])
     ReflowCombinedSetupFooterButtons()
-    InitCombinedSetupScrolling(g, scrollItems)
     while !__MAIL_SETUP.done
         Sleep 50
 
@@ -3673,14 +3473,8 @@ ShowGuiFitToScreen(g, margin := 24) {
         if (maxH < 520)
             maxH := 520
 
-        preferredW := 1360
-        preferredH := 760
         newW := (w > maxW) ? maxW : w
         newH := (h > maxH) ? maxH : h
-        if (newW < preferredW)
-            newW := Min(maxW, preferredW)
-        if (newH < preferredH)
-            newH := Min(maxH, preferredH)
 
         if (newW != w || newH != h) {
             newX := Floor((A_ScreenWidth - newW) / 2)
@@ -3697,7 +3491,6 @@ ShowGuiFitToScreen(g, margin := 24) {
 
 OnCombinedSetupGuiSize(thisGui, minMax, width, height) {
     ReflowCombinedSetupFooterButtons(width, height)
-    RefreshCombinedSetupScrollingLayout(width, height)
 }
 
 ReflowCombinedSetupFooterButtons(width := 0, height := 0) {
@@ -3735,342 +3528,6 @@ ReflowCombinedSetupFooterButtons(width := 0, height := 0) {
     x2 := x1 + saveW + gap
     __MAIL_SETUP.btnSave.Move(x1, y, saveW, btnH)
     __MAIL_SETUP.btnCancel.Move(x2, y, cancelW, btnH)
-}
-
-InitCombinedSetupScrolling(g, scrollItems) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP)
-        return
-
-    __MAIL_SETUP.scrollItems := scrollItems
-    __MAIL_SETUP.scrollRawState := CaptureCombinedSetupScrollBaseState(g, scrollItems)
-    __MAIL_SETUP.scrollBaseState := __MAIL_SETUP.scrollRawState
-    __MAIL_SETUP.lastLayoutWidth := 0
-    __MAIL_SETUP.scrollState := Map()
-    __MAIL_SETUP.scrollOffset := 0
-    __MAIL_SETUP.scrollMax := 0
-    __MAIL_SETUP.scrollTop := 0
-    __MAIL_SETUP.scrollBottom := 0
-    __MAIL_SETUP.scrollReady := false
-    RefreshCombinedSetupScrollingLayout(0, 0)
-    __MAIL_SETUP.scrollReady := true
-    ApplyCombinedSetupScroll(0)
-}
-
-CaptureCombinedSetupScrollBaseState(g, scrollItems) {
-    base := Map()
-    for _, ctrl in scrollItems {
-        if !IsObject(ctrl)
-            continue
-
-        try {
-            ControlGetPos(&x, &y, &w, &h, "ahk_id " ctrl.Hwnd, "ahk_id " g.Hwnd)
-            base[ctrl.Hwnd] := { x: x, y: y, w: w, h: h }
-        } catch {
-            continue
-        }
-    }
-    return base
-}
-
-BuildCombinedSetupTwoColumnBaseState(rawBaseState, width) {
-    if !IsObject(rawBaseState)
-        return rawBaseState
-    if (width <= 0)
-        return rawBaseState
-
-    rightPadding := 44
-    minRightColWidth := 340
-    if (width < 980)
-        return rawBaseState
-
-    ys := []
-    leftMinX := 2147483647
-    leftMaxRight := -2147483648
-    topY := 2147483647
-    for _, st in rawBaseState {
-        if !IsObject(st)
-            continue
-        ys.Push(st.y)
-        if (st.y < topY)
-            topY := st.y
-        if (st.x < leftMinX)
-            leftMinX := st.x
-    }
-    if (ys.Length = 0 || topY = 2147483647 || leftMinX = 2147483647)
-        return rawBaseState
-
-    n := ys.Length
-    loop n - 1 {
-        i := A_Index
-        loop n - i {
-            j := i + A_Index
-            if (ys[j] < ys[i]) {
-                tmp := ys[i]
-                ys[i] := ys[j]
-                ys[j] := tmp
-            }
-        }
-    }
-
-    splitY := ys[Floor((n + 1) / 2)]
-    rightTopY := 2147483647
-
-    for hwnd, st in rawBaseState {
-        if !IsObject(st)
-            continue
-        if (st.y < splitY && (st.x + st.w) > leftMaxRight)
-            leftMaxRight := st.x + st.w
-        else if (st.y >= splitY && st.y < rightTopY)
-            rightTopY := st.y
-    }
-    if (leftMaxRight = -2147483648)
-        leftMaxRight := leftMinX + 520
-    if (rightTopY = 2147483647)
-        return rawBaseState
-
-    colGap := 24
-    col2X := leftMaxRight + colGap
-    if (col2X > (width - rightPadding - minRightColWidth))
-        col2X := width - rightPadding - minRightColWidth
-    if (col2X <= leftMinX)
-        return rawBaseState
-
-    shiftX := col2X - leftMinX
-    shiftY := rightTopY - topY
-    newBase := Map()
-
-    for hwnd, st in rawBaseState {
-        if !IsObject(st)
-            continue
-        nx := st.x
-        ny := st.y
-        nw := st.w
-        if (st.y >= splitY) {
-            nx := st.x + shiftX
-            ny := st.y - shiftY
-            rightLimit := width - rightPadding
-            if (nx + nw > rightLimit)
-                nw := Max(120, rightLimit - nx)
-        }
-        newBase[hwnd] := { x: nx, y: ny, w: nw, h: st.h }
-    }
-
-    return newBase
-}
-
-BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
-    items := []
-    if !IsObject(anchorCtrl)
-        return items
-
-    anchorY := 0
-    try ControlGetPos(, &anchorY, , , "ahk_id " anchorCtrl.Hwnd, "ahk_id " g.Hwnd)
-
-    excluded := Map()
-    if IsObject(excludeCtrls) {
-        for _, c in excludeCtrls {
-            if IsObject(c)
-                excluded[c.Hwnd] := true
-        }
-    }
-
-    hwndList := []
-    try hwndList := WinGetControlsHwnd("ahk_id " g.Hwnd)
-    catch
-        return items
-    for _, childHwnd in hwndList {
-        if excluded.Has(childHwnd)
-            continue
-
-        ctrl := GuiCtrlFromHwnd(childHwnd)
-        if !IsObject(ctrl)
-            continue
-
-        y := -2147483648
-        try ControlGetPos(, &y, , , "ahk_id " childHwnd, "ahk_id " g.Hwnd)
-        catch
-            continue
-        If (!IsSet(y))
-            Continue
-        If (y >= anchorY)
-            items.Push(ctrl)
-    }
-    return items
-}
-
-RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
-        return
-    if !HasProp(__MAIL_SETUP, "scrollRawState") || !IsObject(__MAIL_SETUP.scrollRawState)
-        return
-
-    if (width <= 0 || height <= 0) {
-        try WinGetClientPos(, , &width, &height, "ahk_id " __MAIL_SETUP.gui.Hwnd)
-    }
-    if (width <= 0 || height <= 0)
-        return
-
-    if !HasProp(__MAIL_SETUP, "lastLayoutWidth") || (__MAIL_SETUP.lastLayoutWidth != width) {
-        __MAIL_SETUP.scrollBaseState := BuildCombinedSetupTwoColumnBaseState(__MAIL_SETUP.scrollRawState, width)
-        __MAIL_SETUP.lastLayoutWidth := width
-    }
-    if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
-        return
-
-    margin := 16
-    btnH := 34
-    footerReserve := 0
-    minY := 2147483647
-    maxBottom := 0
-
-    for _, ctrl in __MAIL_SETUP.scrollItems {
-        if !IsObject(ctrl)
-            continue
-
-        state := __MAIL_SETUP.scrollBaseState.Has(ctrl.Hwnd) ? __MAIL_SETUP.scrollBaseState[ctrl.Hwnd] : 0
-        if !IsObject(state)
-            continue
-
-        if (state.y < minY)
-            minY := state.y
-        if (state.y + state.h > maxBottom)
-            maxBottom := state.y + state.h
-    }
-
-    if (minY = 2147483647)
-        return
-
-    __MAIL_SETUP.scrollTop := minY
-    __MAIL_SETUP.scrollBottom := maxBottom
-
-    footerTop := height - margin - btnH
-    if (footerTop < (minY + 120))
-        footerTop := minY + 120
-    viewBottom := footerTop - 12
-    if (viewBottom < (minY + 120))
-        viewBottom := minY + 120
-
-    maxScroll := maxBottom - viewBottom
-    if (maxScroll < 0)
-        maxScroll := 0
-
-    __MAIL_SETUP.scrollMax := maxScroll
-
-    if HasProp(__MAIL_SETUP, "sbScroll") && IsObject(__MAIL_SETUP.sbScroll) {
-        sbW := 16
-        sbX := width - margin - sbW
-        sbY := minY
-        sbH := viewBottom - minY
-        if (sbH < 120)
-            sbH := 120
-        try __MAIL_SETUP.sbScroll.Move(sbX, sbY, sbW, sbH)
-        try __MAIL_SETUP.sbScroll.Opt("Range0-" maxScroll)
-        __MAIL_SETUP.scrollSyncing := true
-        try __MAIL_SETUP.sbScroll.Value := __MAIL_SETUP.scrollOffset
-        __MAIL_SETUP.scrollSyncing := false
-        if (maxScroll > 0)
-            __MAIL_SETUP.sbScroll.Visible := true
-        else
-            __MAIL_SETUP.sbScroll.Visible := false
-    }
-
-    ApplyCombinedSetupScroll(__MAIL_SETUP.scrollOffset)
-}
-
-ApplyCombinedSetupScroll(offset := 0) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
-        return
-    if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
-        return
-
-    if (offset < 0)
-        offset := 0
-    if (offset > __MAIL_SETUP.scrollMax)
-        offset := __MAIL_SETUP.scrollMax
-
-    __MAIL_SETUP.scrollOffset := offset
-
-    if HasProp(__MAIL_SETUP, "sbScroll") && IsObject(__MAIL_SETUP.sbScroll) {
-        __MAIL_SETUP.scrollSyncing := true
-        try __MAIL_SETUP.sbScroll.Value := offset
-        __MAIL_SETUP.scrollSyncing := false
-    }
-
-    for _, ctrl in __MAIL_SETUP.scrollItems {
-        if !IsObject(ctrl)
-            continue
-        state := __MAIL_SETUP.scrollBaseState.Has(ctrl.Hwnd) ? __MAIL_SETUP.scrollBaseState[ctrl.Hwnd] : 0
-        if !IsObject(state)
-            continue
-        try ctrl.Move(state.x, state.y - offset, state.w, state.h)
-    }
-}
-
-OnCombinedSetupScrollBarChanged(ctrl, *) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP)
-        return
-    if HasProp(__MAIL_SETUP, "scrollSyncing") && __MAIL_SETUP.scrollSyncing
-        return
-    ApplyCombinedSetupScroll(ctrl.Value)
-}
-
-OnCombinedSetupMouseWheelV2(wParam, lParam, msg, hwnd) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollReady") || !__MAIL_SETUP.scrollReady
-        return 0
-    if !HasProp(__MAIL_SETUP, "gui") || !IsObject(__MAIL_SETUP.gui)
-        return 0
-
-    target := hwnd
-    while (target && target != __MAIL_SETUP.gui.Hwnd) {
-        try target := DllCall("GetParent", "ptr", target, "ptr")
-        catch {
-            target := 0
-        }
-    }
-    if (target != __MAIL_SETUP.gui.Hwnd)
-        return 0
-
-    delta := (wParam >> 16) & 0xFFFF
-    if (delta & 0x8000)
-        delta -= 0x10000
-    if (delta = 0)
-        return 0
-
-    step := GetKeyState("Shift", "P") ? 140 : 60
-    nextOffset := __MAIL_SETUP.scrollOffset + ((delta > 0) ? -step : step)
-    ApplyCombinedSetupScroll(nextOffset)
-    return 1
-}
-
-OnCombinedSetupMouseWheel(wParam, lParam, msg, hwnd) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollReady") || !__MAIL_SETUP.scrollReady
-        return 0
-    guiHwnd := __MAIL_SETUP.gui.Hwnd
-    targetRoot := hwnd
-    if (targetRoot != guiHwnd) {
-        try targetRoot := DllCall("GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
-    }
-    if (targetRoot != guiHwnd)
-        return 0
-    if (__MAIL_SETUP.scrollMax <= 0)
-        return 0
-
-    delta := (wParam >> 16) & 0xFFFF
-    if (delta & 0x8000)
-        delta -= 0x10000
-    if (delta = 0)
-        return 0
-
-    step := GetKeyState("Shift", "P") ? 140 : 60
-    nextOffset := __MAIL_SETUP.scrollOffset + ((delta > 0) ? -step : step)
-    ApplyCombinedSetupScroll(nextOffset)
-    return 1
 }
 
 OnCombinedBrowseOkww(*) {
@@ -4779,20 +4236,7 @@ PruneScreenRecordingFiles(keepCount := 5) {
     if (files.Length <= keepCount)
         return 0
 
-    ; AHK v2.0.19 的 Array 沒有 Sort 方法，這裡用簡單交換排序（新->舊）。
-    i := 1
-    while (i <= files.Length - 1) {
-        j := i + 1
-        while (j <= files.Length) {
-            if (files[i].modified < files[j].modified) {
-                tmp := files[i]
-                files[i] := files[j]
-                files[j] := tmp
-            }
-            j += 1
-        }
-        i += 1
-    }
+    files.Sort((a, b) => (a.modified = b.modified) ? 0 : ((a.modified > b.modified) ? -1 : 1))
 
     deleted := 0
     Loop (files.Length - keepCount) {
@@ -5579,7 +5023,6 @@ OpenSettingsFromTray(*) {
 
 OnCombinedSetupCancel(*) {
     global __MAIL_SETUP
-    OnMessage(0x020A, OnCombinedSetupMouseWheelV2, 0)
     __MAIL_SETUP.saved := false
     __MAIL_SETUP.done := true
     try __MAIL_SETUP.gui.Destroy()
@@ -5587,7 +5030,6 @@ OnCombinedSetupCancel(*) {
 
 OnCombinedSetupClose(*) {
     global __MAIL_SETUP
-    OnMessage(0x020A, OnCombinedSetupMouseWheelV2, 0)
     __MAIL_SETUP.saved := false
     __MAIL_SETUP.done := true
 }
