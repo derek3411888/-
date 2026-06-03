@@ -3618,8 +3618,14 @@ ShowGuiFitToScreen(g, margin := 24) {
         if (maxH < 520)
             maxH := 520
 
+        preferredW := 1080
+        preferredH := 760
         newW := (w > maxW) ? maxW : w
         newH := (h > maxH) ? maxH : h
+        if (newW < preferredW)
+            newW := Min(maxW, preferredW)
+        if (newH < preferredH)
+            newH := Min(maxH, preferredH)
 
         if (newW != w || newH != h) {
             newX := Floor((A_ScreenWidth - newW) / 2)
@@ -3682,7 +3688,9 @@ InitCombinedSetupScrolling(g, scrollItems) {
         return
 
     __MAIL_SETUP.scrollItems := scrollItems
-    __MAIL_SETUP.scrollBaseState := CaptureCombinedSetupScrollBaseState(g, scrollItems)
+    __MAIL_SETUP.scrollRawState := CaptureCombinedSetupScrollBaseState(g, scrollItems)
+    __MAIL_SETUP.scrollBaseState := __MAIL_SETUP.scrollRawState
+    __MAIL_SETUP.lastLayoutWidth := 0
     __MAIL_SETUP.scrollState := Map()
     __MAIL_SETUP.scrollOffset := 0
     __MAIL_SETUP.scrollMax := 0
@@ -3708,6 +3716,102 @@ CaptureCombinedSetupScrollBaseState(g, scrollItems) {
         }
     }
     return base
+}
+
+BuildCombinedSetupTwoColumnBaseState(rawBaseState, width) {
+    if !IsObject(rawBaseState)
+        return rawBaseState
+    if (width <= 0)
+        return rawBaseState
+
+    margin := 16
+    colGap := 16
+    colW := Floor((width - margin * 2 - colGap) / 2)
+    if (colW < 360)
+        return rawBaseState
+
+    entries := []
+    minY := 2147483647
+    for hwnd, st in rawBaseState {
+        if !IsObject(st)
+            continue
+        entries.Push({ hwnd: hwnd, x: st.x, y: st.y, w: st.w, h: st.h })
+        if (st.y < minY)
+            minY := st.y
+    }
+    if (entries.Length = 0)
+        return rawBaseState
+
+    ; AHK v2.0.x 無原生 Array.Sort，使用手寫排序保持相容。
+    n := entries.Length
+    loop n - 1 {
+        i := A_Index
+        loop n - i {
+            j := i + A_Index
+            a := entries[i]
+            b := entries[j]
+            if (b.y < a.y || (b.y = a.y && b.x < a.x)) {
+                tmp := entries[i]
+                entries[i] := entries[j]
+                entries[j] := tmp
+            }
+        }
+    }
+
+    rows := []
+    rowMergeDelta := 8
+    for _, item in entries {
+        if (rows.Length = 0 || Abs(item.y - rows[rows.Length].yRef) > rowMergeDelta) {
+            rows.Push({
+                yRef: item.y,
+                minX: item.x,
+                maxRight: item.x + item.w,
+                maxH: item.h,
+                items: [item]
+            })
+        } else {
+            row := rows[rows.Length]
+            row.items.Push(item)
+            if (item.x < row.minX)
+                row.minX := item.x
+            if (item.x + item.w > row.maxRight)
+                row.maxRight := item.x + item.w
+            if (item.h > row.maxH)
+                row.maxH := item.h
+            rows[rows.Length] := row
+        }
+    }
+
+    colX1 := margin
+    colX2 := margin + colW + colGap
+    colY1 := minY
+    colY2 := minY
+    rowGap := 6
+    newBase := Map()
+
+    for _, row in rows {
+        col := (colY1 <= colY2) ? 1 : 2
+        rowW := row.maxRight - row.minX
+        scale := 1.0
+        maxRowW := colW - 4
+        if (rowW > maxRowW && rowW > 0)
+            scale := maxRowW / rowW
+
+        targetX := (col = 1) ? colX1 : colX2
+        targetY := (col = 1) ? colY1 : colY2
+        for _, it in row.items {
+            nx := targetX + Round((it.x - row.minX) * scale)
+            nw := Max(30, Round(it.w * scale))
+            newBase[it.hwnd] := { x: nx, y: targetY, w: nw, h: it.h }
+        }
+
+        if (col = 1)
+            colY1 := targetY + row.maxH + rowGap
+        else
+            colY2 := targetY + row.maxH + rowGap
+    }
+
+    return newBase
 }
 
 BuildCombinedSetupScrollItems(g, anchorCtrl, excludeCtrls := "") {
@@ -3754,13 +3858,20 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP) || !HasProp(__MAIL_SETUP, "scrollItems") || !IsObject(__MAIL_SETUP.scrollItems)
         return
-    if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
+    if !HasProp(__MAIL_SETUP, "scrollRawState") || !IsObject(__MAIL_SETUP.scrollRawState)
         return
 
     if (width <= 0 || height <= 0) {
         try WinGetClientPos(, , &width, &height, "ahk_id " __MAIL_SETUP.gui.Hwnd)
     }
     if (width <= 0 || height <= 0)
+        return
+
+    if !HasProp(__MAIL_SETUP, "lastLayoutWidth") || (__MAIL_SETUP.lastLayoutWidth != width) {
+        __MAIL_SETUP.scrollBaseState := BuildCombinedSetupTwoColumnBaseState(__MAIL_SETUP.scrollRawState, width)
+        __MAIL_SETUP.lastLayoutWidth := width
+    }
+    if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
         return
 
     margin := 16
