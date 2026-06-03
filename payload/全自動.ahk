@@ -4236,7 +4236,20 @@ PruneScreenRecordingFiles(keepCount := 5) {
     if (files.Length <= keepCount)
         return 0
 
-    files.Sort((a, b) => (a.modified = b.modified) ? 0 : ((a.modified > b.modified) ? -1 : 1))
+    ; AHK v2.0.19 的 Array 沒有 Sort 方法，這裡用簡單交換排序（新->舊）。
+    i := 1
+    while (i <= files.Length - 1) {
+        j := i + 1
+        while (j <= files.Length) {
+            if (files[i].modified < files[j].modified) {
+                tmp := files[i]
+                files[i] := files[j]
+                files[j] := tmp
+            }
+            j += 1
+        }
+        i += 1
+    }
 
     deleted := 0
     Loop (files.Length - keepCount) {
