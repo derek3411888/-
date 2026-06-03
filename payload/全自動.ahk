@@ -3618,7 +3618,7 @@ ShowGuiFitToScreen(g, margin := 24) {
         if (maxH < 520)
             maxH := 520
 
-        preferredW := 1080
+        preferredW := 1200
         preferredH := 760
         newW := (w > maxW) ? maxW : w
         newH := (h > maxH) ? maxH : h
@@ -3868,7 +3868,7 @@ RefreshCombinedSetupScrollingLayout(width := 0, height := 0) {
         return
 
     if !HasProp(__MAIL_SETUP, "lastLayoutWidth") || (__MAIL_SETUP.lastLayoutWidth != width) {
-        __MAIL_SETUP.scrollBaseState := BuildCombinedSetupTwoColumnBaseState(__MAIL_SETUP.scrollRawState, width)
+        __MAIL_SETUP.scrollBaseState := __MAIL_SETUP.scrollRawState
         __MAIL_SETUP.lastLayoutWidth := width
     }
     if !HasProp(__MAIL_SETUP, "scrollBaseState") || !IsObject(__MAIL_SETUP.scrollBaseState)
