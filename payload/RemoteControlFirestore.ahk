@@ -425,7 +425,7 @@ RC_ScoreIniDecodedText(text) {
     score := 0
     for token in ["�", "锟", "嚙", "ｽ", "", "�"] {
         count := 0
-        StrReplace(text, token, "", &count)
+        StrReplace(text, token, "", , &count)
         score -= count * 25
     }
 
