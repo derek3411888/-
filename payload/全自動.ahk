@@ -58,7 +58,7 @@ global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
 global SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD := 1
 global SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL := "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 global __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED := false
-global SCREEN_RECORDING_STOP_MODE := "exit"
+global SCREEN_RECORDING_STOP_MODE := "reward_end"
 global SCREEN_RECORDING_STOP_TEMPLATE := "login"
 global SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := ""
 global SCREEN_RECORDING_STOP_LRMC_TASK := ""
@@ -1220,7 +1220,6 @@ try {
         if (!found) {
             WriteLog("聲骸合成已完成")
             ShowTip("✅ 聲骸合成已完成", 2000)
-            TryStopScreenRecordingByMode("synthesis_end")
             
             ; 檢查是否有重啟標記
             flagFile := dataDir "\synthesis_restart.flag"
@@ -1234,8 +1233,6 @@ try {
             break
         }
 
-        TryStopScreenRecordingByTemplate()
-        
         Sleep 2000  ; 每2秒檢查一次
     }
     
@@ -2716,7 +2713,6 @@ MonitorRewardAndShutdown() {
                 }
             }
         }
-        TryStopScreenRecordingByTemplate()
         ClickTemplateIfFound(A_ScriptDir "\登入.png")
         Sleep REWARD_CHECK_INTERVAL_MS
     }
@@ -2883,7 +2879,7 @@ ResetRestartTrackingOnFreshStart() {
 }
 
 HandleCycleFinishAndShutdown() {
-    TryStopScreenRecordingByMode("reward_end")
+    TryStopScreenRecording("收尾監測達標（保底停止）")
 
     if AdvanceServerScheduleForNextCycle() {
         global __NEXTSERVER_RESTART, __RESTART_IN_PROGRESS
@@ -2899,6 +2895,7 @@ HandleCycleFinishAndShutdown() {
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false) {
+    TryStopScreenRecording("手動/收尾關閉流程保底")
     UnmuteWutheringAudio("監測到結束，開始收尾")
     WriteLog("開始關閉收尾目標程式：鳴潮、LRMCAI、OKWW")
     ShowTip("🛑 正在關閉鳴潮/LRMCAI/OKWW...", 1500)
@@ -3133,7 +3130,7 @@ ReadCombinedConfigState() {
     state.screenRecordingOutputDir := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
     if (state.screenRecordingOutputDir = "")
         state.screenRecordingOutputDir := "recordings"
-    state.screenRecordingStopMode := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "exit"))
+    state.screenRecordingStopMode := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "reward_end"))
     state.screenRecordingStopTemplate := NormalizeScreenRecordingStopTemplate(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template", "login"))
     state.screenRecordingStopTemplateCustom := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template_custom", ""))
     state.screenRecordingStopLrmcTask := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_lrmc_task", ""), " `t`r`n")
@@ -3360,16 +3357,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnScreenRecordingOutputDir := g.AddButton("x+5 w70", "瀏覽...")
 
     g.AddText("xs y+8 w80", "停止時機")
-    ddScreenRecordingStopMode := g.AddDropDownList("x+5 w355", ["exit:腳本結束時", "synthesis_end:聲骸合成結束時", "reward_end:收尾監測達標時", "template:模板命中時", "lrmc_task_end:LRMCAI任務完成時"])
-    ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "synthesis_end") ? 2 : (state.screenRecordingStopMode = "reward_end") ? 3 : (state.screenRecordingStopMode = "template") ? 4 : (state.screenRecordingStopMode = "lrmc_task_end") ? 5 : 1)
-
-    g.AddText("xs y+8 w80", "模板來源")
-    ddScreenRecordingStopTemplate := g.AddDropDownList("x+5 w355", ["login:登入.png", "close:0510.png", "custom:自訂模板"])
-    ddScreenRecordingStopTemplate.Choose((state.screenRecordingStopTemplate = "close") ? 2 : (state.screenRecordingStopTemplate = "custom") ? 3 : 1)
-
-    g.AddText("xs y+8 w80", "自訂模板")
-    edScreenRecordingStopTemplateCustom := g.AddEdit("x+5 w280", state.screenRecordingStopTemplateCustom)
-    btnScreenRecordingStopTemplateCustom := g.AddButton("x+5 w70", "瀏覽...")
+    ddScreenRecordingStopMode := g.AddDropDownList("x+5 w355", ["reward_end:收尾監測達標時", "lrmc_task_end:LRMCAI任務完成時"])
+    ddScreenRecordingStopMode.Choose((state.screenRecordingStopMode = "lrmc_task_end") ? 2 : 1)
 
     g.AddText("xs y+8 w80", "任務名稱")
     edScreenRecordingStopLrmcTask := g.AddEdit("x+5 w355", state.screenRecordingStopLrmcTask)
@@ -3424,9 +3413,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edScreenRecordingOutputDir: edScreenRecordingOutputDir,
         btnScreenRecordingOutputDir: btnScreenRecordingOutputDir,
         ddScreenRecordingStopMode: ddScreenRecordingStopMode,
-        ddScreenRecordingStopTemplate: ddScreenRecordingStopTemplate,
-        edScreenRecordingStopTemplateCustom: edScreenRecordingStopTemplateCustom,
-        btnScreenRecordingStopTemplateCustom: btnScreenRecordingStopTemplateCustom,
         edScreenRecordingStopLrmcTask: edScreenRecordingStopLrmcTask,
         txtScreenRecordingHint: txtScreenRecordingHint,
         txtMailHint: txtMailHint
@@ -3448,10 +3434,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edScreenRecordingFps.OnEvent("Change", OnScreenRecordingSettingChanged)
     edScreenRecordingCrf.OnEvent("Change", OnScreenRecordingSettingChanged)
     ddScreenRecordingStopMode.OnEvent("Change", OnScreenRecordingSettingChanged)
-    ddScreenRecordingStopTemplate.OnEvent("Change", OnScreenRecordingSettingChanged)
     btnScreenRecordingFfmpegExe.OnEvent("Click", OnBrowseScreenRecordingFfmpegExe)
     btnScreenRecordingOutputDir.OnEvent("Click", OnBrowseScreenRecordingOutputDir)
-    btnScreenRecordingStopTemplateCustom.OnEvent("Click", OnBrowseScreenRecordingTemplate)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Size", OnCombinedSetupGuiSize)
@@ -3630,8 +3614,8 @@ OnCombinedSetupSave(*) {
     ffmpegArgsVal := Trim(st.edScreenRecordingFfmpegArgs.Value, " `t`r`n")
     outputDirVal := NormalizePath(st.edScreenRecordingOutputDir.Value)
     stopModeVal := NormalizeScreenRecordingStopMode(StrSplit(st.ddScreenRecordingStopMode.Text, ":")[1])
-    stopTemplateVal := NormalizeScreenRecordingStopTemplate(StrSplit(st.ddScreenRecordingStopTemplate.Text, ":")[1])
-    stopTemplateCustomVal := NormalizePath(st.edScreenRecordingStopTemplateCustom.Value)
+    stopTemplateVal := "login"
+    stopTemplateCustomVal := ""
     stopLrmcTaskVal := Trim(st.edScreenRecordingStopLrmcTask.Value, " `t`r`n")
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
@@ -3667,15 +3651,6 @@ OnCombinedSetupSave(*) {
         if !(portVal ~= "^\d+$") {
             MsgBox "smtp_port 必須是數字", "整合設定", "Iconx"
             return
-        }
-    }
-
-    if (screenRecordingEnabledVal && stopModeVal = "template") {
-        if (stopTemplateVal = "custom") {
-            if (stopTemplateCustomVal = "") {
-                MsgBox "錄影停止條件為模板命中時，自訂模板路徑不可空白", "整合設定", "Iconx"
-                return
-            }
         }
     }
 
@@ -3775,16 +3750,6 @@ OnScreenRecordingSettingChanged(*) {
     RefreshScreenRecordingInputsEnabled()
 }
 
-OnBrowseScreenRecordingTemplate(*) {
-    global __MAIL_SETUP
-    if !IsObject(__MAIL_SETUP)
-        return
-
-    p := FileSelect(, "", "選擇錄影停止模板", "圖片檔 (*.png;*.jpg;*.jpeg;*.bmp;*.webp)")
-    if (p)
-        __MAIL_SETUP.edScreenRecordingStopTemplateCustom.Value := p
-}
-
 OnBrowseScreenRecordingFfmpegExe(*) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP)
@@ -3842,30 +3807,19 @@ RefreshScreenRecordingInputsEnabled() {
         __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "進階模式：你可直接手動編輯完整 ffmpeg 參數。"
 
     modeKey := NormalizeScreenRecordingStopMode(StrSplit(__MAIL_SETUP.ddScreenRecordingStopMode.Text, ":")[1])
-    useTemplateMode := enabled && (modeKey = "template")
     useTaskMode := enabled && (modeKey = "lrmc_task_end")
-    __MAIL_SETUP.ddScreenRecordingStopTemplate.Enabled := useTemplateMode
-
-    templateKey := NormalizeScreenRecordingStopTemplate(StrSplit(__MAIL_SETUP.ddScreenRecordingStopTemplate.Text, ":")[1])
-    useCustom := useTemplateMode && (templateKey = "custom")
-    __MAIL_SETUP.edScreenRecordingStopTemplateCustom.Enabled := useCustom
-    __MAIL_SETUP.btnScreenRecordingStopTemplateCustom.Enabled := useCustom
     __MAIL_SETUP.edScreenRecordingStopLrmcTask.Enabled := useTaskMode
 
     if !enabled
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：螢幕錄影目前停用。"
     else if (engineKey = "ffmpeg")
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：目前僅使用 FFmpeg；找不到 ffmpeg 會嘗試自動下載。"
-    else if (modeKey = "template")
-        __MAIL_SETUP.txtScreenRecordingHint.Value := useCustom ? "提示：請提供自訂模板檔路徑。" : "提示：目前使用預設模板作為停止條件。"
     else if (modeKey = "lrmc_task_end")
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：任務包命中任務名稱且同段含『用時:..秒』可直接停錄；或偵測到『到達終點』後下一條任務包命中也會停錄（繁簡互通）。"
-    else if (modeKey = "synthesis_end")
-        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在聲骸合成結束時停止錄影。"
     else if (modeKey = "reward_end")
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在收尾監測達標時停止錄影。"
     else
-        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在腳本結束時停止錄影。"
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在收尾監測達標時停止錄影。"
 }
 
 OnServerSchedulePreview(*) {
@@ -4108,7 +4062,7 @@ LoadScreenRecordingEnabled() {
     SCREEN_RECORDING_OUTPUT_DIR := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
     if (SCREEN_RECORDING_OUTPUT_DIR = "")
         SCREEN_RECORDING_OUTPUT_DIR := "recordings"
-    SCREEN_RECORDING_STOP_MODE := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "exit"))
+    SCREEN_RECORDING_STOP_MODE := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "reward_end"))
     SCREEN_RECORDING_STOP_TEMPLATE := NormalizeScreenRecordingStopTemplate(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template", "login"))
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template_custom", ""))
     SCREEN_RECORDING_STOP_LRMC_TASK := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_lrmc_task", ""), " `t`r`n")
@@ -4316,9 +4270,9 @@ StopFfmpegScreenRecording(pid) {
 
 NormalizeScreenRecordingStopMode(val) {
     s := StrLower(Trim(val, " `t`r`n"))
-    if (s = "exit" || s = "synthesis_end" || s = "reward_end" || s = "template" || s = "lrmc_task_end")
+    if (s = "reward_end" || s = "lrmc_task_end")
         return s
-    return "exit"
+    return "reward_end"
 }
 
 NormalizeScreenRecordingStopTemplate(val) {
@@ -4352,8 +4306,6 @@ TryStopScreenRecordingByMode(stage) {
 
     if !SCREEN_RECORDING_ENABLED
         return false
-    if (SCREEN_RECORDING_STOP_MODE = "synthesis_end" && stage = "synthesis_end")
-        return TryStopScreenRecording("聲骸合成結束")
     if (SCREEN_RECORDING_STOP_MODE = "reward_end" && stage = "reward_end")
         return TryStopScreenRecording("收尾監測達標")
     return false
@@ -4455,16 +4407,25 @@ TryStopScreenRecordingByLrmcTaskLine(line) {
         return false
     }
 
-    taskName := ParseLrmcTaskPackageName(line)
-    if (taskName = "")
-        return false
-
     target := NormalizeZhTaskText(SCREEN_RECORDING_STOP_LRMC_TASK)
-    current := NormalizeZhTaskText(taskName)
     if (target = "")
         return false
 
-    isMatched := (InStr(current, target) || InStr(target, current))
+    lineNorm := NormalizeZhTaskText(line)
+    taskName := ParseLrmcTaskPackageName(line)
+    if (taskName = "") {
+        ; 後備判定：任務包行同段帶有用時，且整行包含目標任務名。
+        if (IsLrmcTaskPackageDurationLine(line) && InStr(lineNorm, target)) {
+            __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
+            WriteLog("錄影任務停止命中（任務包整行比對）: " SCREEN_RECORDING_STOP_LRMC_TASK)
+            return TryStopScreenRecording("LRMCAI任務包完成")
+        }
+        return false
+    }
+
+    current := NormalizeZhTaskText(taskName)
+
+    isMatched := (InStr(current, target) || InStr(target, current) || InStr(lineNorm, target) || InStr(target, lineNorm))
     if !isMatched {
         if __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING {
             __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
