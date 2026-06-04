@@ -52,9 +52,9 @@ global SCREEN_RECORDING_ENABLED := 0
 global SCREEN_RECORDING_SECTION := "screen_recording"
 global SCREEN_RECORDING_ENGINE := "ffmpeg"
 global SCREEN_RECORDING_FFMPEG_EXE := ""
-global SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+global SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
 global SCREEN_RECORDING_OUTPUT_DIR := "recordings"
-global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 1
+global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
 global SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD := 1
 global SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL := "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 global __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED := false
@@ -513,7 +513,7 @@ BuildScreenRecordingFfmpegArgsBySimple(qualityPreset, fpsVal, crfVal) {
     else if (q = "custom")
         crf := ToIntRange(crfVal, 23, 0, 51)
 
-    return "-y -f gdigrab -framerate " fps " -i desktop -c:v libx264 -preset veryfast -crf " crf " -pix_fmt yuv420p"
+    return "-y -f gdigrab -framerate " fps " -i desktop -c:v libx264 -preset veryfast -crf " crf " -pix_fmt yuv420p -f matroska"
 }
 
 GetScreenRecordingQualityHint(qualityPreset, crfText := "") {
@@ -1057,7 +1057,7 @@ noWindowSinceTick := 0
 if !isRestart
     TryStartScreenRecording("主流程開始")
 else
-    WriteLog("重啟模式：保留既有錄影，不重新觸發 Alt+F9")
+    WriteLog("重啟模式：保留既有錄影，不重新觸發錄影啟動")
 EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
 
@@ -3118,13 +3118,13 @@ ReadCombinedConfigState() {
     state.sendEnabled := ParseBool01(IniReadSafe(CFG_FILE, MAIL_SECTION, "send_enabled", "1"), 1)
     state.screenRecordingEnabled := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
     state.screenRecordingEngine := NormalizeScreenRecordingEngine(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "engine", "ffmpeg"))
-    state.screenRecordingAllowHotkeyFallback := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "allow_hotkey_fallback", "1"), 1)
+    state.screenRecordingAllowHotkeyFallback := 0
     state.screenRecordingFfmpegExe := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_exe", ResolveDefaultScreenRecordingFfmpegExe()))
     if (state.screenRecordingFfmpegExe = "")
         state.screenRecordingFfmpegExe := ResolveDefaultScreenRecordingFfmpegExe()
-    state.screenRecordingFfmpegArgs := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"), " `t`r`n")
+    state.screenRecordingFfmpegArgs := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"), " `t`r`n")
     if (state.screenRecordingFfmpegArgs = "")
-        state.screenRecordingFfmpegArgs := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+        state.screenRecordingFfmpegArgs := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
     parsedSimple := ParseScreenRecordingSimpleSettingsFromArgs(state.screenRecordingFfmpegArgs)
     state.screenRecordingUseSimpleParams := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "use_simple_params", "1"), 1)
     state.screenRecordingQualityPreset := NormalizeScreenRecordingQualityPreset(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "quality_preset", parsedSimple.quality))
@@ -3147,7 +3147,7 @@ ReadCombinedConfigState() {
     SCREEN_RECORDING_FFMPEG_EXE := state.screenRecordingFfmpegExe
     SCREEN_RECORDING_FFMPEG_ARGS := state.screenRecordingFfmpegArgs
     SCREEN_RECORDING_OUTPUT_DIR := state.screenRecordingOutputDir
-    SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := state.screenRecordingAllowHotkeyFallback
+    SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
     SCREEN_RECORDING_STOP_MODE := state.screenRecordingStopMode
     SCREEN_RECORDING_STOP_TEMPLATE := state.screenRecordingStopTemplate
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := state.screenRecordingStopTemplateCustom
@@ -3326,11 +3326,11 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
 
     g.AddText("xs y+10 w80", "錄影引擎")
-    ddScreenRecordingEngine := g.AddDropDownList("x+5 w355", ["ffmpeg:跨電腦建議", "hotkey:Alt+F9"])
-    ddScreenRecordingEngine.Choose((state.screenRecordingEngine = "hotkey") ? 2 : 1)
+    ddScreenRecordingEngine := g.AddDropDownList("x+5 w355", ["ffmpeg:跨電腦建議"])
+    ddScreenRecordingEngine.Choose(1)
 
-    cbScreenRecordingAllowFallback := g.AddCheckbox("xs y+8 w440", "FFmpeg 失敗時退回 Alt+F9")
-    cbScreenRecordingAllowFallback.Value := state.screenRecordingAllowHotkeyFallback ? 1 : 0
+    cbScreenRecordingAllowFallback := g.AddCheckbox("xs y+8 w440", "已移除 Alt+F9 錄影回退（僅使用 FFmpeg）")
+    cbScreenRecordingAllowFallback.Value := 0
 
     g.AddText("xs y+10 w80", "ffmpeg.exe")
     edScreenRecordingFfmpegExe := g.AddEdit("x+5 w280", state.screenRecordingFfmpegExe)
@@ -3618,8 +3618,8 @@ OnCombinedSetupSave(*) {
     sslVal := st.ddSsl.Text
     sendEnabledVal := st.cbSendEnabled.Value ? 1 : 0
     screenRecordingEnabledVal := st.cbScreenRecordingEnabled.Value ? 1 : 0
-    recordingEngineVal := NormalizeScreenRecordingEngine(StrSplit(st.ddScreenRecordingEngine.Text, ":")[1])
-    allowFallbackVal := st.cbScreenRecordingAllowFallback.Value ? 1 : 0
+    recordingEngineVal := "ffmpeg"
+    allowFallbackVal := 0
     useSimpleParamsVal := st.cbScreenRecordingUseSimpleParams.Value ? 1 : 0
     qualityPresetVal := NormalizeScreenRecordingQualityPreset(StrSplit(st.ddScreenRecordingQualityPreset.Text, ":")[1])
     fpsText := Trim(st.edScreenRecordingFps.Value, " `t`r`n")
@@ -3743,7 +3743,7 @@ OnCombinedSetupSave(*) {
     IniWrite fpsVal, st.cfgPath, "screen_recording", "fps"
     IniWrite crfVal, st.cfgPath, "screen_recording", "crf"
     IniWrite (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal), st.cfgPath, "screen_recording", "ffmpeg_exe"
-    IniWrite (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p" : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
+    IniWrite (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
     IniWrite (outputDirVal = "" ? "recordings" : outputDirVal), st.cfgPath, "screen_recording", "output_dir"
     IniWrite stopModeVal, st.cfgPath, "screen_recording", "stop_mode"
     IniWrite stopTemplateVal, st.cfgPath, "screen_recording", "stop_template"
@@ -3753,9 +3753,9 @@ OnCombinedSetupSave(*) {
     MAIL_NOTIFY_ENABLED := sendEnabledVal
     SCREEN_RECORDING_ENABLED := screenRecordingEnabledVal
     SCREEN_RECORDING_ENGINE := recordingEngineVal
-    SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := allowFallbackVal
+    SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
     SCREEN_RECORDING_FFMPEG_EXE := (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal)
-    SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p" : ffmpegArgsVal)
+    SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal)
     SCREEN_RECORDING_OUTPUT_DIR := (outputDirVal = "" ? "recordings" : outputDirVal)
     SCREEN_RECORDING_STOP_MODE := stopModeVal
     SCREEN_RECORDING_STOP_TEMPLATE := stopTemplateVal
@@ -3819,7 +3819,7 @@ RefreshScreenRecordingInputsEnabled() {
     useFfmpeg := enabled && (engineKey = "ffmpeg")
     useSimple := useFfmpeg && (__MAIL_SETUP.cbScreenRecordingUseSimpleParams.Value ? true : false)
     __MAIL_SETUP.ddScreenRecordingEngine.Enabled := enabled
-    __MAIL_SETUP.cbScreenRecordingAllowFallback.Enabled := useFfmpeg
+    __MAIL_SETUP.cbScreenRecordingAllowFallback.Enabled := false
     __MAIL_SETUP.edScreenRecordingFfmpegExe.Enabled := useFfmpeg
     __MAIL_SETUP.btnScreenRecordingFfmpegExe.Enabled := useFfmpeg
     __MAIL_SETUP.cbScreenRecordingUseSimpleParams.Enabled := useFfmpeg
@@ -3855,11 +3855,11 @@ RefreshScreenRecordingInputsEnabled() {
     if !enabled
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：螢幕錄影目前停用。"
     else if (engineKey = "ffmpeg")
-        __MAIL_SETUP.txtScreenRecordingHint.Value := __MAIL_SETUP.cbScreenRecordingAllowFallback.Value ? "提示：目前使用 FFmpeg；找不到 ffmpeg 會嘗試自動下載，失敗時可退回 Alt+F9。" : "提示：目前使用 FFmpeg；找不到 ffmpeg 會嘗試自動下載，失敗時不退回 Alt+F9。"
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：目前僅使用 FFmpeg；找不到 ffmpeg 會嘗試自動下載。"
     else if (modeKey = "template")
         __MAIL_SETUP.txtScreenRecordingHint.Value := useCustom ? "提示：請提供自訂模板檔路徑。" : "提示：目前使用預設模板作為停止條件。"
     else if (modeKey = "lrmc_task_end")
-        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：偵測到『到達終點』後，下一條任務包命中任務名稱就停止錄影（繁簡互通）。"
+        __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：任務包命中任務名稱且同段含『用時:..秒』可直接停錄；或偵測到『到達終點』後下一條任務包命中也會停錄（繁簡互通）。"
     else if (modeKey = "synthesis_end")
         __MAIL_SETUP.txtScreenRecordingHint.Value := "提示：會在聲骸合成結束時停止錄影。"
     else if (modeKey = "reward_end")
@@ -4098,13 +4098,13 @@ LoadScreenRecordingEnabled() {
     global __SCREEN_RECORDING_TEMPLATE_WARNED, __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
     SCREEN_RECORDING_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
     SCREEN_RECORDING_ENGINE := NormalizeScreenRecordingEngine(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "engine", "ffmpeg"))
-    SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "allow_hotkey_fallback", "1"), 1)
+    SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
     SCREEN_RECORDING_FFMPEG_EXE := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_exe", ResolveDefaultScreenRecordingFfmpegExe()))
     if (SCREEN_RECORDING_FFMPEG_EXE = "")
         SCREEN_RECORDING_FFMPEG_EXE := ResolveDefaultScreenRecordingFfmpegExe()
-    SCREEN_RECORDING_FFMPEG_ARGS := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"), " `t`r`n")
+    SCREEN_RECORDING_FFMPEG_ARGS := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"), " `t`r`n")
     if (SCREEN_RECORDING_FFMPEG_ARGS = "")
-        SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+        SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
     SCREEN_RECORDING_OUTPUT_DIR := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
     if (SCREEN_RECORDING_OUTPUT_DIR = "")
         SCREEN_RECORDING_OUTPUT_DIR := "recordings"
@@ -4122,7 +4122,7 @@ LoadScreenRecordingEnabled() {
 }
 
 TryStartScreenRecording(reason := "") {
-    global SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, __SCREEN_RECORDING_ACTIVE
+    global SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_ENGINE, __SCREEN_RECORDING_ACTIVE
     global __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
 
     if !SCREEN_RECORDING_ENABLED {
@@ -4132,92 +4132,57 @@ TryStartScreenRecording(reason := "") {
     if __SCREEN_RECORDING_ACTIVE
         return true
 
-    if (SCREEN_RECORDING_ENGINE = "ffmpeg") {
-        if StartFfmpegScreenRecording(&outPath, &pid) {
-            __SCREEN_RECORDING_ACTIVE := true
-            __SCREEN_RECORDING_PID := pid
-            __SCREEN_RECORDING_OUTPUT_PATH := outPath
-            msg := "已啟動 FFmpeg 螢幕錄影 PID=" pid " 檔案=" outPath
-            if (reason != "")
-                msg .= "（" reason "）"
-            WriteLog(msg)
-            return true
-        }
-
-        if SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK
-            WriteLog("FFmpeg 錄影啟動失敗，回退 Alt+F9", "WARN")
-        else {
-            WriteLog("FFmpeg 錄影啟動失敗，且已設定不回退 Alt+F9", "WARN")
-            return false
-        }
+    if (SCREEN_RECORDING_ENGINE != "ffmpeg") {
+        WriteLog("錄影引擎設定無效（僅支援 ffmpeg）", "WARN")
+        return false
     }
 
-    try {
-        Send "!{F9}"
+    if StartFfmpegScreenRecording(&outPath, &pid) {
         __SCREEN_RECORDING_ACTIVE := true
-        __SCREEN_RECORDING_PID := 0
-        __SCREEN_RECORDING_OUTPUT_PATH := ""
-        msg := "已送出 Alt+F9 開始螢幕錄影"
+        __SCREEN_RECORDING_PID := pid
+        __SCREEN_RECORDING_OUTPUT_PATH := outPath
+        msg := "已啟動 FFmpeg 螢幕錄影 PID=" pid " 檔案=" outPath
         if (reason != "")
             msg .= "（" reason "）"
         WriteLog(msg)
         return true
-    } catch as e {
-        WriteLog("開始螢幕錄影失敗: " e.Message, "WARN")
-        return false
     }
+
+    WriteLog("FFmpeg 錄影啟動失敗（已移除 Alt+F9 錄影功能）", "WARN")
+    return false
 }
 
 TryStopScreenRecording(reason := "") {
-    global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
 
     if !__SCREEN_RECORDING_ACTIVE
         return false
 
-    if (__SCREEN_RECORDING_PID > 0) {
-        pid := __SCREEN_RECORDING_PID
-        if StopFfmpegScreenRecording(pid) {
-            __SCREEN_RECORDING_ACTIVE := false
-            __SCREEN_RECORDING_PID := 0
-            msg := "已停止 FFmpeg 螢幕錄影 PID=" pid
-            if (__SCREEN_RECORDING_OUTPUT_PATH != "")
-                msg .= " 檔案=" __SCREEN_RECORDING_OUTPUT_PATH
-            if (reason != "")
-                msg .= "（" reason "）"
-            WriteLog(msg)
-            PruneScreenRecordingFiles(5)
-            __SCREEN_RECORDING_OUTPUT_PATH := ""
-            return true
-        }
-
-        if SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK
-            WriteLog("停止 FFmpeg 錄影失敗，嘗試 Alt+F9 備援", "WARN")
-        else {
-            WriteLog("停止 FFmpeg 錄影失敗，且已設定不回退 Alt+F9", "WARN")
-            return false
-        }
+    if (__SCREEN_RECORDING_PID <= 0) {
+        WriteLog("停止錄影失敗：未持有有效 FFmpeg PID", "WARN")
+        return false
     }
 
-    try {
-        Send "!{F9}"
+    pid := __SCREEN_RECORDING_PID
+    if StopFfmpegScreenRecording(pid) {
         __SCREEN_RECORDING_ACTIVE := false
         __SCREEN_RECORDING_PID := 0
-        __SCREEN_RECORDING_OUTPUT_PATH := ""
-        msg := "已送出 Alt+F9 停止螢幕錄影"
+        msg := "已停止 FFmpeg 螢幕錄影 PID=" pid
+        if (__SCREEN_RECORDING_OUTPUT_PATH != "")
+            msg .= " 檔案=" __SCREEN_RECORDING_OUTPUT_PATH
         if (reason != "")
             msg .= "（" reason "）"
         WriteLog(msg)
+        PruneScreenRecordingFiles(5)
+        __SCREEN_RECORDING_OUTPUT_PATH := ""
         return true
-    } catch as e {
-        WriteLog("停止螢幕錄影失敗: " e.Message, "WARN")
-        return false
     }
+
+    WriteLog("停止 FFmpeg 錄影失敗（已移除 Alt+F9 錄影功能）", "WARN")
+    return false
 }
 
 NormalizeScreenRecordingEngine(val) {
-    s := StrLower(Trim(val, " `t`r`n"))
-    if (s = "hotkey")
-        return "hotkey"
     return "ffmpeg"
 }
 
@@ -4241,7 +4206,7 @@ PruneScreenRecordingFiles(keepCount := 5) {
         return 0
 
     files := []
-    Loop Files, outDir "\\*.mp4", "F" {
+    Loop Files, outDir "\\*.mkv", "F" {
         files.Push({ path: A_LoopFileFullPath, modified: A_LoopFileTimeModified })
     }
 
@@ -4293,10 +4258,10 @@ StartFfmpegScreenRecording(&outPath, &pid) {
     try DirCreate(outDir)
 
     ts := FormatTime(A_Now, "yyyyMMdd_HHmmss")
-    outPath := outDir "\\recording_" ts ".mp4"
+    outPath := outDir "\\recording_" ts ".mkv"
     args := Trim(SCREEN_RECORDING_FFMPEG_ARGS, " `t`r`n")
     if (args = "")
-        args := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+        args := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
 
     cmd := '"' ffmpegExe '" ' args ' "' outPath '"'
     try {
@@ -4318,7 +4283,7 @@ StopFfmpegScreenRecording(pid) {
     if (pid <= 0)
         return false
 
-    ; 先嘗試溫和關閉，盡量讓 ffmpeg 寫完檔案尾端索引（避免 mp4 損毀）
+    ; 先嘗試溫和關閉，盡量讓 ffmpeg 正常收尾（mkv 可降低強制中止時損壞風險）
     try {
         hwnd := WinExist("ahk_pid " pid)
         if hwnd
@@ -4457,6 +4422,17 @@ ParseLrmcTaskPackageName(line) {
     return Trim(last, " `t`r`n")
 }
 
+IsLrmcTaskPackageDurationLine(line) {
+    t := Trim(line, " `t`r`n")
+    if (t = "")
+        return false
+    if !(InStr(t, "任务包:") || InStr(t, "任務包:"))
+        return false
+
+    ; 例：用时:12秒 / 用時：12.5秒
+    return RegExMatch(t, "(用时|用時)\s*[:：]\s*\d+(\.\d+)?\s*秒") ? true : false
+}
+
 TryStopScreenRecordingByLrmcTaskLine(line) {
     global SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_LRMC_TASK, __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING
 
@@ -4483,23 +4459,33 @@ TryStopScreenRecordingByLrmcTaskLine(line) {
     if (taskName = "")
         return false
 
-    if !__SCREEN_RECORDING_LRMC_ARRIVAL_PENDING
-        return false
-
     target := NormalizeZhTaskText(SCREEN_RECORDING_STOP_LRMC_TASK)
     current := NormalizeZhTaskText(taskName)
-    __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
-
     if (target = "")
         return false
 
-    if (InStr(current, target) || InStr(target, current)) {
-        WriteLog("錄影任務停止命中：" taskName "（設定=" SCREEN_RECORDING_STOP_LRMC_TASK "）")
-        return TryStopScreenRecording("LRMCAI任務完成")
+    isMatched := (InStr(current, target) || InStr(target, current))
+    if !isMatched {
+        if __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING {
+            __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
+            WriteLog("錄影任務停止未命中：" taskName "（設定=" SCREEN_RECORDING_STOP_LRMC_TASK "）", "INFO")
+        }
+        return false
     }
 
-    WriteLog("錄影任務停止未命中：" taskName "（設定=" SCREEN_RECORDING_STOP_LRMC_TASK "）", "INFO")
-    return false
+    ; 新增條件：任務包行同段帶有「用時：..秒」可直接視為任務包完成。
+    if IsLrmcTaskPackageDurationLine(line) {
+        __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
+        WriteLog("錄影任務停止命中（任務包用時）：" taskName "（設定=" SCREEN_RECORDING_STOP_LRMC_TASK "）")
+        return TryStopScreenRecording("LRMCAI任務包完成")
+    }
+
+    if !__SCREEN_RECORDING_LRMC_ARRIVAL_PENDING
+        return false
+
+    __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
+    WriteLog("錄影任務停止命中：" taskName "（設定=" SCREEN_RECORDING_STOP_LRMC_TASK "）")
+    return TryStopScreenRecording("LRMCAI任務完成")
 }
 
 TryStopScreenRecordingByTemplate() {

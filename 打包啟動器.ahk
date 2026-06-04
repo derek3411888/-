@@ -84,6 +84,7 @@ CleanupLauncherReplaceBatFiles(baseDir) {
     deleted := 0
     Loop Files, baseDir "\launcher_replace_*.bat", "F" {
         try {
+            try FileSetAttrib("-R", A_LoopFileFullPath)
             FileDelete(A_LoopFileFullPath)
             deleted += 1
         }
@@ -629,9 +630,10 @@ REMOTE_VER_FILE := DATA_DIR "\payload_remote_version.txt"
 
 WriteLog("工作目錄設定為：" WORK_DIR)
 
-oldReplaceBatCount := CleanupLauncherReplaceBatFiles(WORK_DIR)
+oldReplaceBatCount := CleanupLauncherReplaceBatFiles(A_ScriptDir)
+
 if (oldReplaceBatCount > 0)
-    WriteLog("已清理工作目錄殘留的 launcher_replace 批次檔: " oldReplaceBatCount " 個")
+    WriteLog("已清理程式所在資料夾殘留的 launcher_replace 批次檔: " oldReplaceBatCount " 個")
 
 ; =========================
 ; Ahk2Exe 打包指令（編譯時加入）
