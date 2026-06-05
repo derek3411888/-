@@ -586,10 +586,10 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, TOOLTIP_SLOT
     try ToolTip(, , , TOOLTIP_SLOT)
     try RC_Shutdown()
-    if (!__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
-        TryStopScreenRecording("腳本結束保底")
-    else
+    if __RESTART_IN_PROGRESS
         WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
+    else
+        TryStopScreenRecording("腳本結束保底")
     UnmuteWutheringAudio("腳本結束保底")
 }
 
@@ -2895,7 +2895,11 @@ HandleCycleFinishAndShutdown() {
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false) {
-    TryStopScreenRecording("手動/收尾關閉流程保底")
+    global __RESTART_IN_PROGRESS
+    if (__RESTART_IN_PROGRESS || relaunchForNextServer)
+        WriteLog("重啟模式：關閉流程略過停止錄影", "WARN")
+    else
+        TryStopScreenRecording("手動/收尾關閉流程保底")
     UnmuteWutheringAudio("監測到結束，開始收尾")
     WriteLog("開始關閉收尾目標程式：鳴潮、LRMCAI、OKWW")
     ShowTip("🛑 正在關閉鳴潮/LRMCAI/OKWW...", 1500)
