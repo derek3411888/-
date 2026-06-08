@@ -55,6 +55,8 @@ global SCREEN_RECORDING_FFMPEG_EXE := ""
 global SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
 global SCREEN_RECORDING_OUTPUT_DIR := "recordings"
 global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
+global SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := 1
+global SCREEN_RECORDING_OWNER_MARKER := "WUTHERING_AUTO_RECORDER_V1"
 global SCREEN_RECORDING_FFMPEG_AUTO_DOWNLOAD := 1
 global SCREEN_RECORDING_FFMPEG_DOWNLOAD_URL := "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 global __SCREEN_RECORDING_FFMPEG_BOOTSTRAP_ATTEMPTED := false
@@ -3098,7 +3100,7 @@ EnsureAllConfigAtStartup(force := false, reason := "") {
 
 ReadCombinedConfigState() {
     global CFG_FILE, MAIL_NOTIFY_ENABLED, MAIL_SECTION, REWARD_LOG_FILE, SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_SECTION
-    global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK
+    global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
     global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, SCREEN_RECORDING_STOP_LRMC_TASK
 
     state := {}
@@ -3126,6 +3128,7 @@ ReadCombinedConfigState() {
     state.screenRecordingFfmpegArgs := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"), " `t`r`n")
     if (state.screenRecordingFfmpegArgs = "")
         state.screenRecordingFfmpegArgs := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+    state.screenRecordingAutoStopExternalFfmpeg := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_stop_external_ffmpeg", "1"), 1)
     parsedSimple := ParseScreenRecordingSimpleSettingsFromArgs(state.screenRecordingFfmpegArgs)
     state.screenRecordingUseSimpleParams := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "use_simple_params", "1"), 1)
     state.screenRecordingQualityPreset := NormalizeScreenRecordingQualityPreset(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "quality_preset", parsedSimple.quality))
@@ -3149,6 +3152,7 @@ ReadCombinedConfigState() {
     SCREEN_RECORDING_FFMPEG_ARGS := state.screenRecordingFfmpegArgs
     SCREEN_RECORDING_OUTPUT_DIR := state.screenRecordingOutputDir
     SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
+    SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := state.screenRecordingAutoStopExternalFfmpeg
     SCREEN_RECORDING_STOP_MODE := state.screenRecordingStopMode
     SCREEN_RECORDING_STOP_TEMPLATE := state.screenRecordingStopTemplate
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := state.screenRecordingStopTemplateCustom
@@ -3239,6 +3243,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "screen_recording.crf: " state.screenRecordingCrf "`r`n"
     summary .= "screen_recording.ffmpeg_exe: " state.screenRecordingFfmpegExe "`r`n"
     summary .= "screen_recording.ffmpeg_args: " state.screenRecordingFfmpegArgs "`r`n"
+    summary .= "screen_recording.auto_stop_external_ffmpeg: " state.screenRecordingAutoStopExternalFfmpeg "`r`n"
     summary .= "screen_recording.output_dir: " state.screenRecordingOutputDir "`r`n"
     summary .= "screen_recording.stop_mode: " state.screenRecordingStopMode "`r`n"
     summary .= "screen_recording.stop_template: " state.screenRecordingStopTemplate "`r`n"
@@ -3340,6 +3345,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbScreenRecordingUseSimpleParams := g.AddCheckbox("xs y+8 w440", "使用簡易錄影參數（建議）")
     cbScreenRecordingUseSimpleParams.Value := state.screenRecordingUseSimpleParams ? 1 : 0
 
+    cbScreenRecordingAutoStopExternalFfmpeg := g.AddCheckbox("xs y+8 w440", "自動停止外部 FFmpeg 錄影並改由本程式接管")
+    cbScreenRecordingAutoStopExternalFfmpeg.Value := state.screenRecordingAutoStopExternalFfmpeg ? 1 : 0
+
     g.AddText("xs y+8 w80", "畫質等級")
     ddScreenRecordingQualityPreset := g.AddDropDownList("x+5 w355", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
     ddScreenRecordingQualityPreset.Choose((state.screenRecordingQualityPreset = "high") ? 2 : (state.screenRecordingQualityPreset = "low") ? 3 : (state.screenRecordingQualityPreset = "custom") ? 4 : 1)
@@ -3408,6 +3416,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edScreenRecordingFfmpegExe: edScreenRecordingFfmpegExe,
         btnScreenRecordingFfmpegExe: btnScreenRecordingFfmpegExe,
         cbScreenRecordingUseSimpleParams: cbScreenRecordingUseSimpleParams,
+        cbScreenRecordingAutoStopExternalFfmpeg: cbScreenRecordingAutoStopExternalFfmpeg,
         ddScreenRecordingQualityPreset: ddScreenRecordingQualityPreset,
         edScreenRecordingFps: edScreenRecordingFps,
         edScreenRecordingCrf: edScreenRecordingCrf,
@@ -3434,6 +3443,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     ddScreenRecordingEngine.OnEvent("Change", OnScreenRecordingSettingChanged)
     cbScreenRecordingAllowFallback.OnEvent("Click", OnScreenRecordingSettingChanged)
     cbScreenRecordingUseSimpleParams.OnEvent("Click", OnScreenRecordingSettingChanged)
+    cbScreenRecordingAutoStopExternalFfmpeg.OnEvent("Click", OnScreenRecordingSettingChanged)
     ddScreenRecordingQualityPreset.OnEvent("Change", OnScreenRecordingSettingChanged)
     edScreenRecordingFps.OnEvent("Change", OnScreenRecordingSettingChanged)
     edScreenRecordingCrf.OnEvent("Change", OnScreenRecordingSettingChanged)
@@ -3583,7 +3593,7 @@ RefreshFallbackLogHint() {
 
 OnCombinedSetupSave(*) {
     global __MAIL_SETUP, MAIL_NOTIFY_ENABLED, SCREEN_RECORDING_ENABLED
-    global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK
+    global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
     global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, SCREEN_RECORDING_STOP_LRMC_TASK
     st := __MAIL_SETUP
 
@@ -3609,6 +3619,7 @@ OnCombinedSetupSave(*) {
     recordingEngineVal := "ffmpeg"
     allowFallbackVal := 0
     useSimpleParamsVal := st.cbScreenRecordingUseSimpleParams.Value ? 1 : 0
+    autoStopExternalFfmpegVal := st.cbScreenRecordingAutoStopExternalFfmpeg.Value ? 1 : 0
     qualityPresetVal := NormalizeScreenRecordingQualityPreset(StrSplit(st.ddScreenRecordingQualityPreset.Text, ":")[1])
     fpsText := Trim(st.edScreenRecordingFps.Value, " `t`r`n")
     crfText := Trim(st.edScreenRecordingCrf.Value, " `t`r`n")
@@ -3718,6 +3729,7 @@ OnCombinedSetupSave(*) {
     IniWrite recordingEngineVal, st.cfgPath, "screen_recording", "engine"
     IniWrite allowFallbackVal, st.cfgPath, "screen_recording", "allow_hotkey_fallback"
     IniWrite useSimpleParamsVal, st.cfgPath, "screen_recording", "use_simple_params"
+    IniWrite autoStopExternalFfmpegVal, st.cfgPath, "screen_recording", "auto_stop_external_ffmpeg"
     IniWrite qualityPresetVal, st.cfgPath, "screen_recording", "quality_preset"
     IniWrite fpsVal, st.cfgPath, "screen_recording", "fps"
     IniWrite crfVal, st.cfgPath, "screen_recording", "crf"
@@ -3736,6 +3748,7 @@ OnCombinedSetupSave(*) {
     SCREEN_RECORDING_FFMPEG_EXE := (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal)
     SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal)
     SCREEN_RECORDING_OUTPUT_DIR := (outputDirVal = "" ? "recordings" : outputDirVal)
+    SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := autoStopExternalFfmpegVal
     SCREEN_RECORDING_STOP_MODE := stopModeVal
     SCREEN_RECORDING_STOP_TEMPLATE := stopTemplateVal
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := stopTemplateCustomVal
@@ -3792,6 +3805,7 @@ RefreshScreenRecordingInputsEnabled() {
     __MAIL_SETUP.edScreenRecordingFfmpegExe.Enabled := useFfmpeg
     __MAIL_SETUP.btnScreenRecordingFfmpegExe.Enabled := useFfmpeg
     __MAIL_SETUP.cbScreenRecordingUseSimpleParams.Enabled := useFfmpeg
+    __MAIL_SETUP.cbScreenRecordingAutoStopExternalFfmpeg.Enabled := useFfmpeg
     __MAIL_SETUP.ddScreenRecordingQualityPreset.Enabled := useSimple
     __MAIL_SETUP.edScreenRecordingFps.Enabled := useSimple
     qualityKey := NormalizeScreenRecordingQualityPreset(StrSplit(__MAIL_SETUP.ddScreenRecordingQualityPreset.Text, ":")[1])
@@ -4051,9 +4065,9 @@ LoadMailNotifyEnabled() {
 
 LoadScreenRecordingEnabled() {
     global CFG_FILE, SCREEN_RECORDING_SECTION, SCREEN_RECORDING_ENABLED
-    global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK
+    global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
     global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, SCREEN_RECORDING_STOP_LRMC_TASK
-    global __SCREEN_RECORDING_TEMPLATE_WARNED, __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_TEMPLATE_WARNED, __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
     SCREEN_RECORDING_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
     SCREEN_RECORDING_ENGINE := NormalizeScreenRecordingEngine(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "engine", "ffmpeg"))
     SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
@@ -4063,6 +4077,7 @@ LoadScreenRecordingEnabled() {
     SCREEN_RECORDING_FFMPEG_ARGS := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"), " `t`r`n")
     if (SCREEN_RECORDING_FFMPEG_ARGS = "")
         SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+    SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_stop_external_ffmpeg", "1"), 1)
     SCREEN_RECORDING_OUTPUT_DIR := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
     if (SCREEN_RECORDING_OUTPUT_DIR = "")
         SCREEN_RECORDING_OUTPUT_DIR := "recordings"
@@ -4072,10 +4087,13 @@ LoadScreenRecordingEnabled() {
     SCREEN_RECORDING_STOP_LRMC_TASK := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_lrmc_task", ""), " `t`r`n")
     __SCREEN_RECORDING_TEMPLATE_WARNED := false
     __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
-    __SCREEN_RECORDING_PID := 0
-    __SCREEN_RECORDING_OUTPUT_PATH := ""
+    ; 避免在錄影進行中（例如系統匣儲存設定）把 PID 清掉，導致後續無法正常停止。
+    if !__SCREEN_RECORDING_ACTIVE {
+        __SCREEN_RECORDING_PID := 0
+        __SCREEN_RECORDING_OUTPUT_PATH := ""
+    }
     WriteLog("螢幕錄影開關(enabled)=" SCREEN_RECORDING_ENABLED)
-    WriteLog("螢幕錄影引擎(engine)=" SCREEN_RECORDING_ENGINE " ffmpeg_exe=" SCREEN_RECORDING_FFMPEG_EXE " allow_hotkey_fallback=" SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK)
+    WriteLog("螢幕錄影引擎(engine)=" SCREEN_RECORDING_ENGINE " ffmpeg_exe=" SCREEN_RECORDING_FFMPEG_EXE " allow_hotkey_fallback=" SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK " auto_stop_external_ffmpeg=" SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG)
     WriteLog("螢幕錄影停止條件 stop_mode=" SCREEN_RECORDING_STOP_MODE " stop_template=" SCREEN_RECORDING_STOP_TEMPLATE)
 }
 
@@ -4094,6 +4112,24 @@ TryStartScreenRecording(reason := "") {
         WriteLog("錄影引擎設定無效（僅支援 ffmpeg）", "WARN")
         return false
     }
+
+    existingPid := 0
+    existingPath := ""
+    precheck := EnsureScreenRecordingSessionBeforeStart(&existingPid, &existingPath)
+    if (precheck = "adopted") {
+        __SCREEN_RECORDING_ACTIVE := true
+        __SCREEN_RECORDING_PID := existingPid
+        __SCREEN_RECORDING_OUTPUT_PATH := existingPath
+        msg := "沿用既有 FFmpeg 螢幕錄影 PID=" existingPid
+        if (existingPath != "")
+            msg .= " 檔案=" existingPath
+        if (reason != "")
+            msg .= "（" reason "）"
+        WriteLog(msg)
+        return true
+    }
+    if (precheck = "blocked")
+        return false
 
     if StartFfmpegScreenRecording(&outPath, &pid) {
         __SCREEN_RECORDING_ACTIVE := true
@@ -4201,7 +4237,7 @@ PruneScreenRecordingFiles(keepCount := 5) {
 }
 
 StartFfmpegScreenRecording(&outPath, &pid) {
-    global SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS
+    global SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OWNER_MARKER
 
     outPath := ""
     pid := 0
@@ -4216,12 +4252,12 @@ StartFfmpegScreenRecording(&outPath, &pid) {
     try DirCreate(outDir)
 
     ts := FormatTime(A_Now, "yyyyMMdd_HHmmss")
-    outPath := outDir "\\recording_" ts ".mkv"
+    outPath := outDir "\\wuthering_auto_recording_" ts ".mkv"
     args := Trim(SCREEN_RECORDING_FFMPEG_ARGS, " `t`r`n")
     if (args = "")
         args := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
 
-    cmd := '"' ffmpegExe '" ' args ' "' outPath '"'
+    cmd := '"' ffmpegExe '" ' args ' -metadata comment="' SCREEN_RECORDING_OWNER_MARKER '" "' outPath '"'
     try {
         Run(cmd, "", "Hide", &pid)
         if (pid <= 0)
@@ -4235,6 +4271,127 @@ StartFfmpegScreenRecording(&outPath, &pid) {
         WriteLog("啟動 FFmpeg 失敗: " e.Message, "WARN")
         return false
     }
+}
+
+EnsureScreenRecordingSessionBeforeStart(&existingPid, &existingOutPath) {
+    global SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
+
+    existingPid := 0
+    existingOutPath := ""
+
+    recordingFound := false
+    externalCount := 0
+    externalPids := []
+
+    for item in EnumerateRunningFfmpegProcesses() {
+        cmdLine := item.cmdLine
+        if !IsLikelyFfmpegScreenRecordingCommand(cmdLine)
+            continue
+
+        recordingFound := true
+        if IsManagedByCurrentScriptFfmpegCommand(cmdLine) {
+            existingPid := item.pid
+            existingOutPath := ParseFfmpegOutputPathFromCommandLine(cmdLine)
+            return "adopted"
+        }
+
+        externalCount += 1
+        externalPids.Push(item.pid)
+    }
+
+    if !recordingFound
+        return "none"
+    if (externalCount <= 0)
+        return "none"
+
+    if !SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG {
+        WriteLog("偵測到外部 FFmpeg 錄影（" externalCount " 個），已停用自動停止外部錄影，略過本次啟動", "WARN")
+        return "blocked"
+    }
+
+    stopped := 0
+    for _, pid in externalPids {
+        if StopFfmpegScreenRecording(pid)
+            stopped += 1
+        else
+            WriteLog("停止外部 FFmpeg 錄影失敗，PID=" pid, "WARN")
+    }
+
+    remaining := 0
+    for item in EnumerateRunningFfmpegProcesses() {
+        if !IsLikelyFfmpegScreenRecordingCommand(item.cmdLine)
+            continue
+        if IsManagedByCurrentScriptFfmpegCommand(item.cmdLine)
+            continue
+        remaining += 1
+    }
+
+    if (remaining > 0) {
+        WriteLog("仍有 " remaining " 個外部 FFmpeg 錄影未能停止，為避免衝突，略過本次啟動", "WARN")
+        return "blocked"
+    }
+
+    if (stopped > 0)
+        WriteLog("已停止外部 FFmpeg 錄影 " stopped " 個，改由本程式重新啟動錄影", "WARN")
+    return "none"
+}
+
+EnumerateRunningFfmpegProcesses() {
+    out := []
+    try {
+        for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name='ffmpeg.exe'") {
+            pid := 0
+            cmdLine := ""
+            try pid := proc.ProcessId + 0
+            try cmdLine := proc.CommandLine
+            if (pid > 0)
+                out.Push({ pid: pid, cmdLine: cmdLine })
+        }
+    } catch as e {
+        WriteLog("掃描 ffmpeg 進程失敗: " e.Message, "WARN")
+    }
+    return out
+}
+
+IsLikelyFfmpegScreenRecordingCommand(cmdLine) {
+    s := StrLower(Trim(cmdLine, " `t`r`n"))
+    if (s = "")
+        return false
+    if !InStr(s, "ffmpeg")
+        return false
+    if (InStr(s, "-f gdigrab") && InStr(s, "-i desktop"))
+        return true
+    if (InStr(s, "-f dshow") && InStr(s, "-i") && InStr(s, "video="))
+        return true
+    return false
+}
+
+IsManagedByCurrentScriptFfmpegCommand(cmdLine) {
+    global SCREEN_RECORDING_OWNER_MARKER
+
+    candidate := StrLower(StrReplace(Trim(cmdLine, " `t`r`n"), "/", "\\"))
+    if (candidate = "")
+        return false
+
+    marker := StrLower(Trim(SCREEN_RECORDING_OWNER_MARKER, " `t`r`n"))
+    if (marker != "" && InStr(candidate, marker))
+        return true
+
+    outDir := StrLower(StrReplace(ResolveScreenRecordingOutputDir(), "/", "\\"))
+    if (SubStr(outDir, -1) = "\\")
+        outDir := SubStr(outDir, 1, -1)
+
+    hasManagedPrefix := InStr(candidate, "wuthering_auto_recording_") || InStr(candidate, "\\recording_")
+    isInManagedDir := (outDir != "") && InStr(candidate, outDir "\\")
+    return hasManagedPrefix && isInManagedDir
+}
+
+ParseFfmpegOutputPathFromCommandLine(cmdLine) {
+    if RegExMatch(cmdLine, 'i)"([^"]+\.mkv)"\s*$', &m)
+        return m[1]
+    if RegExMatch(cmdLine, 'i)([^\s]+\.mkv)\s*$', &m)
+        return m[1]
+    return ""
 }
 
 StopFfmpegScreenRecording(pid) {
@@ -4969,15 +5126,18 @@ SetupTrayMenu() {
 }
 
 ExitFromTrayNow(*) {
-    global EXITING_FROM_TRAY, REMOTE_PAUSE_WAITING
+    global EXITING_FROM_TRAY, REMOTE_PAUSE_WAITING, __RESTART_IN_PROGRESS, REMOTE_STOP_IN_PROGRESS
     if EXITING_FROM_TRAY
         return
 
     EXITING_FROM_TRAY := true
     REMOTE_PAUSE_WAITING := false
+    REMOTE_STOP_IN_PROGRESS := true
+    ; 使用者手動退出應視為完整關閉，不沿用重啟流程的「保留錄影」判定。
+    __RESTART_IN_PROGRESS := false
     try RC_SetPausedFlag(false)
-    try WriteLog("系統匣：使用者請求立即離開")
-    ExitApp
+    try WriteLog("系統匣：使用者請求立即離開，改走完整關閉流程")
+    SetTimer(() => ShutdownGameLrmcOkww(false), -50)
 }
 
 OpenSettingsFromTray(*) {
@@ -5115,8 +5275,21 @@ ClickTemplateIfFound(templatePath) {
     y := 0
     try {
         if ImageSearch(&x, &y, 0, 0, A_ScreenWidth, A_ScreenHeight, templatePath) {
-            Click x, y
-            WriteLog("模板檢測到並點擊: " . templatePath)
+            clickX := x
+            clickY := y
+            if GetImageFileSize(templatePath, &imgW, &imgH) {
+                clickX := x + Floor(imgW / 2)
+                clickY := y + Floor(imgH / 2)
+            } else {
+                ; 取不到尺寸時回退，至少不要點在左上角。
+                clickX := x + 8
+                clickY := y + 8
+            }
+
+            clickX := Min(A_ScreenWidth - 1, Max(0, clickX))
+            clickY := Min(A_ScreenHeight - 1, Max(0, clickY))
+            Click clickX, clickY
+            WriteLog("模板檢測到並點擊: " . templatePath . " @" . clickX . "," . clickY)
             return true
         }
     } catch as e {
@@ -5126,4 +5299,29 @@ ClickTemplateIfFound(templatePath) {
     }
     WriteLog("模板未檢測到: " . templatePath, "INFO")
     return false
+}
+
+GetImageFileSize(path, &w, &h) {
+    w := 0
+    h := 0
+    try {
+        hBitmap := LoadPicture(path)
+        if !hBitmap
+            return false
+
+        ; BITMAP 結構在 x64 需要 32 bytes，x86 為 24 bytes。
+        bmpSize := (A_PtrSize = 8) ? 32 : 24
+        bmp := Buffer(bmpSize, 0)
+        if (DllCall("GetObject", "ptr", hBitmap, "int", bmpSize, "ptr", bmp.Ptr, "int") <= 0) {
+            DllCall("DeleteObject", "ptr", hBitmap)
+            return false
+        }
+
+        w := NumGet(bmp, 4, "int")
+        h := NumGet(bmp, 8, "int")
+        DllCall("DeleteObject", "ptr", hBitmap)
+        return (w > 0 && h > 0)
+    } catch {
+        return false
+    }
 }
