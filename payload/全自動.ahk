@@ -96,6 +96,9 @@ global REMOTE_CONTROL_ACTIVE := false
 global REMOTE_PAUSE_WAITING := false
 global EXITING_FROM_TRAY := false
 global REMOTE_STOP_IN_PROGRESS := false
+global __REMOTE_WAS_PAUSED := false
+global __REMOTE_PAUSE_HOTKEY_BUSY := false
+global __REMOTE_RESUME_SYNC_BUSY := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -596,7 +599,7 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
 }
 
 OnRemoteControlStateChanged(state) {
-    global REMOTE_STOP_IN_PROGRESS
+    global REMOTE_STOP_IN_PROGRESS, __REMOTE_WAS_PAUSED
     if (state = "STOP") {
         if REMOTE_STOP_IN_PROGRESS
             return
@@ -609,12 +612,119 @@ OnRemoteControlStateChanged(state) {
     }
 
     if (state = "PAUSE") {
+        __REMOTE_WAS_PAUSED := true
         WriteLog("遠端控制：收到 PAUSE（軟停模式）", "WARN")
         ShowTip("⏸ 已切換為遠端暫停", 1500)
+        SetTimer(RemotePauseHookTick, -50)
     } else {
         WriteLog("遠端控制：收到 RUN（恢復執行）")
         ShowTip("▶ 已切換為遠端執行", 1500)
+        if (state = "RUN" && __REMOTE_WAS_PAUSED) {
+            __REMOTE_WAS_PAUSED := false
+            SetTimer(RemoteRunResumeHookTick, -80)
+        }
     }
+}
+
+RemotePauseHookTick() {
+    global __REMOTE_PAUSE_HOTKEY_BUSY
+
+    if __REMOTE_PAUSE_HOTKEY_BUSY
+        return
+
+    __REMOTE_PAUSE_HOTKEY_BUSY := true
+    try {
+        if !ProcessExist("LRMCAI.exe") {
+            WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9", "INFO")
+            return
+        }
+
+        if SendHotkeyToLrmc("{F9}", "遠端PAUSE")
+            WriteLog("遠端PAUSE：已送出 F9 到 LRMCAI")
+        else
+            WriteLog("遠端PAUSE：送出 F9 到 LRMCAI 失敗", "WARN")
+    } finally {
+        __REMOTE_PAUSE_HOTKEY_BUSY := false
+    }
+}
+
+RemoteRunResumeHookTick() {
+    global __REMOTE_RESUME_SYNC_BUSY
+
+    if __REMOTE_RESUME_SYNC_BUSY
+        return
+
+    __REMOTE_RESUME_SYNC_BUSY := true
+    try {
+        loginTemplate := A_ScriptDir "\登入.png"
+        if FileExist(loginTemplate) {
+            ClickTemplateIfFound(loginTemplate)
+            Sleep 300
+        } else {
+            WriteLog("遠端RUN：找不到登入模板，略過點擊", "WARN")
+        }
+
+        hwnd := GetWutheringGameHwnd()
+        if !hwnd
+            hwnd := WaitForWutheringGameWindow(20)
+
+        if !hwnd {
+            WriteLog("遠端RUN：找不到鳴潮視窗，略過主畫面模板檢測與 Ctrl+F1", "WARN")
+            return
+        }
+
+        if !WaitEscMenuOCR(hwnd, 90) {
+            WriteLog("遠端RUN：未檢測到 icon_main.png，略過送出 Ctrl+F1", "WARN")
+            return
+        }
+
+        if !ProcessExist("LRMCAI.exe") {
+            WriteLog("遠端RUN：LRMCAI 未執行，略過送出 Ctrl+F1", "WARN")
+            return
+        }
+
+        if SendHotkeyToLrmc("^{F1}", "遠端RUN恢復")
+            WriteLog("遠端RUN：已檢測到主畫面，送出 Ctrl+F1 到 LRMCAI")
+        else
+            WriteLog("遠端RUN：送出 Ctrl+F1 到 LRMCAI 失敗", "WARN")
+    } finally {
+        __REMOTE_RESUME_SYNC_BUSY := false
+    }
+}
+
+SendHotkeyToLrmc(hotkey, reason := "") {
+    if !ProcessExist("LRMCAI.exe")
+        return false
+
+    hwnd := 0
+    try hwnd := WinExist("ahk_exe LRMCAI.exe")
+
+    if hwnd {
+        try {
+            WinActivate("ahk_id " hwnd)
+            Sleep 80
+            SendEvent hotkey
+            if (reason != "")
+                WriteLog("已送出快捷鍵到 LRMCAI: " hotkey "（" reason "）")
+            else
+                WriteLog("已送出快捷鍵到 LRMCAI: " hotkey)
+            return true
+        } catch {
+        }
+    }
+
+    try {
+        ControlSend(hotkey, , "ahk_exe LRMCAI.exe")
+        if (reason != "")
+            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey "（" reason "）")
+        else
+            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey)
+        return true
+    } catch as e {
+        WriteLog("送出快捷鍵到 LRMCAI 失敗: " hotkey " | " e.Message, "WARN")
+    }
+
+    return false
 }
 
 ; 軟暫停：主流程在 Sleep 檢查點停住，但遠端監控計時器仍可繼續心跳與收命令。
@@ -1761,8 +1871,12 @@ DetectWutheringAndExit(&loginDetected := false) {
         closeIconPath := A_ScriptDir "\0510.png"
         if FileExist(closeIconPath) {
             try {
-                ImageSearch &foundX, &foundY, 0, 0, 1920, 1440, closeIconPath
-                if (foundX > 0 && foundY > 0) {
+                foundX := 0
+                foundY := 0
+                searchRight := (A_ScreenWidth > 0) ? (A_ScreenWidth - 1) : 1919
+                searchBottom := (A_ScreenHeight > 0) ? (A_ScreenHeight - 1) : 1079
+                isFound := ImageSearch(&foundX, &foundY, 0, 0, searchRight, searchBottom, closeIconPath)
+                if isFound {
                     ShowTip("✅ 檢測到叉叉提示 → 自動點擊", 800)
                     MouseClick "left", foundX, foundY
                     WriteLog("已點擊叉叉按鈕 位置:" foundX "," foundY, "INFO")
