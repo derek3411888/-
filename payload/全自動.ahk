@@ -591,7 +591,10 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, TOOLTIP_SLOT
     try ToolTip(, , , TOOLTIP_SLOT)
     try RC_Shutdown()
-    ForceStopManagedScreenRecording("腳本結束保底")
+    if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+        WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
+    else
+        ForceStopManagedScreenRecording("腳本結束保底")
     UnmuteWutheringAudio("腳本結束保底")
 }
 
@@ -2672,7 +2675,7 @@ RestartAutoScript(reason := "") {
             if AdvanceServerScheduleForNextCycle() {
                 WriteLog("已切換到下一個伺服器，使用 nextserver 模式重啟", "WARN")
                 __NEXTSERVER_RESTART := true
-                TryStopScreenRecording("切換下一個伺服器")
+                WriteLog("nextserver 重啟：保留錄影不中斷，略過停止錄影", "WARN")
                 CheckAndCloseExistingProcesses()
                 Sleep 2000
                 
@@ -2994,24 +2997,26 @@ ResetRestartTrackingOnFreshStart() {
 }
 
 HandleCycleFinishAndShutdown() {
-    TryStopScreenRecording("收尾監測達標（保底停止）")
-
     if AdvanceServerScheduleForNextCycle() {
         global __NEXTSERVER_RESTART, __RESTART_IN_PROGRESS
         __RESTART_IN_PROGRESS := true
         __NEXTSERVER_RESTART := true
-        TryStopScreenRecording("切換下一個伺服器")
+        WriteLog("伺服器排程：重啟模式保留錄影，不停止目前錄影", "WARN")
         WriteLog("伺服器排程：本輪完成，關閉程式後自動啟動下一個伺服器流程", "WARN")
         ShutdownGameLrmcOkww(true)
         return
     }
 
+    TryStopScreenRecording("收尾監測達標（保底停止）")
     ShutdownGameLrmcOkww(false)
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false) {
     global __RESTART_IN_PROGRESS
-    ForceStopManagedScreenRecording("手動/收尾關閉流程保底")
+    if (__RESTART_IN_PROGRESS || relaunchForNextServer)
+        WriteLog("重啟模式：保留錄影不中斷，略過收尾保底停止", "WARN")
+    else
+        ForceStopManagedScreenRecording("手動/收尾關閉流程保底")
     UnmuteWutheringAudio("監測到結束，開始收尾")
     WriteLog("開始關閉收尾目標程式：鳴潮、LRMCAI、OKWW")
     ShowTip("🛑 正在關閉鳴潮/LRMCAI/OKWW...", 1500)
@@ -4374,6 +4379,7 @@ ForceStopManagedScreenRecording(reason := "") {
         if (reason != "")
             msg .= "（" reason "）"
         WriteLog(msg)
+        PruneScreenRecordingFiles(5)
         return true
     }
 
