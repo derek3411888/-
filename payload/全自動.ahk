@@ -591,10 +591,7 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, TOOLTIP_SLOT
     try ToolTip(, , , TOOLTIP_SLOT)
     try RC_Shutdown()
-    if __RESTART_IN_PROGRESS
-        WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
-    else
-        TryStopScreenRecording("腳本結束保底")
+    ForceStopManagedScreenRecording("腳本結束保底")
     UnmuteWutheringAudio("腳本結束保底")
 }
 
@@ -1168,8 +1165,10 @@ noWindowSinceTick := 0
 
 if !isRestart
     TryStartScreenRecording("主流程開始")
-else
+else {
+    AttachManagedScreenRecordingOnRestart("重啟模式接管")
     WriteLog("重啟模式：保留既有錄影，不重新觸發錄影啟動")
+}
 EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
 
@@ -3012,10 +3011,7 @@ HandleCycleFinishAndShutdown() {
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false) {
     global __RESTART_IN_PROGRESS
-    if (__RESTART_IN_PROGRESS || relaunchForNextServer)
-        WriteLog("重啟模式：關閉流程略過停止錄影", "WARN")
-    else
-        TryStopScreenRecording("手動/收尾關閉流程保底")
+    ForceStopManagedScreenRecording("手動/收尾關閉流程保底")
     UnmuteWutheringAudio("監測到結束，開始收尾")
     WriteLog("開始關閉收尾目標程式：鳴潮、LRMCAI、OKWW")
     ShowTip("🛑 正在關閉鳴潮/LRMCAI/OKWW...", 1500)
@@ -4244,6 +4240,8 @@ TryStartScreenRecording(reason := "") {
     }
     if (precheck = "blocked")
         return false
+    if (precheck = "none")
+        WriteLog("錄影接管掃描結果：未接管既有進程，將啟動新錄影", "INFO")
 
     if StartFfmpegScreenRecording(&outPath, &pid) {
         __SCREEN_RECORDING_ACTIVE := true
@@ -4257,6 +4255,45 @@ TryStartScreenRecording(reason := "") {
     }
 
     WriteLog("FFmpeg 錄影啟動失敗（已移除 Alt+F9 錄影功能）", "WARN")
+    return false
+}
+
+AttachManagedScreenRecordingOnRestart(reason := "") {
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+
+    existingPid := 0
+    existingPath := ""
+    for item in EnumerateRunningFfmpegProcesses() {
+        if !IsLikelyFfmpegScreenRecordingCommand(item.cmdLine)
+            continue
+        if !IsManagedByCurrentScriptFfmpegCommand(item.cmdLine)
+            continue
+
+        existingPid := item.pid
+        existingPath := ParseFfmpegOutputPathFromCommandLine(item.cmdLine)
+        break
+    }
+
+    if (existingPid > 0) {
+        __SCREEN_RECORDING_ACTIVE := true
+        __SCREEN_RECORDING_PID := existingPid
+        __SCREEN_RECORDING_OUTPUT_PATH := existingPath
+        msg := "重啟接管成功：PID=" existingPid
+        if (existingPath != "")
+            msg .= " 檔案=" existingPath
+        if (reason != "")
+            msg .= "（" reason "）"
+        WriteLog(msg)
+        return true
+    }
+
+    __SCREEN_RECORDING_ACTIVE := false
+    __SCREEN_RECORDING_PID := 0
+    __SCREEN_RECORDING_OUTPUT_PATH := ""
+    msg := "重啟接管未命中：未找到受管 FFmpeg 錄影"
+    if (reason != "")
+        msg .= "（" reason "）"
+    WriteLog(msg, "WARN")
     return false
 }
 
@@ -4287,6 +4324,68 @@ TryStopScreenRecording(reason := "") {
     }
 
     WriteLog("停止 FFmpeg 錄影失敗（已移除 Alt+F9 錄影功能）", "WARN")
+    return false
+}
+
+ForceStopManagedScreenRecording(reason := "") {
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+
+    attempted := 0
+    stopped := 0
+    seen := Map()
+
+    if (__SCREEN_RECORDING_PID > 0) {
+        pidKey := String(__SCREEN_RECORDING_PID)
+        seen[pidKey] := 1
+        attempted += 1
+        if StopFfmpegScreenRecording(__SCREEN_RECORDING_PID) {
+            stopped += 1
+            WriteLog("保底停錄：已停止記憶中的 FFmpeg PID=" __SCREEN_RECORDING_PID)
+        } else {
+            WriteLog("保底停錄：停止記憶中的 FFmpeg 失敗 PID=" __SCREEN_RECORDING_PID, "WARN")
+        }
+    }
+
+    for item in EnumerateRunningFfmpegProcesses() {
+        if !IsLikelyFfmpegScreenRecordingCommand(item.cmdLine)
+            continue
+        if !IsManagedByCurrentScriptFfmpegCommand(item.cmdLine)
+            continue
+
+        pidKey := String(item.pid)
+        if seen.Has(pidKey)
+            continue
+        seen[pidKey] := 1
+
+        attempted += 1
+        if StopFfmpegScreenRecording(item.pid) {
+            stopped += 1
+            WriteLog("保底停錄：已停止受管 FFmpeg PID=" item.pid)
+        } else {
+            WriteLog("保底停錄：停止受管 FFmpeg 失敗 PID=" item.pid, "WARN")
+        }
+    }
+
+    if (stopped > 0) {
+        __SCREEN_RECORDING_ACTIVE := false
+        __SCREEN_RECORDING_PID := 0
+        __SCREEN_RECORDING_OUTPUT_PATH := ""
+        msg := "保底停錄完成：共停止 " stopped " 個受管 FFmpeg"
+        if (reason != "")
+            msg .= "（" reason "）"
+        WriteLog(msg)
+        return true
+    }
+
+    if (attempted > 0) {
+        msg := "保底停錄：有受管 FFmpeg 但未能停止"
+        if (reason != "")
+            msg .= "（" reason "）"
+        WriteLog(msg, "WARN")
+        return false
+    }
+
+    WriteLog("保底停錄：未發現受管 FFmpeg 進程", "INFO")
     return false
 }
 
@@ -4396,16 +4495,19 @@ EnsureScreenRecordingSessionBeforeStart(&existingPid, &existingOutPath) {
     recordingFound := false
     externalCount := 0
     externalPids := []
+    scannedRecordingCount := 0
 
     for item in EnumerateRunningFfmpegProcesses() {
         cmdLine := item.cmdLine
         if !IsLikelyFfmpegScreenRecordingCommand(cmdLine)
             continue
 
+        scannedRecordingCount += 1
         recordingFound := true
         if IsManagedByCurrentScriptFfmpegCommand(cmdLine) {
             existingPid := item.pid
             existingOutPath := ParseFfmpegOutputPathFromCommandLine(cmdLine)
+            WriteLog("錄影接管命中：PID=" existingPid (existingOutPath != "" ? " 檔案=" existingOutPath : ""))
             return "adopted"
         }
 
@@ -4413,10 +4515,14 @@ EnsureScreenRecordingSessionBeforeStart(&existingPid, &existingOutPath) {
         externalPids.Push(item.pid)
     }
 
-    if !recordingFound
+    if !recordingFound {
+        WriteLog("錄影接管掃描：未發現任何 ffmpeg 錄影進程", "INFO")
         return "none"
+    }
     if (externalCount <= 0)
         return "none"
+
+    WriteLog("錄影接管掃描：共找到 " scannedRecordingCount " 個錄影進程，其中外部進程 " externalCount " 個", "INFO")
 
     if !SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG {
         WriteLog("偵測到外部 FFmpeg 錄影（" externalCount " 個），已停用自動停止外部錄影，略過本次啟動", "WARN")
