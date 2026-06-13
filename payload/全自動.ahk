@@ -99,6 +99,7 @@ global REMOTE_STOP_IN_PROGRESS := false
 global __REMOTE_WAS_PAUSED := false
 global __REMOTE_PAUSE_HOTKEY_BUSY := false
 global __REMOTE_RESUME_SYNC_BUSY := false
+global __REMOTE_PAUSED_AUX_PIDS := []
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -636,13 +637,14 @@ RemotePauseHookTick() {
     try {
         if !ProcessExist("LRMCAI.exe") {
             WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9", "INFO")
-            return
+        } else {
+            if SendHotkeyToLrmc("{F9}", "遠端PAUSE")
+                WriteLog("遠端PAUSE：已送出 F9 到 LRMCAI")
+            else
+                WriteLog("遠端PAUSE：送出 F9 到 LRMCAI 失敗", "WARN")
         }
 
-        if SendHotkeyToLrmc("{F9}", "遠端PAUSE")
-            WriteLog("遠端PAUSE：已送出 F9 到 LRMCAI")
-        else
-            WriteLog("遠端PAUSE：送出 F9 到 LRMCAI 失敗", "WARN")
+        PauseAuxManagedScriptsOnRemotePause()
     } finally {
         __REMOTE_PAUSE_HOTKEY_BUSY := false
     }
@@ -656,10 +658,20 @@ RemoteRunResumeHookTick() {
 
     __REMOTE_RESUME_SYNC_BUSY := true
     try {
+        ResumeAuxManagedScriptsAfterRemoteRun()
+
         loginTemplate := A_ScriptDir "\登入.png"
+        loginDetected := false
         if FileExist(loginTemplate) {
+            loginDetected := WaitForTemplateVisible(loginTemplate, 60)
+            if !loginDetected {
+                WriteLog("遠端RUN：1 分鐘未判定到登入.png，直接送出 Ctrl+F1 到 LRMCAI", "WARN")
+                TrySendRunCtrlF1ToLrmc("遠端RUN（1分鐘未判定登入模板）")
+                return
+            }
+
             ClickTemplateIfFound(loginTemplate)
-            Sleep 300
+            EnsureLoginTemplateClearedByCenterClick(loginTemplate, 40)
         } else {
             WriteLog("遠端RUN：找不到登入模板，略過點擊", "WARN")
         }
@@ -683,13 +695,197 @@ RemoteRunResumeHookTick() {
             return
         }
 
-        if SendHotkeyToLrmc("^{F1}", "遠端RUN恢復")
-            WriteLog("遠端RUN：已檢測到主畫面，送出 Ctrl+F1 到 LRMCAI")
-        else
-            WriteLog("遠端RUN：送出 Ctrl+F1 到 LRMCAI 失敗", "WARN")
+        TrySendRunCtrlF1ToLrmc("遠端RUN恢復")
     } finally {
         __REMOTE_RESUME_SYNC_BUSY := false
     }
+}
+
+TrySendRunCtrlF1ToLrmc(reason := "") {
+    if !ProcessExist("LRMCAI.exe") {
+        WriteLog("遠端RUN：LRMCAI 未執行，略過送出 Ctrl+F1", "WARN")
+        return false
+    }
+
+    if SendHotkeyToLrmc("^{F1}", reason != "" ? reason : "遠端RUN恢復") {
+        WriteLog("遠端RUN：已送出 Ctrl+F1 到 LRMCAI")
+        return true
+    }
+
+    WriteLog("遠端RUN：送出 Ctrl+F1 到 LRMCAI 失敗", "WARN")
+    return false
+}
+
+WaitForTemplateVisible(templatePath, timeoutSec := 60) {
+    deadline := A_TickCount + timeoutSec * 1000
+    while (A_TickCount < deadline) {
+        if IsTemplateVisible(templatePath)
+            return true
+        Sleep 400
+    }
+    return false
+}
+
+IsTemplateVisible(templatePath) {
+    x := 0
+    y := 0
+    try {
+        return ImageSearch(&x, &y, 0, 0, A_ScreenWidth, A_ScreenHeight, templatePath) ? true : false
+    } catch {
+        return false
+    }
+}
+
+EnsureLoginTemplateClearedByCenterClick(templatePath, timeoutSec := 40) {
+    if !IsTemplateVisible(templatePath)
+        return true
+
+    deadline := A_TickCount + timeoutSec * 1000
+    attempts := 0
+    while (A_TickCount < deadline) {
+        if !IsTemplateVisible(templatePath) {
+            if (attempts > 0)
+                WriteLog("遠端RUN：登入畫面已消失，中心點擊重試成功（嘗試 " attempts " 次）")
+            return true
+        }
+
+        Sleep 2000
+        if !IsTemplateVisible(templatePath) {
+            if (attempts > 0)
+                WriteLog("遠端RUN：登入畫面已消失，中心點擊重試成功（嘗試 " attempts " 次）")
+            return true
+        }
+
+        attempts += 1
+        if ClickWutheringCenterPoint() {
+            WriteLog("遠端RUN：登入畫面仍存在，已執行第 " attempts " 次中心點擊")
+        } else {
+            WriteLog("遠端RUN：中心點擊失敗，改用螢幕中心 fallback", "WARN")
+            Click A_ScreenWidth // 2, A_ScreenHeight // 2
+        }
+        Sleep 300
+    }
+
+    if IsTemplateVisible(templatePath) {
+        WriteLog("遠端RUN：登入畫面在 " timeoutSec " 秒內未消失，後續仍嘗試主畫面檢測", "WARN")
+        return false
+    }
+    return true
+}
+
+ClickWutheringCenterPoint() {
+    hwnd := GetWutheringGameHwnd()
+    if !hwnd
+        hwnd := WaitForWutheringGameWindow(8)
+    if !hwnd
+        return false
+
+    try WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
+    catch
+        return false
+
+    if (ww <= 0 || wh <= 0)
+        return false
+
+    cx := wx + (ww // 2)
+    cy := wy + (wh // 2)
+    Click cx, cy
+    return true
+}
+
+PauseAuxManagedScriptsOnRemotePause() {
+    global __REMOTE_PAUSED_AUX_PIDS
+
+    suspendedCount := 0
+    __REMOTE_PAUSED_AUX_PIDS := []
+    for item in EnumerateAuxManagedAhkProcesses() {
+        if SuspendProcessByPid(item.pid) {
+            __REMOTE_PAUSED_AUX_PIDS.Push(item.pid)
+            suspendedCount += 1
+            WriteLog("遠端PAUSE：已暫停子腳本 PID=" item.pid "（" item.name "）")
+        }
+    }
+
+    if (suspendedCount <= 0)
+        WriteLog("遠端PAUSE：未發現可暫停的子腳本進程", "INFO")
+}
+
+ResumeAuxManagedScriptsAfterRemoteRun() {
+    global __REMOTE_PAUSED_AUX_PIDS
+
+    candidates := Map()
+    for _, pid in __REMOTE_PAUSED_AUX_PIDS
+        candidates[String(pid)] := pid
+    for item in EnumerateAuxManagedAhkProcesses()
+        candidates[String(item.pid)] := item.pid
+
+    resumed := 0
+    for _, pid in candidates {
+        if ResumeProcessByPid(pid) {
+            resumed += 1
+            WriteLog("遠端RUN：已恢復子腳本 PID=" pid)
+        }
+    }
+    __REMOTE_PAUSED_AUX_PIDS := []
+
+    if (resumed <= 0)
+        WriteLog("遠端RUN：未發現需要恢復的子腳本進程", "INFO")
+}
+
+EnumerateAuxManagedAhkProcesses() {
+    currentPid := DllCall("GetCurrentProcessId")
+    result := []
+    wantedNames := ["聲骸合成.ahk", "自動開啟OKWW.ahk", "開啟LRMC.ahk"]
+
+    try {
+        for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name like '%AutoHotkey%'") {
+            if (proc.ProcessId = currentPid)
+                continue
+
+            cmdLine := ""
+            try cmdLine := proc.CommandLine
+            if (cmdLine = "")
+                continue
+
+            for _, name in wantedNames {
+                if InStr(cmdLine, name) {
+                    result.Push({ pid: proc.ProcessId, name: name })
+                    break
+                }
+            }
+        }
+    }
+    return result
+}
+
+SuspendProcessByPid(pid) {
+    if (pid <= 0)
+        return false
+
+    PROCESS_SUSPEND_RESUME := 0x0800
+    PROCESS_QUERY_LIMITED_INFORMATION := 0x1000
+    hProc := DllCall("Kernel32\\OpenProcess", "UInt", PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, "Int", 0, "UInt", pid, "Ptr")
+    if !hProc
+        return false
+
+    ntStatus := DllCall("ntdll\\NtSuspendProcess", "Ptr", hProc, "Int")
+    DllCall("Kernel32\\CloseHandle", "Ptr", hProc)
+    return (ntStatus = 0)
+}
+
+ResumeProcessByPid(pid) {
+    if (pid <= 0)
+        return false
+
+    PROCESS_SUSPEND_RESUME := 0x0800
+    PROCESS_QUERY_LIMITED_INFORMATION := 0x1000
+    hProc := DllCall("Kernel32\\OpenProcess", "UInt", PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, "Int", 0, "UInt", pid, "Ptr")
+    if !hProc
+        return false
+
+    ntStatus := DllCall("ntdll\\NtResumeProcess", "Ptr", hProc, "Int")
+    DllCall("Kernel32\\CloseHandle", "Ptr", hProc)
+    return (ntStatus = 0)
 }
 
 SendHotkeyToLrmc(hotkey, reason := "") {
@@ -3260,6 +3456,9 @@ ReadCombinedConfigState() {
     state.serverScheduleList := Trim(IniReadSafe(CFG_FILE, "server_schedule", "list", ""), " `t`r`n")
     state.serverSwitchX := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_x", "640"), " `t`r`n")
     state.serverSwitchY := Trim(IniReadSafe(CFG_FILE, "server_schedule", "switch_y", "549"), " `t`r`n")
+    state.remoteUid := Trim(IniReadSafe(CFG_FILE, "remote_control", "uid", ""), " `t`r`n")
+    state.remoteDeviceAlias := Trim(IniReadSafe(CFG_FILE, "remote_control", "device_alias", ""), " `t`r`n")
+    state.remoteDisplayName := Trim(IniReadSafe(CFG_FILE, "remote_control", "display_name", ""), " `t`r`n")
     MAIL_NOTIFY_ENABLED := state.sendEnabled
     SCREEN_RECORDING_ENABLED := state.screenRecordingEnabled
     SCREEN_RECORDING_ENGINE := state.screenRecordingEngine
@@ -3330,14 +3529,14 @@ ReadCombinedConfigState() {
 
 ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     ; 加寬最小視窗尺寸以容納雙欄
-    g := Gui("+Resize +MinSize1100x760", "整合設定（程式路徑 + 郵件通知）")
+    g := Gui("+Resize +MinSize1550x760", "整合設定（程式路徑 + 郵件通知）")
     g.SetFont("s10", "Microsoft JhengHei UI")
 
     ; === 頂部共用區域 (全寬) ===
-    g.AddText("w1060", "【觸發原因】" reason)
-    g.AddText("w1060", "【設定檔位置】" cfgPath)
-    g.AddText("w1060", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
-    g.AddText("w1060", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
+    g.AddText("w1510", "【觸發原因】" reason)
+    g.AddText("w1510", "【設定檔位置】" cfgPath)
+    g.AddText("w1510", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
+    g.AddText("w1510", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
 
     summary := "目前偵測值：`r`n"
     summary .= "OKWW: " state.okwwPath "`r`n"
@@ -3367,11 +3566,14 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "server_schedule.enabled: " (state.serverScheduleEnabled ? "1(啟用)" : "0(停用)") "`r`n"
     summary .= "server_schedule.list: " state.serverScheduleList "`r`n"
     summary .= "server_schedule.switch: (" state.serverSwitchX "," state.serverSwitchY ")`r`n"
+    summary .= "remote_control.device_alias: " state.remoteDeviceAlias "`r`n"
+    summary .= "remote_control.display_name: " state.remoteDisplayName "`r`n"
+    summary .= "remote_control.uid: " state.remoteUid "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
-    g.AddEdit("xm w1060 r8 ReadOnly", summary)
+    g.AddEdit("xm w1510 r8 ReadOnly", summary)
 
     if (state.needSetup)
-        g.AddEdit("xm y+8 w1060 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
+        g.AddEdit("xm y+8 w1510 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
 
     ; ==========================================
     ; === 左欄開始 (使用 Section 建立錨點) ===
@@ -3492,6 +3694,23 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     txtScreenRecordingHint := g.AddText("xs y+8 w440 c666666 h30", "") ; 多行提示區
 
+    ; ==========================================
+    ; === 第三欄：遠端控制識別設定 ===
+    ; ==========================================
+    g.AddText("x1060 ys Section w440", "【遠端控制識別】")
+    g.AddText("xs y+10 w440 c666666", "建議兩台機器填不同裝置別名，網頁上會更好辨認。")
+
+    g.AddText("xs y+10 w80", "裝置別名")
+    edRemoteDeviceAlias := g.AddEdit("x+5 w355", state.remoteDeviceAlias)
+
+    g.AddText("xs y+10 w80", "顯示名稱")
+    edRemoteDisplayName := g.AddEdit("x+5 w355", state.remoteDisplayName)
+
+    g.AddText("xs y+10 w80", "UID")
+    edRemoteUid := g.AddEdit("x+5 w355 ReadOnly", state.remoteUid)
+
+    g.AddText("xs y+6 w440 c666666", "提示：若顯示名稱留空，會自動使用 別名@電腦名-短碼。")
+
     ; === 底部按鈕區 ===
     btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
@@ -3543,7 +3762,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         ddScreenRecordingStopMode: ddScreenRecordingStopMode,
         edScreenRecordingStopLrmcTask: edScreenRecordingStopLrmcTask,
         txtScreenRecordingHint: txtScreenRecordingHint,
-        txtMailHint: txtMailHint
+        txtMailHint: txtMailHint,
+        edRemoteDeviceAlias: edRemoteDeviceAlias,
+        edRemoteDisplayName: edRemoteDisplayName,
+        edRemoteUid: edRemoteUid
     }
 
     btnOkww.OnEvent("Click", OnCombinedBrowseOkww)
@@ -3747,6 +3969,8 @@ OnCombinedSetupSave(*) {
     stopTemplateVal := "login"
     stopTemplateCustomVal := ""
     stopLrmcTaskVal := Trim(st.edScreenRecordingStopLrmcTask.Value, " `t`r`n")
+    remoteDeviceAliasVal := Trim(st.edRemoteDeviceAlias.Value, " `t`r`n")
+    remoteDisplayNameVal := Trim(st.edRemoteDisplayName.Value, " `t`r`n")
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
         MsgBox "OKWW 路徑空白或不存在", "整合設定", "Iconx"
@@ -3855,6 +4079,8 @@ OnCombinedSetupSave(*) {
     IniWrite stopTemplateVal, st.cfgPath, "screen_recording", "stop_template"
     IniWrite stopTemplateCustomVal, st.cfgPath, "screen_recording", "stop_template_custom"
     IniWrite stopLrmcTaskVal, st.cfgPath, "screen_recording", "stop_lrmc_task"
+    IniWrite remoteDeviceAliasVal, st.cfgPath, "remote_control", "device_alias"
+    IniWrite remoteDisplayNameVal, st.cfgPath, "remote_control", "display_name"
 
     MAIL_NOTIFY_ENABLED := sendEnabledVal
     SCREEN_RECORDING_ENABLED := screenRecordingEnabledVal

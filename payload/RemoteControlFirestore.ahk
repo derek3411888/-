@@ -8,6 +8,7 @@ global RC_COLLECTION := "ahk_clients"
 global RC_CFG_PATH := ""
 global RC_UID := ""
 global RC_DISPLAY_NAME := ""
+global RC_DEVICE_ALIAS := ""
 global RC_CONTROL_SECRET := ""
 global RC_HEARTBEAT_INTERVAL_MS := 90000
 global RC_POLL_INTERVAL_MS := 5000
@@ -20,7 +21,7 @@ global RC_LAST_ERROR_MSG := ""
 global RC_ON_STATE_CHANGED := ""
 
 RC_Init(cfgPath, onStateChangedCallback := "") {
-    global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME
+    global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME, RC_DEVICE_ALIAS
     global RC_CONTROL_SECRET, RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
     global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE
 
@@ -51,9 +52,11 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
         try IniWrite(RC_UID, cfgPath, "remote_control", "uid")
     }
 
+    RC_DEVICE_ALIAS := Trim(RC_IniReadSafe(cfgPath, "remote_control", "device_alias", ""), " `t`r`n")
+
     RC_DISPLAY_NAME := Trim(RC_IniReadSafe(cfgPath, "remote_control", "display_name", ""), " `t`r`n")
     if (RC_DISPLAY_NAME = "") {
-        RC_DISPLAY_NAME := A_ComputerName
+        RC_DISPLAY_NAME := RC_BuildFriendlyDisplayName(RC_DEVICE_ALIAS)
         try IniWrite(RC_DISPLAY_NAME, cfgPath, "remote_control", "display_name")
     }
 
@@ -62,7 +65,7 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
 
     RC_StartupDefaultRun()
 
-    RC_Log("RemoteControl initialized. uid=" RC_UID " collection=" RC_COLLECTION)
+    RC_Log("RemoteControl initialized. uid=" RC_UID " display=" RC_DISPLAY_NAME " collection=" RC_COLLECTION)
     RC_Start()
     return true
 }
@@ -178,6 +181,20 @@ RC_BuildClientUid() {
     if (mac = "")
         mac := Format("{:X}", A_TickCount)
     return A_ComputerName "_" mac
+}
+
+RC_BuildFriendlyDisplayName(alias := "") {
+    shortCode := RC_BuildShortMachineCode()
+    if (alias != "")
+        return alias "@" A_ComputerName "-" shortCode
+    return A_ComputerName "-" shortCode
+}
+
+RC_BuildShortMachineCode() {
+    mac := RC_GetPrimaryMacAddress()
+    if (mac != "" && StrLen(mac) >= 4)
+        return StrUpper(SubStr(mac, -3))
+    return Format("{:04X}", Mod(A_TickCount, 65536))
 }
 
 RC_GetPrimaryMacAddress() {
@@ -343,6 +360,7 @@ RC_EnsureRemoteControlDefaults(cfgPath) {
         "api_key", "AIzaSyDqWHdBixVQPt4OiTi50hseInFxPtk0hf0",
         "collection", "ahk_clients",
         "uid", "",
+        "device_alias", "",
         "display_name", "",
         "control_secret", "ww-control-a3988-shared-2026",
         "heartbeat_interval_ms", "90000",

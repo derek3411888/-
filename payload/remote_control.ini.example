@@ -12,7 +12,15 @@ collection=ahk_clients
 ; 第一次可留空，腳本會自動生成（A_ComputerName + MAC）
 uid=
 
+; 裝置別名（建議填：主機A/主機B、客廳機、工作機）
+; 若 display_name 留空，會自動組成：device_alias@電腦名-短碼
+device_alias=
+
 ; 顯示名稱（下拉選單可見）
+; 可手動固定，例如：主機A-鳴潮、主機B-鳴潮
+; 若留空，會自動使用：
+; 1) 有 device_alias -> device_alias@電腦名-短碼
+; 2) 無 device_alias -> 電腦名-短碼
 display_name=
 
 ; 簡單共享密碼（需與 web app.js 的 CONTROL_SECRET 一致）
