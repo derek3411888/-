@@ -635,6 +635,20 @@ RemotePauseHookTick() {
 
     __REMOTE_PAUSE_HOTKEY_BUSY := true
     try {
+        confirmTemplate := A_ScriptDir "\確認.png"
+        if FileExist(confirmTemplate) {
+            if WaitForTemplateVisible(confirmTemplate, 15) {
+                if ClickTemplateIfFound(confirmTemplate)
+                    WriteLog("遠端PAUSE：15 秒內命中確認.png，已先執行點擊")
+                else
+                    WriteLog("遠端PAUSE：已偵測到確認.png，但點擊失敗，繼續原暫停流程", "WARN")
+            } else {
+                WriteLog("遠端PAUSE：15 秒內未檢測到確認.png，繼續原暫停流程", "INFO")
+            }
+        } else {
+            WriteLog("遠端PAUSE：找不到確認.png，略過模板檢測", "WARN")
+        }
+
         if !ProcessExist("LRMCAI.exe") {
             WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9", "INFO")
         } else {
