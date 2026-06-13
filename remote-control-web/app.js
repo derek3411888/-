@@ -13,7 +13,7 @@ const CONTROL_SECRET = "ww-control-a3988-shared-2026";
 const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const REFRESH_MS = 5_000;
-const WEB_BUILD = "20260603-4";
+const WEB_BUILD = "20260613-5";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -101,7 +101,7 @@ function renderClients() {
     const opt = document.createElement("option");
     opt.value = r.id;
     const onlineTag = r.online ? "在線" : "離線";
-    const labelName = r.computerName || r.displayName || r.id;
+    const labelName = r.displayName || r.computerName || r.id;
     opt.textContent = `${labelName} (${r.status} / ${onlineTag})`;
     pcDropdown.appendChild(opt);
   }
@@ -126,6 +126,7 @@ function refreshMeta() {
   const d = cache.get(id);
   const lines = [
     `UID: ${id}`,
+    `顯示名稱: ${readField(d, "displayName", "-")}`,
     `電腦: ${readField(d, "computerName", "-")}`,
     `狀態: ${readField(d, "status", "-")}`,
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
