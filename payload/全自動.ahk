@@ -635,19 +635,7 @@ RemotePauseHookTick() {
 
     __REMOTE_PAUSE_HOTKEY_BUSY := true
     try {
-        confirmTemplate := A_ScriptDir "\確認.png"
-        if FileExist(confirmTemplate) {
-            if WaitForTemplateVisible(confirmTemplate, 15) {
-                if ClickTemplateIfFound(confirmTemplate)
-                    WriteLog("遠端PAUSE：15 秒內命中確認.png，已先執行點擊")
-                else
-                    WriteLog("遠端PAUSE：已偵測到確認.png，但點擊失敗，繼續原暫停流程", "WARN")
-            } else {
-                WriteLog("遠端PAUSE：15 秒內未檢測到確認.png，繼續原暫停流程", "INFO")
-            }
-        } else {
-            WriteLog("遠端PAUSE：找不到確認.png，略過模板檢測", "WARN")
-        }
+        PauseAuxManagedScriptsOnRemotePause()
 
         if !ProcessExist("LRMCAI.exe") {
             WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9", "INFO")
@@ -658,7 +646,19 @@ RemotePauseHookTick() {
                 WriteLog("遠端PAUSE：送出 F9 到 LRMCAI 失敗", "WARN")
         }
 
-        PauseAuxManagedScriptsOnRemotePause()
+        confirmTemplate := A_ScriptDir "\確認.png"
+        if FileExist(confirmTemplate) {
+            if WaitForTemplateVisible(confirmTemplate, 60) {
+                if ClickTemplateIfFound(confirmTemplate)
+                    WriteLog("遠端PAUSE：60 秒內命中確認.png，已先執行點擊")
+                else
+                    WriteLog("遠端PAUSE：已偵測到確認.png，但點擊失敗，繼續原暫停流程", "WARN")
+            } else {
+                WriteLog("遠端PAUSE：60 秒內未檢測到確認.png，繼續原暫停流程", "INFO")
+            }
+        } else {
+            WriteLog("遠端PAUSE：找不到確認.png，略過模板檢測", "WARN")
+        }
     } finally {
         __REMOTE_PAUSE_HOTKEY_BUSY := false
     }
@@ -674,6 +674,10 @@ RemoteRunResumeHookTick() {
     try {
         ResumeAuxManagedScriptsAfterRemoteRun()
 
+        hwnd := GetWutheringGameHwnd()
+        if !hwnd
+            hwnd := WaitForWutheringGameWindow(20)
+
         loginTemplate := A_ScriptDir "\登入.png"
         loginDetected := false
         if FileExist(loginTemplate) {
@@ -685,14 +689,10 @@ RemoteRunResumeHookTick() {
             }
 
             ClickTemplateIfFound(loginTemplate)
-            EnsureLoginTemplateClearedByCenterClick(loginTemplate, 40)
+            WaitLoginScreenClearedByOcrAndCenterClick(hwnd, 40)
         } else {
             WriteLog("遠端RUN：找不到登入模板，略過點擊", "WARN")
         }
-
-        hwnd := GetWutheringGameHwnd()
-        if !hwnd
-            hwnd := WaitForWutheringGameWindow(20)
 
         if !hwnd {
             WriteLog("遠端RUN：找不到鳴潮視窗，略過主畫面模板檢測與 Ctrl+F1", "WARN")
@@ -750,29 +750,68 @@ IsTemplateVisible(templatePath) {
     }
 }
 
-EnsureLoginTemplateClearedByCenterClick(templatePath, timeoutSec := 40) {
-    if !IsTemplateVisible(templatePath)
+IsLoginScreenByOcr(hwnd) {
+    loginKeywords := ["點擊開始", "点击开始", "點選開始", "点选开始", "開始遊戲", "开始游戏",
+                      "點擊連接", "点击连接", "點選連接", "点选连接",
+                      "伺服器", "服务器", "賬號", "账号", "帳號", "账户"]
+    tempFile := A_Temp "\ahk_login_ocr_" A_TickCount ".png"
+    try {
+        ImagePutFile("ahk_id " hwnd, tempFile)
+        ocr := RapidOcr()
+        res := ocr.ocr_from_file(tempFile, , true)
+        if FileExist(tempFile)
+            FileDelete(tempFile)
+        if !IsObject(res)
+            return false
+        for block in res {
+            clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", "")
+            clean := StrReplace(clean, " ", "")
+            for _, kw in loginKeywords {
+                if InStr(clean, kw)
+                    return true
+            }
+        }
+    } catch {
+        try FileDelete(tempFile)
+    }
+    return false
+}
+
+WaitLoginScreenClearedByOcrAndCenterClick(hwnd, timeoutSec := 40) {
+    if !hwnd {
+        WriteLog("遠端RUN：無遊戲視窗，略過登入畫面 OCR 檢測", "WARN")
+        return false
+    }
+
+    ; 先等登入畫面出現（點擊按鈕後畫面需要短暫切換，最多 30 秒）
+    deadline30 := A_TickCount + 30000
+    loginScreenFound := false
+    while (A_TickCount < deadline30) {
+        if IsLoginScreenByOcr(hwnd) {
+            loginScreenFound := true
+            break
+        }
+        Sleep 400
+    }
+
+    if !loginScreenFound {
+        WriteLog("遠端RUN：點擊登入按鈕後 30 秒內未偵測到登入畫面（OCR），繼續後續流程", "INFO")
         return true
+    }
+    WriteLog("遠端RUN：OCR 偵測到登入畫面，開始以中心點擊直到消失")
 
     deadline := A_TickCount + timeoutSec * 1000
     attempts := 0
     while (A_TickCount < deadline) {
-        if !IsTemplateVisible(templatePath) {
-            if (attempts > 0)
-                WriteLog("遠端RUN：登入畫面已消失，中心點擊重試成功（嘗試 " attempts " 次）")
-            return true
-        }
-
         Sleep 2000
-        if !IsTemplateVisible(templatePath) {
-            if (attempts > 0)
-                WriteLog("遠端RUN：登入畫面已消失，中心點擊重試成功（嘗試 " attempts " 次）")
+        if !IsLoginScreenByOcr(hwnd) {
+            WriteLog("遠端RUN：登入畫面已消失（OCR 確認），共點擊 " attempts " 次")
             return true
         }
 
         attempts += 1
         if ClickWutheringCenterPoint() {
-            WriteLog("遠端RUN：登入畫面仍存在，已執行第 " attempts " 次中心點擊")
+            WriteLog("遠端RUN：登入畫面仍存在（OCR），已執行第 " attempts " 次中心點擊")
         } else {
             WriteLog("遠端RUN：中心點擊失敗，改用螢幕中心 fallback", "WARN")
             Click A_ScreenWidth // 2, A_ScreenHeight // 2
@@ -780,11 +819,8 @@ EnsureLoginTemplateClearedByCenterClick(templatePath, timeoutSec := 40) {
         Sleep 300
     }
 
-    if IsTemplateVisible(templatePath) {
-        WriteLog("遠端RUN：登入畫面在 " timeoutSec " 秒內未消失，後續仍嘗試主畫面檢測", "WARN")
-        return false
-    }
-    return true
+    WriteLog("遠端RUN：登入畫面在 " timeoutSec " 秒內未消失（OCR），後續仍嘗試主畫面檢測", "WARN")
+    return false
 }
 
 ClickWutheringCenterPoint() {
