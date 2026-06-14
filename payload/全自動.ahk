@@ -735,7 +735,7 @@ WaitForTemplateVisible(templatePath, timeoutSec := 60) {
     while (A_TickCount < deadline) {
         if IsTemplateVisible(templatePath)
             return true
-        Sleep 400
+        RawSleep(400)
     }
     return false
 }
@@ -948,7 +948,7 @@ SendHotkeyToLrmc(hotkey, reason := "") {
     if hwnd {
         try {
             WinActivate("ahk_id " hwnd)
-            Sleep 80
+            RawSleep(80)
             SendEvent hotkey
             if (reason != "")
                 WriteLog("已送出快捷鍵到 LRMCAI: " hotkey "（" reason "）")
@@ -971,6 +971,14 @@ SendHotkeyToLrmc(hotkey, reason := "") {
     }
 
     return false
+}
+
+RawSleep(delayMs) {
+    ms := 0
+    try ms := Integer(delayMs)
+    if (ms < 0)
+        ms := 0
+    DllCall("Sleep", "UInt", ms)
 }
 
 ; 軟暫停：主流程在 Sleep 檢查點停住，但遠端監控計時器仍可繼續心跳與收命令。
