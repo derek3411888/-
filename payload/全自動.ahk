@@ -939,35 +939,35 @@ ResumeProcessByPid(pid) {
 }
 
 SendHotkeyToLrmc(hotkey, reason := "") {
-    if !ProcessExist("LRMCAI.exe")
+    target := ResolveLrmcTargetWindow()
+    if !target.hwnd {
+        WriteLog("送出快捷鍵到 LRMCAI 失敗：找不到可用視窗，hotkey=" hotkey, "WARN")
         return false
-
-    hwnd := 0
-    try hwnd := WinExist("ahk_exe LRMCAI.exe")
-
-    if hwnd {
-        try {
-            WinActivate("ahk_id " hwnd)
-            RawSleep(80)
-            SendEvent hotkey
-            if (reason != "")
-                WriteLog("已送出快捷鍵到 LRMCAI: " hotkey "（" reason "）")
-            else
-                WriteLog("已送出快捷鍵到 LRMCAI: " hotkey)
-            return true
-        } catch {
-        }
     }
 
     try {
-        ControlSend(hotkey, , "ahk_exe LRMCAI.exe")
+        ControlSend(hotkey, , "ahk_id " target.hwnd)
         if (reason != "")
-            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey "（" reason "）")
+            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
         else
-            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey)
+            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
         return true
     } catch as e {
-        WriteLog("送出快捷鍵到 LRMCAI 失敗: " hotkey " | " e.Message, "WARN")
+        WriteLog("ControlSend 送出快捷鍵到 LRMCAI 失敗: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
+    }
+
+    try {
+        WinActivate("ahk_id " target.hwnd)
+        WinWaitActive("ahk_id " target.hwnd, , 1)
+        RawSleep(80)
+        SendEvent hotkey
+        if (reason != "")
+            WriteLog("已切到前景送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
+        else
+            WriteLog("已切到前景送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
+        return true
+    } catch as e {
+        WriteLog("送出快捷鍵到 LRMCAI 失敗: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
     }
 
     return false
@@ -979,6 +979,52 @@ RawSleep(delayMs) {
     if (ms < 0)
         ms := 0
     DllCall("Sleep", "UInt", ms)
+}
+
+ResolveLrmcTargetWindow() {
+    best := { hwnd: 0, pid: 0, title: "", class: "", score: -1 }
+
+    if !ProcessExist("LRMCAI.exe")
+        return best
+
+    try {
+        for hwnd in WinGetList("ahk_exe LRMCAI.exe") {
+            title := ""
+            class := ""
+            visible := false
+
+            try title := WinGetTitle("ahk_id " hwnd)
+            try class := WinGetClass("ahk_id " hwnd)
+            try visible := DllCall("IsWindowVisible", "ptr", hwnd, "int")
+
+            score := 0
+            if (visible)
+                score += 40
+            if (title != "")
+                score += 10
+            if InStr(title, "LRMCAI")
+                score += 50
+            if (title ~= "i)LRMCAI.*\d")
+                score += 100
+            if (class != "ConsoleWindowClass")
+                score += 20
+
+            if (score > best.score) {
+                best := { hwnd: hwnd, pid: WinGetPID("ahk_id " hwnd), title: title, class: class, score: score }
+            }
+        }
+    }
+
+    if (!best.hwnd) {
+        try {
+            hwnd := WinExist("ahk_exe LRMCAI.exe")
+            if hwnd {
+                best := { hwnd: hwnd, pid: WinGetPID("ahk_id " hwnd), title: WinGetTitle("ahk_id " hwnd), class: "", score: 0 }
+            }
+        }
+    }
+
+    return best
 }
 
 ; 軟暫停：主流程在 Sleep 檢查點停住，但遠端監控計時器仍可繼續心跳與收命令。
