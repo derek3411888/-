@@ -1477,6 +1477,7 @@ WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
     loginDetected := false
+    TryAssistLoginTemplateBeforeOcr()
     detectState := DetectWutheringAndExit(&loginDetected)
     if (detectState = "update") {
         updateLoops++
@@ -5826,7 +5827,7 @@ PsEsc(text) {
 ; =========================================================
 ; 額外模板檢測與點擊邏輯
 ; =========================================================
-ClickTemplateIfFound(templatePath) {
+ClickTemplateIfFound(templatePath, logIfMissing := true) {
     x := 0
     y := 0
     try {
@@ -5853,8 +5854,33 @@ ClickTemplateIfFound(templatePath) {
         WriteLog("模板檢測略過（不影響主流程）: " . templatePath . " | " . e.Message, "WARN")
         return false
     }
-    WriteLog("模板未檢測到: " . templatePath, "INFO")
+    if (logIfMissing)
+        WriteLog("模板未檢測到: " . templatePath, "INFO")
     return false
+}
+
+TryAssistLoginTemplateBeforeOcr() {
+    static lastAttemptTick := 0
+    static warnedMissingTemplate := false
+
+    intervalMs := 1000
+    nowTick := A_TickCount
+    if (nowTick - lastAttemptTick < intervalMs)
+        return
+    lastAttemptTick := nowTick
+
+    loginTemplate := A_ScriptDir "\登入.png"
+    if !FileExist(loginTemplate) {
+        if !warnedMissingTemplate {
+            warnedMissingTemplate := true
+            WriteLog("OCR 前模板輔助：找不到登入.png，略過此輔助機制", "WARN")
+        }
+        return
+    }
+    warnedMissingTemplate := false
+
+    if ClickTemplateIfFound(loginTemplate, false)
+        WriteLog("OCR 前模板輔助：已檢測到登入.png並點擊")
 }
 
 GetImageFileSize(path, &w, &h) {
