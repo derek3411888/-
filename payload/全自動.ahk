@@ -5369,10 +5369,47 @@ LoadServerScheduleContext(isContinueCycle := false) {
     if (idx > SERVER_SCHEDULE_LIST.Length)
         idx := 1
 
+    resolvedIdx := ResolveNextPendingServerIndexInCurrentCycle(idx)
+    if (resolvedIdx = 0) {
+        SERVER_SCHEDULE_INDEX := 1
+        CURRENT_SERVER_TARGET := ""
+        IniWrite "1", CFG_FILE, "server_schedule", "current_index"
+        WriteLog("伺服器排程：今日循環所有伺服器都已完成，啟動時不指定切服目標", "WARN")
+        return
+    }
+
+    if (resolvedIdx != idx)
+        WriteLog("伺服器排程：已自動略過今日已完成伺服器，改用第 " resolvedIdx " 個目標")
+    idx := resolvedIdx
+
     SERVER_SCHEDULE_INDEX := idx
     CURRENT_SERVER_TARGET := SERVER_SCHEDULE_LIST[idx]
     IniWrite idx, CFG_FILE, "server_schedule", "current_index"
     WriteLog("伺服器排程已載入：第 " idx "/" SERVER_SCHEDULE_LIST.Length " 個，目標=" CURRENT_SERVER_TARGET)
+}
+
+ResolveNextPendingServerIndexInCurrentCycle(startIdx := 1) {
+    global SERVER_SCHEDULE_LIST
+
+    total := SERVER_SCHEDULE_LIST.Length
+    if (total <= 0)
+        return 0
+
+    idx := startIdx
+    if (idx < 1 || idx > total)
+        idx := 1
+
+    Loop total {
+        current := idx + (A_Index - 1)
+        if (current > total)
+            current -= total
+
+        server := SERVER_SCHEDULE_LIST[current]
+        if !IsServerCompletedInCurrentCycle(server)
+            return current
+    }
+
+    return 0
 }
 
 AdvanceServerScheduleForNextCycle() {
