@@ -2148,6 +2148,10 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
         noWindowStreak := 0
         stableWindowHit += 1
+
+        ; 在 OCR 主迴圈中持續做非阻塞的登入模板輔助點擊。
+        TryAssistLoginTemplateBeforeOcr()
+
         if !foundTargetWindow {
             foundTargetWindow := true
             WriteLog("已找到目標鳴潮視窗，開始準備移動到右上角")
@@ -2781,63 +2785,34 @@ ToSimp(s) {
 
 ; 判斷兩個時間是否在同一日循環（上午4點～隔天上午4點）
 IsSameDayCircle(time1Str, time2Str) {
-    ; 解析時間字串 "yyyy-MM-dd HH:mm:ss"
     if (time1Str = "" || time2Str = "")
         return false
 
     try {
-        ; 轉換為分鐘數（以上午4點為循環起點）
-        GetDayCircleMinutes(t) {
-            parts := StrSplit(t, A_Space)
-            if (parts.Length < 2)
-                return -1
-            
-            timeParts := StrSplit(parts[2], ":")
-            if (timeParts.Length < 2)
-                return -1
-            
-            hour := Integer(timeParts[1])
-            minute := Integer(timeParts[2])
-            
-            ; 上午4點前（0-3點）算上一天的循環
-            if (hour < 4) {
-                ; 換算成分鐘，並加上前一天24小時
-                return (hour * 60 + minute) + 1440
-            } else {
-                ; 正常換算
-                return hour * 60 + minute
-            }
-        }
-        
-        min1 := GetDayCircleMinutes(time1Str)
-        min2 := GetDayCircleMinutes(time2Str)
-        
-        if (min1 < 0 || min2 < 0)
+        k1 := GetDayCircleKey(time1Str)
+        k2 := GetDayCircleKey(time2Str)
+        if (k1 = "" || k2 = "")
             return false
-        
-        ; 判斷兩個時間是否在同一天
-        parts1 := StrSplit(time1Str, A_Space)
-        parts2 := StrSplit(time2Str, A_Space)
-        
-        date1 := parts1[1]
-        date2 := parts2[1]
-        
-        ; 如果日期相同，直接算同一循環
-        if (date1 = date2)
-            return true
-        
-        ; 日期不同，檢查是否跨越上午4點
-        ; 例：4月1日3點59分 和 4月2日4點01分 不在同一循環
-        ; 但 4月2日3點59分 和 4月1日8點00分 在同一循環
-        
-        ; 簡化：比較 time1 的分鐘數和 time2 的分鐘數
-        ; 如果 time1 是 >= 1440（即前一天的0-3點），time2 也是 >= 1440，則同循環
-        ; 或都 < 1440，則同循環
-        return ((min1 >= 1440 && min2 >= 1440) || (min1 < 1440 && min2 < 1440))
+        return (k1 = k2)
     } catch as e {
         WriteLog("IsSameDayCircle 時間判斷失敗: " e.Message, "WARN")
         return false
     }
+}
+
+GetDayCircleKey(timeStr) {
+    ; 支援格式：yyyy-MM-dd HH:mm:ss
+    if !RegExMatch(timeStr, "^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$", &m)
+        return ""
+
+    yyyy := m[1], MM := m[2], dd := m[3], HH := m[4], mm := m[5], ss := m[6]
+    ts := yyyy MM dd HH mm ss
+
+    ; 上午 4 點前算前一天循環
+    if (Integer(HH) < 4)
+        ts := DateAdd(ts, -1, "Days")
+
+    return SubStr(ts, 1, 8)
 }
 
 ; 檢查伺服器是否在當日循環已完成
