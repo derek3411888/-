@@ -744,7 +744,9 @@ IsTemplateVisible(templatePath) {
     x := 0
     y := 0
     try {
-        return ImageSearch(&x, &y, 0, 0, A_ScreenWidth, A_ScreenHeight, templatePath) ? true : false
+        if FindTemplateInWutheringWindow(templatePath, &x, &y)
+            return true
+        return FindTemplateOnScreenWithTolerance(templatePath, &x, &y, 0, 0, A_ScreenWidth - 1, A_ScreenHeight - 1)
     } catch {
         return false
     }
@@ -5839,11 +5841,62 @@ PsEsc(text) {
 ; =========================================================
 ; 額外模板檢測與點擊邏輯
 ; =========================================================
+FindTemplateOnScreenWithTolerance(templatePath, &outX, &outY, x1, y1, x2, y2) {
+    outX := 0
+    outY := 0
+    variations := [0, 20, 30, 40, 60]
+    for _, v in variations {
+        spec := (v > 0) ? ("*" v " " templatePath) : templatePath
+        try {
+            if ImageSearch(&outX, &outY, x1, y1, x2, y2, spec)
+                return true
+        } catch {
+            continue
+        }
+    }
+    return false
+}
+
+FindTemplateInWutheringWindow(templatePath, &outX, &outY) {
+    outX := 0
+    outY := 0
+    hwnd := GetWutheringGameHwnd()
+    if !hwnd
+        return false
+
+    try {
+        WinRestore("ahk_id " hwnd)
+        WinSetAlwaysOnTop(1, "ahk_id " hwnd)
+        WinActivate("ahk_id " hwnd)
+    }
+
+    try {
+        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
+        if (ww <= 0 || wh <= 0)
+            return false
+
+        x1 := Max(0, wx)
+        y1 := Max(0, wy)
+        x2 := Min(A_ScreenWidth - 1, wx + ww - 1)
+        y2 := Min(A_ScreenHeight - 1, wy + wh - 1)
+        if (x2 <= x1 || y2 <= y1)
+            return false
+
+        return FindTemplateOnScreenWithTolerance(templatePath, &outX, &outY, x1, y1, x2, y2)
+    }
+
+    return false
+}
+
 ClickTemplateIfFound(templatePath, logIfMissing := true) {
     x := 0
     y := 0
     try {
-        if ImageSearch(&x, &y, 0, 0, A_ScreenWidth, A_ScreenHeight, templatePath) {
+        found := FindTemplateInWutheringWindow(templatePath, &x, &y)
+        if !found
+            found := FindTemplateOnScreenWithTolerance(templatePath, &x, &y, 0, 0, A_ScreenWidth - 1, A_ScreenHeight - 1)
+
+        if found {
             clickX := x
             clickY := y
             if GetImageFileSize(templatePath, &imgW, &imgH) {
