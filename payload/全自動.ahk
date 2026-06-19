@@ -812,11 +812,11 @@ WaitLoginScreenClearedByOcrAndCenterClick(hwnd, timeoutSec := 40) {
         }
 
         attempts += 1
-        if ClickWutheringCenterPoint() {
+        if ClickWutheringCenterPoint(hwnd) {
             WriteLog("遠端RUN：登入畫面仍存在（OCR），已執行第 " attempts " 次中心點擊")
         } else {
-            WriteLog("遠端RUN：中心點擊失敗，改用螢幕中心 fallback", "WARN")
-            Click A_ScreenWidth // 2, A_ScreenHeight // 2
+            WriteLog("遠端RUN：中心點擊失敗，改用遊戲視窗中心 fallback", "WARN")
+            ClickWutheringCenterPoint(hwnd)
         }
         Sleep 300
     }
@@ -825,24 +825,25 @@ WaitLoginScreenClearedByOcrAndCenterClick(hwnd, timeoutSec := 40) {
     return false
 }
 
-ClickWutheringCenterPoint() {
-    hwnd := GetWutheringGameHwnd()
+ClickWutheringCenterPoint(hwnd := 0) {
+    if !hwnd
+        hwnd := GetWutheringGameHwnd()
     if !hwnd
         hwnd := WaitForWutheringGameWindow(8)
     if !hwnd
         return false
 
-    try WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
+    ; 使用遊戲客戶區相對座標點擊，避免點到視窗外。
+    try WinGetClientPos(&cx, &cy, &cw, &ch, "ahk_id " hwnd)
     catch
         return false
 
-    if (ww <= 0 || wh <= 0)
+    if (cw <= 0 || ch <= 0)
         return false
 
-    cx := wx + (ww // 2)
-    cy := wy + (wh // 2)
-    Click cx, cy
-    return true
+    centerX := cw // 2
+    centerY := ch // 2
+    return ServerClickClient(hwnd, centerX, centerY)
 }
 
 PauseAuxManagedScriptsOnRemotePause() {
@@ -947,26 +948,34 @@ SendHotkeyToLrmc(hotkey, reason := "") {
         return false
     }
 
+    ; 需求：先置頂並激活 LRMCAI 主視窗，再送出快捷鍵。
+    try {
+        WinRestore("ahk_id " target.hwnd)
+        WinSetAlwaysOnTop(1, "ahk_id " target.hwnd)
+        WinActivate("ahk_id " target.hwnd)
+        WinWaitActive("ahk_id " target.hwnd, , 1)
+        RawSleep(80)
+    } catch as e {
+        WriteLog("LRMCAI 視窗置頂/激活失敗，仍嘗試送鍵: hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
+    }
+
+    try {
+        SendEvent hotkey
+        if (reason != "")
+            WriteLog("已以前景方式送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
+        else
+            WriteLog("已以前景方式送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
+        return true
+    } catch as e {
+        WriteLog("前景送出快捷鍵到 LRMCAI 失敗，改用 ControlSend: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
+    }
+
     try {
         ControlSend(hotkey, , "ahk_id " target.hwnd)
         if (reason != "")
             WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
         else
             WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
-        return true
-    } catch as e {
-        WriteLog("ControlSend 送出快捷鍵到 LRMCAI 失敗: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
-    }
-
-    try {
-        WinActivate("ahk_id " target.hwnd)
-        WinWaitActive("ahk_id " target.hwnd, , 1)
-        RawSleep(80)
-        SendEvent hotkey
-        if (reason != "")
-            WriteLog("已切到前景送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
-        else
-            WriteLog("已切到前景送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
         return true
     } catch as e {
         WriteLog("送出快捷鍵到 LRMCAI 失敗: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
