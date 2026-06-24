@@ -3035,6 +3035,14 @@ MonitorRewardAndShutdown() {
     loop {
         TryRecoverLrmcDuringRewardMonitor()
 
+        ; 檢查遊戲窗口是否在收尾監測期間消失（閃退）
+        if !WinExist("UE4-Client") {
+            WriteLog("收尾監測期間偵測遊戲窗口已消失，判定為遊戲閃退", "ERROR")
+            ShowTip("❌ 收尾期間遊戲閃退，準備重啟", 2500)
+            RequestRestart("收尾監測期間 UE4-Client 窗口消失（遊戲閃退）")
+            return
+        }
+
         chunk := ReadLogAppended(logPath, &lastPos)
         if (chunk != "") {
             for line in StrSplit(chunk, "`n") {
