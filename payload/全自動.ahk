@@ -1692,12 +1692,6 @@ IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
 WriteLog("流程成功完成，已重置重啟計數器")
 WriteStep("主流程完成", "重啟計數已歸零")
 
-; 新增：標記當前伺服器為已完成
-global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
-if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
-    MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET)
-}
-
 WriteLog("全自動流程完成，進入收尾監測（等待電台一鍵領取達標）")
 WriteStep("收尾監測", "等待電台一鍵領取條件")
 MonitorRewardAndShutdown()
@@ -3284,6 +3278,12 @@ ResetRestartTrackingOnFreshStart() {
 }
 
 HandleCycleFinishAndShutdown() {
+    ; 標記當前伺服器為已完成（收尾監測完成時才記錄）
+    global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
+    if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
+        MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET)
+    }
+
     if AdvanceServerScheduleForNextCycle() {
         global __NEXTSERVER_RESTART, __RESTART_IN_PROGRESS
         __RESTART_IN_PROGRESS := true
