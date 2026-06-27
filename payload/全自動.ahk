@@ -2911,7 +2911,7 @@ ShouldUseCrashRestartHotkey(reason) {
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
 RestartAutoScript(reason := "") {
-    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, MAIL_NOTIFY_ENABLED
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
@@ -2943,6 +2943,15 @@ RestartAutoScript(reason := "") {
     
     ; 儲存重啟計數
     IniWrite restartCount, CFG_FILE, "restart_tracking", "auto_restart_count"
+
+    ; 寄送重啟通知信（包含重啟原因）
+    if MAIL_NOTIFY_ENABLED {
+        restartMailResult := SendRestartNotifyMail(reason, restartCount, nowText)
+        if restartMailResult.ok
+            WriteLog("重啟通知信已寄出")
+        else
+            WriteLog("重啟通知信寄送失敗: " restartMailResult.message, "WARN")
+    }
     
     ; 檢查當前伺服器是否已在當日循環完成過
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
@@ -3463,6 +3472,61 @@ SendStartNotifyMail() {
     subject := subjectPrefix " 開始鋤地通知 " nowText
     body := BuildNotifyMailBody("全自動鋤地流程已開始，請勿登入。", nowText)
     body .= "`r`n提醒：若需要登入，請先執行停止鋤地流程。"
+
+    return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
+}
+
+SendRestartNotifyMail(restartReason, restartCount, nowText := "") {
+    global CFG_FILE, MAIL_SECTION, MAX_RESTART_COUNT, CRASH_RESTART_MODE
+
+    state := ReadCombinedConfigState()
+    if state.needSetup {
+        WriteLog("重啟寄信前偵測到設定缺漏，重新打開整合設定視窗", "WARN")
+        ok := ShowCombinedConfigSetupGui(CFG_FILE, MAIL_SECTION, state, "重啟寄信前偵測到設定有空白或錯誤")
+        if !ok
+            return { ok: false, message: "使用者取消整合設定" }
+
+        state := ReadCombinedConfigState()
+        if state.needSetup
+            return { ok: false, message: "設定仍不完整: " state.errorText }
+    }
+
+    cfgPath := Trim(CFG_FILE, " `t`r`n")
+    section := Trim(MAIL_SECTION, " `t`r`n")
+    if (cfgPath = "")
+        return { ok: false, message: "CFG_FILE 未設定" }
+    if !FileExist(cfgPath)
+        return { ok: false, message: "找不到設定檔: " cfgPath }
+
+    smtpHost := Trim(IniRead(cfgPath, section, "smtp_host", ""), " `t`r`n")
+    smtpPort := Trim(IniRead(cfgPath, section, "smtp_port", "587"), " `t`r`n")
+    smtpUser := Trim(IniRead(cfgPath, section, "smtp_user", ""), " `t`r`n")
+    smtpPass := Trim(IniRead(cfgPath, section, "smtp_pass", ""), " `t`r`n")
+    if (smtpPass = "")
+        smtpPass := Trim(IniRead(cfgPath, section, "smtp_password", ""), " `t`r`n")
+    mailFrom := Trim(IniRead(cfgPath, section, "from", ""), " `t`r`n")
+    mailTo := Trim(IniRead(cfgPath, section, "to", ""), " `t`r`n")
+    subjectPrefix := Trim(IniRead(cfgPath, section, "subject_prefix", "LRMCAI"), " `t`r`n")
+    useSsl := Trim(IniRead(cfgPath, section, "use_ssl", "1"), " `t`r`n")
+
+    if (smtpHost = "" || smtpUser = "" || smtpPass = "" || mailFrom = "" || mailTo = "")
+        return { ok: false, message: "mail_config.ini 欄位不完整" }
+    if !(smtpPort ~= "^\d+$")
+        return { ok: false, message: "smtp_port 不是數字: " smtpPort }
+
+    if (nowText = "")
+        nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+
+    restartReason := Trim(restartReason, " `t`r`n")
+    if (restartReason = "")
+        restartReason := "未提供"
+
+    modeName := CRASH_RESTART_MODE ? "crash" : "restart"
+    subject := subjectPrefix " 重啟通知 " nowText
+    body := BuildNotifyMailBody("全自動流程觸發重啟。", nowText)
+    body .= "`r`n重啟模式：" modeName
+    body .= "`r`n重啟次數：" restartCount "/" MAX_RESTART_COUNT
+    body .= "`r`n重啟原因：" restartReason
 
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
 }
