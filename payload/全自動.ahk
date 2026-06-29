@@ -45,7 +45,7 @@ global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
 global REWARD_INVALID_HWND_NEED_COUNT := 6
-global REWARD_LOG_RECENT_WINDOW_SEC := 300
+global REWARD_LOG_RECENT_WINDOW_SEC := 3600
 global REWARD_LRMCAI_RESTART_COOLDOWN_MS := 15000
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
@@ -3282,13 +3282,15 @@ ReadLogAppended(filePath, &lastPos) {
 }
 
 ExtractLogTimestampToA_NowFormat(line) {
-    ; 預期格式：YYYY-MM-DD HH:MM:SS [LEVEL] ...
-    if RegExMatch(line, "^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})", &m)
+    ; 支援格式：
+    ; 1) YYYY-MM-DD HH:MM:SS [LEVEL] ...
+    ; 2) YYYY-MM-DD HH:MM:SS,mmm - LRMCAI - INFO - ...
+    if RegExMatch(line, "^\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:[\.,]\d{1,6})?", &m)
         return m[1] m[2] m[3] m[4] m[5] m[6]
     return ""
 }
 
-IsRecentRewardMonitorLogLine(line, maxAgeSec := 300) {
+IsRecentRewardMonitorLogLine(line, maxAgeSec := 3600) {
     ts := ExtractLogTimestampToA_NowFormat(line)
     if (ts = "")
         return false
