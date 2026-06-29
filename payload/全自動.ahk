@@ -45,6 +45,7 @@ global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
 global REWARD_INVALID_HWND_NEED_COUNT := 6
+global REWARD_LOG_RECENT_WINDOW_SEC := 300
 global REWARD_LRMCAI_RESTART_COOLDOWN_MS := 15000
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
@@ -3013,7 +3014,7 @@ RestartAutoScript(reason := "") {
 }
 
 MonitorRewardAndShutdown() {
-    global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS, REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT
+    global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS, REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT, REWARD_LOG_RECENT_WINDOW_SEC
 
     logPath := ResolveRewardLogPath()
     if (logPath = "") {
@@ -3057,6 +3058,9 @@ MonitorRewardAndShutdown() {
             for line in StrSplit(chunk, "`n") {
                 line := Trim(line, "`r`t ")
                 if (line = "")
+                    continue
+
+                if !IsRecentRewardMonitorLogLine(line, REWARD_LOG_RECENT_WINDOW_SEC)
                     continue
 
                 TryStopScreenRecordingByLrmcTaskLine(line)
@@ -3274,6 +3278,27 @@ ReadLogAppended(filePath, &lastPos) {
         return txt
     } catch {
         return ""
+    }
+}
+
+ExtractLogTimestampToA_NowFormat(line) {
+    ; 預期格式：YYYY-MM-DD HH:MM:SS [LEVEL] ...
+    if RegExMatch(line, "^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})", &m)
+        return m[1] m[2] m[3] m[4] m[5] m[6]
+    return ""
+}
+
+IsRecentRewardMonitorLogLine(line, maxAgeSec := 300) {
+    ts := ExtractLogTimestampToA_NowFormat(line)
+    if (ts = "")
+        return false
+
+    try {
+        ; 正值表示該行時間早於現在；僅接受近期日誌，並容忍最多10秒時鐘漂移
+        deltaSec := DateDiff(A_Now, ts, "Seconds")
+        return (deltaSec >= -10 && deltaSec <= maxAgeSec)
+    } catch {
+        return false
     }
 }
 
