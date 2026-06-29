@@ -40,7 +40,7 @@ global TOOLTIP_CONTENT := ""
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
-global REWARD_START_DELAY_MS := 60000
+global REWARD_START_DELAY_MS := 90000
 global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
@@ -2797,8 +2797,10 @@ IsSameDayCircle(time1Str, time2Str) {
     try {
         k1 := GetDayCircleKey(time1Str)
         k2 := GetDayCircleKey(time2Str)
-        if (k1 = "" || k2 = "")
+        if (k1 = "" || k2 = "") {
+            WriteLog("IsSameDayCircle 無法解析時間，t1='" time1Str "' t2='" time2Str "'", "WARN")
             return false
+        }
         return (k1 = k2)
     } catch as e {
         WriteLog("IsSameDayCircle 時間判斷失敗: " e.Message, "WARN")
@@ -2806,13 +2808,29 @@ IsSameDayCircle(time1Str, time2Str) {
     }
 }
 
-GetDayCircleKey(timeStr) {
-    ; 支援格式：yyyy-MM-dd HH:mm:ss
-    if !RegExMatch(timeStr, "^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$", &m)
+NormalizeCycleTimeString(timeStr) {
+    s := Trim(timeStr, " `t`r`n")
+    s := Trim(s, "　")  ; 全形空白
+    if (s = "")
         return ""
 
-    yyyy := m[1], MM := m[2], dd := m[3], HH := m[4], mm := m[5], ss := m[6]
-    ts := yyyy MM dd HH mm ss
+    ; 支援 2026-06-29 12:38:13 / 2026/06/29 12:38:13 / 2026-06-29 12:38:13,789
+    if RegExMatch(s, "(\d{4})[-/\.](\d{2})[-/\.](\d{2})[ T](\d{2}):(\d{2}):(\d{2})", &m)
+        return m[1] m[2] m[3] m[4] m[5] m[6]
+
+    ; 支援 A_Now 格式
+    if RegExMatch(s, "^(\d{14})$", &m)
+        return m[1]
+
+    return ""
+}
+
+GetDayCircleKey(timeStr) {
+    ts := NormalizeCycleTimeString(timeStr)
+    if (ts = "")
+        return ""
+
+    HH := SubStr(ts, 9, 2)
 
     ; 上午 4 點前算前一天循環
     if (Integer(HH) < 4)

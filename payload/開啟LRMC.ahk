@@ -408,7 +408,7 @@ WriteStep("等待UI窗口", "條件: 標題包含 LRMCAI 且有版本數字")
 
 ; 先嘗試找到包含版本號的主窗口（優先）
 targetHwnd := 0
-maxAttempts := 30
+maxAttempts := 60
 attempt := 0
 
 while (attempt < maxAttempts && !targetHwnd) {
@@ -438,7 +438,7 @@ while (attempt < maxAttempts && !targetHwnd) {
 }
 
 if !targetHwnd {
-    Log("等待 LRMCAI UI 窗口超時（100秒），無法找到包含版本號的窗口", "ERROR")
+    Log("等待 LRMCAI UI 窗口超時（180秒），無法找到包含版本號的窗口", "ERROR")
     
     ; 列出所有找到的窗口供調試
     Log("所有找到的窗口:", "WARN")
