@@ -2081,14 +2081,11 @@ CrashWatcherTick() {
             try ProcessClose "OK-WW.exe"
         Sleep 2000
 
-        ; 以 AhkExe 重新啟動整支腳本。
-        ; 僅在 LRMCAI 已啟動後發生崩潰時，才帶 crash 參數進入快捷鍵模式。
-        global AhkExe
-        restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
-        if ShouldUseCrashRestartHotkey("UE4-Client 崩潰重啟")
-            restartCmd .= ' crash'
-        Run(restartCmd)
-        ExitApp
+        ; 統一走 RequestRestart：
+        ; 1) 正確設置重啟旗標，避免 OnExit 誤停錄影
+        ; 2) 沿用既有重啟計數/通知/crash hotkey 模式判定
+        RequestRestart("UE4-Client 崩潰重啟")
+        return
     } finally busy := false
 }
 
