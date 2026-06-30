@@ -408,7 +408,7 @@ WriteStep("等待UI窗口", "條件: 標題包含 LRMCAI 且有版本數字")
 
 ; 先嘗試找到包含版本號的主窗口（優先）
 targetHwnd := 0
-maxAttempts := 60
+maxAttempts := 100  ; 5 分鐘 = 60 秒 * 100 次，每次間隔 3 秒
 attempt := 0
 
 while (attempt < maxAttempts && !targetHwnd) {
@@ -422,23 +422,23 @@ while (attempt < maxAttempts && !targetHwnd) {
             ; 檢查 LRMCAI 後面是否有數字
             ; 匹配任何格式的版本號（3.03、v3.03、v303、3 等）
             if (title ~= "i)LRMCAI.*\d") {
-                Log("找到UI窗口（含數字）: [" title "]", "INFO")
+                Log("找到 UI 窗口（含數字）: [" title "]", "INFO")
                 targetHwnd := hwnd
                 break
             }
         }
     } catch as e {
-        Log("搜索窗口出錯: " e.Message, "WARN")
+        Log("搜索窗口出錯：" e.Message, "WARN")
     }
     
     if (!targetHwnd) {
-        Log("第 " attempt " 次搜索未找到UI窗口，3秒後重試...")
+        Log("第 " attempt " 次搜索未找到 UI 窗口，3 秒後重試...")
         Sleep 3000
     }
 }
 
 if !targetHwnd {
-    Log("等待 LRMCAI UI 窗口超時（180秒），無法找到包含版本號的窗口", "ERROR")
+    Log("等待 LRMCAI UI 窗口超時（5 分鐘），無法找到包含版本號的窗口", "ERROR")
     
     ; 列出所有找到的窗口供調試
     Log("所有找到的窗口:", "WARN")
