@@ -1749,89 +1749,94 @@ StartOKWWFlow(isRestart) {
     }
     
     if (okwwHwnd) {
-        ; 激活 OKWW 視窗
+        topmostCtx := PrepareOkwwTopmostOperation(okwwHwnd)
         try {
-            WinActivate "ahk_id " okwwHwnd
-            WinWaitActive "ahk_id " okwwHwnd, , 3
-            Sleep 500
-            
-            ; 截圖OKWW視窗並OCR識別
-            WriteLog("開始OCR識別OKWW視窗中的啟動遊戲/F11字樣...")
-            tempFile := A_Temp "\okww_launch_" A_TickCount ".jpg"
+            ; 激活 OKWW 視窗
             try {
-                ImagePutFile("ahk_id " okwwHwnd, tempFile)
+                WinActivate "ahk_id " okwwHwnd
+                WinWaitActive "ahk_id " okwwHwnd, , 3
+                Sleep 500
                 
-                ; OCR識別
-                ocr := RapidOcr()
-                res := ocr.ocr_from_file(tempFile, , true)
-                
-                if FileExist(tempFile)
-                    FileDelete(tempFile)
-                
-                ; 搜尋啟動遊戲或F11相關文字
-                foundButton := false
-                clickX := 0
-                clickY := 0
-                
-                if IsObject(res) {
-                    for block in res {
-                        clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", "")
-                        clean := StrReplace(clean, " ", "")
-                        
-                        ; 檢測啟動遊戲、開始（繁體、簡體）或 F11
-                        if InStr(clean, "啟動遊戲") || InStr(clean, "启动游戏") || InStr(clean, "開始") || InStr(clean, "开始") || InStr(clean, "F11") {
-                            WriteLog("找到啟動按鈕文字: " block.text)
-                            ; 計算文字中心點 - 支持 box 和 boxPoint 兩種格式
-                            boxData := ""
-                            if block.HasOwnProp("box") && IsObject(block.box) && block.box.Length >= 4 {
-                                boxData := block.box
-                            } else if block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3 {
-                                boxData := block.boxPoint
-                            }
+                ; 截圖OKWW視窗並OCR識別
+                WriteLog("開始OCR識別OKWW視窗中的啟動遊戲/F11字樣...")
+                tempFile := A_Temp "\okww_launch_" A_TickCount ".jpg"
+                try {
+                    ImagePutFile("ahk_id " okwwHwnd, tempFile)
+                    
+                    ; OCR識別
+                    ocr := RapidOcr()
+                    res := ocr.ocr_from_file(tempFile, , true)
+                    
+                    if FileExist(tempFile)
+                        FileDelete(tempFile)
+                    
+                    ; 搜尋啟動遊戲或F11相關文字
+                    foundButton := false
+                    clickX := 0
+                    clickY := 0
+                    
+                    if IsObject(res) {
+                        for block in res {
+                            clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", "")
+                            clean := StrReplace(clean, " ", "")
                             
-                            if (boxData != "") {
-                                if (boxData[1].HasOwnProp("x")) {
-                                    ; boxPoint 格式：[{x,y}, {x,y}, {x,y}, {x,y}]
-                                    clickX := (boxData[1].x + boxData[3].x) / 2
-                                    clickY := (boxData[1].y + boxData[3].y) / 2
-                                } else {
-                                    ; box 格式：[[x,y], [x,y], [x,y], [x,y]]
-                                    clickX := (boxData[1][1] + boxData[3][1]) / 2
-                                    clickY := (boxData[1][2] + boxData[3][2]) / 2
+                            ; 檢測啟動遊戲、開始（繁體、簡體）或 F11
+                            if InStr(clean, "啟動遊戲") || InStr(clean, "启动游戏") || InStr(clean, "開始") || InStr(clean, "开始") || InStr(clean, "F11") {
+                                WriteLog("找到啟動按鈕文字: " block.text)
+                                ; 計算文字中心點 - 支持 box 和 boxPoint 兩種格式
+                                boxData := ""
+                                if block.HasOwnProp("box") && IsObject(block.box) && block.box.Length >= 4 {
+                                    boxData := block.box
+                                } else if block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3 {
+                                    boxData := block.boxPoint
                                 }
-                                foundButton := true
-                                WriteLog("計算點擊座標: " clickX ", " clickY)
-                                break
-                            } else {
-                                WriteLog("警告：文字框座標格式不正確", "WARN")
+                                
+                                if (boxData != "") {
+                                    if (boxData[1].HasOwnProp("x")) {
+                                        ; boxPoint 格式：[{x,y}, {x,y}, {x,y}, {x,y}]
+                                        clickX := (boxData[1].x + boxData[3].x) / 2
+                                        clickY := (boxData[1].y + boxData[3].y) / 2
+                                    } else {
+                                        ; box 格式：[[x,y], [x,y], [x,y], [x,y]]
+                                        clickX := (boxData[1][1] + boxData[3][1]) / 2
+                                        clickY := (boxData[1][2] + boxData[3][2]) / 2
+                                    }
+                                    foundButton := true
+                                    WriteLog("計算點擊座標: " clickX ", " clickY)
+                                    break
+                                } else {
+                                    WriteLog("警告：文字框座標格式不正確", "WARN")
+                                }
                             }
                         }
                     }
-                }
-                
-                ; 如果找到按鈕，點擊它
-                if (foundButton && clickX > 0 && clickY > 0) {
-                    WriteLog("點擊啟動按鈕座標: " clickX ", " clickY)
-                    MouseMove clickX, clickY
-                    Sleep 200
-                    MouseClick "left"
-                    WriteLog("已點擊OKWW啟動按鈕")
-                    Sleep 1000
-                } else {
-                    WriteLog("未找到啟動遊戲按鈕，嘗試使用備用方案F11", "WARN")
+                    
+                    ; 如果找到按鈕，點擊它
+                    if (foundButton && clickX > 0 && clickY > 0) {
+                        WriteLog("點擊啟動按鈕座標: " clickX ", " clickY)
+                        MouseMove clickX, clickY
+                        Sleep 200
+                        MouseClick "left"
+                        WriteLog("已點擊OKWW啟動按鈕")
+                        Sleep 1000
+                    } else {
+                        WriteLog("未找到啟動遊戲按鈕，嘗試使用備用方案F11", "WARN")
+                        SendEvent "{F11}"
+                        WriteLog("已發送F11備用快捷鍵")
+                        Sleep 1000
+                    }
+                } catch as e {
+                    WriteLog("OKWW OCR識別失敗: " e.Message ", 使用備用方案F11", "WARN")
                     SendEvent "{F11}"
                     WriteLog("已發送F11備用快捷鍵")
                     Sleep 1000
                 }
             } catch as e {
-                WriteLog("OKWW OCR識別失敗: " e.Message ", 使用備用方案F11", "WARN")
-                SendEvent "{F11}"
-                WriteLog("已發送F11備用快捷鍵")
-                Sleep 1000
+                WriteLog("激活OKWW視窗失敗: " e.Message, "ERROR")
+                WriteStepResult("OKWW流程", false, "激活視窗失敗")
             }
-        } catch as e {
-            WriteLog("激活OKWW視窗失敗: " e.Message, "ERROR")
-            WriteStepResult("OKWW流程", false, "激活視窗失敗")
+        } finally {
+            RestoreTopmostAfterOkwwOperation(topmostCtx)
         }
     } else {
         WriteLog("無法找到 OKWW 視窗，跳過啟動", "WARN")
@@ -1841,6 +1846,57 @@ StartOKWWFlow(isRestart) {
     Sleep 1000
     MinimizeOKWWWindows()
     WriteStepResult("OKWW流程", true, "已完成啟動與最小化")
+}
+
+PrepareOkwwTopmostOperation(okwwHwnd) {
+    ctx := Map()
+    ctx["okww"] := okwwHwnd
+    ctx["wuthering"] := 0
+    ctx["lrmc"] := 0
+
+    try {
+        wuthHwnd := GetWutheringGameHwnd()
+        if (wuthHwnd) {
+            ctx["wuthering"] := wuthHwnd
+            try WinSetAlwaysOnTop(0, "ahk_id " wuthHwnd)
+        }
+    }
+
+    try {
+        target := ResolveLrmcTargetWindow()
+        if (target.hwnd) {
+            ctx["lrmc"] := target.hwnd
+            try WinSetAlwaysOnTop(0, "ahk_id " target.hwnd)
+        }
+    }
+
+    try {
+        WinRestore("ahk_id " okwwHwnd)
+        WinSetAlwaysOnTop(1, "ahk_id " okwwHwnd)
+        WinActivate("ahk_id " okwwHwnd)
+        WinWaitActive("ahk_id " okwwHwnd, , 2)
+        WriteLog("OKWW OCR/點擊前：已設置 OKWW 置頂，並暫時取消鳴潮/LRMCAI 置頂")
+    } catch as e {
+        WriteLog("OKWW 置頂準備失敗: " e.Message, "WARN")
+    }
+
+    return ctx
+}
+
+RestoreTopmostAfterOkwwOperation(ctx) {
+    try {
+        okwwHwnd := ctx.Has("okww") ? ctx["okww"] : 0
+        if (okwwHwnd)
+            try WinSetAlwaysOnTop(0, "ahk_id " okwwHwnd)
+    }
+
+    try {
+        wuthHwnd := ctx.Has("wuthering") ? ctx["wuthering"] : 0
+        if (wuthHwnd && WinExist("ahk_id " wuthHwnd)) {
+            try WinSetAlwaysOnTop(1, "ahk_id " wuthHwnd)
+            WriteLog("OKWW 操作完成：已恢復鳴潮置頂")
+        }
+    }
 }
 
 ; ★ 最小化 OKWW 視窗
