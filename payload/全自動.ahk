@@ -1893,8 +1893,8 @@ RestoreTopmostAfterOkwwOperation(ctx) {
     try {
         wuthHwnd := ctx.Has("wuthering") ? ctx["wuthering"] : 0
         if (wuthHwnd && WinExist("ahk_id " wuthHwnd)) {
-            try WinSetAlwaysOnTop(1, "ahk_id " wuthHwnd)
-            WriteLog("OKWW 操作完成：已恢復鳴潮置頂")
+            try WinSetAlwaysOnTop(0, "ahk_id " wuthHwnd)
+            WriteLog("OKWW 操作完成：不恢復鳴潮持續置頂")
         }
     }
 }
@@ -2397,6 +2397,15 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     roiBottomMargin := 0
 
     WriteLog("模板驗證參數: template=" templateFile " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
+
+    ; 城市操作時只做一次置頂脈衝，避免鳴潮長時間持續置頂
+    try {
+        WinRestore("ahk_id " hwnd)
+        WinSetAlwaysOnTop(1, "ahk_id " hwnd)
+        WinActivate("ahk_id " hwnd)
+        Sleep 120
+        WinSetAlwaysOnTop(0, "ahk_id " hwnd)
+    }
 
     deadline := A_TickCount + timeoutSec*1000
     lastProgressLog := A_TickCount
@@ -5997,8 +6006,11 @@ FindTemplateInWutheringWindow(templatePath, &outX, &outY) {
 
     try {
         WinRestore("ahk_id " hwnd)
+        ; 只在模板檢測前做一次置頂脈衝，避免持續置頂影響其他視窗
         WinSetAlwaysOnTop(1, "ahk_id " hwnd)
         WinActivate("ahk_id " hwnd)
+        Sleep 80
+        WinSetAlwaysOnTop(0, "ahk_id " hwnd)
     }
 
     try {
