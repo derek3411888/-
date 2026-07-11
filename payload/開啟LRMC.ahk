@@ -408,7 +408,7 @@ WriteStep("等待UI窗口", "條件: 標題包含 LRMCAI 且有版本數字")
 
 ; 先嘗試找到包含版本號的主窗口（優先）
 targetHwnd := 0
-maxAttempts := 100  ; 5 分鐘 = 60 秒 * 100 次，每次間隔 3 秒
+maxAttempts := 60
 attempt := 0
 
 while (attempt < maxAttempts && !targetHwnd) {
@@ -422,23 +422,23 @@ while (attempt < maxAttempts && !targetHwnd) {
             ; 檢查 LRMCAI 後面是否有數字
             ; 匹配任何格式的版本號（3.03、v3.03、v303、3 等）
             if (title ~= "i)LRMCAI.*\d") {
-                Log("找到 UI 窗口（含數字）: [" title "]", "INFO")
+                Log("找到UI窗口（含數字）: [" title "]", "INFO")
                 targetHwnd := hwnd
                 break
             }
         }
     } catch as e {
-        Log("搜索窗口出錯：" e.Message, "WARN")
+        Log("搜索窗口出錯: " e.Message, "WARN")
     }
     
     if (!targetHwnd) {
-        Log("第 " attempt " 次搜索未找到 UI 窗口，3 秒後重試...")
+        Log("第 " attempt " 次搜索未找到UI窗口，3秒後重試...")
         Sleep 3000
     }
 }
 
 if !targetHwnd {
-    Log("等待 LRMCAI UI 窗口超時（5 分鐘），無法找到包含版本號的窗口", "ERROR")
+    Log("等待 LRMCAI UI 窗口超時（180秒），無法找到包含版本號的窗口", "ERROR")
     
     ; 列出所有找到的窗口供調試
     Log("所有找到的窗口:", "WARN")
@@ -685,6 +685,12 @@ if (best is Array) {
         Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
     } else {
         ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+        if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
+            Log("點擊前切換 LRMC 前景失敗，已中止本次點擊以避免誤點", "WARN")
+            if FileExist(tempFile)
+                FileDelete(tempFile)
+            ExitApp
+        }
         CoordMode "Mouse", "Screen"
         Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
         MouseClick "left", clickX, clickY
@@ -713,6 +719,49 @@ if FileExist(tempFile)
 
 Log("LRMC 啟動流程完成")
 ExitApp
+
+; 點擊前先切到 LRMC 前景，避免遊戲鎖滑鼠導致座標正確但點擊無效。
+EnsureWindowForegroundForClick(hwnd, pid := 0) {
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    try WinRestore("ahk_id " hwnd)
+    Sleep 120
+    try WinActivate("ahk_id " hwnd)
+    if WinWaitActive("ahk_id " hwnd, , 1) {
+        Log("點擊前已切到 LRMC 前景視窗: hwnd=" hwnd)
+        return true
+    }
+
+    ; 模擬人為切窗（Alt+Tab）後再次指定 LRMC，處理遊戲剛鎖滑鼠視角的情況。
+    try Send("!{Tab}")
+    Sleep 220
+    try WinActivate("ahk_id " hwnd)
+    if WinWaitActive("ahk_id " hwnd, , 1) {
+        Log("Alt+Tab 後切換 LRMC 前景成功: hwnd=" hwnd)
+        return true
+    }
+
+    ; 後備：同 PID 其他視窗嘗試取得前景。
+    if (pid) {
+        try {
+            for altHwnd in WinGetList("ahk_pid " pid) {
+                if !WinExist("ahk_id " altHwnd)
+                    continue
+                try WinRestore("ahk_id " altHwnd)
+                Sleep 100
+                try WinActivate("ahk_id " altHwnd)
+                if WinWaitActive("ahk_id " altHwnd, , 1) {
+                    Log("後備切換成功（同 PID 視窗）: hwnd=" altHwnd)
+                    return true
+                }
+            }
+        }
+    }
+
+    Log("無法將 LRMC 切到前景，將放棄本次點擊", "WARN")
+    return false
+}
 
 ; ========= 穩健送出 Ctrl+F1（同 PID 多視窗嘗試，提升命中率） =========
 SendCtrlF1(pid, preferredHwnd := 0) {
