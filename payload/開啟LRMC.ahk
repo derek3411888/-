@@ -343,6 +343,7 @@ findWindow() {
 findWindowWithFallback() {
     maxAttempts := 12
     attempt := 0
+    currentPID := DllCall("GetCurrentProcessId")
 
     while (attempt < maxAttempts) {
         attempt++
@@ -366,8 +367,18 @@ findWindowWithFallback() {
         try {
             ; 回退二：以標題內含 LRMCAI 的視窗
             for hwnd in WinGetList() {
+                procName := ""
+                wclass := ""
+                winPid := 0
                 title := WinGetTitle(hwnd)
-                if InStr(title, "LRMCAI")
+                try procName := StrLower(WinGetProcessName(hwnd))
+                try wclass := StrLower(WinGetClass(hwnd))
+                try winPid := WinGetPID(hwnd)
+
+                if (winPid = currentPID || wclass = "tooltips_class32")
+                    continue
+
+                if (procName = "lrmcai.exe" && InStr(title, "LRMCAI"))
                     return hwnd
             }
         } catch {

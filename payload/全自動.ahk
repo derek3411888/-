@@ -1731,13 +1731,29 @@ StartOKWWFlow(isRestart) {
     okwwHwnd := 0
     maxAttempts := 10
     attempt := 0
+    currentPID := DllCall("GetCurrentProcessId")
     
     while (attempt < maxAttempts && !okwwHwnd) {
         attempt++
         try {
             ; 尋找標題包含 "OK-WW" 和 "Global" 的視窗（格式: OK-WW v版本數字 Global）
             for hwnd in WinGetList() {
+                pid := 0
+                procName := ""
+                wclass := ""
                 title := WinGetTitle(hwnd)
+                try pid := WinGetPID(hwnd)
+                try procName := StrLower(WinGetProcessName(hwnd))
+                try wclass := StrLower(WinGetClass(hwnd))
+
+                ; 排除當前腳本自身視窗與 Tooltip，避免誤判。
+                if (pid = currentPID || wclass = "tooltips_class32")
+                    continue
+
+                ; 僅接受 OKWW 真正可能來源進程。
+                if (procName != "ok-ww.exe" && procName != "pythonw.exe")
+                    continue
+
                 ; 匹配 "OK-WW v版本數字 Global" 格式
                 if (InStr(title, "OK-WW") && InStr(title, "Global")) {
                     okwwHwnd := hwnd
@@ -1908,13 +1924,22 @@ MinimizeOKWWWindows() {
     WriteStep("最小化OKWW", "入口")
     WriteLog("開始尋找並最小化 OKWW 視窗...")
     foundCount := 0
+    currentPID := DllCall("GetCurrentProcessId")
     
     ; 尋找所有可能的 OKWW 視窗
     for hwnd in WinGetList() {
         try {
             title := WinGetTitle(hwnd)
             processName := WinGetProcessName(hwnd)
+            pid := WinGetPID(hwnd)
+            wclass := ""
+            try wclass := StrLower(WinGetClass(hwnd))
             titleLower := StrLower(title)
+            processLower := StrLower(processName)
+
+            ; 排除自身腳本與 Tooltip 視窗，避免誤把 step tooltip 當作 OKWW 視窗。
+            if (pid = currentPID || wclass = "tooltips_class32")
+                continue
             
             ; 排除編輯器和開發工具
             isEditor := (InStr(titleLower, "visual studio code") || 
@@ -1932,8 +1957,8 @@ MinimizeOKWWWindows() {
             }
             
             ; 方法2: 檢查是否為相關進程
-            if (processName = "ok-ww.exe" || 
-                (processName = "pythonw.exe" && InStr(titleLower, "ok"))) {
+            if (processLower = "ok-ww.exe" || 
+                (processLower = "pythonw.exe" && (InStr(titleLower, "ok-ww") || InStr(titleLower, "okww")))) {
                 isOKWWWindow := true
             }
             

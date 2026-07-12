@@ -334,15 +334,29 @@ IsValidGameWindow(hwnd) {
 ListOkwwWindows() {
     list := []
     Log("開始搜尋OKWW視窗...")
+    currentPID := DllCall("GetCurrentProcessId")
     
     ; 搜尋所有視窗
     for hwnd in WinGetList() {
         try {
             title := WinGetTitle(hwnd)
             processName := WinGetProcessName(hwnd)
+            pid := WinGetPID(hwnd)
+            wclass := ""
+            try wclass := WinGetClass(hwnd)
             
             ; 檢查標題包含OKWW或OK-WW（不區分大小寫）
             titleLower := StrLower(title)
+            processLower := StrLower(processName)
+            classLower := StrLower(wclass)
+
+            ; 排除自己這支守門腳本（避免把本腳本 tooltip/視窗當成 OKWW）
+            if (pid = currentPID)
+                continue
+
+            ; 排除 Tooltip 類視窗（常見誤判來源）
+            if (classLower = "tooltips_class32")
+                continue
             
             ; 排除編輯器和開發工具
             isEditor := (InStr(titleLower, "visual studio code") || 
@@ -350,11 +364,14 @@ ListOkwwWindows() {
                         InStr(titleLower, "vscode") ||
                         InStr(processName, "Code.exe") ||
                         InStr(processName, "notepad"))
+
+            ; 只允許真正可能的 OKWW 相關進程來源
+            isOkwwProcess := (processLower = "ok-ww.exe" || processLower = "pythonw.exe")
+            if !isOkwwProcess
+                continue
             
             ; 只檢測真正的OKWW程式視窗，排除編輯器
             if ((InStr(titleLower, "ok-ww") || InStr(titleLower, "okww")) && !isEditor) {
-                pid := WinGetPID(hwnd)
-                
                 ; 🎯 重要：區分主程式和更新檢測程式，以及主視窗和背景服務視窗
                 ; ok-ww.exe 是主程式，pythonw.exe 是更新檢測程式
                 isMainProcess := (processName = "ok-ww.exe")
