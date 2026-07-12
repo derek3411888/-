@@ -40,7 +40,7 @@ global TOOLTIP_CONTENT := ""
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
-global REWARD_START_DELAY_MS := 90000
+global REWARD_START_DELAY_MS := 45000
 global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
