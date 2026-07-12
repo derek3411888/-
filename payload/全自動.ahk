@@ -101,6 +101,9 @@ global __REMOTE_WAS_PAUSED := false
 global __REMOTE_PAUSE_HOTKEY_BUSY := false
 global __REMOTE_RESUME_SYNC_BUSY := false
 global __REMOTE_PAUSED_AUX_PIDS := []
+global CURRENT_STEP_NAME := ""
+global CURRENT_STEP_DETAIL := ""
+global CURRENT_STEP_LEVEL := "INFO"
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -1349,9 +1352,12 @@ WriteLog(msg, level := "INFO") {
 }
 
 WriteStep(stepName, detail := "", level := "INFO") {
-    global STEP_SEQ
+    global STEP_SEQ, CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL, REMOTE_CONTROL_ACTIVE
     STEP_SEQ += 1
     stepId := Format("{:03}", STEP_SEQ)
+    CURRENT_STEP_NAME := stepName
+    CURRENT_STEP_DETAIL := detail
+    CURRENT_STEP_LEVEL := level
     msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
@@ -1360,6 +1366,8 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         tip .= "`nℹ " detail
     ShowTip(tip)
+    if (REMOTE_CONTROL_ACTIVE)
+        RC_ReportRuntimeState()
 }
 
 WriteStepResult(stepName, ok, detail := "") {
@@ -5557,6 +5565,7 @@ LoadServerScheduleContext(isContinueCycle := false) {
     CURRENT_SERVER_TARGET := SERVER_SCHEDULE_LIST[idx]
     IniWrite idx, CFG_FILE, "server_schedule", "current_index"
     WriteLog("伺服器排程已載入：第 " idx "/" SERVER_SCHEDULE_LIST.Length " 個，目標=" CURRENT_SERVER_TARGET)
+    SyncRemoteControlRuntimeState()
 }
 
 ResolveNextPendingServerIndexInCurrentCycle(startIdx := 1) {
@@ -5598,7 +5607,15 @@ AdvanceServerScheduleForNextCycle() {
 
     IniWrite nextIndex, CFG_FILE, "server_schedule", "current_index"
     WriteLog("伺服器排程切換到下一個：第 " nextIndex "/" SERVER_SCHEDULE_LIST.Length " 個")
+    SyncRemoteControlRuntimeState()
     return true
+}
+
+SyncRemoteControlRuntimeState() {
+    global REMOTE_CONTROL_ACTIVE
+
+    if (REMOTE_CONTROL_ACTIVE)
+        RC_ReportRuntimeState()
 }
 
 GetOcrBlockCenter(block) {

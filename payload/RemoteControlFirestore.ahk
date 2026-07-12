@@ -113,6 +113,12 @@ RC_HeartbeatTick() {
     RC_PatchClientState(RC_REMOTE_PAUSED ? "PAUSE" : "RUN", false)
 }
 
+RC_ReportRuntimeState() {
+    global RC_REMOTE_PAUSED
+
+    RC_PatchClientState(RC_REMOTE_PAUSED ? "PAUSE" : "RUN", false)
+}
+
 RC_PollCommandTick() {
     global RC_ENABLED, RC_LAST_NONCE, RC_LAST_ERROR_MSG
     if !RC_ENABLED
@@ -214,7 +220,20 @@ RC_GetPrimaryMacAddress() {
 
 RC_PatchClientState(state, isShutdown) {
     global RC_LAST_HEARTBEAT_OK, RC_LAST_ERROR_MSG
+    global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
+    global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     nowMs := RC_UnixMs()
+
+    currentStepName := Trim(CURRENT_STEP_NAME, " `t`r`n")
+    currentStepDetail := Trim(CURRENT_STEP_DETAIL, " `t`r`n")
+    currentStepLevel := Trim(CURRENT_STEP_LEVEL, " `t`r`n")
+
+    currentServer := Trim(CURRENT_SERVER_TARGET, " `t`r`n")
+    serverIndex := (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_INDEX > 0 ? SERVER_SCHEDULE_INDEX : 0)
+    serverTotal := (SERVER_SCHEDULE_ENABLED ? SERVER_SCHEDULE_LIST.Length : 0)
+    currentServerLabel := currentServer
+    if (serverTotal > 1 && currentServer != "")
+        currentServerLabel := serverIndex "/" serverTotal " | " currentServer
 
     body := "{"
     body .= '"fields":{'
@@ -222,6 +241,13 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
     body .= '"status":{"stringValue":"' RC_JsonEsc(state) '"},'
+    body .= '"currentStep":{"stringValue":"' RC_JsonEsc(currentStepName) '"},'
+    body .= '"currentStepDetail":{"stringValue":"' RC_JsonEsc(currentStepDetail) '"},'
+    body .= '"currentStepLevel":{"stringValue":"' RC_JsonEsc(currentStepLevel) '"},'
+    body .= '"currentServer":{"stringValue":"' RC_JsonEsc(currentServer) '"},'
+    body .= '"currentServerLabel":{"stringValue":"' RC_JsonEsc(currentServerLabel) '"},'
+    body .= '"currentServerIndex":{"integerValue":"' serverIndex '"},'
+    body .= '"currentServerTotal":{"integerValue":"' serverTotal '"},'
     body .= '"lastHeartbeat":{"integerValue":"' nowMs '"},'
     body .= '"updatedAt":{"integerValue":"' nowMs '"}'
     body .= "}"
@@ -232,6 +258,13 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=displayName"
     url .= "&updateMask.fieldPaths=computerName"
     url .= "&updateMask.fieldPaths=status"
+    url .= "&updateMask.fieldPaths=currentStep"
+    url .= "&updateMask.fieldPaths=currentStepDetail"
+    url .= "&updateMask.fieldPaths=currentStepLevel"
+    url .= "&updateMask.fieldPaths=currentServer"
+    url .= "&updateMask.fieldPaths=currentServerLabel"
+    url .= "&updateMask.fieldPaths=currentServerIndex"
+    url .= "&updateMask.fieldPaths=currentServerTotal"
     url .= "&updateMask.fieldPaths=lastHeartbeat"
     url .= "&updateMask.fieldPaths=updatedAt"
 
