@@ -429,7 +429,7 @@ pt := Buffer(8)
 NumPut("int", 30, pt, 0), NumPut("int", 30, pt, 4)
 DllCall("ClientToScreen", "ptr", targetHwnd, "ptr", pt)
 CoordMode "Mouse", "Screen"
-MouseClick "left", NumGet(pt, 0, "int"), NumGet(pt, 4, "int")
+ControlClickClientPoint(targetHwnd, 30, 30)
 Sleep 300
 
 ; 送出 Enter 鍵
@@ -705,7 +705,7 @@ for block in res {
     clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", " ")
     if (clean != "")
         ocrTexts.Push(clean)
-    if InStr(clean, "副本") {
+    if IsReliableCopyTargetText(clean) {
         foundCopy := true
         Log("找到「副本」文字: " clean)
         break
@@ -728,7 +728,7 @@ copyFound := false
 
 for block in res {
     clean := StrReplace(block.text, " ", "")
-    if InStr(clean, "副本") && block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
+    if IsReliableCopyTargetText(clean) && block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3 {
         copyFound := true
         x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
         x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
@@ -774,7 +774,13 @@ if (best is Array) {
         CoordMode "Mouse", "Screen"
         WriteStep("點擊副本", "screen=" clickX "," clickY)
         Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
-        MouseClick "left", clickX, clickY
+        if !ControlClickScreenPoint(ocrHwnd, clickX, clickY) {
+            WriteStep("點擊副本", "ControlClick 失敗，已中止", "WARN")
+            Log("點擊「副本」失敗：ControlClick 失敗，screen=" clickX "," clickY, "WARN")
+            if FileExist(tempFile)
+                FileDelete(tempFile)
+            ExitApp
+        }
         Sleep 500
         WriteStep("送出快捷鍵", "Ctrl+F1")
         SendCtrlF1(pid, ocrHwnd)   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
@@ -794,8 +800,25 @@ if (best is Array) {
     } catch as e {
         Log("保存 OCR 除錯截圖失敗: " e.Message, "WARN")
     }
-    WriteStep("點擊副本", "未找到『副本』，跳過點擊", "WARN")
-    Log("未找到「副本」文字，跳過點擊", "WARN")
+    WriteStep("點擊副本", "未找到可靠『副本』，改用固定座標備援", "WARN")
+    Log("未找到可靠「副本」文字，嘗試固定座標備援點擊", "WARN")
+
+    ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+    if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
+        WriteStep("切換LRMCAI前景", "備援點擊前切換失敗", "WARN")
+        Log("備援點擊前切換 LRMC 前景失敗", "WARN")
+    } else {
+        ; 左側功能列「副本」在固定布局下約位於此處，作為 OCR 失效時的保底。
+        if ControlClickClientPoint(ocrHwnd, 82, 112) {
+            Log("已執行副本固定座標備援點擊: client=82,112")
+            Sleep 500
+            WriteStep("送出快捷鍵", "Ctrl+F1")
+            SendCtrlF1(pid, ocrHwnd)
+            Log("已發送 Ctrl+F1（固定座標備援）")
+        } else {
+            Log("固定座標備援點擊失敗，略過本輪點擊", "WARN")
+        }
+    }
 }
 
 if FileExist(tempFile)
@@ -906,6 +929,46 @@ SendCtrlF1(pid, preferredHwnd := 0) {
     }
 
     Sleep 120
+}
+
+IsReliableCopyTargetText(text) {
+    clean := StrReplace(StrReplace(StrReplace(StrReplace(StrReplace(text, " ", ""), "`r", ""), "`n", ""), "『", ""), "』", "")
+    if !InStr(clean, "副本")
+        return false
+
+    ; 排除腳本步驟/提示文案，避免點到「搜尋副本按鈕」這類非目標文字。
+    if (InStr(clean, "搜索") || InStr(clean, "搜尋") || InStr(clean, "按鈕") || InStr(clean, "按钮")
+        || InStr(clean, "OCR") || InStr(clean, "STEP") || InStr(clean, "找到"))
+        return false
+
+    return (clean = "副本" || StrLen(clean) <= 3)
+}
+
+ControlClickClientPoint(hwnd, x, y) {
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    try {
+        ControlClick("x" Round(x) " y" Round(y), "ahk_id " hwnd, , "Left", 1, "NA")
+        return true
+    } catch {
+        return false
+    }
+}
+
+ControlClickScreenPoint(hwnd, screenX, screenY) {
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    pt := Buffer(8, 0)
+    NumPut("int", Round(screenX), pt, 0)
+    NumPut("int", Round(screenY), pt, 4)
+    if !DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt, "int")
+        return false
+
+    cx := NumGet(pt, 0, "int")
+    cy := NumGet(pt, 4, "int")
+    return ControlClickClientPoint(hwnd, cx, cy)
 }
 
 StrJoin(items, sep := ", ") {
