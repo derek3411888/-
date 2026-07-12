@@ -108,8 +108,8 @@ OnExit(RestoreWutheringAudioOnExit)
 ; 提示工具（開頭加5個空白避免被滑鼠遮擋）
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
-    if (duration < 5000)
-        duration := 5000
+    if (duration < 3000)
+        duration := 3000
     msg := StrReplace(msg, "`r", "")
 
     if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
@@ -1351,11 +1351,15 @@ WriteLog(msg, level := "INFO") {
 WriteStep(stepName, detail := "", level := "INFO") {
     global STEP_SEQ
     STEP_SEQ += 1
-    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    stepId := Format("{:03}", STEP_SEQ)
+    msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName)
+    tip := "📌 STEP " stepId "｜" stepName
+    if (detail != "")
+        tip .= "`nℹ " detail
+    ShowTip(tip)
 }
 
 WriteStepResult(stepName, ok, detail := "") {
@@ -2975,6 +2979,7 @@ RequestRestart(reason, level := "ERROR") {
     else
         CRASH_RESTART_MODE := false
     WriteLog("觸發重啟請求，原因: " reason, level)
+    WriteStep("重啟請求", "原因=" reason, level)
     RestartAutoScript(reason)
 }
 
@@ -3007,6 +3012,7 @@ RestartAutoScript(reason := "") {
     restartCount++
     nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     WriteLog("準備重啟全自動腳本，第 " restartCount " 次重啟，原因: " reason, "WARN")
+    WriteStep("重啟流程", "第 " restartCount " 次 | " reason, "WARN")
 
     ; 記錄最近一次重啟原因，供下一次啟動追蹤
     IniWrite reason, CFG_FILE, "restart_tracking", "last_restart_reason"
@@ -3015,6 +3021,7 @@ RestartAutoScript(reason := "") {
     ; 檢查是否超過最大重啟次數
     if (restartCount > MAX_RESTART_COUNT) {
         WriteLog("重啟次數已達上限 (" MAX_RESTART_COUNT ")，停止重啟以避免無限循環。最後原因: " reason, "ERROR")
+        WriteStep("重啟流程", "超過上限，停止重啟", "ERROR")
         ShowTip("❌ 重啟次數過多，停止執行", 5000)
         Sleep 5000
         ; 重置計數器
@@ -3030,12 +3037,14 @@ RestartAutoScript(reason := "") {
     if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
         if IsServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET) {
             WriteLog("伺服器『" CURRENT_SERVER_TARGET "』已在當日循環完成過，將跳過重新執行該伺服器，轉到下一個伺服器", "WARN")
+            WriteStep("重啟流程", "當前伺服器已完成，嘗試切換下一服", "WARN")
             ShowTip("⏭️ 伺服器已完成，轉向下一個", 2000)
             Sleep 2000
             
             ; 嘗試切換到下一個伺服器
             if AdvanceServerScheduleForNextCycle() {
                 WriteLog("已切換到下一個伺服器，使用 nextserver 模式重啟", "WARN")
+                WriteStep("重啟流程", "nextserver 模式重啟", "WARN")
                 __NEXTSERVER_RESTART := true
                 WriteLog("nextserver 重啟：保留錄影不中斷，略過停止錄影", "WARN")
                 CheckAndCloseExistingProcesses()
@@ -3046,13 +3055,16 @@ RestartAutoScript(reason := "") {
                     restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" nextserver'
                     Run(restartCmd)
                     WriteLog("nextserver 重啟命令已發送")
+                    WriteStep("重啟流程", "nextserver 命令已發送")
                 } catch as e {
                     WriteLog("nextserver 重啟失敗: " e.Message, "ERROR")
+                    WriteStep("重啟流程", "nextserver 重啟失敗 | " e.Message, "ERROR")
                 }
                 Sleep 1000
                 ExitApp
             } else {
                 WriteLog("無更多伺服器可切換，停止執行", "WARN")
+                WriteStep("重啟流程", "無更多伺服器可切換，停止", "WARN")
                 ShowTip("✅ 所有伺服器今日循環已完成", 3000)
                 Sleep 3000
                 ExitApp
@@ -3062,12 +3074,14 @@ RestartAutoScript(reason := "") {
     
     ; 關閉所有相關進程
     WriteLog("關閉所有相關進程...")
+    WriteStep("重啟流程", "關閉相關進程")
     CheckAndCloseExistingProcesses()
     
     Sleep 3000
     
     ; 重新啟動腳本
     WriteLog("重新啟動全自動腳本...")
+    WriteStep("重啟流程", "送出 restart 命令")
     try {
         global AhkExe
         restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
@@ -3075,8 +3089,10 @@ RestartAutoScript(reason := "") {
             restartCmd .= ' crash'
         Run(restartCmd)
         WriteLog("重啟命令已發送")
+        WriteStep("重啟流程", "restart 命令已發送")
     } catch as e {
         WriteLog("重啟失敗: " e.Message, "ERROR")
+        WriteStep("重啟流程", "重啟失敗 | " e.Message, "ERROR")
     }
     
     ; 結束當前進程
@@ -3090,16 +3106,19 @@ MonitorRewardAndShutdown() {
     logPath := ResolveRewardLogPath()
     if (logPath = "") {
         WriteLog("收尾監測未設定日誌檔，跳過監測", "WARN")
+        WriteStep("收尾監測", "未設定日誌檔，略過", "WARN")
         return
     }
 
     if !FileExist(logPath) {
         WriteLog("收尾監測找不到日誌檔: " logPath, "WARN")
+        WriteStep("收尾監測", "找不到日誌檔，略過", "WARN")
         return
     }
 
     startDelaySec := Round(REWARD_START_DELAY_MS / 1000)
     WriteLog("主流程完成，先等待 " startDelaySec " 秒再開始監測最新日誌: " logPath)
+    WriteStep("收尾監測", "開始監測前等待 " startDelaySec " 秒")
     ShowTip("⏳ 主流程完成，" startDelaySec "秒後開始監測", 1500)
     Sleep REWARD_START_DELAY_MS
 
@@ -3111,6 +3130,7 @@ MonitorRewardAndShutdown() {
     seenSolaraRewardFail := false
     invalidHwndHits := 0
     WriteLog("開始持續監測『最新新增』日誌，起始偏移: " lastPos)
+    WriteStep("收尾監測", "開始持續讀取新增日誌")
     ShowTip("🧭 開始監測最新日誌...", 1200)
 
     loop {
@@ -3119,6 +3139,7 @@ MonitorRewardAndShutdown() {
         ; 檢查鳴潮遊戲窗口是否在收尾監測期間消失（閃退）
         if !WinExist("ahk_exe Client-Win64-Shipping.exe") {
             WriteLog("收尾監測期間偵測鳴潮遊戲窗口已消失，判定為遊戲閃退", "ERROR")
+            WriteStep("收尾監測", "鳴潮視窗消失，觸發重啟", "ERROR")
             ShowTip("❌ 收尾期間鳴潮閃退，準備重啟", 2500)
             RequestRestart("收尾監測期間鳴潮遊戲窗口消失（Client-Win64-Shipping.exe 進程終止）")
             return
@@ -3139,8 +3160,11 @@ MonitorRewardAndShutdown() {
                 if IsInvalidWindowHandleLogLine(line) {
                     invalidHwndHits += 1
                     WriteLog("監測命中『無效視窗控制代碼』累計次數: " invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT " | " line, "WARN")
+                    if (invalidHwndHits = 1 || Mod(invalidHwndHits, 3) = 0)
+                        WriteStep("收尾監測", "無效視窗控制代碼累計 " invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT, "WARN")
                     if (invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
                         WriteLog("偵測到大量無效視窗控制代碼，判定為遊戲閃退，觸發重啟", "ERROR")
+                        WriteStep("收尾監測", "無效視窗命中達閾值，觸發重啟", "ERROR")
                         ShowTip("❌ 偵測遊戲閃退，準備重啟流程", 2500)
                         RequestRestart("LRMCAI 日誌大量無效視窗控制代碼，疑似遊戲閃退")
                         return
@@ -3151,9 +3175,11 @@ MonitorRewardAndShutdown() {
                     seenClickReward := true
                     hit += 1
                     WriteLog("監測命中『電台_一鍵領取』(" hit "/" REWARD_MATCH_NEED_COUNT "): " line)
+                    WriteStep("收尾監測", "命中電台一鍵領取 " hit "/" REWARD_MATCH_NEED_COUNT)
                     if (hit >= REWARD_MATCH_NEED_COUNT) {
                         delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
                         WriteLog("已監測到 " REWARD_MATCH_NEED_COUNT " 條『電台_一鍵領取』，" delaySec " 秒後開始關閉流程")
+                        WriteStep("收尾監測", "達到關閉條件：一鍵領取命中數")
                         ShowTip("✅ 監測命中，" delaySec "秒後關閉程式", 2000)
                         Sleep REWARD_SHUTDOWN_DELAY_MS
                         HandleCycleFinishAndShutdown()
@@ -3179,6 +3205,7 @@ MonitorRewardAndShutdown() {
                 if (seenClickReward && seenNoReward) {
                     delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
                     WriteLog("已同時監測到『點擊電台一鍵領取』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
+                    WriteStep("收尾監測", "達到關閉條件：一鍵領取+無獎勵")
                     ShowTip("✅ 監測到一鍵領取+無獎勵，" delaySec "秒後關閉", 2000)
                     Sleep REWARD_SHUTDOWN_DELAY_MS
                     HandleCycleFinishAndShutdown()
@@ -3188,6 +3215,7 @@ MonitorRewardAndShutdown() {
                 if (seenDailyRewardSuccess && seenNoReward) {
                     delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
                     WriteLog("已同時監測到『領取每日獎勵成功』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
+                    WriteStep("收尾監測", "達到關閉條件：每日獎勵成功+無獎勵")
                     ShowTip("✅ 監測到每日獎勵成功+無獎勵，" delaySec "秒後關閉", 2000)
                     Sleep REWARD_SHUTDOWN_DELAY_MS
                     HandleCycleFinishAndShutdown()
@@ -3197,6 +3225,7 @@ MonitorRewardAndShutdown() {
                 if (seenSolaraRewardFail && seenNoReward) {
                     delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
                     WriteLog("已同時監測到『索拉獎勵領取失敗』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
+                    WriteStep("收尾監測", "達到關閉條件：索拉失敗+無獎勵")
                     ShowTip("✅ 監測到索拉獎勵失敗+無獎勵，" delaySec "秒後關閉", 2000)
                     Sleep REWARD_SHUTDOWN_DELAY_MS
                     HandleCycleFinishAndShutdown()
@@ -6034,6 +6063,7 @@ FindTemplateInWutheringWindow(templatePath, &outX, &outY) {
 ClickTemplateIfFound(templatePath, logIfMissing := true) {
     x := 0
     y := 0
+    oldMode := A_CoordModeMouse
     try {
         found := FindTemplateInWutheringWindow(templatePath, &x, &y)
         if !found
@@ -6053,14 +6083,51 @@ ClickTemplateIfFound(templatePath, logIfMissing := true) {
 
             clickX := Min(A_ScreenWidth - 1, Max(0, clickX))
             clickY := Min(A_ScreenHeight - 1, Max(0, clickY))
-            Click clickX, clickY
-            WriteLog("模板檢測到並點擊: " . templatePath . " @" . clickX . "," . clickY)
+
+            CoordMode "Mouse", "Screen"
+            hwnd := GetWutheringGameHwnd()
+            if (hwnd) {
+                try {
+                    WinRestore("ahk_id " hwnd)
+                    WinActivate("ahk_id " hwnd)
+                    WinWaitActive("ahk_id " hwnd, , 0.8)
+                }
+            }
+
+            ; 主通道：實體滑鼠點擊
+            MouseMove clickX, clickY
+            Sleep 40
+            MouseClick "left", clickX, clickY
+            WriteLog("模板檢測到並點擊(滑鼠): " . templatePath . " @" . clickX . "," . clickY)
+
+            ; 備援通道：對遊戲視窗發送客戶區點擊訊息，避免滑鼠被鎖視角時失效
+            if (hwnd && WinExist("ahk_id " hwnd)) {
+                try {
+                    pt := Buffer(8, 0)
+                    NumPut("int", clickX, pt, 0)
+                    NumPut("int", clickY, pt, 4)
+                    DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt)
+                    cx := NumGet(pt, 0, "int")
+                    cy := NumGet(pt, 4, "int")
+                    if (cx >= 0 && cy >= 0) {
+                        lParam := (cy << 16) | (cx & 0xFFFF)
+                        PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
+                        Sleep 20
+                        PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
+                        WriteLog("模板點擊備援(PostMessage)已送出: client=" cx "," cy)
+                    }
+                } catch as e {
+                    WriteLog("模板點擊備援(PostMessage)失敗: " e.Message, "WARN")
+                }
+            }
             return true
         }
     } catch as e {
         ; 可選檢測：任何錯誤都不影響主流程。
         WriteLog("模板檢測略過（不影響主流程）: " . templatePath . " | " . e.Message, "WARN")
         return false
+    } finally {
+        CoordMode "Mouse", oldMode
     }
     if (logIfMissing)
         WriteLog("模板未檢測到: " . templatePath, "INFO")

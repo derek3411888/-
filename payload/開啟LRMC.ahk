@@ -12,6 +12,8 @@ RegisterLifecycleLogging("開啟LRMC")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 4
+global TOOLTIP_UNTIL_TICK := 0
+global TOOLTIP_CONTENT := ""
 global HOTKEY_MODE := false
 global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
@@ -36,11 +38,15 @@ WriteLog(msg, level := "INFO") {
 WriteStep(stepName, detail := "", level := "INFO") {
     global STEP_SEQ
     STEP_SEQ += 1
-    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    stepId := Format("{:03}", STEP_SEQ)
+    msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName)
+    tip := "📌 STEP " stepId "｜" stepName
+    if (detail != "")
+        tip .= "`nℹ " detail
+    ShowTip(tip)
 }
 
 Log("LRMC 啟動腳本開始: " A_ScriptFullPath)
@@ -82,12 +88,32 @@ global CFG_FILE := dataDir "\config.ini"
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
 ShowTip(msg, duration := 5000) {
-    global TOOLTIP_SLOT
-    if (duration < 5000)
-        duration := 5000
-    ToolTip "          " msg, , , TOOLTIP_SLOT
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (duration < 3000)
+        duration := 3000
+    msg := StrReplace(msg, "`r", "")
+
+    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
+        TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
+    else
+        TOOLTIP_CONTENT := msg
+
+    display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")
+    TOOLTIP_UNTIL_TICK := A_TickCount + duration
+    expireTick := TOOLTIP_UNTIL_TICK
+
+    ToolTip display, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
+        SetTimer(() => ClearTipIfMatched(expireTick), -duration)
+}
+
+ClearTipIfMatched(expireTick) {
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (TOOLTIP_UNTIL_TICK = expireTick) {
+        ToolTip(, , , TOOLTIP_SLOT)
+        TOOLTIP_UNTIL_TICK := 0
+        TOOLTIP_CONTENT := ""
+    }
 }
 
 ; 去除路徑前後的引號和空白
@@ -272,10 +298,12 @@ Log("開始啟動 LRMCAI... (重啟計數: " currentRestartCount ")")
 WriteStep("啟動LRMCAI", "準備讀取路徑並啟動進程")
 lnkPath := LaunchLRMC()
 if (!lnkPath) {
+    WriteStep("讀取LRMCAI路徑", "未設定路徑", "ERROR")
     Log("未設定 LRMCAI 路徑", "ERROR")
     MsgBox "未設定 LRMCAI 路徑。按 Ctrl+F2 重新指定。"
     ExitApp
 }
+WriteStep("讀取LRMCAI路徑", "成功 | " lnkPath)
 
 Log("執行 LRMCAI: " lnkPath)
 Run lnkPath,,, &pid
@@ -350,9 +378,11 @@ findWindowWithFallback() {
     return 0
 }
 
+WriteStep("主窗口搜尋", "開始 PID/fallback 搜尋")
 targetHwnd := findWindowWithFallback()
 if !targetHwnd {
     ; 額外給 UI 緩衝時間，避免剛啟動就誤判失敗
+    WriteStep("主窗口搜尋", "首輪未命中，進入延長等待", "WARN")
     Log("首輪未找到 LRMC 視窗，進入延長等待重試...", "WARN")
     Loop 8 {
         Sleep 1000
@@ -365,6 +395,7 @@ if !targetHwnd {
 if !targetHwnd {
     ; 補充進程狀態，方便辨識是視窗慢啟動還是程式秒退
     hasProc := ProcessExist("LRMCAI.exe")
+    WriteStep("主窗口搜尋", hasProc ? "失敗 | 進程存在但 UI 未就緒" : "失敗 | 進程可能秒退", "ERROR")
     if (hasProc)
         MsgBox "❌ 找不到應用程式視窗（LRMCAI 進程存在，但 UI 尚未就緒）"
     else
@@ -378,6 +409,11 @@ try WinRestore targetHwnd
 Sleep 200
 
 ; 點擊視窗左上角位置啟動處理
+WriteStep("切換LRMCAI前景", "準備點擊啟動入口")
+if (!EnsureWindowForegroundForClick(targetHwnd, pid)) {
+    WriteStep("切換LRMCAI前景", "失敗，停止後續操作", "WARN")
+    ExitApp
+}
 pt := Buffer(8)
 NumPut("int", 30, pt, 0), NumPut("int", 30, pt, 4)
 DllCall("ClientToScreen", "ptr", targetHwnd, "ptr", pt)
@@ -387,15 +423,18 @@ Sleep 300
 
 ; 送出 Enter 鍵
 if !WinExist("ahk_id " targetHwnd) {
+    WriteStep("送出Enter前檢查", "視窗失效，重新定位", "WARN")
     Log("送 Enter 前視窗已失效，重新定位視窗...", "WARN")
     targetHwnd := findWindowWithFallback()
 }
 
 if !targetHwnd || !WinExist("ahk_id " targetHwnd) {
+    WriteStep("送出Enter前檢查", "失敗，目標視窗不存在", "ERROR")
     MsgBox "❌ 目標視窗失效，請重試啟動 LRMCAI"
     ExitApp
 }
 
+WriteStep("送出Enter", "啟動 LRMCAI 互動介面")
 PostMessage 0x100, 0x0D, 0, , targetHwnd
 Sleep 200
 PostMessage 0x101, 0x0D, 0, , targetHwnd
@@ -432,12 +471,15 @@ while (attempt < maxAttempts && !targetHwnd) {
     }
     
     if (!targetHwnd) {
+        if (Mod(attempt, 10) = 0)
+            WriteStep("等待UI窗口", "仍在等待 | attempt=" attempt "/" maxAttempts)
         Log("第 " attempt " 次搜索未找到UI窗口，3秒後重試...")
         Sleep 3000
     }
 }
 
 if !targetHwnd {
+    WriteStep("等待UI窗口", "超時（180秒）", "ERROR")
     Log("等待 LRMCAI UI 窗口超時（180秒），無法找到包含版本號的窗口", "ERROR")
     
     ; 列出所有找到的窗口供調試
@@ -450,10 +492,12 @@ if !targetHwnd {
     }
     
     Log("準備重啟", "WARN")
+    WriteStep("重啟流程", "UI 超時，準備重啟", "WARN")
     
     ; 更新重啟計數器
     newRestartCount := IncrementRestartCounter()
     Log("準備執行第 " newRestartCount " 次重啟")
+    WriteStep("重啟流程", "第 " newRestartCount " 次")
     
     ; 關閉 LRMCAI 進程
     try {
@@ -475,6 +519,7 @@ if !targetHwnd {
     
     ; 重新啟動開啟LRMC.ahk腳本
     Log("重新啟動開啟LRMC.ahk腳本... (第 " newRestartCount " 次重啟)")
+    WriteStep("重啟腳本", "重新啟動開啟LRMC.ahk")
     try {
         ahkExe := BUNDLED_AHK_EXE
         
@@ -517,6 +562,7 @@ Sleep 200
 
 ; 🎯 分別移動兩個LRMCAI視窗到正確位置
 Log("調整LRMCAI視窗位置...")
+WriteStep("視窗佈局", "調整控制窗與執行窗")
 try {
     ; 獲取螢幕尺寸
     screenWidth := A_ScreenWidth
@@ -554,10 +600,12 @@ try {
     if (controlWindowHwnd) {
         WinMove 0, 0, , , "ahk_id " controlWindowHwnd
         Log("控制視窗已移動到螢幕左上角 (0,0)")
+        WriteStep("視窗佈局", "控制視窗定位完成")
     } else {
         Log("未找到控制視窗，使用預設目標視窗", "WARN")
         WinMove 0, 0, , , "ahk_id " targetHwnd
         Log("預設視窗已移動到螢幕左上角 (0,0)")
+        WriteStep("視窗佈局", "未找到控制窗，使用預設視窗", "WARN")
     }
     
     ; 2. 移動執行視窗到螢幕右下角（貼齊工作列）
@@ -571,29 +619,39 @@ try {
         newY := workArea.height - consoleHeight
         WinMove newX, newY, , , "ahk_id " consoleWindowHwnd
         Log("LRMCAI執行視窗已移動到右下角（貼齊工作列）: X=" newX " Y=" newY)
+        WriteStep("視窗佈局", "執行視窗定位完成 | X=" newX " Y=" newY)
     } else {
         Log("未找到LRMCAI執行視窗", "WARN")
+        WriteStep("視窗佈局", "未找到執行視窗", "WARN")
     }
 
     ; OCR 視窗固定使用控制視窗
     if (controlWindowHwnd) {
         ocrTargetHwnd := controlWindowHwnd
         Log("OCR 將使用控制視窗")
+        WriteStep("OCR目標視窗", "使用控制視窗 | hwnd=" ocrTargetHwnd)
     } else {
         ocrTargetHwnd := targetHwnd
         Log("未找到控制視窗，OCR 沿用預設 target", "WARN")
+        WriteStep("OCR目標視窗", "未找到控制視窗，沿用預設", "WARN")
     }
     
 } catch as e {
     Log("移動視窗時出錯: " e.Message, "WARN")
+    WriteStep("視窗佈局", "例外 | " e.Message, "WARN")
     ocrTargetHwnd := targetHwnd
 }
 
 Sleep 2000
 
 if (HOTKEY_MODE) {
-    Log("hotkey 模式啟動，直接送出 Ctrl+F1")
+    WriteStep("Hotkey模式", "直接送出 Ctrl+F1")
     ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+    if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
+        WriteStep("切換LRMCAI前景", "hotkey 模式送鍵前切換失敗", "WARN")
+        ExitApp
+    }
+    WriteStep("送出快捷鍵", "Ctrl+F1")
     SendCtrlF1(pid, ocrHwnd)
     Log("已發送 Ctrl+F1")
     Log("LRMC 啟動流程完成")
@@ -609,20 +667,25 @@ ocr := RapidOcr()
 tempFile := A_ScriptDir "\temp_lrmc_" A_TickCount ".png"
 debugCapturePath := ""
 try {
+    WriteStep("OCR截圖", "開始擷取")
     captureInfo := CaptureWindowVisibleRegionForOcr(ocrTargetHwnd, tempFile)
     Log("OCR 目標視窗: 標題=[" WinGetTitle("ahk_id " ocrTargetHwnd) "] 尺寸=" captureInfo.w "x" captureInfo.h " 位置=" captureInfo.x "," captureInfo.y " 擷取方式=" captureInfo.method)
+    WriteStep("OCR截圖", "成功 | " captureInfo.method " | " captureInfo.w "x" captureInfo.h)
     if FileExist(tempFile)
         Log("OCR 截圖已保存: " tempFile " (" FileGetSize(tempFile) " bytes)")
     res := ocr.ocr_from_file(tempFile, , true)
 } catch as e {
+    WriteStep("OCR截圖", "失敗 | " e.Message, "ERROR")
     Log("OCR 處理失敗: " e.Message, "ERROR")
     if FileExist(tempFile)
         FileDelete(tempFile)
     ExitApp
 }
 
-if (res is Array) && (res.Length = 0)
+if (res is Array) && (res.Length = 0) {
+    WriteStep("OCR辨識", "未返回任何文字區塊", "WARN")
     Log("OCR 未返回任何文字區塊，將略過「副本」點擊流程", "WARN")
+}
 
 ; 顯示 OCR 識別結果（簡化輸出，減少字串處理）
 foundCopy := false
@@ -639,9 +702,12 @@ for block in res {
 }
 
 if (!foundCopy) {
+    WriteStep("OCR辨識", "未找到『副本』文字", "WARN")
     Log("未找到「副本」文字，繼續處理...", "WARN")
     if (ocrTexts.Length > 0)
         Log("OCR 辨識內容: " StrJoin(ocrTexts, " | "), "WARN")
+} else {
+    WriteStep("OCR辨識", "找到『副本』文字")
 }
 
 ; 尋找最左上角「副本」並點擊（優化版：減少計算量）
@@ -682,23 +748,29 @@ if (best is Array) {
 
     ; 避免誤點工作列右下角「顯示桌面」熱區，防止全視窗最小化。
     if (clickX >= A_ScreenWidth - 8 && clickY >= A_ScreenHeight - 8) {
+        WriteStep("點擊副本", "座標過於接近右下角，已取消", "WARN")
         Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
     } else {
         ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+        WriteStep("切換LRMCAI前景", "副本點擊前切換")
         if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
             Log("點擊前切換 LRMC 前景失敗，已中止本次點擊以避免誤點", "WARN")
+            WriteStep("切換LRMCAI前景", "失敗，已中止點擊", "WARN")
             if FileExist(tempFile)
                 FileDelete(tempFile)
             ExitApp
         }
         CoordMode "Mouse", "Screen"
+        WriteStep("點擊副本", "screen=" clickX "," clickY)
         Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
         MouseClick "left", clickX, clickY
         Sleep 500
+        WriteStep("送出快捷鍵", "Ctrl+F1")
         SendCtrlF1(pid, ocrHwnd)   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
         Log("已發送 Ctrl+F1")
     }
 } else if (copyFound) {
+    WriteStep("點擊副本", "找到文字但缺少可點擊座標", "WARN")
     Log("找到「副本」文字但無法獲取座標", "WARN")
 } else {
     debugCapturePath := A_ScriptDir "\debug_lrmc_ocr_nomatch_" FormatTime(, "yyyyMMdd_HHmmss") ".png"
@@ -711,6 +783,7 @@ if (best is Array) {
     } catch as e {
         Log("保存 OCR 除錯截圖失敗: " e.Message, "WARN")
     }
+    WriteStep("點擊副本", "未找到『副本』，跳過點擊", "WARN")
     Log("未找到「副本」文字，跳過點擊", "WARN")
 }
 
@@ -718,6 +791,7 @@ if FileExist(tempFile)
     FileDelete(tempFile)
 
 Log("LRMC 啟動流程完成")
+WriteStep("流程完成", "LRMC 啟動流程完成")
 ExitApp
 
 ; 點擊前先切到 LRMC 前景，避免遊戲鎖滑鼠導致座標正確但點擊無效。

@@ -57,6 +57,8 @@ RegisterLifecycleLogging("聲骸合成")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 2
+global TOOLTIP_UNTIL_TICK := 0
+global TOOLTIP_CONTENT := ""
 global DATA_DIR := GetDataDir()
 logger.log("========== 聲骸合成腳本啟動 ==========")
 
@@ -68,23 +70,47 @@ WriteLog(msg, level := "INFO") {
 WriteStep(stepName, detail := "", level := "INFO") {
     global STEP_SEQ
     STEP_SEQ += 1
-    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    stepId := Format("{:03}", STEP_SEQ)
+    msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName)
+    tip := "📌 STEP " stepId "｜" stepName
+    if (detail != "")
+        tip .= "`nℹ " detail
+    ShowTip(tip)
 }
 
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
 ShowTip(msg, duration := 5000) {
-    global TOOLTIP_SLOT
-    if (duration < 5000)
-        duration := 5000
-    ToolTip "          " msg, , , TOOLTIP_SLOT
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (duration < 3000)
+        duration := 3000
+    msg := StrReplace(msg, "`r", "")
+
+    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
+        TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
+    else
+        TOOLTIP_CONTENT := msg
+
+    display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")
+    TOOLTIP_UNTIL_TICK := A_TickCount + duration
+    expireTick := TOOLTIP_UNTIL_TICK
+
+    ToolTip display, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
+        SetTimer(() => ClearTipIfMatched(expireTick), -duration)
+}
+
+ClearTipIfMatched(expireTick) {
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (TOOLTIP_UNTIL_TICK = expireTick) {
+        ToolTip(, , , TOOLTIP_SLOT)
+        TOOLTIP_UNTIL_TICK := 0
+        TOOLTIP_CONTENT := ""
+    }
 }
 
 ; 全域變數
@@ -145,25 +171,33 @@ Main() {
 RunSynthesisLoop() {
     global logger, firstTime
     ; 步驟1：按 Esc 打開主選單（圖2）
+    WriteStep("主選單", "按 Esc 開啟")
     if !OpenMainMenu() {
+        WriteStep("主選單", "開啟失敗", "ERROR")
         logger.log("無法打開主選單", "ERROR")
         return false
     }
     
     ; 步驟2：點擊數據屋（圖2 → 圖3）
+    WriteStep("導航", "點擊數據屋")
     if !ClickDataWarehouse() {
+        WriteStep("導航", "數據屋點擊失敗", "ERROR")
         logger.log("無法點擊數據屋", "ERROR")
         return false
     }
     
     ; 步驟3：點擊圖3紅框（圖3 → 圖4）
+    WriteStep("導航", "進入融合頁")
     if !ClickStep3Icon() {
+        WriteStep("導航", "進入融合頁失敗", "ERROR")
         logger.log("無法點擊圖3目標", "ERROR")
         return false
     }
     
     ; 驗證是否正確進入背包面板
+    WriteStep("背包面板", "驗證是否已進入")
     if !VerifyBackpackPanel() {
+        WriteStep("背包面板", "驗證失敗", "ERROR")
         logger.log("未正確進入背包面板，流程終止", "ERROR")
         ShowTip("⚠️ 未能正確進入背包面板，請檢查遊戲狀態。", 3000)
         Sleep 3000
@@ -176,48 +210,62 @@ RunSynthesisLoop() {
     while true {
         loopCount++
         logger.log("========== 第 " loopCount " 輪融合 ==========")
+        WriteStep("融合迴圈", "第 " loopCount " 輪開始")
         
         ; 步驟16~19：僅在第一次執行，後續迴圈從「全選」開始
         if firstLoop {
             ; 步驟16：點擊批量融合（圖4 → 圖5）
+            WriteStep("融合迴圈", "首次流程：點擊批量融合")
             if !ClickBatchMerge() {
+                WriteStep("融合迴圈", "批量融合入口失敗", "ERROR")
                 logger.log("無法點擊批量融合", "ERROR")
                 break
             }
 
             ; 步驟17：點擊最靠下的標準融合（Y軸最大）
+            WriteStep("融合迴圈", "首次流程：選擇最下方標準融合")
             if !ClickBottomStandardMerge() {
+                WriteStep("融合迴圈", "標準融合點擊失敗", "ERROR")
                 logger.log("無法點擊最靠下的標準融合", "ERROR")
                 break
             }
 
             ; 步驟18：點擊圖5紅框（圖5 → 圖6）
+            WriteStep("融合迴圈", "首次流程：進入篩選")
             if !ClickStep5Icon() {
+                WriteStep("融合迴圈", "進入篩選失敗", "ERROR")
                 logger.log("無法點擊圖5目標", "ERROR")
                 break
             }
             
             ; 步驟19：選擇已棄置並返回（圖6 → 圖7）
+            WriteStep("融合迴圈", "首次流程：選擇已棄置")
             if !SelectDiscardedAndConfirm() {
+                WriteStep("融合迴圈", "選擇已棄置失敗", "ERROR")
                 logger.log("無法選擇已棄置", "ERROR")
                 break
             }
         } else {
+            WriteStep("融合迴圈", "非首次：跳過標準融合/篩選")
             logger.log("非首次迴圈，跳過標準融合與篩選步驟（圖5/圖6），直接從全選開始")
             Sleep 1000
         }
         
         ; 步驟20：點擊全選（圖7 → 圖8）
+        WriteStep("融合迴圈", "點擊全選")
         if !ClickSelectAll() {
+            WriteStep("融合迴圈", "全選失敗", "ERROR")
             logger.log("無法點擊全選", "ERROR")
             break
         }
         
         ; 步驟21：檢查次數並點擊批量融合（圖8）
         mergeCount := CheckMergeCount()
+        WriteStep("融合次數", "mergeCount=" mergeCount)
         logger.log("批量融合次數: " mergeCount)
         
         if (mergeCount <= 0) {
+            WriteStep("融合結束", "次數為 0，回到 ESC 畫面")
             logger.log("融合次數為 0，先點擊返回再點擊回到主畫面後結束流程")
 
             ; 步驟22：先點擊右上角返回（座標：1213,56）
@@ -230,24 +278,30 @@ RunSynthesisLoop() {
             
             ; 打開 ESC 背包畫面
             logger.log("打開 ESC 背包畫面")
+            WriteStep("返回ESC", "切回遊戲並送 Esc")
             ActivateGame()
             Sleep 500
             Send "{Esc}"
             Sleep 1500
             logger.log("已停留在 ESC 背包畫面")
+            WriteStep("返回ESC", "已停留在 ESC 背包畫面")
             
             break
         }
         
         ; 點擊批量融合按鈕（圖8 → 圖9或圖10）
+        WriteStep("融合迴圈", "點擊批量融合按鈕")
         if !ClickMergeBatchButton() {
+            WriteStep("融合迴圈", "批量融合按鈕失敗", "ERROR")
             logger.log("無法點擊批量融合按鈕", "ERROR")
             break
         }
         
         ; 步驟24：首次處理提示框（圖9 → 圖10）
         if (firstTime) {
+            WriteStep("首次提示", "處理首次融合提示框")
             if !HandleFirstTimePrompt() {
+                WriteStep("首次提示", "處理失敗（不中斷）", "WARN")
                 logger.log("無法處理首次提示", "WARN")
             }
             firstTime := false
@@ -257,7 +311,9 @@ RunSynthesisLoop() {
         Sleep 1000
         
         ; 步驟25：按 Esc 返回圖4
+        WriteStep("融合迴圈", "按 Esc 返回主融合頁")
         if !ReturnToStep4() {
+            WriteStep("融合迴圈", "返回主融合頁失敗", "ERROR")
             logger.log("無法返回圖4", "ERROR")
             break
         }
@@ -266,12 +322,14 @@ RunSynthesisLoop() {
         if firstLoop {
             firstLoop := false
             logger.log("首次迴圈完成，後續將跳過圖5和圖6")
+            WriteStep("融合迴圈", "首次輪完成，後續簡化流程")
         }
         
         Sleep 1000
     }
     
     logger.log("批量融合迴圈結束")
+    WriteStep("融合迴圈", "迴圈結束")
     return true
 }
 

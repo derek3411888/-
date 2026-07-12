@@ -30,6 +30,8 @@ RegisterLifecycleLogging("自動開啟OKWW")
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 3
+global TOOLTIP_UNTIL_TICK := 0
+global TOOLTIP_CONTENT := ""
 
 ; 日誌函數（使用新的日誌系統，保持RUN_ID兼容性）
 WriteLog(msg, level := "INFO") {
@@ -47,11 +49,15 @@ WriteLog(msg, level := "INFO") {
 WriteStep(stepName, detail := "", level := "INFO") {
     global STEP_SEQ
     STEP_SEQ += 1
-    msg := "[STEP " Format("{:03}", STEP_SEQ) "] " stepName
+    stepId := Format("{:03}", STEP_SEQ)
+    msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
     WriteLog(msg, level)
-    ShowTip("📌 " stepName)
+    tip := "📌 STEP " stepId "｜" stepName
+    if (detail != "")
+        tip .= "`nℹ " detail
+    ShowTip(tip)
 }
 
 Log("程序啟動: PID=" DllCall("GetCurrentProcessId") " 腳本=" A_ScriptFullPath)
@@ -90,12 +96,32 @@ Log("CFG_FILE=" CFG_FILE)
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
 ShowTip(msg, duration := 5000) {
-    global TOOLTIP_SLOT
-    if (duration < 5000)
-        duration := 5000
-    ToolTip "          " msg, , , TOOLTIP_SLOT
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (duration < 3000)
+        duration := 3000
+    msg := StrReplace(msg, "`r", "")
+
+    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
+        TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
+    else
+        TOOLTIP_CONTENT := msg
+
+    display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")
+    TOOLTIP_UNTIL_TICK := A_TickCount + duration
+    expireTick := TOOLTIP_UNTIL_TICK
+
+    ToolTip display, , , TOOLTIP_SLOT
     if (duration > 0)
-        SetTimer(() => ToolTip(, , , TOOLTIP_SLOT), -duration)
+        SetTimer(() => ClearTipIfMatched(expireTick), -duration)
+}
+
+ClearTipIfMatched(expireTick) {
+    global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    if (TOOLTIP_UNTIL_TICK = expireTick) {
+        ToolTip(, , , TOOLTIP_SLOT)
+        TOOLTIP_UNTIL_TICK := 0
+        TOOLTIP_CONTENT := ""
+    }
 }
 
 ; 去除路徑前後的引號和空白
@@ -129,6 +155,7 @@ Hotkey("^F3", (*) => ForceAskAndSave("WUTHERING", "請選擇「鳴潮」遊戲�
 ; 🔒 額外的啟動前安全檢查
 StartupSafetyCheck() {
     Log("執行啟動前安全檢查...")
+    WriteStep("前置安全檢查", "掃描 AutoHotkey/OKWW 相關進程")
     
     ; 檢查是否有其他同類腳本正在運行
     currentPID := DllCall("GetCurrentProcessId")
@@ -154,6 +181,7 @@ StartupSafetyCheck() {
     
     if (scriptCount > 0) {
         Log("檢測到 " scriptCount " 個其他腳本實例，為避免衝突將退出", "WARN")
+        WriteStep("前置安全檢查", "檢測到重複實例，停止執行", "WARN")
         MsgBox("檢測到其他自動開啟OKWW腳本正在運行，`n為避免重複啟動將退出此實例。", "重複實例檢測", "T3")
         ExitApp
     }
@@ -559,12 +587,15 @@ if (!okwwProcess) {
 hasRunningOKWW := (wins0.Length > 0) || okwwProcess || pythonwWithOKWW
 
 if (hasRunningOKWW) {
+    WriteStep("OKWW守門", "發現既有實例，改為接手")
     Log("發現已運行的OKWW (視窗:" wins0.Length " 進程:" (okwwProcess ? "yes" : "no") " pythonw:" (pythonwWithOKWW ? "yes" : "no") ")，嘗試接手")
     if (wins0.Length > 0) {
         result := AttachNewestOkww(&pid, &targetHwnd, false)  ; 改為 false，不關閉舊進程
         Log("已成功接手現有OKWW進程，PID=" pid)
+        WriteStep("OKWW守門", "接手完成 | pid=" pid)
     } else {
         Log("有OKWW進程但無視窗，等待視窗出現...")
+        WriteStep("OKWW守門", "有進程無視窗，等待視窗出現", "WARN")
         ; 等待視窗出現，最多等30秒
         Loop 10 {
             Sleep 3000
@@ -572,19 +603,25 @@ if (hasRunningOKWW) {
             if (wins1.Length > 0) {
                 Log("等待後發現OKWW視窗，接手進程")
                 result := AttachNewestOkww(&pid, &targetHwnd, false)
+                WriteStep("OKWW守門", "等待後接手成功 | pid=" pid)
                 break
             }
+            if (Mod(A_Index, 3) = 0)
+                WriteStep("OKWW守門", "等待視窗中 | attempt=" A_Index "/10")
             Log("等待OKWW視窗第" A_Index "次...")
         }
     }
 } else {
+    WriteStep("OKWW守門", "未發現既有實例，準備啟動新進程")
     Log("未發現已運行的OKWW進程，準備啟動新進程")
 
     ; 先啟動鳴潮遊戲，與 OKWW/LRMCAI 一樣記憶路徑
     wutheringRunning := IsWutheringGameRunning()
     if (!wutheringRunning) {
+        WriteStep("鳴潮啟動", "未運行，準備啟動")
         gameExe := LaunchWuthering()
         if (!gameExe) {
+            WriteStep("鳴潮啟動", "未設定路徑", "ERROR")
             Log("未設定鳴潮遊戲路徑，無法啟動", "ERROR")
             MsgBox "未設定鳴潮遊戲路徑。按 Ctrl+F3 重新指定。"
             ExitApp
@@ -603,10 +640,13 @@ if (hasRunningOKWW) {
 
         Sleep 2000  ; 留一點時間讓遊戲初始化
     } else {
+        WriteStep("鳴潮啟動", "已在運行，略過")
         Log("偵測到鳴潮已在運行，略過啟動")
     }
+    WriteStep("啟動OKWW", "讀取路徑並準備啟動")
     exePath := LaunchOKWW()
     if (!exePath) {
+        WriteStep("啟動OKWW", "未設定路徑", "ERROR")
         Log("未設定OKWW路徑，無法啟動", "ERROR")
         MsgBox "未設定 ok-ww 路徑。按 Ctrl+F2 重新指定。"
         ExitApp
@@ -624,6 +664,7 @@ if (hasRunningOKWW) {
     
     if (finalCheck.Length > 0 || finalProcessCheck) {
         Log("最終檢查發現OKWW已啟動 (視窗:" finalCheck.Length " 進程:" (finalProcessCheck ? "yes" : "no") ")，取消啟動", "WARN")
+        WriteStep("啟動OKWW", "最終檢查發現已啟動，改為接手", "WARN")
         if (finalCheck.Length > 0) {
             result := AttachNewestOkww(&pid, &targetHwnd, false)
             Log("改為接手已啟動的OKWW進程")
@@ -657,10 +698,12 @@ if (hasRunningOKWW) {
     Log("運行OKWW: " exePath)
     Run exePath,,, &pid
     if (!pid) {
+        WriteStep("啟動OKWW", "啟動失敗，無 PID", "ERROR")
         Log("無法獲取新啟動進程的PID", "ERROR")
         MsgBox "啟動OKWW失敗"
         ExitApp
     }
+    WriteStep("啟動OKWW", "啟動成功 | pid=" pid)
     
     Log("OKWW已啟動，PID=" pid)
     try {
@@ -680,18 +723,23 @@ if (hasRunningOKWW) {
         if (targetHwnd) {
             windowFound := true
             Log("已找到OKWW主視窗，耗時=" (A_Index * 3) "秒")
+            WriteStep("等待OKWW主視窗", "成功 | 耗時=" (A_Index * 3) "秒")
             break
         }
+        if (Mod(A_Index, 5) = 0)
+            WriteStep("等待OKWW主視窗", "等待中 | attempt=" A_Index "/30")
         Log("等待OKWW視窗，第 " A_Index " 次嘗試")
         Sleep 3000
     }
     
     if (!windowFound) {
+        WriteStep("等待OKWW主視窗", "超時，進入備援搜尋", "WARN")
         Log("等待OKWW視窗超時", "WARN")
     }
 }
 
 if !targetHwnd {
+    WriteStep("OKWW主視窗", "常規搜尋失敗，嘗試備援條件", "WARN")
     Log("無法找到OKWW視窗，嘗試額外的搜尋方式", "WARN")
     
     ; 使用更寬鬆的視窗搜尋標準
@@ -711,6 +759,7 @@ if !targetHwnd {
                 ; 嘗試激活此窗口
                 targetHwnd := hwnd
                 try WinActivate("ahk_id " . targetHwnd)
+                WriteStep("OKWW主視窗", "備援搜尋成功 | hwnd=" hwnd, "WARN")
                 break
             }
         } catch as e {
@@ -720,6 +769,7 @@ if !targetHwnd {
     }
     
     if (!extraFoundHwnd) {
+        WriteStep("OKWW主視窗", "備援搜尋失敗，結束", "ERROR")
         Log("使用所有方法都無法找到OKWW視窗，退出", "ERROR")
         MsgBox "❌ 無法找到 ok-ww 視窗，請手動啟動"
         ExitApp
@@ -870,7 +920,19 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
         if best is Array {
             Log("DoOCRClick click at x=" best[1] " y=" best[2] " score=" bestScore)
             ShowTip(stageText "`n→ 點擊: " best[1] ", " best[2], 500)
-            MouseClick "left", best[1], best[2]
+            oldMode := A_CoordModeMouse
+            CoordMode "Mouse", "Screen"
+            try {
+                if IsValidHwnd(targetHwnd) {
+                    try WinActivate("ahk_id " . targetHwnd)
+                    try WinWaitActive("ahk_id " . targetHwnd, "", 0.6)
+                }
+                MouseMove best[1], best[2]
+                Sleep 40
+                MouseClick "left", best[1], best[2]
+            } finally {
+                CoordMode "Mouse", oldMode
+            }
             Sleep 350
             if (sendHotkey != "") {
                 Log("DoOCRClick send hotkey=" sendHotkey)
@@ -889,25 +951,40 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
 }
 
 ; ====================== 前檢查與四階段流程 ======================
+WriteStep("升級檢測", "檢查是否需要執行升級流程")
 if !DetectOCRText("升级APP", 15000) {
+    WriteStep("升級檢測", "未偵測到升级APP，流程結束")
     ShowTip("🔍 未偵測到「升级APP」，不執行升級", 1200)
     Log("no upgrade needed, exit")
     ExitApp
 }
 
-if !DoOCRClick("升级APP",     "階段1：尋找 升級APP",     "leftmost")
+WriteStep("升級流程", "階段1：點擊 升级APP")
+if !DoOCRClick("升级APP",     "階段1：尋找 升級APP",     "leftmost") {
+    WriteStep("升級流程", "階段1失敗", "WARN")
     ExitApp
+}
 
-if !DoOCRClick("确认UPDATE",  "階段2：尋找 確認UPDATE",   "rightbottom")
+WriteStep("升級流程", "階段2：點擊 確認UPDATE")
+if !DoOCRClick("确认UPDATE",  "階段2：尋找 確認UPDATE",   "rightbottom") {
+    WriteStep("升級流程", "階段2失敗", "WARN")
     ExitApp
+}
 
-if !DoOCRClick("完成",        "階段3：尋找 完成",         "rightbottom")
+WriteStep("升級流程", "階段3：點擊 完成")
+if !DoOCRClick("完成",        "階段3：尋找 完成",         "rightbottom") {
+    WriteStep("升級流程", "階段3失敗", "WARN")
     ExitApp
+}
 
+WriteStep("升級流程", "階段4：點擊 启动应用")
 if !DoOCRClick("启动应用",    "階段4：尋找 啟動應用",     "leftmost")
-    && !DoOCRClick("肩动应用","階段4：尋找 启动应用(容錯)","leftmost")
+    && !DoOCRClick("肩动应用","階段4：尋找 启动应用(容錯)","leftmost") {
+    WriteStep("升級流程", "階段4失敗", "WARN")
     ExitApp
+}
 
 Log("flow done")
+WriteStep("升級流程", "完成")
 ShowTip("✅ 自動升級完成", 1500)
 ExitApp
