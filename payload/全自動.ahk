@@ -921,12 +921,12 @@ SuspendProcessByPid(pid) {
 
     PROCESS_SUSPEND_RESUME := 0x0800
     PROCESS_QUERY_LIMITED_INFORMATION := 0x1000
-    hProc := DllCall("Kernel32\\OpenProcess", "UInt", PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, "Int", 0, "UInt", pid, "Ptr")
+    hProc := DllCall("Kernel32\OpenProcess", "UInt", PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, "Int", 0, "UInt", pid, "Ptr")
     if !hProc
         return false
 
-    ntStatus := DllCall("ntdll\\NtSuspendProcess", "Ptr", hProc, "Int")
-    DllCall("Kernel32\\CloseHandle", "Ptr", hProc)
+    ntStatus := DllCall("ntdll\NtSuspendProcess", "Ptr", hProc, "Int")
+    DllCall("Kernel32\CloseHandle", "Ptr", hProc)
     return (ntStatus = 0)
 }
 
@@ -936,12 +936,12 @@ ResumeProcessByPid(pid) {
 
     PROCESS_SUSPEND_RESUME := 0x0800
     PROCESS_QUERY_LIMITED_INFORMATION := 0x1000
-    hProc := DllCall("Kernel32\\OpenProcess", "UInt", PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, "Int", 0, "UInt", pid, "Ptr")
+    hProc := DllCall("Kernel32\OpenProcess", "UInt", PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, "Int", 0, "UInt", pid, "Ptr")
     if !hProc
         return false
 
-    ntStatus := DllCall("ntdll\\NtResumeProcess", "Ptr", hProc, "Int")
-    DllCall("Kernel32\\CloseHandle", "Ptr", hProc)
+    ntStatus := DllCall("ntdll\NtResumeProcess", "Ptr", hProc, "Int")
+    DllCall("Kernel32\CloseHandle", "Ptr", hProc)
     return (ntStatus = 0)
 }
 
