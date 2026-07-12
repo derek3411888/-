@@ -3007,25 +3007,10 @@ RequestRestart(reason, level := "ERROR") {
         reason := "未提供"
 
     LAST_RESTART_REASON := reason
-    if ShouldUseCrashRestartHotkey(reason)
-        CRASH_RESTART_MODE := true
-    else
-        CRASH_RESTART_MODE := false
+    CRASH_RESTART_MODE := false
     WriteLog("觸發重啟請求，原因: " reason, level)
     WriteStep("重啟請求", "原因=" reason, level)
     RestartAutoScript(reason)
-}
-
-ShouldUseCrashRestartHotkey(reason) {
-    global LRMCAI_FLOW_STARTED
-
-    if !LRMCAI_FLOW_STARTED
-        return false
-
-    ; 僅允許「LRMCAI 已啟動後的遊戲閃退」走 hotkey 模式
-    ; 來源1: UE4 崩潰監看
-    ; 來源2: LRMCAI 日誌連續無效視窗控制代碼
-    return RegExMatch(reason, "i)(UE4-Client|無效視窗控制代碼|LRMCAI.*閃退|遊戲閃退)")
 }
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
