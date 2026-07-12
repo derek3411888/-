@@ -6013,15 +6013,21 @@ PsEsc(text) {
 FindTemplateOnScreenWithTolerance(templatePath, &outX, &outY, x1, y1, x2, y2) {
     outX := 0
     outY := 0
+    oldPixelMode := A_CoordModePixel
+    CoordMode "Pixel", "Screen"
     variations := [0, 20, 30, 40, 60]
-    for _, v in variations {
-        spec := (v > 0) ? ("*" v " " templatePath) : templatePath
-        try {
-            if ImageSearch(&outX, &outY, x1, y1, x2, y2, spec)
-                return true
-        } catch {
-            continue
+    try {
+        for _, v in variations {
+            spec := (v > 0) ? ("*" v " " templatePath) : templatePath
+            try {
+                if ImageSearch(&outX, &outY, x1, y1, x2, y2, spec)
+                    return true
+            } catch {
+                continue
+            }
         }
+    } finally {
+        CoordMode "Pixel", oldPixelMode
     }
     return false
 }
@@ -6051,6 +6057,21 @@ FindTemplateInWutheringWindow(templatePath, &outX, &outY) {
         y1 := Max(0, wy)
         x2 := Min(A_ScreenWidth - 1, wx + ww - 1)
         y2 := Min(A_ScreenHeight - 1, wy + wh - 1)
+
+        ; 叉叉模板只在遊戲視窗右上區塊搜尋，避免誤命中左上或中間的相似圖示。
+        splitPath templatePath, &tplName
+        if (tplName = "0510.png") {
+            roiLeft := wx + Floor(ww * 0.50)
+            roiTop := wy
+            roiRight := wx + ww - 1
+            roiBottom := wy + Floor(wh * 0.25)
+            x1 := Max(0, roiLeft)
+            y1 := Max(0, roiTop)
+            x2 := Min(A_ScreenWidth - 1, roiRight)
+            y2 := Min(A_ScreenHeight - 1, roiBottom)
+            WriteLog("叉叉模板使用右上四分之一ROI搜尋: " x1 "," y1 " -> " x2 "," y2)
+        }
+
         if (x2 <= x1 || y2 <= y1)
             return false
 
