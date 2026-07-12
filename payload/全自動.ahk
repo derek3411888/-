@@ -6091,6 +6091,7 @@ ClickTemplateIfFound(templatePath, logIfMissing := true) {
             found := FindTemplateOnScreenWithTolerance(templatePath, &x, &y, 0, 0, A_ScreenWidth - 1, A_ScreenHeight - 1)
 
         if found {
+            splitPath templatePath, &tplName
             clickX := x
             clickY := y
             if GetImageFileSize(templatePath, &imgW, &imgH) {
@@ -6139,6 +6140,38 @@ ClickTemplateIfFound(templatePath, logIfMissing := true) {
                     }
                 } catch as e {
                     WriteLog("模板點擊備援(PostMessage)失敗: " e.Message, "WARN")
+                }
+            }
+
+            ; 叉叉按鈕額外補一個「右下偏移」點，兼容部分場景把滑鼠中心對到目標中心而非尖端。
+            if (tplName = "0510.png") {
+                tipOffsetX := 12
+                tipOffsetY := 12
+                clickX2 := Min(A_ScreenWidth - 1, Max(0, clickX + tipOffsetX))
+                clickY2 := Min(A_ScreenHeight - 1, Max(0, clickY + tipOffsetY))
+                MouseMove clickX2, clickY2
+                Sleep 30
+                MouseClick "left", clickX2, clickY2
+                WriteLog("叉叉模板補點擊(尖端補償): base=" clickX "," clickY " -> offset=" clickX2 "," clickY2)
+
+                if (hwnd && WinExist("ahk_id " hwnd)) {
+                    try {
+                        pt2 := Buffer(8, 0)
+                        NumPut("int", clickX2, pt2, 0)
+                        NumPut("int", clickY2, pt2, 4)
+                        DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt2)
+                        cx2 := NumGet(pt2, 0, "int")
+                        cy2 := NumGet(pt2, 4, "int")
+                        if (cx2 >= 0 && cy2 >= 0) {
+                            lParam2 := (cy2 << 16) | (cx2 & 0xFFFF)
+                            PostMessage 0x201, 1, lParam2, , "ahk_id " hwnd
+                            Sleep 20
+                            PostMessage 0x202, 0, lParam2, , "ahk_id " hwnd
+                            WriteLog("叉叉補點擊備援(PostMessage): client=" cx2 "," cy2)
+                        }
+                    } catch as e {
+                        WriteLog("叉叉補點擊備援(PostMessage)失敗: " e.Message, "WARN")
+                    }
                 }
             }
             return true
