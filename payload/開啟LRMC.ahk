@@ -17,9 +17,9 @@ global TOOLTIP_CONTENT := ""
 global HOTKEY_MODE := false
 global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
-if A_Args.Length > 0 && A_Args[1] = "hotkey" {
+if A_Args.Length > 0 && A_Args[1] = "rewardmonitor" {
     HOTKEY_MODE := true
-    Log("檢測到 hotkey 模式，將略過 OCR『副本』搜尋")
+    Log("檢測到收尾監測熱鍵模式，將略過 OCR『副本』搜尋")
 }
 
 ; 日誌函數（使用新的日誌系統）
@@ -537,7 +537,7 @@ if !targetHwnd {
         if FileExist(ahkExe) {
             restartCmd := '"' ahkExe '" "' A_ScriptFullPath '"'
             if (HOTKEY_MODE)
-                restartCmd .= ' hotkey'
+                restartCmd .= ' rewardmonitor'
             Run(restartCmd)
             Log("已重新啟動開啟LRMC.ahk腳本 (第 " newRestartCount " 次)")
         } else {
@@ -656,10 +656,10 @@ try {
 Sleep 2000
 
 if (HOTKEY_MODE) {
-    WriteStep("Hotkey模式", "直接送出 Ctrl+F1")
+    WriteStep("收尾監測熱鍵模式", "直接送出 Ctrl+F1")
     ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
     if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
-        WriteStep("切換LRMCAI前景", "hotkey 模式送鍵前切換失敗", "WARN")
+        WriteStep("切換LRMCAI前景", "收尾監測熱鍵模式送鍵前切換失敗", "WARN")
         ExitApp
     }
     WriteStep("送出快捷鍵", "Ctrl+F1")

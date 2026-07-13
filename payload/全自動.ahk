@@ -1695,7 +1695,7 @@ WriteStep("啟動LRMC", "交由開啟LRMC.ahk 控制")
 LRMCAI_FLOW_STARTED := true
 lrmcCmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk"'
 if (CRASH_RESTART_MODE)
-    lrmcCmd .= ' hotkey'
+    lrmcCmd .= ' rewardmonitor'
 Run(lrmcCmd)
 ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 
@@ -3308,16 +3308,16 @@ TryRecoverLrmcDuringRewardMonitor() {
         return false
     }
 
-    cmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk" hotkey'
+    cmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk" rewardmonitor'
     try {
         Run(cmd)
         __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
-        WriteLog("收尾監測：偵測 LRMCAI 已退出，已用 hotkey 模式重啟（不走 OCR）", "WARN")
-        ShowTip("⚠️ LRMCAI 退出，已自動 hotkey 重啟", 1200)
+        WriteLog("收尾監測：偵測 LRMCAI 已退出，已用收尾監測熱鍵模式重啟（不走 OCR）", "WARN")
+        ShowTip("⚠️ LRMCAI 退出，已自動熱鍵重啟", 1200)
         return true
     } catch as e {
         __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
-        WriteLog("收尾監測：LRMCAI hotkey 重啟失敗: " e.Message, "ERROR")
+        WriteLog("收尾監測：LRMCAI 收尾監測熱鍵重啟失敗: " e.Message, "ERROR")
         return false
     }
 }
