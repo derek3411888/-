@@ -31,10 +31,11 @@ class RapidOcr {
 			if (!init)
 				Throw OSError()
 		}
+		defaultModels := RapidOcr.ResolveDefaultModelsDir()
 		if !IsSet(config)
-			config := { models: A_LineFile '\..\models' }
+			config := { models: defaultModels }
 		else if !HasProp(config, 'models')
-			config.models := A_LineFile '\..\models'
+			config.models := defaultModels
 		if !FileExist(config.models) 
 			config.models := unset
 		det_model := cls_model := rec_model := keys_dict := '', numThread := 2
@@ -53,10 +54,17 @@ class RapidOcr {
 								break
 							}
 					}
+					modelCandidates := Map('det', [], 'cls', [], 'rec', [])
 					loop files v '*.onnx' {
-						if RegExMatch(A_LoopFileName, 'i)_(det|cls|rec)[_.]', &m) && !%m[1]%_model
-							%m[1]%_model := A_LoopFileFullPath
-					} until det_model && cls_model && rec_model
+						if RegExMatch(A_LoopFileName, 'i)_(det|cls|rec)[_.]', &m)
+							modelCandidates[m[1]].Push(A_LoopFileFullPath)
+					}
+					if !det_model
+						det_model := RapidOcr.SelectPreferredModelPath(modelCandidates['det'], 'det')
+					if !cls_model
+						cls_model := RapidOcr.SelectPreferredModelPath(modelCandidates['cls'], 'cls')
+					if !rec_model
+						rec_model := RapidOcr.SelectPreferredModelPath(modelCandidates['rec'], 'rec')
 			}
 		}
 		for k in ['keys_dict', 'det_model', 'cls_model', 'rec_model']
@@ -68,6 +76,73 @@ class RapidOcr {
 		this.ptr := DllCall('RapidOcrOnnx\OcrInit', 'str', det_model, 'str', cls_model, 'str', rec_model, 'str', keys_dict, 'int', numThread, 'ptr')
 	}
 	__Delete() => this.ptr && DllCall('RapidOcrOnnx\OcrDestroy', 'ptr', this)
+
+	static ResolveDefaultModelsDir() {
+		baseDir := A_LineFile '\..\'
+		envModels := EnvGet('RAPIDOCR_MODELS')
+		if (envModels != '' && DirExist(envModels))
+			return envModels
+
+		for candidate in ['models_zh_hq', 'models_zh_best', 'models_zh_cn', 'models_ppocr_v4', 'models'] {
+			fullPath := baseDir candidate
+			if DirExist(fullPath)
+				return fullPath
+		}
+
+		return baseDir 'models'
+	}
+
+	static SelectPreferredModelPath(candidates, role) {
+		if !IsObject(candidates) || (candidates.Length = 0)
+			return ''
+
+		bestPath := ''
+		bestScore := -2147483648
+		for path in candidates {
+			score := RapidOcr.ScoreModelPath(path, role)
+			if (score > bestScore) {
+				bestScore := score
+				bestPath := path
+			}
+		}
+		return bestPath
+	}
+
+	static ScoreModelPath(path, role) {
+		name := StrLower(path)
+		score := 0
+
+		if InStr(name, 'server')
+			score += 500
+		if InStr(name, 'v5')
+			score += 400
+		else if InStr(name, 'v4')
+			score += 300
+		else if InStr(name, 'v3')
+			score += 200
+		if InStr(name, 'chinese_cht') || InStr(name, 'traditional') || InStr(name, 'tw')
+			score += 120
+		if InStr(name, 'chinese') || InStr(name, 'ppocr') || InStr(name, 'ch_')
+			score += 80
+		if InStr(name, 'mobile')
+			score -= 40
+		if InStr(name, 'lite')
+			score -= 20
+
+		switch role, false {
+			case 'det':
+				if InStr(name, '_det')
+					score += 50
+			case 'cls':
+				if InStr(name, '_cls')
+					score += 50
+			case 'rec':
+				if InStr(name, '_rec')
+					score += 50
+		}
+
+		return score
+	}
 
 	static __cb(i) {
 		static cbs := [
