@@ -151,17 +151,25 @@ CaptureWindowVisibleRegionForOcr(hwnd, outFile) {
     if (winW <= 0 || winH <= 0)
         throw Error("目標視窗尺寸異常: " winW "x" winH)
 
-    ; 優先擷取螢幕上可見的視窗區域，避免透明/分層視窗直接抓 hwnd 時拿到空圖。
+    ; 先嘗試直接擷取目標視窗，避免前景視窗遮擋污染 OCR 結果。
+    try {
+        ImagePutFile("ahk_id " hwnd, outFile)
+        if FileExist(outFile) && (FileGetSize(outFile) > 0)
+            return { method: "window-hwnd", x: winX, y: winY, w: winW, h: winH }
+    } catch as e {
+        Log("hwnd 擷取失敗，改用螢幕區域擷取: " e.Message, "WARN")
+    }
+
+    ; 後備：擷取螢幕上可見的視窗區域，處理直接抓 hwnd 為空圖的情況。
     try {
         ImagePutFile([winX, winY, winW, winH], outFile)
         if FileExist(outFile) && (FileGetSize(outFile) > 0)
             return { method: "screen-region", x: winX, y: winY, w: winW, h: winH }
     } catch as e {
-        Log("螢幕區域截圖失敗，改用 hwnd 擷取: " e.Message, "WARN")
+        Log("螢幕區域擷取也失敗: " e.Message, "WARN")
     }
 
-    ImagePutFile("ahk_id " hwnd, outFile)
-    return { method: "window-hwnd", x: winX, y: winY, w: winW, h: winH }
+    throw Error("無法擷取目標視窗")
 }
 
 ; ===== 重啟計數器和安全機制 =====
