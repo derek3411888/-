@@ -758,17 +758,17 @@ for block in res {
 }
 
 if (best is Array) {
-    ; OCR 座標通常是截圖內相對座標，需轉為螢幕座標避免誤點。
-    clickX := best[1]
-    clickY := best[2]
-    if (IsSet(captureInfo) && IsObject(captureInfo)
-        && captureInfo.HasOwnProp("w") && captureInfo.HasOwnProp("h")
-        && captureInfo.HasOwnProp("x") && captureInfo.HasOwnProp("y")) {
-        ; 只有在座標看起來落在截圖尺寸內時才做偏移，避免重複加位移。
-        if (clickX <= captureInfo.w + 5 && clickY <= captureInfo.h + 5) {
-            clickX += captureInfo.x
-            clickY += captureInfo.y
-        }
+    ; window-hwnd 擷取圖的座標原點是 client 區，不是含標題列/邊框的視窗外框。
+    ; 必須 ClientToScreen，不能直接加 WinGetPos 的外框座標，否則游標會偏到按鈕上方。
+    ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
+    clickX := 0
+    clickY := 0
+    if !ClientPointToScreen(ocrHwnd, best[1], best[2], &clickX, &clickY) {
+        WriteStep("點擊副本", "client 座標轉螢幕座標失敗", "WARN")
+        Log("點擊「副本」失敗：ClientToScreen 失敗，client=" best[1] "," best[2], "WARN")
+        if FileExist(tempFile)
+            FileDelete(tempFile)
+        ExitApp
     }
 
     ; 避免誤點工作列右下角「顯示桌面」熱區，防止全視窗最小化。
@@ -776,7 +776,6 @@ if (best is Array) {
         WriteStep("點擊副本", "座標過於接近右下角，已取消", "WARN")
         Log("點擊座標過於接近右下角，已中止點擊以避免誤觸顯示桌面: raw=" best[1] "," best[2] " screen=" clickX "," clickY, "WARN")
     } else {
-        ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
         WriteStep("切換LRMCAI前景", "副本點擊前切換")
         if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
             Log("點擊前切換 LRMC 前景失敗，已中止本次點擊以避免誤點", "WARN")
@@ -786,8 +785,8 @@ if (best is Array) {
             ExitApp
         }
         CoordMode "Mouse", "Screen"
-        WriteStep("點擊副本", "screen=" clickX "," clickY)
-        Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
+        WriteStep("點擊副本", "client=" best[1] "," best[2] " -> screen=" clickX "," clickY)
+        Log("點擊「副本」位置: client=" best[1] "," best[2] " -> screen=" clickX "," clickY)
         clickMode := ""
         if !ClickLrmcPointRobust(ocrHwnd, clickX, clickY, &clickMode) {
             WriteStep("點擊副本", "ControlClick 失敗，已中止", "WARN")
@@ -1052,6 +1051,23 @@ ClickLrmcPointRobust(hwnd, screenX, screenY, &modeOut := "") {
     }
 
     return false
+}
+
+ClientPointToScreen(hwnd, clientX, clientY, &screenX, &screenY) {
+    screenX := 0
+    screenY := 0
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    pt := Buffer(8, 0)
+    NumPut("int", Round(clientX), pt, 0)
+    NumPut("int", Round(clientY), pt, 4)
+    if !DllCall("ClientToScreen", "ptr", hwnd, "ptr", pt, "int")
+        return false
+
+    screenX := NumGet(pt, 0, "int")
+    screenY := NumGet(pt, 4, "int")
+    return true
 }
 
 ControlClickScreenPoint(hwnd, screenX, screenY) {
