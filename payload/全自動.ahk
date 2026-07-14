@@ -619,7 +619,8 @@ OnRemoteControlStateChanged(state) {
         try RC_SetPausedFlag(false)
         WriteLog("遠端控制：收到 STOP，開始完整關閉流程", "WARN")
         ShowTip("⏹ 遠端關閉中：腳本/遊戲/OKWW/LRMCAI", 1800)
-        SetTimer(() => ShutdownGameLrmcOkww(false), -50)
+        ; 直接執行關閉流程，避免在收尾等待中先 ExitApp 導致計時器回呼來不及執行。
+        ShutdownGameLrmcOkww(false)
         return
     }
 
@@ -5953,7 +5954,7 @@ ExitFromTrayNow(*) {
     __RESTART_IN_PROGRESS := false
     try RC_SetPausedFlag(false)
     try WriteLog("系統匣：使用者請求立即離開，改走完整關閉流程")
-    SetTimer(() => ShutdownGameLrmcOkww(false), -50)
+    ShutdownGameLrmcOkww(false)
 }
 
 OpenSettingsFromTray(*) {

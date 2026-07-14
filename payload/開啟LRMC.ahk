@@ -992,15 +992,16 @@ SendWindowClickMessage(hwnd, cx, cy) {
 ForegroundMouseClickScreenPoint(screenX, screenY) {
     try {
         CoordMode "Mouse", "Screen"
-        MouseGetPos &oldX, &oldY
         targetX := Round(screenX)
         targetY := Round(screenY)
-        ; 優先採用可見的實體滑鼠移動與點擊，行為最接近人工操作。
-        MouseMove targetX, targetY, 0
-        Sleep 40
+        ; 以可見移動 + 目標停留後點擊，行為更接近人工操作。
+        MouseMove targetX, targetY, 4
+        Sleep 90
+        MouseGetPos &actualX, &actualY
+        if (actualX != targetX || actualY != targetY)
+            MouseMove targetX, targetY, 0
         Click "Left"
-        Sleep 40
-        MouseMove oldX, oldY, 0
+        Sleep 90
         return true
     } catch {
         return false
