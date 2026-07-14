@@ -473,6 +473,18 @@ QuoteForBat(path) {
     return "`"" path "`""
 }
 
+ExtractZipByPowerShell(zipPath, destDir) {
+    try {
+        psZip := StrReplace(zipPath, "'", "''")
+        psDest := StrReplace(destDir, "'", "''")
+        psCmd := "$ErrorActionPreference='Stop'; $zip='" psZip "'; $dest='" psDest "'; if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }; New-Item -ItemType Directory -Path $dest -Force | Out-Null; Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force"
+        cmd := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psCmd Chr(34)
+        return (RunWait(cmd, , "Hide") = 0)
+    } catch {
+        return false
+    }
+}
+
 ; 設置進程優先級為普通，減少系統負擔
 try {
     ProcessSetPriority("Normal", DllCall("GetCurrentProcessId"))
@@ -879,6 +891,25 @@ if needUnpack {
         }
         Sleep(1000)  ; 額外緩衝
         
+        ; Shell 解壓在某些 zip（含中文檔名/路徑）可能靜默失敗，補一層 PowerShell 備援。
+        extractedCount := 0
+        try {
+            Loop Files, APP_DIR "\*", "R" {
+                extractedCount += 1
+                break
+            }
+        }
+
+        if (extractedCount = 0) {
+            WriteLog("Shell 解壓後 payload 仍為空，改用 PowerShell Expand-Archive 備援", "WARN")
+            if !ExtractZipByPowerShell(payloadPath, APP_DIR) {
+                WriteLog("PowerShell 備援解壓也失敗", "ERROR")
+                MsgBox("解壓失敗：Shell 與 PowerShell 皆無法解壓 payload.zip", "解壓錯誤", 16)
+                ExitApp
+            }
+            Sleep(400)
+        }
+
         WriteLog("payload.zip 解壓完成到 " APP_DIR)
         
         ; --- 智能目錄結構修正 (遞歸搜尋 MAIN_FILE) ---
