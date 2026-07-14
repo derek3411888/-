@@ -788,14 +788,16 @@ if (best is Array) {
         CoordMode "Mouse", "Screen"
         WriteStep("點擊副本", "screen=" clickX "," clickY)
         Log("點擊「副本」位置: raw=" best[1] "," best[2] " -> screen=" clickX "," clickY)
-        if !ControlClickScreenPoint(ocrHwnd, clickX, clickY) {
+        clickMode := ""
+        if !ClickLrmcPointRobust(ocrHwnd, clickX, clickY, &clickMode) {
             WriteStep("點擊副本", "ControlClick 失敗，已中止", "WARN")
-            Log("點擊「副本」失敗：ControlClick 失敗，screen=" clickX "," clickY, "WARN")
+            Log("點擊「副本」失敗：所有點擊策略皆失敗，screen=" clickX "," clickY, "WARN")
             if FileExist(tempFile)
                 FileDelete(tempFile)
             ExitApp
         }
-        Sleep 500
+        Log("點擊「副本」已執行，模式=" clickMode)
+        Sleep 900
         WriteStep("送出快捷鍵", "Ctrl+F1")
         SendCtrlF1(pid, ocrHwnd)   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
         Log("已發送 Ctrl+F1")
@@ -968,6 +970,87 @@ ControlClickClientPoint(hwnd, x, y) {
     } catch {
         return false
     }
+}
+
+SendWindowClickMessage(hwnd, cx, cy) {
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    lParam := ((Round(cy) & 0xFFFF) << 16) | (Round(cx) & 0xFFFF)
+    try {
+        PostMessage 0x200, 0, lParam, , "ahk_id " hwnd   ; WM_MOUSEMOVE
+        Sleep 30
+        PostMessage 0x201, 1, lParam, , "ahk_id " hwnd   ; WM_LBUTTONDOWN (MK_LBUTTON)
+        Sleep 35
+        PostMessage 0x202, 0, lParam, , "ahk_id " hwnd   ; WM_LBUTTONUP
+        return true
+    } catch {
+        return false
+    }
+}
+
+ForegroundMouseClickScreenPoint(screenX, screenY) {
+    try {
+        CoordMode "Mouse", "Screen"
+        MouseGetPos &oldX, &oldY
+        targetX := Round(screenX)
+        targetY := Round(screenY)
+        ; 優先採用可見的實體滑鼠移動與點擊，行為最接近人工操作。
+        MouseMove targetX, targetY, 0
+        Sleep 40
+        Click "Left"
+        Sleep 40
+        MouseMove oldX, oldY, 0
+        return true
+    } catch {
+        return false
+    }
+}
+
+ClickLrmcPointRobust(hwnd, screenX, screenY, &modeOut := "") {
+    modeOut := ""
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    ; 先把螢幕座標換成 client 座標，供各策略重用。
+    pt := Buffer(8, 0)
+    NumPut("int", Round(screenX), pt, 0)
+    NumPut("int", Round(screenY), pt, 4)
+    if !DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt, "int")
+        return false
+
+    cx := NumGet(pt, 0, "int")
+    cy := NumGet(pt, 4, "int")
+
+    ; 策略1（最高優先）：前景實際滑鼠點擊
+    if ForegroundMouseClickScreenPoint(screenX, screenY) {
+        modeOut := "foreground-mouse"
+        return true
+    }
+
+    ; 策略2：背景 ControlClick (NA)
+    try {
+        ControlClick("x" cx " y" cy, "ahk_id " hwnd, , "Left", 1, "NA")
+        modeOut := "controlclick-na"
+        return true
+    } catch {
+    }
+
+    ; 策略3：ControlClick（允許切焦點）
+    try {
+        ControlClick("x" cx " y" cy, "ahk_id " hwnd, , "Left", 1)
+        modeOut := "controlclick"
+        return true
+    } catch {
+    }
+
+    ; 策略4：直接送視窗滑鼠訊息（不移動實體滑鼠）
+    if SendWindowClickMessage(hwnd, cx, cy) {
+        modeOut := "postmessage"
+        return true
+    }
+
+    return false
 }
 
 ControlClickScreenPoint(hwnd, screenX, screenY) {

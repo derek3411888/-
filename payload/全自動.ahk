@@ -3145,7 +3145,10 @@ MonitorRewardAndShutdown() {
     WriteLog("主流程完成，先等待 " startDelaySec " 秒再開始監測最新日誌: " logPath)
     WriteStep("收尾監測", "開始監測前等待 " startDelaySec " 秒")
     ShowTip("⏳ 主流程完成，" startDelaySec "秒後開始監測", 1500)
-    Sleep REWARD_START_DELAY_MS
+    if !WaitInterruptibleForShutdown(REWARD_START_DELAY_MS, "收尾監測啟動延遲") {
+        WriteLog("收尾監測啟動延遲期間收到停止指令，已提前結束監測", "WARN")
+        return
+    }
 
     lastPos := GetLogFileLength(logPath)
     hit := 0
@@ -3206,7 +3209,10 @@ MonitorRewardAndShutdown() {
                         WriteLog("已監測到 " REWARD_MATCH_NEED_COUNT " 條『電台_一鍵領取』，" delaySec " 秒後開始關閉流程")
                         WriteStep("收尾監測", "達到關閉條件：一鍵領取命中數")
                         ShowTip("✅ 監測命中，" delaySec "秒後關閉程式", 2000)
-                        Sleep REWARD_SHUTDOWN_DELAY_MS
+                        if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測命中後關閉延遲") {
+                            WriteLog("命中後關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
+                            return
+                        }
                         HandleCycleFinishAndShutdown()
                         return
                     }
@@ -3232,7 +3238,10 @@ MonitorRewardAndShutdown() {
                     WriteLog("已同時監測到『點擊電台一鍵領取』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
                     WriteStep("收尾監測", "達到關閉條件：一鍵領取+無獎勵")
                     ShowTip("✅ 監測到一鍵領取+無獎勵，" delaySec "秒後關閉", 2000)
-                    Sleep REWARD_SHUTDOWN_DELAY_MS
+                    if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測條件達成後關閉延遲") {
+                        WriteLog("條件達成後關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
+                        return
+                    }
                     HandleCycleFinishAndShutdown()
                     return
                 }
@@ -3242,7 +3251,10 @@ MonitorRewardAndShutdown() {
                     WriteLog("已同時監測到『領取每日獎勵成功』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
                     WriteStep("收尾監測", "達到關閉條件：每日獎勵成功+無獎勵")
                     ShowTip("✅ 監測到每日獎勵成功+無獎勵，" delaySec "秒後關閉", 2000)
-                    Sleep REWARD_SHUTDOWN_DELAY_MS
+                    if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測每日獎勵關閉延遲") {
+                        WriteLog("每日獎勵關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
+                        return
+                    }
                     HandleCycleFinishAndShutdown()
                     return
                 }
@@ -3252,15 +3264,45 @@ MonitorRewardAndShutdown() {
                     WriteLog("已同時監測到『索拉獎勵領取失敗』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
                     WriteStep("收尾監測", "達到關閉條件：索拉失敗+無獎勵")
                     ShowTip("✅ 監測到索拉獎勵失敗+無獎勵，" delaySec "秒後關閉", 2000)
-                    Sleep REWARD_SHUTDOWN_DELAY_MS
+                    if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測索拉失敗關閉延遲") {
+                        WriteLog("索拉失敗關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
+                        return
+                    }
                     HandleCycleFinishAndShutdown()
                     return
                 }
             }
         }
         ClickTemplateIfFound(A_ScriptDir "\登入.png")
-        Sleep REWARD_CHECK_INTERVAL_MS
+        if !WaitInterruptibleForShutdown(REWARD_CHECK_INTERVAL_MS, "收尾監測輪詢間隔") {
+            WriteLog("收尾監測輪詢間隔期間收到停止指令，已提前結束監測", "WARN")
+            return
+        }
     }
+}
+
+WaitInterruptibleForShutdown(totalMs, phase := "") {
+    global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY
+
+    if (totalMs <= 0)
+        return true
+
+    deadline := A_TickCount + totalMs
+    while (A_TickCount < deadline) {
+        if (REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY) {
+            if (phase != "")
+                WriteLog("等待中止（" phase "）：收到停止/離開請求", "WARN")
+            return false
+        }
+
+        remain := deadline - A_TickCount
+        chunk := (remain > 300) ? 300 : remain
+        if (chunk < 1)
+            break
+        Sleep chunk
+    }
+
+    return !(REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY)
 }
 
 ResolveRewardLogPath() {
