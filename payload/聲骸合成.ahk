@@ -88,11 +88,17 @@ ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
     if (duration < 3000)
         duration := 3000
+    else if (duration > 30000)
+        duration := 30000
     msg := StrReplace(msg, "`r", "")
 
-    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
-        TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
-    else
+    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "") {
+        lineCount := StrSplit(TOOLTIP_CONTENT, "`n").Length
+        if (lineCount >= 5)
+            TOOLTIP_CONTENT := msg
+        else
+            TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
+    } else
         TOOLTIP_CONTENT := msg
 
     display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")

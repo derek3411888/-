@@ -40,7 +40,7 @@ global TOOLTIP_CONTENT := ""
 
 ; 收尾監測設定（命中兩條「電台_一鍵領取」後延遲關閉）
 global REWARD_LOG_FILE := "D:\LRMCAI\log\LRMCAI.log"
-global REWARD_START_DELAY_MS := 45000
+global REWARD_START_DELAY_MS := 300000
 global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
@@ -113,12 +113,19 @@ ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
     if (duration < 3000)
         duration := 3000
+    else if (duration > 30000)
+        duration := 30000
     msg := StrReplace(msg, "`r", "")
 
-    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "")
-        TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
-    else
+    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "") {
+        lineCount := StrSplit(TOOLTIP_CONTENT, "`n").Length
+        if (lineCount >= 5)
+            TOOLTIP_CONTENT := msg
+        else
+            TOOLTIP_CONTENT := TOOLTIP_CONTENT "`n" msg
+    } else {
         TOOLTIP_CONTENT := msg
+    }
 
     display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")
     TOOLTIP_UNTIL_TICK := A_TickCount + duration
