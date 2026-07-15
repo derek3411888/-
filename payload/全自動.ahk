@@ -3274,7 +3274,9 @@ MonitorRewardAndShutdown() {
                 }
             }
         }
-        ClickTemplateIfFound(A_ScriptDir "\登入.png")
+        ; 收尾監測只做背景模板搜尋；不可因每輪輪詢而置頂或切換到鳴潮。
+        ; 若實際找到登入按鈕，才會在點擊時啟用鳴潮。
+        ClickTemplateIfFound(A_ScriptDir "\登入.png", true, false)
         if !WaitInterruptibleForShutdown(REWARD_CHECK_INTERVAL_MS, "收尾監測輪詢間隔") {
             WriteLog("收尾監測輪詢間隔期間收到停止指令，已提前結束監測", "WARN")
             return
@@ -6109,20 +6111,22 @@ FindTemplateOnScreenWithTolerance(templatePath, &outX, &outY, x1, y1, x2, y2) {
     return false
 }
 
-FindTemplateInWutheringWindow(templatePath, &outX, &outY) {
+FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := true) {
     outX := 0
     outY := 0
     hwnd := GetWutheringGameHwnd()
     if !hwnd
         return false
 
-    try {
-        WinRestore("ahk_id " hwnd)
-        ; 只在模板檢測前做一次置頂脈衝，避免持續置頂影響其他視窗
-        WinSetAlwaysOnTop(1, "ahk_id " hwnd)
-        WinActivate("ahk_id " hwnd)
-        Sleep 80
-        WinSetAlwaysOnTop(0, "ahk_id " hwnd)
+    if (activateWindow) {
+        try {
+            WinRestore("ahk_id " hwnd)
+            ; 只在模板檢測前做一次置頂脈衝，避免持續置頂影響其他視窗
+            WinSetAlwaysOnTop(1, "ahk_id " hwnd)
+            WinActivate("ahk_id " hwnd)
+            Sleep 80
+            WinSetAlwaysOnTop(0, "ahk_id " hwnd)
+        }
     }
 
     try {
@@ -6158,12 +6162,13 @@ FindTemplateInWutheringWindow(templatePath, &outX, &outY) {
     return false
 }
 
-ClickTemplateIfFound(templatePath, logIfMissing := true) {
+ClickTemplateIfFound(templatePath, logIfMissing := true, activateWindowForSearch := true) {
     x := 0
     y := 0
     oldMode := A_CoordModeMouse
+    topmostForClickHwnd := 0
     try {
-        found := FindTemplateInWutheringWindow(templatePath, &x, &y)
+        found := FindTemplateInWutheringWindow(templatePath, &x, &y, activateWindowForSearch)
         if !found
             found := FindTemplateOnScreenWithTolerance(templatePath, &x, &y, 0, 0, A_ScreenWidth - 1, A_ScreenHeight - 1)
 
@@ -6188,6 +6193,12 @@ ClickTemplateIfFound(templatePath, logIfMissing := true) {
             if (hwnd) {
                 try {
                     WinRestore("ahk_id " hwnd)
+                    ; 收尾監測採背景搜尋；只有真的找到模板、準備點擊時才短暫置頂。
+                    if !activateWindowForSearch {
+                        WinSetAlwaysOnTop(1, "ahk_id " hwnd)
+                        topmostForClickHwnd := hwnd
+                        Sleep 80
+                    }
                     WinActivate("ahk_id " hwnd)
                     WinWaitActive("ahk_id " hwnd, , 0.8)
                 }
@@ -6258,6 +6269,9 @@ ClickTemplateIfFound(templatePath, logIfMissing := true) {
         WriteLog("模板檢測略過（不影響主流程）: " . templatePath . " | " . e.Message, "WARN")
         return false
     } finally {
+        if (topmostForClickHwnd && WinExist("ahk_id " topmostForClickHwnd)) {
+            try WinSetAlwaysOnTop(0, "ahk_id " topmostForClickHwnd)
+        }
         CoordMode "Mouse", oldMode
     }
     if (logIfMissing)
