@@ -5,8 +5,8 @@ Edit `app.js`:
 - `FIREBASE_CONFIG.apiKey`
 - `FIREBASE_CONFIG.authDomain`
 - `FIREBASE_CONFIG.projectId`
-- `CONTROL_PASSWORD`
-- `CONTROL_SECRET`
+
+目前控制台不設登入密碼；開啟頁面後可直接操作。請用 Firestore Rules 或 Firebase Authentication 控制實際存取權限。
 
 ## 2) Firestore collection
 Default collection: `ahk_clients`
@@ -30,6 +30,5 @@ display_name=客廳電腦
 heartbeat_interval_ms=30000
 poll_interval_ms=5000
 http_timeout_ms=2500
-control_secret=CHANGE_ME
 
 `uid` is auto-generated on first run if empty.

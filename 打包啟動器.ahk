@@ -1003,7 +1003,7 @@ if needUnpack {
         }
 
         ; 驗證關鍵檔案是否存在
-        keyFiles := ["全自動.ahk", "進程管理器.ahk", "LogManager.ahk"]
+        keyFiles := ["全自動.ahk", "開啟LRMC.ahk", "自動開啟OKWW.ahk", "聲骸合成.ahk", "LogManager.ahk", "RemoteControlFirestore.ahk"]
         for fileName in keyFiles {
             filePath := APP_DIR "\" fileName
             if FileExist(filePath) {

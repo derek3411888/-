@@ -34,8 +34,6 @@ h1 { margin: 0; }
   padding: 14px;
 }
 
-.locked { opacity: 0.55; pointer-events: none; }
-
 label { font-weight: 700; display: block; margin-bottom: 8px; }
 
 select, input {

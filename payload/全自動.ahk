@@ -2002,6 +2002,53 @@ MinimizeOKWWWindows() {
     }
 }
 
+; 僅識別由 OKWW 使用的 Python 進程，避免誤殺其他 python.exe/pythonw.exe。
+IsOkwwPythonProcess(pid, commandLine := "") {
+    if (pid <= 0)
+        return false
+
+    cmdLower := StrLower(commandLine)
+    if (InStr(cmdLower, "ok-ww") || InStr(cmdLower, "okww"))
+        return true
+
+    try {
+        for hwnd in WinGetList("ahk_pid " pid) {
+            titleLower := StrLower(WinGetTitle("ahk_id " hwnd))
+            if (InStr(titleLower, "ok-ww") || InStr(titleLower, "okww"))
+                return true
+        }
+    }
+
+    return false
+}
+
+CloseOkwwPythonProcesses() {
+    closedCount := 0
+    try {
+        wmi := ComObjGet("winmgmts:")
+        query := "Select ProcessId, Name, CommandLine from Win32_Process where Name='pythonw.exe' or Name='python.exe'"
+        for proc in wmi.ExecQuery(query) {
+            pid := proc.ProcessId + 0
+            cmdLine := ""
+            try cmdLine := proc.CommandLine
+            if !IsOkwwPythonProcess(pid, cmdLine)
+                continue
+
+            WriteLog("關閉 OKWW Python 進程：PID=" pid " Name=" proc.Name)
+            try ProcessClose(pid)
+            Sleep 250
+            if ProcessExist(pid) {
+                WriteLog("OKWW Python 進程仍存在，依 PID 強制關閉：" pid, "WARN")
+                try RunWait("taskkill /F /PID " pid, , "Hide")
+            }
+            closedCount += 1
+        }
+    } catch as e {
+        WriteLog("掃描 OKWW Python 進程失敗：" e.Message, "WARN")
+    }
+    return closedCount
+}
+
 ; ★ 啟動前檢測：關閉所有目標程式
 CheckAndCloseExistingProcesses() {
     WriteStep("清場流程", "入口：檢測並關閉既有進程")
@@ -2010,7 +2057,6 @@ CheckAndCloseExistingProcesses() {
     ; 定義要檢測的程式（使用實際檢測到的程式名稱）
     processes := [
         {name: "ok-ww.exe", display: "OKWW主程式"},
-        {name: "pythonw.exe", display: "OKWW更新檢測", filter: "OK-WW"},
         {name: "Client-Win64-Shipping.exe", display: "鳴潮遊戲"},
         {name: "LRMCAI.exe", display: "LRMC自動"}
     ]
@@ -2025,40 +2071,8 @@ CheckAndCloseExistingProcesses() {
         ; 先用ProcessExist快速檢查
         pid := ProcessExist(process.name)
         if (pid) {
-            ; 對於pythonw.exe，需要額外檢查是否是OKWW程式
-            if (process.name = "pythonw.exe" && process.HasOwnProp("filter")) {
-                isTargetProcess := false
-                
-                ; 方法1：檢查視窗標題
-                try {
-                    for hwnd in WinGetList() {
-                        if (WinGetProcessName("ahk_id " hwnd) = "pythonw.exe") {
-                            title := WinGetTitle("ahk_id " hwnd)
-                            titleLower := StrLower(title)
-                            
-                            ; 排除編輯器和開發工具
-                            isEditor := (InStr(titleLower, "visual studio code") || 
-                                        InStr(titleLower, "notepad") || 
-                                        InStr(titleLower, "vscode"))
-                            
-                            ; 只檢測真正的OKWW程式視窗，排除編輯器
-                            if (InStr(titleLower, StrLower(process.filter)) && !isEditor) {
-                                isTargetProcess := true
-                                targetPID := WinGetPID("ahk_id " hwnd)
-                                WriteLog("通過視窗標題找到OKWW程式: " title " (PID:" targetPID ")")
-                                break
-                            }
-                        }
-                    }
-                } catch as e {
-                    WriteLog("檢查視窗標題時出錯: " e.Message, "WARN")
-                }
-                
-                processExists := isTargetProcess
-            } else {
-                processExists := true
-                targetPID := pid
-            }
+            processExists := true
+            targetPID := pid
         }
         
         if (processExists) {
@@ -2086,6 +2100,10 @@ CheckAndCloseExistingProcesses() {
             }
         }
     }
+
+    ; Python 只依命令列或所屬視窗標題辨識 OKWW，再關閉命中的特定 PID。
+    if (CloseOkwwPythonProcesses() > 0)
+        foundAny := true
     
     ; 額外檢測：關閉所有 AutoHotkey 進程（除了自己）
     currentPID := DllCall("GetCurrentProcessId")
@@ -3540,7 +3558,7 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false) {
         try ProcessClose("OK-WW.exe")
     try Run("taskkill /F /IM ok-ww.exe", , "Hide")
     try Run("taskkill /F /IM OK-WW.exe", , "Hide")
-    try Run("taskkill /F /IM pythonw.exe", , "Hide")
+    CloseOkwwPythonProcesses()
 
     ; 停止監看計時器，避免後續流程再觸發
     try SetTimer(CrashWatcherTick, 0)

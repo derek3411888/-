@@ -1,0 +1,9 @@
+# Local credentials and runtime-only configuration
+郵件測試/mail_config.ini
+config/
+
+# Runtime logs and temporary captures
+*.log
+payload/temp*.png
+payload/ue4crash*.png
+payload/menu*.png

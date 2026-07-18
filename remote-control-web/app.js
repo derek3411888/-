@@ -8,21 +8,13 @@ const FIREBASE_CONFIG = {
   projectId: "ww-control-a3988",
 };
 
-const CONTROL_PASSWORD = "123456789";
-const CONTROL_SECRET = "ww-control-a3988-shared-2026";
 const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const REFRESH_MS = 5_000;
-const WEB_BUILD = "20260712-2";
+const WEB_BUILD = "20260718-1";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
-
-const gateCard = document.getElementById("gateCard");
-const controlCard = document.getElementById("controlCard");
-const gatePwd = document.getElementById("gatePwd");
-const gateMsg = document.getElementById("gateMsg");
-const btnUnlock = document.getElementById("btnUnlock");
 
 const pcDropdown = document.getElementById("pcDropdown");
 const btnPause = document.getElementById("btnPause");
@@ -31,7 +23,6 @@ const btnStop = document.getElementById("btnStop");
 const statusMsg = document.getElementById("statusMsg");
 const clientMeta = document.getElementById("clientMeta");
 
-let unlocked = false;
 let cache = new Map();
 
 function fmtTs(ms) {
@@ -61,10 +52,6 @@ function normalizeStatus(v) {
   const s = String(v ?? "UNKNOWN").toUpperCase().replace(/[^A-Z]/g, "");
   if (s === "RUN" || s === "PAUSE" || s === "STOP" || s === "OFFLINE") return s;
   return "UNKNOWN";
-}
-
-function lockUi(flag) {
-  controlCard.classList.toggle("locked", flag);
 }
 
 function renderClients() {
@@ -153,7 +140,6 @@ function refreshMeta() {
 }
 
 async function loadClients() {
-  if (!unlocked) return;
   try {
     const snap = await getDocs(collection(db, COLLECTION));
     cache.clear();
@@ -180,7 +166,6 @@ async function sendCommand(state) {
     await updateDoc(ref, {
       desiredState: state,
       nonce: nextNonce,
-      controlSecret: CONTROL_SECRET,
       commandUpdatedAt: Date.now(),
     });
 
@@ -191,17 +176,6 @@ async function sendCommand(state) {
   }
 }
 
-btnUnlock.addEventListener("click", () => {
-  if (gatePwd.value !== CONTROL_PASSWORD) {
-    gateMsg.textContent = "密碼錯誤";
-    return;
-  }
-  unlocked = true;
-  gateMsg.textContent = `已解鎖（v${WEB_BUILD}）`;
-  lockUi(false);
-  loadClients();
-});
-
 btnPause.addEventListener("click", () => sendCommand("PAUSE"));
 btnRun.addEventListener("click", () => sendCommand("RUN"));
 btnStop.addEventListener("click", () => {
@@ -210,5 +184,6 @@ btnStop.addEventListener("click", () => {
 });
 pcDropdown.addEventListener("change", refreshMeta);
 
-lockUi(true);
+statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
+loadClients();
 setInterval(loadClients, REFRESH_MS);
