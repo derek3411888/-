@@ -1404,9 +1404,6 @@ if !FileExist(AhkExe) {
 }
 WriteLog("成功找到 AutoHotkey: " AhkExe)
 
-; ★ 啟動 UE4 崩潰全域監看（獨立 UE4-Client 視窗）
-StartCrashWatcher()
-
 okwwExe := "OK-WW.exe"   ; 由工作管理員確認
 
 ; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
@@ -1477,6 +1474,10 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
 
 if (!isRestart && !isNextServerCycle)
     ResetRestartTrackingOnFreshStart()
+
+; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
+;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
+StartCrashWatcher()
 
 LoadServerScheduleContext(isNextServerCycle)
 
@@ -2141,16 +2142,98 @@ CheckAndCloseExistingProcesses() {
 StartCrashWatcher() {
     SetTimer CrashWatcherTick, 5000  ; 從2秒進一步降低到5秒，大幅減少系統負擔
 }
+
+GetActionableUe4CrashWindow(hwnd) {
+    if !hwnd
+        return false
+
+    try {
+        if !DllCall("IsWindow", "ptr", hwnd, "int")
+            return false
+        if !DllCall("IsWindowVisible", "ptr", hwnd, "int")
+            return false
+
+        title := Trim(WinGetTitle("ahk_id " hwnd), " `t`r`n")
+        if (title != "UE4-Client")
+            return false
+
+        ; 已縮到工作列或被 DWM cloak 的視窗，使用者畫面上其實不存在，不能當成新崩潰。
+        if (WinGetMinMax("ahk_id " hwnd) = -1)
+            return false
+
+        cloakedBuf := Buffer(4, 0)
+        try {
+            hr := DllCall("dwmapi\DwmGetWindowAttribute", "ptr", hwnd, "uint", 14, "ptr", cloakedBuf, "uint", 4, "int")
+            if (hr = 0 && NumGet(cloakedBuf, 0, "uint") != 0)
+                return false
+        }
+
+        WinGetPos(&x, &y, &w, &h, "ahk_id " hwnd)
+        if (w < 120 || h < 80)
+            return false
+
+        virtualX := SysGet(76)
+        virtualY := SysGet(77)
+        virtualW := SysGet(78)
+        virtualH := SysGet(79)
+        if (x + w <= virtualX || y + h <= virtualY || x >= virtualX + virtualW || y >= virtualY + virtualH)
+            return false
+
+        pid := WinGetPID("ahk_id " hwnd)
+        processName := ""
+        try processName := WinGetProcessName("ahk_id " hwnd)
+        return { hwnd: hwnd, pid: pid, processName: processName, title: title, x: x, y: y, w: w, h: h }
+    }
+
+    return false
+}
+
+FindActionableUe4CrashWindow() {
+    ; 不依賴全域 TitleMatchMode，逐一比對精確標題，避免其他含 UE4-Client 字樣的視窗誤命中。
+    for hwnd in WinGetList() {
+        info := GetActionableUe4CrashWindow(hwnd)
+        if IsObject(info)
+            return info
+    }
+    return false
+}
+
+WaitForUe4CrashWindowDismissal(hwnd, timeoutMs := 2500) {
+    deadline := A_TickCount + timeoutMs
+    while (A_TickCount < deadline) {
+        if !IsObject(GetActionableUe4CrashWindow(hwnd))
+            return true
+        Sleep 100
+    }
+    return !IsObject(GetActionableUe4CrashWindow(hwnd))
+}
+
 CrashWatcherTick() {
+    global CFG_FILE
     static busy := false
+    static lastSkippedSignature := ""
     if busy
         return
-    hwndC := WinExist("UE4-Client")
-    if !hwndC
+
+    crashWindow := FindActionableUe4CrashWindow()
+    if !IsObject(crashWindow)
         return
+
+    hwndC := crashWindow.hwnd
+    incidentSignature := crashWindow.pid "|" hwndC
+    previousSignature := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_ue4_crash_signature", ""), " `t`r`n")
+    if (incidentSignature = previousSignature) {
+        if (incidentSignature != lastSkippedSignature) {
+            WriteLog("UE4 崩潰監看：略過已處理事件 PID=" crashWindow.pid " HWND=" hwndC " EXE=" crashWindow.processName, "WARN")
+            lastSkippedSignature := incidentSignature
+        }
+        return
+    }
 
     busy := true
     try {
+        WriteLog("UE4 崩潰監看：命中可操作視窗 PID=" crashWindow.pid " HWND=" hwndC " EXE=" crashWindow.processName
+            " RECT=" crashWindow.x "," crashWindow.y "," crashWindow.w "x" crashWindow.h, "ERROR")
         ocr := RapidOcr()
         ; 使用唯一臨時檔案名，避免衝突
         tempFile := A_ScriptDir "\ue4crash_" A_TickCount ".png"
@@ -2186,13 +2269,27 @@ CrashWatcherTick() {
             }
         }
 
+        ; 先落盤事件指紋，再操作視窗。即使腳本隨即重啟，同一個 HWND/PID 也不會再吃重啟額度。
+        IniWrite incidentSignature, CFG_FILE, "restart_tracking", "last_ue4_crash_signature"
+        IniWrite FormatTime(, "yyyy-MM-dd HH:mm:ss"), CFG_FILE, "restart_tracking", "last_ue4_crash_time"
+
         WinActivate "ahk_id " hwndC
         Sleep 120
         if IsObject(btn)
             MouseClick "left", btn[1], btn[2]
         else
             Send "{Enter}"
-        Sleep 1000
+
+        dismissed := WaitForUe4CrashWindowDismissal(hwndC, 2500)
+        if !dismissed {
+            WriteLog("UE4 崩潰視窗按下確認後仍可操作，嘗試 WinClose；PID=" crashWindow.pid " HWND=" hwndC, "WARN")
+            try WinClose("ahk_id " hwndC)
+            dismissed := WaitForUe4CrashWindowDismissal(hwndC, 1500)
+        }
+        if dismissed
+            WriteLog("UE4 崩潰視窗已從可操作畫面消失；事件指紋=" incidentSignature)
+        else
+            WriteLog("UE4 崩潰視窗仍存在，但已記錄事件指紋，不會跨重啟重複觸發；事件指紋=" incidentSignature, "WARN")
 
         ; 關閉 OKWW 程式，因為遊戲崩潰重啟時 OKWW 也需要重新啟動
         try ProcessClose "ok-ww.exe"
@@ -3067,6 +3164,14 @@ RestartAutoScript(reason := "") {
         WriteLog("重啟次數已達上限 (" MAX_RESTART_COUNT ")，停止重啟以避免無限循環。最後原因: " reason, "ERROR")
         WriteStep("重啟流程", "超過上限，停止重啟", "ERROR")
         ShowTip("❌ 重啟次數過多，停止執行", 5000)
+
+        ; 這條路徑已不會再啟動下一個腳本，必須切回正常終止模式並完成錄影收尾。
+        ; 否則 OnExit 會把它誤認成重啟交接，留下 FFmpeg 持續錄影或遭外力中止後損壞檔案。
+        __RESTART_IN_PROGRESS := false
+        __NEXTSERVER_RESTART := false
+        try SetTimer(CrashWatcherTick, 0)
+        ForceStopManagedScreenRecording("重啟次數達上限")
+
         Sleep 5000
         ; 重置計數器
         IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
