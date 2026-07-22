@@ -40,7 +40,7 @@
 - LRMCAI UI 視窗等待逾時：3 分鐘（60 次 * 3 秒）
 
 ### 3.5 自動重啟上限
-- MAX_RESTART_COUNT 目前為 6。
+- MAX_RESTART_COUNT 目前為 10。
 
 ### 3.6 重啟通知信
 - 重啟流程會寄送通知信，且內文包含「重啟原因」。
@@ -91,10 +91,13 @@
 ## 8) 推版流程（維運）
 1. 修改腳本後先做語法/錯誤檢查
 2. 編譯 payload/全自動.ahk -> payload/全自動鋤地.exe
-3. 重建 payload.zip
-4. 計算 payload.zip SHA256
-5. 更新 update_manifest.example.json 版本與 payload_sha256
-6. git commit + push
+3. 編譯 打包啟動器.ahk -> 根目錄 全自動鋤地.exe
+4. 重建 payload.zip
+5. 計算 payload.zip 與根目錄啟動器 EXE 的 SHA256
+6. 同時提升 payload 與 launcher 版本，更新 manifest 兩組版本、URL 與 SHA256
+7. git commit + push main，讓客戶端能直接取得更新
+
+> 維運約定：以後每次「打包更新」都必須同時重新編譯、升版並發布 Payload 與 Launcher，不可只更新其中一個。
 
 ## 9) 本檔用途
 - 這份文件提供給接手 AI/開發者快速理解專案脈絡。

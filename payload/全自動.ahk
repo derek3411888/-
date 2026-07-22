@@ -1440,7 +1440,7 @@ WriteStep("清場", "關閉既有目標進程")
 CheckAndCloseExistingProcesses()
 
 ; 讀取重啟計數器（避免無限循環）
-global MAX_RESTART_COUNT := 6
+global MAX_RESTART_COUNT := 10
 global restartCount := Integer(IniReadSafe(CFG_FILE, "restart_tracking", "auto_restart_count", "0"))
 WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
