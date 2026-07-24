@@ -176,6 +176,16 @@ Main() {
 
 RunSynthesisLoop() {
     global logger, firstTime
+
+    ; 進入聲骸合成前先處理月相觀測卡每日領取畫面。
+    ; 必須先完成兩段點擊並確認回到主畫面，之後 Esc 才會正常開啟選單。
+    WriteStep("月相獎勵", "OCR 檢測進場覆蓋畫面")
+    if !HandleMonthlyCardRewardIfPresent() {
+        WriteStep("月相獎勵", "處理失敗", "ERROR")
+        logger.log("月相觀測卡領取畫面未能正常關閉", "ERROR")
+        return false
+    }
+
     ; 步驟1：按 Esc 打開主選單（圖2）
     WriteStep("主選單", "按 Esc 開啟")
     if !OpenMainMenu() {
@@ -356,6 +366,149 @@ FindGameWindow() {
         return true
     }
     
+    return false
+}
+
+DetectMonthlyCardRewardScreen(&detail := "") {
+    global gameWindow, logger
+
+    detail := ""
+    result := OCRWindow()
+    if !IsObject(result)
+        return false
+
+    clientH := 720
+    try WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " gameWindow)
+
+    ; 文案固定出現在畫面下半部；只組合這個區域的文字，降低其他 UI 誤判機率。
+    combined := ""
+    for block in result {
+        if !block.HasOwnProp("text")
+            continue
+
+        if (block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3) {
+            centerY := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
+            if (clientH > 0 && centerY < clientH * 0.50)
+                continue
+        }
+
+        text := CleanText(block.text)
+        if (text != "")
+            combined .= (combined = "" ? "" : "|") text
+    }
+
+    hasRemaining := InStr(combined, "剩余") > 0 || InStr(combined, "剩餘") > 0
+    hasClickReward := InStr(combined, "点击领取") > 0 || InStr(combined, "點擊領取") > 0
+        || ((InStr(combined, "点击") > 0 || InStr(combined, "點擊") > 0)
+        && (InStr(combined, "领取") > 0 || InStr(combined, "領取") > 0))
+    hasMonthlyCard := InStr(combined, "月相观测卡") > 0 || InStr(combined, "月相觀測卡") > 0
+        || ((InStr(combined, "月相") > 0)
+        && (InStr(combined, "观测") > 0 || InStr(combined, "觀測") > 0))
+    hitCount := (hasRemaining ? 1 : 0) + (hasClickReward ? 1 : 0) + (hasMonthlyCard ? 1 : 0)
+
+    detail := "剩余=" hasRemaining " 点击领取=" hasClickReward " 月相观测卡=" hasMonthlyCard " 命中=" hitCount "/3"
+    return hitCount >= 2
+}
+
+DetectMonthlyCardRewardStable(&detail := "", requiredStable := 2, attempts := 4, intervalMs := 350) {
+    detail := ""
+    stable := 0
+    bestDetail := ""
+
+    Loop attempts {
+        sampleDetail := ""
+        if DetectMonthlyCardRewardScreen(&sampleDetail) {
+            stable += 1
+            bestDetail := sampleDetail
+            if (stable >= requiredStable) {
+                detail := sampleDetail " 連續=" stable "/" requiredStable
+                return true
+            }
+        } else {
+            stable := 0
+        }
+
+        if (A_Index < attempts)
+            Sleep intervalMs
+    }
+
+    detail := bestDetail
+    return false
+}
+
+WaitForMonthlyCardRewardTextGone(timeoutMs := 4500) {
+    deadline := A_TickCount + timeoutMs
+    stableGone := 0
+
+    while (A_TickCount < deadline) {
+        sampleDetail := ""
+        if DetectMonthlyCardRewardScreen(&sampleDetail)
+            stableGone := 0
+        else
+            stableGone += 1
+
+        if (stableGone >= 2)
+            return true
+        Sleep 350
+    }
+    return false
+}
+
+HandleMonthlyCardRewardIfPresent() {
+    global gameWindow, logger
+
+    matchDetail := ""
+    if !DetectMonthlyCardRewardStable(&matchDetail) {
+        logger.log("月相觀測卡 OCR：未命中，直接進入 Esc 流程")
+        return true
+    }
+
+    logger.log("月相觀測卡 OCR：確認命中（" matchDetail "）", "WARN")
+    WriteStep("月相獎勵", "命中，開始兩段點擊", "WARN")
+
+    if !ActivateGame() {
+        logger.log("月相觀測卡處理失敗：無法啟用遊戲視窗", "ERROR")
+        return false
+    }
+
+    clientW := 1280
+    clientH := 720
+    try WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " gameWindow)
+    clickX := Round(clientW / 2)
+    clickY := Round(clientH / 2)
+
+    logger.log("月相觀測卡：第一次點擊遊戲中央 (" clickX "," clickY ")")
+    ClickRelative(clickX, clickY)
+    Sleep 1200
+
+    textGone := WaitForMonthlyCardRewardTextGone(4500)
+    if textGone
+        logger.log("月相觀測卡：第一次點擊後領取文案已消失")
+    else
+        logger.log("月相觀測卡：第一次點擊後文案仍可能存在，依流程執行第二次點擊", "WARN")
+
+    ; 等領取動畫進入可關閉階段，再執行第二下。
+    Sleep 900
+    logger.log("月相觀測卡：第二次點擊遊戲中央")
+    ClickRelative(clickX, clickY)
+    Sleep 1200
+
+    ; icon_main.png 是既有的主畫面右下角模板；連續命中兩次才允許後續 Esc。
+    if WaitEscMenuOCR(gameWindow, 15) {
+        logger.log("月相觀測卡：第二次點擊後已確認回到遊戲主畫面")
+        WriteStep("月相獎勵", "處理完成，主畫面已就緒")
+        return true
+    }
+
+    ; 模板可能受顯示縮放影響；只要月相文案已穩定消失，仍交給既有 OpenMainMenu 重試驗證。
+    remainingDetail := ""
+    if !DetectMonthlyCardRewardStable(&remainingDetail, 2, 3, 300) {
+        logger.log("月相觀測卡：主畫面模板未命中，但領取文案已消失，交由 Esc 選單驗證", "WARN")
+        Sleep 1000
+        return true
+    }
+
+    logger.log("月相觀測卡：兩次點擊後仍辨識到領取畫面（" remainingDetail "）", "ERROR")
     return false
 }
 
@@ -1039,6 +1192,13 @@ ToSimp(s) {
         "設置", "设置",
         "確認", "确认",
         "確定", "确定",
+        "剩餘", "剩余",
+        "點擊領取", "点击领取",
+        "點擊", "点击",
+        "領取", "领取",
+        "觀測卡", "观测卡",
+        "觀測", "观测",
+        "獎勵", "奖励",
         "已棄置", "已弃置",
         "批量融合", "批量融合",
         "全選", "全选"
