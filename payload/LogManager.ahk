@@ -3,7 +3,7 @@
 ; 1. 統一日誌存放到 自動鋤地/log 目錄
 ; 2. 按腳本名稱分類建立子資料夾
 ; 3. 按時間戳命名日誌檔案
-; 4. 自動清理，最多保留5份日誌
+; 4. 自動清理，每個腳本類別最多保留15份日誌
 
 #Requires AutoHotkey v2.0+
 
@@ -73,8 +73,9 @@ class LogManager {
     }
     
     cleanOldLogs() {
-        ; 清理舊日誌，只保留當前腳本的最新5份
+        ; 清理舊日誌，只保留當前腳本的最新15份
         try {
+            keepCount := 15
             logs := []
             ; 只查找屬於當前腳本的日誌檔案
             pattern := this.logDir "\" this.scriptName "_*.log"
@@ -88,10 +89,10 @@ class LogManager {
             ; 按時間排序（新到舊）
             logs := this.sortLogsByTime(logs)
             
-            ; 保留最新5份，刪除其餘
-            if logs.Length > 5 {
-                Loop logs.Length - 5 {
-                    index := 5 + A_Index
+            ; 保留最新 keepCount 份，刪除其餘
+            if logs.Length > keepCount {
+                Loop logs.Length - keepCount {
+                    index := keepCount + A_Index
                     try FileDelete(logs[index].path)
                 }
             }

@@ -15,11 +15,12 @@ global TOOLTIP_SLOT := 4
 global TOOLTIP_UNTIL_TICK := 0
 global TOOLTIP_CONTENT := ""
 global HOTKEY_MODE := false
+global LRMC_RUN_CONFIRMED := false
 global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
-if A_Args.Length > 0 && A_Args[1] = "rewardmonitor" {
+if A_Args.Length > 0 && (A_Args[1] = "resume" || A_Args[1] = "rewardmonitor") {
     HOTKEY_MODE := true
-    Log("檢測到收尾監測熱鍵模式，將略過 OCR『副本』搜尋")
+    Log("檢測到 LRMCAI 接續模式，將略過 OCR『副本』搜尋；參數=" A_Args[1])
 }
 
 ; 日誌函數（使用新的日誌系統）
@@ -65,7 +66,10 @@ if !A_IsAdmin {
     Log("需要管理員權限，嘗試提權...")
     if FileExist(BUNDLED_AHK_EXE) {
         try {
-            Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+            elevatedCmd := '*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"'
+            if (HOTKEY_MODE)
+                elevatedCmd .= ' resume'
+            Run(elevatedCmd)
         }
     } else {
         MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
@@ -85,6 +89,30 @@ if (dataDir = "") {
 }
 DirCreate dataDir
 global CFG_FILE := dataDir "\config.ini"
+
+SetLrmcRunState(started, mode := "", detail := "") {
+    global CFG_FILE, RUN_ID, LRMC_RUN_CONFIRMED
+    startedValue := started ? "1" : "0"
+    IniWrite startedValue, CFG_FILE, "lrmc_runtime", "run_started"
+    IniWrite detail, CFG_FILE, "lrmc_runtime", "last_state_detail"
+    if started {
+        startedTime := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+        IniWrite startedTime, CFG_FILE, "lrmc_runtime", "run_started_time"
+        IniWrite mode, CFG_FILE, "lrmc_runtime", "start_mode"
+        IniWrite RUN_ID, CFG_FILE, "lrmc_runtime", "start_run_id"
+        LRMC_RUN_CONFIRMED := true
+        Log("已記錄 LRMCAI 可接續狀態：mode=" mode " time=" startedTime)
+    } else {
+        IniWrite "", CFG_FILE, "lrmc_runtime", "run_started_time"
+        IniWrite "", CFG_FILE, "lrmc_runtime", "start_mode"
+        IniWrite "", CFG_FILE, "lrmc_runtime", "start_run_id"
+        LRMC_RUN_CONFIRMED := false
+        Log("已清除 LRMCAI 可接續狀態" (detail != "" ? "：" detail : ""))
+    }
+}
+
+if !HOTKEY_MODE
+    SetLrmcRunState(false, "", "一般模式啟動，等待 Ctrl+F1 成功後重新標記")
 
 ; 顯示提示時避免被游標遮住（開頭加5個空白）
 ShowTip(msg, duration := 5000) {
@@ -551,7 +579,7 @@ if !targetHwnd {
         if FileExist(ahkExe) {
             restartCmd := '"' ahkExe '" "' A_ScriptFullPath '"'
             if (HOTKEY_MODE)
-                restartCmd .= ' rewardmonitor'
+                restartCmd .= ' resume'
             Run(restartCmd)
             Log("已重新啟動開啟LRMC.ahk腳本 (第 " newRestartCount " 次)")
         } else {
@@ -670,17 +698,27 @@ try {
 Sleep 2000
 
 if (HOTKEY_MODE) {
-    WriteStep("收尾監測熱鍵模式", "直接送出 Ctrl+F1")
+    WriteStep("LRMCAI接續模式", "略過 OCR，直接送出 Ctrl+F1")
     ocrHwnd := (IsSet(ocrTargetHwnd) && ocrTargetHwnd) ? ocrTargetHwnd : targetHwnd
-    if (!EnsureWindowForegroundForClick(ocrHwnd, pid)) {
-        WriteStep("切換LRMCAI前景", "收尾監測熱鍵模式送鍵前切換失敗", "WARN")
+    resumeReady := EnsureWindowForegroundForClick(ocrHwnd, pid)
+    if !resumeReady {
+        WriteStep("切換LRMCAI前景", "接續模式送鍵前切換失敗，降級一般模式", "WARN")
+    } else {
+        WriteStep("送出快捷鍵", "Ctrl+F1（resume）")
+        resumeReady := SendCtrlF1(pid, ocrHwnd)
+    }
+
+    if resumeReady {
+        Log("已發送 Ctrl+F1（resume）")
+        SetLrmcRunState(true, "resume", "快捷鍵接續成功")
+        Log("LRMC 接續流程完成")
         ExitApp
     }
-    WriteStep("送出快捷鍵", "Ctrl+F1")
-    SendCtrlF1(pid, ocrHwnd)
-    Log("已發送 Ctrl+F1")
-    Log("LRMC 啟動流程完成")
-    ExitApp
+
+    Log("LRMCAI 接續模式失敗，僅降級一次為一般 OCR『副本』流程", "WARN")
+    WriteStep("接續模式降級", "改走一般 OCR『副本』流程", "WARN")
+    SetLrmcRunState(false, "", "resume 失敗，降級一般模式")
+    HOTKEY_MODE := false
 }
 
 Log("開始 OCR 識別...")
@@ -798,8 +836,12 @@ if (best is Array) {
         Log("點擊「副本」已執行，模式=" clickMode)
         Sleep 900
         WriteStep("送出快捷鍵", "Ctrl+F1")
-        SendCtrlF1(pid, ocrHwnd)   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
-        Log("已發送 Ctrl+F1")
+        if SendCtrlF1(pid, ocrHwnd) {   ; 送 Ctrl+F1（對同 PID 多視窗嘗試）
+            Log("已發送 Ctrl+F1")
+            SetLrmcRunState(true, "normal", "OCR 點擊副本後送鍵成功")
+        } else {
+            Log("Ctrl+F1 發送失敗，未標記 LRMCAI 可接續狀態", "ERROR")
+        }
     }
 } else if (copyFound) {
     WriteStep("點擊副本", "找到文字但缺少可點擊座標", "WARN")
@@ -828,8 +870,12 @@ if (best is Array) {
             Log("已執行副本固定座標備援點擊: client=82,112")
             Sleep 500
             WriteStep("送出快捷鍵", "Ctrl+F1")
-            SendCtrlF1(pid, ocrHwnd)
-            Log("已發送 Ctrl+F1（固定座標備援）")
+            if SendCtrlF1(pid, ocrHwnd) {
+                Log("已發送 Ctrl+F1（固定座標備援）")
+                SetLrmcRunState(true, "normal-fallback", "固定座標副本後送鍵成功")
+            } else {
+                Log("Ctrl+F1 發送失敗（固定座標備援），未標記 LRMCAI 可接續狀態", "ERROR")
+            }
         } else {
             Log("固定座標備援點擊失敗，略過本輪點擊", "WARN")
         }
@@ -839,8 +885,14 @@ if (best is Array) {
 if FileExist(tempFile)
     FileDelete(tempFile)
 
-Log("LRMC 啟動流程完成")
-WriteStep("流程完成", "LRMC 啟動流程完成")
+if LRMC_RUN_CONFIRMED {
+    Log("LRMC 啟動流程完成")
+    WriteStep("流程完成", "LRMC 已啟動且可接續")
+} else {
+    SetLrmcRunState(false, "", "流程結束但未確認 Ctrl+F1 成功")
+    Log("LRMC 啟動流程結束，但未確認 Ctrl+F1 成功", "ERROR")
+    WriteStep("流程完成", "未確認 LRMCAI 已開始", "ERROR")
+}
 ExitApp
 
 ; 點擊前先切到 LRMC 前景，避免遊戲鎖滑鼠導致座標正確但點擊無效。
@@ -890,6 +942,7 @@ EnsureWindowForegroundForClick(hwnd, pid := 0) {
 SendCtrlF1(pid, preferredHwnd := 0) {
     targets := []
     seen := Map()
+    sent := false
 
     if (preferredHwnd) {
         targets.Push(preferredHwnd)
@@ -907,7 +960,7 @@ SendCtrlF1(pid, preferredHwnd := 0) {
 
     if (targets.Length = 0) {
         Log("SendCtrlF1: 找不到可送鍵的目標視窗，PID=" pid, "WARN")
-        return
+        return false
     }
 
     ; 第一輪：背景 PostMessage
@@ -918,6 +971,7 @@ SendCtrlF1(pid, preferredHwnd := 0) {
             PostMessage 0x101, 0x70, 0, , "ahk_id " hwnd  ; VK_F1 up
             PostMessage 0x101, 0x11, 0, , "ahk_id " hwnd  ; VK_CONTROL up
             Log("SendCtrlF1: 已對 hwnd=" hwnd " 送出 PostMessage")
+            sent := true
         }
     }
 
@@ -928,6 +982,7 @@ SendCtrlF1(pid, preferredHwnd := 0) {
         try {
             ControlSend("{Ctrl down}{F1}{Ctrl up}", , "ahk_id " hwnd)
             Log("SendCtrlF1: 已對 hwnd=" hwnd " 送出 ControlSend")
+            sent := true
         }
     }
 
@@ -939,11 +994,13 @@ SendCtrlF1(pid, preferredHwnd := 0) {
         Sleep 40
         Send "{Ctrl down}{F1}{Ctrl up}"
         Log("SendCtrlF1: 前景備援已送出，hwnd=" fallbackHwnd)
+        sent := true
     } catch as e {
         Log("SendCtrlF1: 前景備援失敗: " e.Message, "WARN")
     }
 
     Sleep 120
+    return sent
 }
 
 IsReliableCopyTargetText(text) {

@@ -79,6 +79,11 @@ global __WUTHERING_AUDIO_MUTED := false
 global __WUTHERING_MUTE_PENDING := false
 global WUTHERING_PROCESS_EXE := "Client-Win64-Shipping.exe"
 global LAST_RESTART_REASON := ""
+global LAST_RESTART_CODE := ""
+global LAST_RESTART_STAGE := ""
+global LAST_RESTART_RECOVERY := ""
+global LAST_RESTART_PROCESS_SNAPSHOT := ""
+global LAST_RESTART_LRMC_STATE := ""
 global PROCESS_DETECT_RETRY_COUNT := 6
 global PROCESS_DETECT_RETRY_DELAY_MS := 800
 global WUTHERING_STARTUP_WAIT_SEC := 45
@@ -91,7 +96,6 @@ global SERVER_SCHEDULE_INDEX := 1
 global CURRENT_SERVER_TARGET := ""
 global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
-global LRMCAI_FLOW_STARTED := false
 global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
 global REMOTE_CONTROL_ACTIVE := false
 global REMOTE_PAUSE_WAITING := false
@@ -1453,17 +1457,22 @@ if A_Args.Length > 0 && A_Args[1] = "restart" {
     WriteLog("檢測到重啟模式，遊戲更新後將重新啟動OKWW")
     prevReason := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_reason", ""), " `t`r`n")
     prevTime := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_time", ""), " `t`r`n")
+    prevCode := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_code", "UNSPECIFIED"), " `t`r`n")
+    prevStage := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_stage", "未指定"), " `t`r`n")
+    prevRecovery := Trim(IniReadSafe(CFG_FILE, "restart_tracking", "last_restart_recovery", ""), " `t`r`n")
     if (prevReason != "") {
-        detail := prevReason
+        detail := "code=" prevCode " | stage=" prevStage " | reason=" prevReason
+        if (prevRecovery != "")
+            detail .= " | recovery=" prevRecovery
         if (prevTime != "")
             detail .= " @ " prevTime
         WriteStep("上次重啟原因", detail, "WARN")
     }
 }
 
-if A_Args.Length > 1 && A_Args[1] = "restart" && A_Args[2] = "crash" {
+if A_Args.Length > 1 && A_Args[1] = "restart" && (A_Args[2] = "resume" || A_Args[2] = "crash") {
     CRASH_RESTART_MODE := true
-    WriteLog("檢測到崩潰重啟模式，LRMCAI 將使用快捷鍵啟動")
+    WriteLog("檢測到 LRMCAI 接續模式，LRMCAI 將略過 OCR『副本』並使用快捷鍵啟動；參數=" A_Args[2])
 }
 
 isNextServerCycle := false
@@ -1538,7 +1547,9 @@ loop {
             if (elapsedSec >= WUTHERING_UPDATE_RECOVERY_WAIT_SEC) {
                 WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，執行完整重啟流程", "ERROR")
                 ShowTip("⚠️ 更新後超時未啟動，完整重啟流程", 2200)
-                RequestRestart("遊戲更新後點擊確認，等待2分鐘仍未啟動（疑似閃退/當機）")
+                RequestRestart(
+                    "遊戲更新確認完成後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒，仍找不到鳴潮遊戲視窗",
+                    "ERROR", CRASH_RESTART_MODE, "GAME_UPDATE_RECOVERY_TIMEOUT", "遊戲更新後恢復")
                 return
             }
             WriteLog("更新後恢復等待中（" elapsedSec "/" WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒），暫不重啟", "WARN")
@@ -1548,7 +1559,9 @@ loop {
         if (elapsedNoWindowSec >= WUTHERING_NO_WINDOW_RESTART_SEC) {
             WriteLog("鳴潮長時間 no_window（" elapsedNoWindowSec " 秒），判定當機/閃退，執行完整重啟", "ERROR")
             ShowTip("❌ 鳴潮長時間無視窗，完整重啟流程", 2200)
-            RequestRestart("鳴潮長時間無視窗（疑似閃退/當機）")
+            RequestRestart(
+                "連續 " elapsedNoWindowSec " 秒找不到鳴潮遊戲視窗；no_window 次數=" noWindowLoopCount,
+                "ERROR", CRASH_RESTART_MODE, "GAME_STARTUP_NO_WINDOW_TIMEOUT", "遊戲啟動／登入")
             return
         }
 
@@ -1612,7 +1625,9 @@ if !WaitEscMenuOCR(gameHwnd, 90) {
     WriteLog("鳴潮無法使用或超時，觸發重啟機制", "ERROR")
     ShowTip("⚠️ 鳴潮無法使用，重新啟動...", 3000)
     Sleep 3000
-    RequestRestart("遊戲可操作驗證超時或失敗")
+    RequestRestart(
+        "鳴潮視窗存在，但主畫面／可操作模板在 90 秒內未通過驗證",
+        "ERROR", CRASH_RESTART_MODE, "GAME_READY_CHECK_TIMEOUT", "遊戲可操作驗證")
     return
 }
 WriteStep("遊戲可操作驗證", "模板比對通過")
@@ -1673,9 +1688,14 @@ try {
             flagFile := dataDir "\synthesis_restart.flag"
             if FileExist(flagFile) {
                 WriteLog("偵測到聲骸合成要求重啟，刪除標記並觸發重啟機制", "WARN")
+                flagReason := ""
+                try flagReason := Trim(FileRead(flagFile, "UTF-8"), " `t`r`n")
                 try FileDelete(flagFile)
                 Sleep 2000
-                RequestRestart("聲骸合成回報重啟旗標 synthesis_restart.flag", "WARN")
+                detail := "聲骸合成回報重啟旗標 synthesis_restart.flag"
+                if (flagReason != "")
+                    detail .= "；旗標內容=" flagReason
+                RequestRestart(detail, "WARN", CRASH_RESTART_MODE, "SYNTHESIS_RESTART_FLAG", "聲骸合成")
                 return
             }
             break
@@ -1688,7 +1708,9 @@ try {
         WriteLog("聲骸合成超時，觸發重啟機制", "ERROR")
         ShowTip("⚠️ 聲骸合成超時，重新啟動...", 3000)
         Sleep 3000
-        RequestRestart("聲骸合成流程超時")
+        RequestRestart(
+            "聲骸合成子腳本等待超過 " Round(maxWaitTime / 1000) " 秒仍未完成",
+            "ERROR", CRASH_RESTART_MODE, "SYNTHESIS_TIMEOUT", "聲骸合成")
         return
     }
     
@@ -1701,10 +1723,9 @@ try {
 ; 4) 啟動 LRMC 管理腳本（由該腳本負責LRMC的啟動與管理）
 WriteLog("啟動 LRMC 管理腳本...")
 WriteStep("啟動LRMC", "交由開啟LRMC.ahk 控制")
-LRMCAI_FLOW_STARTED := true
 lrmcCmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk"'
 if (CRASH_RESTART_MODE)
-    lrmcCmd .= ' rewardmonitor'
+    lrmcCmd .= ' resume'
 Run(lrmcCmd)
 ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 
@@ -2154,7 +2175,9 @@ GetActionableUe4CrashWindow(hwnd) {
             return false
 
         title := Trim(WinGetTitle("ahk_id " hwnd), " `t`r`n")
-        if (title != "UE4-Client")
+        exactLegacyTitle := (title = "UE4-Client")
+        knownCrashTitle := title ~= "i)^UE4-Client Game.*(crash|崩潰|崩溃|fatal|致命)"
+        if (!exactLegacyTitle && !knownCrashTitle)
             return false
 
         ; 已縮到工作列或被 DWM cloak 的視窗，使用者畫面上其實不存在，不能當成新崩潰。
@@ -2253,25 +2276,46 @@ CrashWatcherTick() {
         }
 
         btn := ""
+        crashEvidenceFound := false
+        crashOcrSummary := ""
         if IsObject(res) {
             for block in res {
-                t := StrReplace(StrReplace(block.text, "`r",""), "`n","")
-                t := StrReplace(t, " ", "")
+                rawText := StrReplace(StrReplace(block.text, "`r", " "), "`n", " ")
+                rawText := Trim(RegExReplace(rawText, "\s+", " "), " `t")
+                if (rawText != "") {
+                    if (crashOcrSummary != "")
+                        crashOcrSummary .= " | "
+                    crashOcrSummary .= rawText
+                    if (StrLen(crashOcrSummary) > 900)
+                        crashOcrSummary := SubStr(crashOcrSummary, 1, 900)
+                }
+
+                if (rawText ~= "i)(fatal\s*error|DXGI_ERROR_DEVICE|崩潰|崩溃|致命錯誤|致命错误)")
+                    crashEvidenceFound := true
+
+                t := StrReplace(rawText, " ", "")
                 t := ToSimp(t)
                 if (block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3) {
                     if (InStr(t, "确定") || InStr(t, "確定") || InStr(t, "OK") || InStr(t, "确认") || InStr(t, "Confirm")) {
                         cx := (block.boxPoint[1].x + block.boxPoint[3].x) / 2
                         cy := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
                         btn := [Round(cx), Round(cy)]
-                        break
                     }
                 }
             }
         }
 
+        if !crashEvidenceFound {
+            skipDetail := "UE4 崩潰監看：標題命中但 OCR 未找到 Fatal/DXGI/崩潰證據，略過以避免誤殺；title="
+            skipDetail .= crashWindow.title " pid=" crashWindow.pid " ocr=" crashOcrSummary
+            WriteLog(skipDetail, "WARN")
+            return
+        }
+
         ; 先落盤事件指紋，再操作視窗。即使腳本隨即重啟，同一個 HWND/PID 也不會再吃重啟額度。
         IniWrite incidentSignature, CFG_FILE, "restart_tracking", "last_ue4_crash_signature"
         IniWrite FormatTime(, "yyyy-MM-dd HH:mm:ss"), CFG_FILE, "restart_tracking", "last_ue4_crash_time"
+        IniWrite crashOcrSummary, CFG_FILE, "restart_tracking", "last_ue4_crash_ocr"
 
         WinActivate "ahk_id " hwndC
         Sleep 120
@@ -2300,7 +2344,11 @@ CrashWatcherTick() {
         ; 統一走 RequestRestart：
         ; 1) 正確設置重啟旗標，避免 OnExit 誤停錄影
         ; 2) 沿用既有重啟計數/通知/crash hotkey 模式判定
-        RequestRestart("UE4-Client 崩潰重啟")
+        RequestRestart(
+            "偵測到可操作的 UE4 致命錯誤視窗；title=" crashWindow.title
+                " pid=" crashWindow.pid " hwnd=" hwndC " exe=" crashWindow.processName
+                "；OCR=" crashOcrSummary,
+            "ERROR", true, "UE4_FATAL_DIALOG", "UE4 全域崩潰監看")
         return
     } finally busy := false
 }
@@ -3122,23 +3170,87 @@ MarkServerCompletedInCurrentCycle(server, completedTime := "") {
     }
 }
 
-RequestRestart(reason, level := "ERROR") {
-    global LAST_RESTART_REASON, CRASH_RESTART_MODE
+IsLrmcRunResumeReady() {
+    global CFG_FILE
+    return IniReadSafe(CFG_FILE, "lrmc_runtime", "run_started", "0") = "1"
+}
+
+GetLrmcRunStateSummary() {
+    global CFG_FILE
+    started := IniReadSafe(CFG_FILE, "lrmc_runtime", "run_started", "0")
+    startedTime := Trim(IniReadSafe(CFG_FILE, "lrmc_runtime", "run_started_time", ""), " `t`r`n")
+    startMode := Trim(IniReadSafe(CFG_FILE, "lrmc_runtime", "start_mode", ""), " `t`r`n")
+    detail := "run_started=" started
+    if (startedTime != "")
+        detail .= " time=" startedTime
+    if (startMode != "")
+        detail .= " mode=" startMode
+    return detail
+}
+
+SetLrmcRunResumeReady(ready, detail := "") {
+    global CFG_FILE
+    readyValue := ready ? "1" : "0"
+    IniWrite readyValue, CFG_FILE, "lrmc_runtime", "run_started"
+    IniWrite detail, CFG_FILE, "lrmc_runtime", "last_state_detail"
+    if !ready {
+        IniWrite "", CFG_FILE, "lrmc_runtime", "run_started_time"
+        IniWrite "", CFG_FILE, "lrmc_runtime", "start_mode"
+    }
+    WriteLog("LRMCAI 可接續狀態=" readyValue (detail != "" ? " | " detail : ""))
+}
+
+CaptureRestartProcessSnapshot() {
+    gameState := ProcessExist("Client-Win64-Shipping.exe") ? "running" : "missing"
+    lrmcState := ProcessExist("LRMCAI.exe") ? "running" : "missing"
+    okwwState := (ProcessExist("ok-ww.exe") || ProcessExist("OK-WW.exe")) ? "running" : "missing"
+    return "game=" gameState ", lrmc=" lrmcState ", okww=" okwwState
+}
+
+RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNSPECIFIED", stage := "未指定") {
+    global LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE, LAST_RESTART_RECOVERY
+    global LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE, CRASH_RESTART_MODE
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
         reason := "未提供"
+    reasonCode := Trim(reasonCode, " `t`r`n")
+    if (reasonCode = "")
+        reasonCode := "UNSPECIFIED"
+    stage := Trim(stage, " `t`r`n")
+    if (stage = "")
+        stage := "未指定"
 
     LAST_RESTART_REASON := reason
-    CRASH_RESTART_MODE := false
-    WriteLog("觸發重啟請求，原因: " reason, level)
-    WriteStep("重啟請求", "原因=" reason, level)
+    LAST_RESTART_CODE := reasonCode
+    LAST_RESTART_STAGE := stage
+    LAST_RESTART_PROCESS_SNAPSHOT := CaptureRestartProcessSnapshot()
+    LAST_RESTART_LRMC_STATE := GetLrmcRunStateSummary()
+
+    canResume := resumeLrmc && IsLrmcRunResumeReady()
+    CRASH_RESTART_MODE := canResume
+    if canResume {
+        LAST_RESTART_RECOVERY := "LRMCAI快捷鍵接續（resume）"
+    } else {
+        LAST_RESTART_RECOVERY := (resumeLrmc
+            ? "要求接續但無有效已開始標記，降級為一般完整重跑"
+            : "一般完整重跑")
+        SetLrmcRunResumeReady(false, "重啟不使用接續模式 | code=" reasonCode)
+    }
+
+    detail := "code=" reasonCode " | stage=" stage " | recovery=" LAST_RESTART_RECOVERY
+    detail .= " | lrmc=" LAST_RESTART_LRMC_STATE " | processes=" LAST_RESTART_PROCESS_SNAPSHOT
+    detail .= " | reason=" reason
+    WriteLog("觸發重啟請求：" detail, level)
+    WriteStep("重啟請求", detail, level)
     RestartAutoScript(reason)
 }
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
 RestartAutoScript(reason := "") {
-    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, MAIL_NOTIFY_ENABLED
+    global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE
+    global LAST_RESTART_RECOVERY, LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE
+    global CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, MAIL_NOTIFY_ENABLED
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
@@ -3158,6 +3270,11 @@ RestartAutoScript(reason := "") {
     ; 記錄最近一次重啟原因，供下一次啟動追蹤
     IniWrite reason, CFG_FILE, "restart_tracking", "last_restart_reason"
     IniWrite nowText, CFG_FILE, "restart_tracking", "last_restart_time"
+    IniWrite LAST_RESTART_CODE, CFG_FILE, "restart_tracking", "last_restart_code"
+    IniWrite LAST_RESTART_STAGE, CFG_FILE, "restart_tracking", "last_restart_stage"
+    IniWrite LAST_RESTART_RECOVERY, CFG_FILE, "restart_tracking", "last_restart_recovery"
+    IniWrite LAST_RESTART_PROCESS_SNAPSHOT, CFG_FILE, "restart_tracking", "last_restart_process_snapshot"
+    IniWrite LAST_RESTART_LRMC_STATE, CFG_FILE, "restart_tracking", "last_restart_lrmc_state"
     
     ; 檢查是否超過最大重啟次數
     if (restartCount > MAX_RESTART_COUNT) {
@@ -3170,6 +3287,7 @@ RestartAutoScript(reason := "") {
         __RESTART_IN_PROGRESS := false
         __NEXTSERVER_RESTART := false
         try SetTimer(CrashWatcherTick, 0)
+        SetLrmcRunResumeReady(false, "重啟次數達上限")
         ForceStopManagedScreenRecording("重啟次數達上限")
 
         Sleep 5000
@@ -3196,6 +3314,7 @@ RestartAutoScript(reason := "") {
                 WriteStep("重啟流程", "nextserver 模式重啟", "WARN")
                 __NEXTSERVER_RESTART := true
                 WriteLog("nextserver 重啟：保留錄影不中斷，略過停止錄影", "WARN")
+                SetLrmcRunResumeReady(false, "錯誤後改切換下一伺服器")
                 CheckAndCloseExistingProcesses()
                 Sleep 2000
                 
@@ -3235,7 +3354,7 @@ RestartAutoScript(reason := "") {
         global AhkExe
         restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
         if (CRASH_RESTART_MODE)
-            restartCmd .= ' crash'
+            restartCmd .= ' resume'
         Run(restartCmd)
         WriteLog("重啟命令已發送")
         WriteStep("重啟流程", "restart 命令已發送")
@@ -3293,7 +3412,9 @@ MonitorRewardAndShutdown() {
             WriteLog("收尾監測期間偵測鳴潮遊戲窗口已消失，判定為遊戲閃退", "ERROR")
             WriteStep("收尾監測", "鳴潮視窗消失，觸發重啟", "ERROR")
             ShowTip("❌ 收尾期間鳴潮閃退，準備重啟", 2500)
-            RequestRestart("收尾監測期間鳴潮遊戲窗口消失（Client-Win64-Shipping.exe 進程終止）")
+            RequestRestart(
+                "收尾監測期間 Client-Win64-Shipping.exe 進程與遊戲視窗消失",
+                "ERROR", true, "GAME_PROCESS_EXITED_DURING_REWARD_MONITOR", "收尾監測")
             return
         }
 
@@ -3318,7 +3439,11 @@ MonitorRewardAndShutdown() {
                         WriteLog("偵測到大量無效視窗控制代碼，判定為遊戲閃退，觸發重啟", "ERROR")
                         WriteStep("收尾監測", "無效視窗命中達閾值，觸發重啟", "ERROR")
                         ShowTip("❌ 偵測遊戲閃退，準備重啟流程", 2500)
-                        RequestRestart("LRMCAI 日誌大量無效視窗控制代碼，疑似遊戲閃退")
+                        RequestRestart(
+                            "LRMCAI 日誌在收尾監測期間累計 " invalidHwndHits
+                                " 次無效視窗控制代碼；門檻=" REWARD_INVALID_HWND_NEED_COUNT
+                                "；最後一行=" line,
+                            "ERROR", true, "LRMCAI_INVALID_HWND_BURST", "收尾監測／LRMCAI 日誌")
                         return
                     }
                 }
@@ -3483,11 +3608,11 @@ TryRecoverLrmcDuringRewardMonitor() {
         return false
     }
 
-    cmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk" rewardmonitor'
+    cmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk" resume'
     try {
         Run(cmd)
         __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
-        WriteLog("收尾監測：偵測 LRMCAI 已退出，已用收尾監測熱鍵模式重啟（不走 OCR）", "WARN")
+        WriteLog("收尾監測：偵測 LRMCAI 已退出，已用 resume 快捷鍵模式重啟（不走 OCR）", "WARN")
         ShowTip("⚠️ LRMCAI 退出，已自動熱鍵重啟", 1200)
         return true
     } catch as e {
@@ -3602,16 +3727,28 @@ IsInvalidWindowHandleLogLine(line) {
 }
 
 ResetRestartTrackingOnFreshStart() {
-    global CFG_FILE, restartCount, LAST_RESTART_REASON, CRASH_RESTART_MODE
+    global CFG_FILE, restartCount, LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE
+    global LAST_RESTART_RECOVERY, LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE, CRASH_RESTART_MODE
 
     restartCount := 0
     LAST_RESTART_REASON := ""
+    LAST_RESTART_CODE := ""
+    LAST_RESTART_STAGE := ""
+    LAST_RESTART_RECOVERY := ""
+    LAST_RESTART_PROCESS_SNAPSHOT := ""
+    LAST_RESTART_LRMC_STATE := ""
     CRASH_RESTART_MODE := false
 
     IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_reason"
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_time"
-    WriteLog("正常首次啟動：已重置重啟計數器與重啟原因")
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_code"
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_stage"
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_recovery"
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_process_snapshot"
+    IniWrite "", CFG_FILE, "restart_tracking", "last_restart_lrmc_state"
+    SetLrmcRunResumeReady(false, "正常首次啟動")
+    WriteLog("正常首次啟動：已重置重啟計數器、重啟原因與 LRMCAI 接續狀態")
 }
 
 HandleCycleFinishAndShutdown() {
@@ -3637,6 +3774,7 @@ HandleCycleFinishAndShutdown() {
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false) {
     global __RESTART_IN_PROGRESS
+    SetLrmcRunResumeReady(false, relaunchForNextServer ? "切換下一伺服器" : "正常／手動收尾")
     if (__RESTART_IN_PROGRESS || relaunchForNextServer)
         WriteLog("重啟模式：保留錄影不中斷，略過收尾保底停止", "WARN")
     else
@@ -3797,16 +3935,34 @@ SendStartNotifyMail(isRestart := false) {
         restartReason := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_reason", ""), " `t`r`n")
         restartTime := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_time", ""), " `t`r`n")
         restartCount := Trim(IniReadSafe(cfgPath, "restart_tracking", "auto_restart_count", "0"), " `t`r`n")
+        restartCode := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_code", "UNSPECIFIED"), " `t`r`n")
+        restartStage := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_stage", "未指定"), " `t`r`n")
+        restartRecovery := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_recovery", "一般完整重跑"), " `t`r`n")
+        restartProcesses := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_process_snapshot", ""), " `t`r`n")
+        restartLrmcState := Trim(IniReadSafe(cfgPath, "restart_tracking", "last_restart_lrmc_state", ""), " `t`r`n")
         if (restartReason = "")
             restartReason := "未提供"
+        if (restartCode = "")
+            restartCode := "UNSPECIFIED"
+        if (restartStage = "")
+            restartStage := "未指定"
+        if (restartRecovery = "")
+            restartRecovery := "一般完整重跑"
 
         body .= "`r`n`r`n【重啟資訊】"
         body .= "`r`n重啟模式：是"
         body .= "`r`n重啟次數：" restartCount
-        body .= "`r`n重啟原因：" restartReason
+        body .= "`r`n原因代碼：" restartCode
+        body .= "`r`n發生階段：" restartStage
+        body .= "`r`n詳細原因：" restartReason
+        body .= "`r`n恢復策略：" restartRecovery
+        if (restartLrmcState != "")
+            body .= "`r`nLRMCAI 當時狀態：" restartLrmcState
+        if (restartProcesses != "")
+            body .= "`r`n當時進程快照：" restartProcesses
         if (restartTime != "")
-            body .= "`r`n重啟時間：" restartTime
-        subject := subjectPrefix " 重啟開始通知 " nowText
+            body .= "`r`n異常偵測時間：" restartTime
+        subject := subjectPrefix " 重啟#" restartCount " [" restartCode "] " nowText
     }
 
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
