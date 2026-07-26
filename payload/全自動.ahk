@@ -1743,7 +1743,7 @@ ExitApp
 
 ; ======================== 函式區 ========================
 
-; ★ OKWW 啟動＋前置流程（啟動 → 等待 → F11 → 最小化）
+; ★ OKWW 啟動＋前置流程（啟動 → 等待最終主視窗 → F11 → 最小化）
 StartOKWWFlow(isRestart) {
     WriteStep("OKWW流程", "入口 isRestart=" (isRestart ? "1" : "0"))
     WriteLog("啟動 OKWW 管理腳本...")
@@ -1761,20 +1761,21 @@ StartOKWWFlow(isRestart) {
     }
     ShowTip("🟢 已啟動 OKWW 管理腳本" . (isRestart ? "（重新啟動）" : ""), 3000)
 
-    WriteLog("等待 OKWW 視窗出現...")
-    Sleep 20000
-    
-    ; 尋找並激活 OKWW 主視窗
-    WriteLog("尋找 OKWW 主視窗並發送 F11...")
+    ; 等待最終 pythonw 主視窗穩定出現，避免誤把 ok-ww.exe 的啟動／升級視窗當成目標。
+    WriteLog("等待 OKWW 最終主視窗開啟，完成後直接發送 F11...")
     okwwHwnd := 0
-    maxAttempts := 10
+    stableHwnd := 0
+    stableHits := 0
+    maxAttempts := 45
     attempt := 0
     currentPID := DllCall("GetCurrentProcessId")
     
     while (attempt < maxAttempts && !okwwHwnd) {
         attempt++
+        candidateHwnd := 0
+        candidateTitle := ""
         try {
-            ; 尋找標題包含 "OK-WW" 和 "Global" 的視窗（格式: OK-WW v版本數字 Global）
+            ; 最終主視窗格式：OK-WW v版本數字 Global ... - OK-WW
             for hwnd in WinGetList() {
                 pid := 0
                 procName := ""
@@ -1788,122 +1789,99 @@ StartOKWWFlow(isRestart) {
                 if (pid = currentPID || wclass = "tooltips_class32")
                     continue
 
-                ; 僅接受 OKWW 真正可能來源進程。
-                if (procName != "ok-ww.exe" && procName != "pythonw.exe")
+                ; v3.x 最終操作視窗由 pythonw.exe 承載；拒絕前置 ok-ww.exe 視窗。
+                if (procName != "pythonw.exe")
                     continue
 
-                ; 匹配 "OK-WW v版本數字 Global" 格式
-                if (InStr(title, "OK-WW") && InStr(title, "Global")) {
-                    okwwHwnd := hwnd
-                    WriteLog("找到 OKWW 視窗: " title)
+                if RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global\b.*-\s*OK-WW\s*$") {
+                    candidateHwnd := hwnd
+                    candidateTitle := title
                     break
                 }
             }
         }
+
+        if candidateHwnd {
+            if (candidateHwnd = stableHwnd) {
+                stableHits += 1
+            } else {
+                stableHwnd := candidateHwnd
+                stableHits := 1
+            }
+
+            WriteLog("找到 OKWW 最終主視窗，穩定確認 " stableHits "/2: hwnd="
+                candidateHwnd " title=" candidateTitle)
+            if (stableHits >= 2) {
+                okwwHwnd := candidateHwnd
+                break
+            }
+        } else {
+            stableHwnd := 0
+            stableHits := 0
+        }
+
         if (!okwwHwnd) {
-            WriteLog("第 " attempt " 次尋找 OKWW 視窗失敗，2秒後重試...")
-            Sleep 2000
+            if Mod(attempt, 5) = 0
+                WriteLog("等待 OKWW 最終主視窗中：attempt=" attempt "/" maxAttempts)
+            Sleep 1000
         }
     }
     
+    f11Sent := false
     if (okwwHwnd) {
         topmostCtx := PrepareOkwwTopmostOperation(okwwHwnd)
         try {
-            ; 激活 OKWW 視窗
-            try {
-                WinActivate "ahk_id " okwwHwnd
-                WinWaitActive "ahk_id " okwwHwnd, , 3
-                Sleep 500
-                
-                ; 截圖OKWW視窗並OCR識別
-                WriteLog("開始OCR識別OKWW視窗中的啟動遊戲/F11字樣...")
-                tempFile := A_Temp "\okww_launch_" A_TickCount ".jpg"
-                try {
-                    ImagePutFile("ahk_id " okwwHwnd, tempFile)
-                    
-                    ; OCR識別
-                    ocr := RapidOcr()
-                    res := ocr.ocr_from_file(tempFile, , true)
-                    
-                    if FileExist(tempFile)
-                        FileDelete(tempFile)
-                    
-                    ; 搜尋啟動遊戲或F11相關文字
-                    foundButton := false
-                    clickX := 0
-                    clickY := 0
-                    
-                    if IsObject(res) {
-                        for block in res {
-                            clean := StrReplace(StrReplace(block.text, "`r", ""), "`n", "")
-                            clean := StrReplace(clean, " ", "")
-                            
-                            ; 檢測啟動遊戲、開始（繁體、簡體）或 F11
-                            if InStr(clean, "啟動遊戲") || InStr(clean, "启动游戏") || InStr(clean, "開始") || InStr(clean, "开始") || InStr(clean, "F11") {
-                                WriteLog("找到啟動按鈕文字: " block.text)
-                                ; 計算文字中心點 - 支持 box 和 boxPoint 兩種格式
-                                boxData := ""
-                                if block.HasOwnProp("box") && IsObject(block.box) && block.box.Length >= 4 {
-                                    boxData := block.box
-                                } else if block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) && block.boxPoint.Length >= 3 {
-                                    boxData := block.boxPoint
-                                }
-                                
-                                if (boxData != "") {
-                                    if (boxData[1].HasOwnProp("x")) {
-                                        ; boxPoint 格式：[{x,y}, {x,y}, {x,y}, {x,y}]
-                                        clickX := (boxData[1].x + boxData[3].x) / 2
-                                        clickY := (boxData[1].y + boxData[3].y) / 2
-                                    } else {
-                                        ; box 格式：[[x,y], [x,y], [x,y], [x,y]]
-                                        clickX := (boxData[1][1] + boxData[3][1]) / 2
-                                        clickY := (boxData[1][2] + boxData[3][2]) / 2
-                                    }
-                                    foundButton := true
-                                    WriteLog("計算點擊座標: " clickX ", " clickY)
-                                    break
-                                } else {
-                                    WriteLog("警告：文字框座標格式不正確", "WARN")
-                                }
-                            }
-                        }
-                    }
-                    
-                    ; 如果找到按鈕，點擊它
-                    if (foundButton && clickX > 0 && clickY > 0) {
-                        WriteLog("點擊啟動按鈕座標: " clickX ", " clickY)
-                        MouseMove clickX, clickY
-                        Sleep 200
-                        MouseClick "left"
-                        WriteLog("已點擊OKWW啟動按鈕")
-                        Sleep 1000
-                    } else {
-                        WriteLog("未找到啟動遊戲按鈕，嘗試使用備用方案F11", "WARN")
-                        SendEvent "{F11}"
-                        WriteLog("已發送F11備用快捷鍵")
-                        Sleep 1000
-                    }
-                } catch as e {
-                    WriteLog("OKWW OCR識別失敗: " e.Message ", 使用備用方案F11", "WARN")
-                    SendEvent "{F11}"
-                    WriteLog("已發送F11備用快捷鍵")
-                    Sleep 1000
-                }
-            } catch as e {
-                WriteLog("激活OKWW視窗失敗: " e.Message, "ERROR")
-                WriteStepResult("OKWW流程", false, "激活視窗失敗")
-            }
+            f11Sent := SendF11ToOkww(okwwHwnd)
         } finally {
             RestoreTopmostAfterOkwwOperation(topmostCtx)
         }
     } else {
-        WriteLog("無法找到 OKWW 視窗，跳過啟動", "WARN")
-        WriteStepResult("OKWW流程", false, "找不到 OKWW 視窗")
+        WriteLog("等待 " maxAttempts " 秒仍找不到 OKWW 最終主視窗，未發送 F11", "ERROR")
     }
     
-    Sleep 1000
+    Sleep 2000
     MinimizeOKWWWindows()
-    WriteStepResult("OKWW流程", true, "已完成啟動與最小化")
+    WriteStepResult("OKWW流程", f11Sent,
+        f11Sent ? "F11 已送出並完成最小化" : "F11 未送出")
+    return f11Sent
+}
+
+SendF11ToOkww(okwwHwnd) {
+    if !okwwHwnd || !WinExist("ahk_id " okwwHwnd) {
+        WriteLog("OKWW F11 發送失敗：目標視窗已失效 | hwnd=" okwwHwnd, "ERROR")
+        return false
+    }
+
+    try {
+        title := WinGetTitle("ahk_id " okwwHwnd)
+        pid := WinGetPID("ahk_id " okwwHwnd)
+        procName := StrLower(WinGetProcessName("ahk_id " okwwHwnd))
+        if (procName != "pythonw.exe"
+            || !RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global\b.*-\s*OK-WW\s*$")) {
+            WriteLog("OKWW F11 發送前安全檢查失敗：pid=" pid
+                " process=" procName " title=" title, "ERROR")
+            return false
+        }
+
+        try WinRestore("ahk_id " okwwHwnd)
+        WinActivate("ahk_id " okwwHwnd)
+        if WinWaitActive("ahk_id " okwwHwnd, , 3) {
+            Sleep 500
+            SendEvent("{F11}")
+            WriteLog("已直接發送 F11 到 OKWW 最終主視窗：hwnd="
+                okwwHwnd " pid=" pid " title=" title)
+            return true
+        }
+
+        WriteLog("OKWW 無法切至前景，改用 ControlSend 定向發送 F11：hwnd="
+            okwwHwnd " pid=" pid " title=" title, "WARN")
+        ControlSend("{F11}", , "ahk_id " okwwHwnd)
+        WriteLog("已透過 ControlSend 發送 F11 到 OKWW 最終主視窗")
+        return true
+    } catch as e {
+        WriteLog("OKWW F11 發送失敗：hwnd=" okwwHwnd " | " e.Message, "ERROR")
+        return false
+    }
 }
 
 PrepareOkwwTopmostOperation(okwwHwnd) {
@@ -1933,7 +1911,7 @@ PrepareOkwwTopmostOperation(okwwHwnd) {
         WinSetAlwaysOnTop(1, "ahk_id " okwwHwnd)
         WinActivate("ahk_id " okwwHwnd)
         WinWaitActive("ahk_id " okwwHwnd, , 2)
-        WriteLog("OKWW OCR/點擊前：已設置 OKWW 置頂，並暫時取消鳴潮/LRMCAI 置頂")
+        WriteLog("OKWW F11 前：已設置 OKWW 置頂，並暫時取消鳴潮/LRMCAI 置頂")
     } catch as e {
         WriteLog("OKWW 置頂準備失敗: " e.Message, "WARN")
     }
