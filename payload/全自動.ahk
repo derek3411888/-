@@ -1775,7 +1775,9 @@ StartOKWWFlow(isRestart) {
         candidateHwnd := 0
         candidateTitle := ""
         try {
-            ; 最終主視窗格式：OK-WW v版本數字 Global ... - OK-WW
+            ; 最終主視窗格式相容：
+            ;   OK-WW v版本數字 Global
+            ;   OK-WW v版本數字 Global ... - OK-WW
             for hwnd in WinGetList() {
                 pid := 0
                 procName := ""
@@ -1793,7 +1795,7 @@ StartOKWWFlow(isRestart) {
                 if (procName != "pythonw.exe")
                     continue
 
-                if RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global\b.*-\s*OK-WW\s*$") {
+                if RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$") {
                     candidateHwnd := hwnd
                     candidateTitle := title
                     break
@@ -1831,7 +1833,11 @@ StartOKWWFlow(isRestart) {
     if (okwwHwnd) {
         topmostCtx := PrepareOkwwTopmostOperation(okwwHwnd)
         try {
-            f11Sent := SendF11ToOkww(okwwHwnd)
+            if EnsureOkwwAutoBattleEnabled(okwwHwnd) {
+                f11Sent := SendF11ToOkww(okwwHwnd)
+            } else {
+                WriteLog("OKWW 自動戰鬥未能確認為已啟用，為避免錯誤啟動，本次不發送 F11", "ERROR")
+            }
         } finally {
             RestoreTopmostAfterOkwwOperation(topmostCtx)
         }
@@ -1839,11 +1845,306 @@ StartOKWWFlow(isRestart) {
         WriteLog("等待 " maxAttempts " 秒仍找不到 OKWW 最終主視窗，未發送 F11", "ERROR")
     }
     
+    if f11Sent
+        WriteLog("F11 已送出，等待 2 秒後最小化 OKWW")
     Sleep 2000
     MinimizeOKWWWindows()
     WriteStepResult("OKWW流程", f11Sent,
-        f11Sent ? "F11 已送出並完成最小化" : "F11 未送出")
+        f11Sent ? "自動戰鬥已啟用、F11 已送出並完成最小化" : "前置確認或 F11 失敗")
     return f11Sent
+}
+
+EnsureOkwwAutoBattleEnabled(okwwHwnd) {
+    if !okwwHwnd || !WinExist("ahk_id " okwwHwnd) {
+        WriteLog("OKWW 自動戰鬥檢查失敗：目標視窗已失效 | hwnd=" okwwHwnd, "ERROR")
+        return false
+    }
+
+    try {
+        WinRestore("ahk_id " okwwHwnd)
+        WinActivate("ahk_id " okwwHwnd)
+        if !WinWaitActive("ahk_id " okwwHwnd, , 3) {
+            WriteLog("OKWW 自動戰鬥檢查失敗：無法切到前景 | hwnd=" okwwHwnd, "ERROR")
+            return false
+        }
+
+        clientW := 0
+        clientH := 0
+        WinGetClientPos(, , &clientW, &clientH, "ahk_id " okwwHwnd)
+
+        dpi := 96
+        try dpi := DllCall("user32\GetDpiForWindow", "ptr", okwwHwnd, "uint")
+        scale := dpi > 0 ? dpi / 96.0 : 1.0
+
+        minW := Round(700 * scale)
+        minH := Round(400 * scale)
+        if (clientW < minW || clientH < minH) {
+            WriteLog("OKWW 自動戰鬥檢查失敗：視窗尺寸過小 | client="
+                clientW "x" clientH " dpi=" dpi, "ERROR")
+            return false
+        }
+
+        ocr := RapidOcr()
+        navResult := CaptureOkwwOcr(okwwHwnd, ocr, "尋找實時觸發")
+        navMatch := FindExactOkwwOcrBlock(navResult, ["实时触发", "實時觸發"])
+        if !navMatch {
+            WriteLog("OKWW 自動戰鬥檢查失敗：OCR 找不到精確的「實時觸發」", "ERROR")
+            return false
+        }
+
+        navX := navMatch.rect.centerX
+        navY := navMatch.rect.centerY
+        toggleX := Round(clientW - 155 * scale)
+
+        WriteLog("OKWW 自動戰鬥檢查：OCR 命中「" navMatch.text
+            "」，前往實時觸發 | client="
+            clientW "x" clientH " dpi=" dpi " nav=" navX "," navY
+            " toggleX=" toggleX)
+
+        if !ClickOkwwClientPoint(okwwHwnd, navX, navY) {
+            WriteLog("OKWW 自動戰鬥檢查失敗：無法點擊實時觸發", "ERROR")
+            return false
+        }
+        Sleep 1200
+
+        stateInfo := ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale)
+        Sleep 300
+        confirmInfo := ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale)
+
+        WriteLog("OKWW 自動戰鬥 OCR 初始判定：" confirmInfo.state
+            " | label=" confirmInfo.labelText " status=" confirmInfo.statusText
+            " rowY=" confirmInfo.rowY)
+
+        if (stateInfo.state != confirmInfo.state) {
+            WriteLog("OKWW 自動戰鬥 OCR 狀態不穩定，停止操作 | first="
+                stateInfo.state " second=" confirmInfo.state, "ERROR")
+            return false
+        }
+
+        if (confirmInfo.state = "enabled") {
+            WriteLog("OKWW 自動戰鬥已啟用，無需切換")
+            return true
+        }
+
+        if (confirmInfo.state != "disabled") {
+            WriteLog("OKWW 自動戰鬥開關無法可靠辨識，未執行切換", "ERROR")
+            return false
+        }
+
+        toggleY := confirmInfo.rowY
+        if (toggleY <= 0 || toggleY >= clientH) {
+            WriteLog("OKWW 自動戰鬥列座標異常，未執行切換 | rowY=" toggleY, "ERROR")
+            return false
+        }
+
+        Loop 2 {
+            WriteLog("OKWW 自動戰鬥目前未啟用，執行第 " A_Index " 次開啟操作")
+            if !ClickOkwwClientPoint(okwwHwnd, toggleX, toggleY) {
+                WriteLog("OKWW 自動戰鬥切換點擊失敗 | attempt=" A_Index, "ERROR")
+                return false
+            }
+            Sleep 1000
+
+            enabledInfo := ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale)
+            Sleep 300
+            enabledConfirm := ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale)
+
+            WriteLog("OKWW 自動戰鬥切換後 OCR 判定：" enabledConfirm.state
+                " | label=" enabledConfirm.labelText
+                " status=" enabledConfirm.statusText
+                " rowY=" enabledConfirm.rowY)
+
+            if (enabledInfo.state = "enabled" && enabledConfirm.state = "enabled") {
+                WriteLog("OKWW 自動戰鬥已成功開啟")
+                return true
+            }
+
+            if (enabledInfo.state != "disabled" || enabledConfirm.state != "disabled") {
+                WriteLog("OKWW 自動戰鬥切換後狀態不明，為避免重複切換而停止", "ERROR")
+                return false
+            }
+        }
+
+        WriteLog("OKWW 自動戰鬥重試後仍為未啟用", "ERROR")
+        return false
+    } catch as e {
+        WriteLog("OKWW 自動戰鬥檢查失敗：hwnd=" okwwHwnd " | " e.Message, "ERROR")
+        return false
+    }
+}
+
+CaptureOkwwOcr(okwwHwnd, ocr, purpose := "") {
+    tempFile := (A_Temp "\okww_state_" DllCall("GetCurrentProcessId")
+        "_" A_TickCount ".png")
+    try {
+        ImagePutFile("ahk_id " okwwHwnd, tempFile)
+        result := ocr.ocr_from_file(tempFile, , true)
+        WriteLog("OKWW OCR 完成" (purpose != "" ? "（" purpose "）" : "")
+            "：blocks=" (IsObject(result) ? result.Length : 0))
+        return result
+    } catch as e {
+        WriteLog("OKWW OCR 失敗" (purpose != "" ? "（" purpose "）" : "")
+            "：" e.Message, "ERROR")
+        return []
+    } finally {
+        if FileExist(tempFile)
+            try FileDelete(tempFile)
+    }
+}
+
+NormalizeOkwwOcrText(text) {
+    clean := StrReplace(text, "`r", "")
+    clean := StrReplace(clean, "`n", "")
+    clean := StrReplace(clean, "`t", "")
+    clean := StrReplace(clean, " ", "")
+    clean := StrReplace(clean, "　", "")
+    return clean
+}
+
+GetOkwwOcrBlockRect(block) {
+    points := ""
+    if block.HasOwnProp("boxPoint") && IsObject(block.boxPoint) {
+        points := block.boxPoint
+    } else if block.HasOwnProp("box") && IsObject(block.box) {
+        points := block.box
+    }
+
+    if !IsObject(points) || points.Length < 3
+        return 0
+
+    left := 2147483647
+    top := 2147483647
+    right := -2147483648
+    bottom := -2147483648
+
+    for point in points {
+        if IsObject(point) && point.HasOwnProp("x") {
+            px := point.x
+            py := point.y
+        } else if IsObject(point) && point.Length >= 2 {
+            px := point[1]
+            py := point[2]
+        } else {
+            continue
+        }
+
+        left := Min(left, px)
+        top := Min(top, py)
+        right := Max(right, px)
+        bottom := Max(bottom, py)
+    }
+
+    if (right < left || bottom < top)
+        return 0
+
+    return {
+        left: left,
+        top: top,
+        right: right,
+        bottom: bottom,
+        centerX: (left + right) / 2,
+        centerY: (top + bottom) / 2
+    }
+}
+
+FindExactOkwwOcrBlock(result, acceptedTexts) {
+    if !IsObject(result)
+        return 0
+
+    for block in result {
+        clean := NormalizeOkwwOcrText(block.text)
+        for accepted in acceptedTexts {
+            if (clean = accepted) {
+                rect := GetOkwwOcrBlockRect(block)
+                if rect
+                    return {text: clean, rawText: block.text, rect: rect}
+            }
+        }
+    }
+    return 0
+}
+
+ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
+    result := CaptureOkwwOcr(okwwHwnd, ocr, "辨識自動戰鬥狀態")
+    labelMatch := FindExactOkwwOcrBlock(result, ["自动战斗", "自動戰鬥"])
+    if !labelMatch {
+        WriteLog("OKWW OCR 找不到精確的「自動戰鬥」列", "WARN")
+        return {
+            state: "unknown", rowY: 0, labelText: "", statusText: "",
+            reason: "missing_auto_battle_label"
+        }
+    }
+
+    bestState := "unknown"
+    bestStatusText := ""
+    bestRowY := labelMatch.rect.centerY
+    bestDistance := 2147483647
+    maxRowDistance := Round(55 * scale)
+
+    for block in result {
+        clean := NormalizeOkwwOcrText(block.text)
+        state := ""
+        if (clean = "已启用" || clean = "已啟用") {
+            state := "enabled"
+        } else if (clean = "未启用" || clean = "未啟用") {
+            state := "disabled"
+        } else {
+            continue
+        }
+
+        rect := GetOkwwOcrBlockRect(block)
+        if !rect || rect.centerX <= labelMatch.rect.centerX
+            continue
+
+        distance := Abs(rect.centerY - labelMatch.rect.centerY)
+        if (distance <= maxRowDistance && distance < bestDistance) {
+            bestDistance := distance
+            bestState := state
+            bestStatusText := clean
+            bestRowY := rect.centerY
+        }
+    }
+
+    if (bestState = "unknown") {
+        WriteLog("OKWW OCR 已找到「" labelMatch.text
+            "」，但同列找不到精確的「已啟用／未啟用」", "WARN")
+    }
+
+    return {
+        state: bestState,
+        rowY: bestRowY,
+        labelText: labelMatch.text,
+        statusText: bestStatusText,
+        reason: (bestState = "unknown" ? "missing_same_row_status" : "")
+    }
+}
+
+ClickOkwwClientPoint(okwwHwnd, clientX, clientY) {
+    if !okwwHwnd || !WinExist("ahk_id " okwwHwnd)
+        return false
+
+    try {
+        winClientX := 0
+        winClientY := 0
+        WinGetClientPos(&winClientX, &winClientY, , , "ahk_id " okwwHwnd)
+        screenX := winClientX + Round(clientX)
+        screenY := winClientY + Round(clientY)
+
+        oldMouseMode := A_CoordModeMouse
+        CoordMode("Mouse", "Screen")
+        try {
+            MouseMove(screenX, screenY, 0)
+            Sleep 150
+            MouseClick("Left")
+        } finally {
+            CoordMode("Mouse", oldMouseMode)
+        }
+        return true
+    } catch as e {
+        WriteLog("OKWW 座標點擊失敗：client=" clientX "," clientY
+            " | " e.Message, "WARN")
+        return false
+    }
 }
 
 SendF11ToOkww(okwwHwnd) {
@@ -1857,7 +2158,7 @@ SendF11ToOkww(okwwHwnd) {
         pid := WinGetPID("ahk_id " okwwHwnd)
         procName := StrLower(WinGetProcessName("ahk_id " okwwHwnd))
         if (procName != "pythonw.exe"
-            || !RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global\b.*-\s*OK-WW\s*$")) {
+            || !RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$")) {
             WriteLog("OKWW F11 發送前安全檢查失敗：pid=" pid
                 " process=" procName " title=" title, "ERROR")
             return false
