@@ -6,6 +6,8 @@
   --line: #d7dde2;
   --ok: #1d7d53;
   --warn: #b14f2a;
+  --danger: #a01616;
+  --info: #245f92;
 }
 
 * { box-sizing: border-box; }
@@ -24,6 +26,7 @@ body {
 }
 
 h1 { margin: 0; }
+h2 { margin: 0; font-size: 20px; }
 .sub { margin-top: 6px; color: var(--muted); }
 
 .card {
@@ -63,12 +66,95 @@ button {
 
 button.ok { color: var(--ok); border-color: #a8d8c3; }
 button.warn { color: var(--warn); border-color: #e6b9a6; }
-button.danger { color: #a01616; border-color: #e6a6a6; }
+button.danger { color: var(--danger); border-color: #e6a6a6; }
+button:disabled { cursor: wait; opacity: 0.55; }
+
+.command-status {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-left-width: 5px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f8fbfd;
+}
+
+.command-status strong { font-size: 16px; }
+.command-status span { color: var(--muted); }
+.command-status[data-status="sending"],
+.command-status[data-status="waiting"] { border-left-color: var(--info); }
+.command-status[data-status="acked"] { border-left-color: var(--ok); background: #f2fbf6; }
+.command-status[data-status="superseded"] { border-left-color: var(--warn); background: #fff9f3; }
+.command-status[data-status="unresponsive"],
+.command-status[data-status="error"] { border-left-color: var(--danger); background: #fff5f5; }
 
 .msg {
   min-height: 24px;
   margin: 10px 0 4px;
   color: var(--muted);
+}
+
+.section-heading {
+  margin-bottom: 10px;
+}
+
+.section-heading .sub {
+  margin-bottom: 0;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.status-badge {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.status-badge.acked { color: var(--ok); border-color: #a8d8c3; background: #f2fbf6; }
+.status-badge.waiting { color: var(--info); border-color: #aac9e1; background: #f2f8fc; }
+.status-badge.superseded { color: var(--warn); border-color: #e6b9a6; background: #fff9f3; }
+.status-badge.unresponsive { color: var(--danger); border-color: #e6a6a6; background: #fff5f5; }
+
+@media (max-width: 560px) {
+  .row.buttons {
+    flex-wrap: wrap;
+  }
+
+  .row.buttons button {
+    flex: 1 1 30%;
+  }
 }
 
 #clientMeta {

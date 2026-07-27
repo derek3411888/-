@@ -9,7 +9,7 @@
 <body>
   <main class="wrap">
     <h1>AHK 遠端控制台</h1>
-    <p class="sub">Firestore 多機控制（MVP）</p>
+    <p class="sub">Firestore 多機控制</p>
 
     <section class="card" id="controlCard">
       <label for="pcDropdown">在線電腦</label>
@@ -22,11 +22,37 @@
         <button id="btnStop" class="danger">關閉腳本</button>
       </div>
 
+      <div id="commandStatus" class="command-status" data-status="idle" role="status" aria-live="polite">
+        <strong id="commandStatusTitle">尚未送出命令</strong>
+        <span id="commandStatusDetail">只有收到精確 ACK 才會顯示成功。</span>
+      </div>
+
       <p id="statusMsg" class="msg"></p>
       <ul id="clientMeta"></ul>
     </section>
+
+    <section class="card" aria-labelledby="historyTitle">
+      <div class="section-heading">
+        <h2 id="historyTitle">命令歷史</h2>
+        <p id="historyNote" class="sub">請先選擇一台電腦。</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">送出時間</th>
+              <th scope="col">指令</th>
+              <th scope="col">Nonce</th>
+              <th scope="col">狀態</th>
+              <th scope="col">說明</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
-  <script type="module" src="app.js?v=20260718-1"></script>
+  <script type="module" src="app.js?v=20260727-2"></script>
 </body>
 </html>

@@ -47,6 +47,9 @@ global REWARD_MATCH_NEED_COUNT := 2
 global REWARD_INVALID_HWND_NEED_COUNT := 6
 global REWARD_LOG_RECENT_WINDOW_SEC := 3600
 global REWARD_LRMCAI_RESTART_COOLDOWN_MS := 15000
+global REWARD_MONITOR_STATE_SECTION := "reward_monitor_runtime"
+global __REWARD_MONITOR_ACTIVE := false
+global __REWARD_MONITOR_COMPLETION_PENDING := false
 global MAIL_NOTIFY_ENABLED := 1
 global MAIL_SECTION := "mail_notify"
 global SCREEN_RECORDING_ENABLED := 0
@@ -644,7 +647,7 @@ OnRemoteControlStateChanged(state) {
 }
 
 RemotePauseHookTick() {
-    global __REMOTE_PAUSE_HOTKEY_BUSY
+    global __REMOTE_PAUSE_HOTKEY_BUSY, __REWARD_MONITOR_ACTIVE
 
     if __REMOTE_PAUSE_HOTKEY_BUSY
         return
@@ -662,18 +665,24 @@ RemotePauseHookTick() {
                 WriteLog("遠端PAUSE：送出 F9 到 LRMCAI 失敗", "WARN")
         }
 
-        confirmTemplate := A_ScriptDir "\確認.png"
-        if FileExist(confirmTemplate) {
-            if WaitForTemplateVisible(confirmTemplate, 60) {
-                if ClickTemplateIfFound(confirmTemplate)
-                    WriteLog("遠端PAUSE：60 秒內命中確認.png，已先執行點擊")
-                else
-                    WriteLog("遠端PAUSE：已偵測到確認.png，但點擊失敗，繼續原暫停流程", "WARN")
-            } else {
-                WriteLog("遠端PAUSE：60 秒內未檢測到確認.png，繼續原暫停流程", "INFO")
-            }
+        ; 收尾監測必須持續讀取 LRMCAI 新增日誌。這裡若進入最長 60 秒的模板等待，
+        ; AHK 的目前執行緒會壓住主監測迴圈，因此收尾階段只送出暫停熱鍵後立即返回。
+        if __REWARD_MONITOR_ACTIVE {
+            WriteLog("遠端PAUSE：目前位於收尾監測，略過確認.png等待，保持背景日誌監測不中斷", "INFO")
         } else {
-            WriteLog("遠端PAUSE：找不到確認.png，略過模板檢測", "WARN")
+            confirmTemplate := A_ScriptDir "\確認.png"
+            if FileExist(confirmTemplate) {
+                if WaitForTemplateVisible(confirmTemplate, 60) {
+                    if ClickTemplateIfFound(confirmTemplate)
+                        WriteLog("遠端PAUSE：60 秒內命中確認.png，已先執行點擊")
+                    else
+                        WriteLog("遠端PAUSE：已偵測到確認.png，但點擊失敗，繼續原暫停流程", "WARN")
+                } else {
+                    WriteLog("遠端PAUSE：60 秒內未檢測到確認.png，繼續原暫停流程", "INFO")
+                }
+            } else {
+                WriteLog("遠端PAUSE：找不到確認.png，略過模板檢測", "WARN")
+            }
         }
     } finally {
         __REMOTE_PAUSE_HOTKEY_BUSY := false
@@ -681,7 +690,7 @@ RemotePauseHookTick() {
 }
 
 RemoteRunResumeHookTick() {
-    global __REMOTE_RESUME_SYNC_BUSY
+    global __REMOTE_RESUME_SYNC_BUSY, __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
 
     if __REMOTE_RESUME_SYNC_BUSY
         return
@@ -689,6 +698,13 @@ RemoteRunResumeHookTick() {
     __REMOTE_RESUME_SYNC_BUSY := true
     try {
         ResumeAuxManagedScriptsAfterRemoteRun()
+
+        ; 收尾條件已在 PAUSE 期間保存時，RUN 的唯一工作是解除暫停。
+        ; 不再進入登入模板/OCR等待或送 Ctrl+F1，以免把安全收尾平白延後一分鐘以上。
+        if (__REWARD_MONITOR_ACTIVE && __REWARD_MONITOR_COMPLETION_PENDING) {
+            WriteLog("遠端RUN：收尾完成條件已保存，略過登入/OCR/Ctrl+F1同步，直接交由收尾監測關閉", "INFO")
+            return
+        }
 
         hwnd := GetWutheringGameHwnd()
         if !hwnd
@@ -3843,7 +3859,10 @@ RestartAutoScript(reason := "") {
 }
 
 MonitorRewardAndShutdown() {
-    global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS, REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT, REWARD_LOG_RECENT_WINDOW_SEC
+    global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS
+    global REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT, REWARD_LOG_RECENT_WINDOW_SEC
+    global REMOTE_CONTROL_ACTIVE, __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
+    global SERVER_SCHEDULE_ENABLED, CURRENT_SERVER_TARGET
 
     logPath := ResolveRewardLogPath()
     if (logPath = "") {
@@ -3858,155 +3877,224 @@ MonitorRewardAndShutdown() {
         return
     }
 
+    initialPos := GetLogFileLength(logPath)
+    state := LoadRewardMonitorRuntimeState(logPath, initialPos)
     startDelaySec := Round(REWARD_START_DELAY_MS / 1000)
-    WriteLog("主流程完成，先等待 " startDelaySec " 秒再開始監測最新日誌: " logPath)
-    WriteStep("收尾監測", "開始監測前等待 " startDelaySec " 秒")
-    ShowTip("⏳ 主流程完成，" startDelaySec "秒後開始監測", 1500)
-    if !WaitInterruptibleForShutdown(REWARD_START_DELAY_MS, "收尾監測啟動延遲") {
-        WriteLog("收尾監測啟動延遲期間收到停止指令，已提前結束監測", "WARN")
-        return
-    }
+    warmupDeadline := state.pendingReason != "" ? A_TickCount : A_TickCount + REWARD_START_DELAY_MS
+    warmupFinishedLogged := (warmupDeadline <= A_TickCount)
+    pausedLogged := false
+    pendingPauseLogged := false
+    pendingWarmupLogged := false
 
-    lastPos := GetLogFileLength(logPath)
-    hit := 0
-    seenClickReward := false
-    seenNoReward := false
-    seenDailyRewardSuccess := false
-    seenSolaraRewardFail := false
-    invalidHwndHits := 0
-    WriteLog("開始持續監測『最新新增』日誌，起始偏移: " lastPos)
-    WriteStep("收尾監測", "開始持續讀取新增日誌")
-    ShowTip("🧭 開始監測最新日誌...", 1200)
+    __REWARD_MONITOR_ACTIVE := true
+    __REWARD_MONITOR_COMPLETION_PENDING := (state.pendingReason != "")
+    try {
+        WriteLog("收尾監測已建立日誌游標，起始偏移: " state.lastPos "；暖機 " startDelaySec " 秒期間仍持續讀取並保存新增命中: " logPath)
+        WriteStep("收尾監測", "持續讀取新增日誌；暖機 " startDelaySec " 秒")
+        ShowTip("🧭 收尾監測已啟動（暖機中）", 1200)
 
-    loop {
-        TryRecoverLrmcDuringRewardMonitor()
-
-        ; 檢查鳴潮遊戲窗口是否在收尾監測期間消失（閃退）
-        if !WinExist("ahk_exe Client-Win64-Shipping.exe") {
-            WriteLog("收尾監測期間偵測鳴潮遊戲窗口已消失，判定為遊戲閃退", "ERROR")
-            WriteStep("收尾監測", "鳴潮視窗消失，觸發重啟", "ERROR")
-            ShowTip("❌ 收尾期間鳴潮閃退，準備重啟", 2500)
-            RequestRestart(
-                "收尾監測期間 Client-Win64-Shipping.exe 進程與遊戲視窗消失",
-                "ERROR", true, "GAME_PROCESS_EXITED_DURING_REWARD_MONITOR", "收尾監測")
-            return
+        if state.restored {
+            WriteLog("收尾監測已還原持久狀態：hit=" state.hit
+                " noReward=" (state.seenNoReward ? "1" : "0")
+                " daily=" (state.seenDailyRewardSuccess ? "1" : "0")
+                " solaraFail=" (state.seenSolaraRewardFail ? "1" : "0")
+                " invalidHwnd=" state.invalidHwndHits
+                " pending=" (state.pendingReason != "" ? state.pendingReason : "無"))
         }
 
-        chunk := ReadLogAppended(logPath, &lastPos)
-        if (chunk != "") {
-            for line in StrSplit(chunk, "`n") {
-                line := Trim(line, "`r`t ")
-                if (line = "")
-                    continue
+        loop {
+            paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+            warmupFinished := (A_TickCount >= warmupDeadline)
 
-                if !IsRecentRewardMonitorLogLine(line, REWARD_LOG_RECENT_WINDOW_SEC)
-                    continue
+            if paused {
+                if !pausedLogged {
+                    pausedLogged := true
+                    WriteLog("收尾監測：遠端已暫停；僅持續讀取並持久保存 LRMCAI 日誌，不執行點擊、復原、重啟或關閉", "WARN")
+                    WriteStep("收尾監測", "PAUSE期間保持被動讀檔", "WARN")
+                }
+            } else if pausedLogged {
+                pausedLogged := false
+                pendingPauseLogged := false
+                WriteLog("收尾監測：收到 RUN，恢復主動檢查與安全收尾")
+            }
 
-                TryStopScreenRecordingByLrmcTaskLine(line)
+            lastPos := state.lastPos
+            chunk := ReadLogAppended(logPath, &lastPos)
+            state.lastPos := lastPos
+            if (chunk != "") {
+                stateChanged := false
+                for line in StrSplit(chunk, "`n") {
+                    line := Trim(line, "`r`t ")
+                    if (line = "")
+                        continue
 
-                if IsInvalidWindowHandleLogLine(line) {
-                    invalidHwndHits += 1
-                    WriteLog("監測命中『無效視窗控制代碼』累計次數: " invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT " | " line, "WARN")
-                    if (invalidHwndHits = 1 || Mod(invalidHwndHits, 3) = 0)
-                        WriteStep("收尾監測", "無效視窗控制代碼累計 " invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT, "WARN")
-                    if (invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
-                        WriteLog("偵測到大量無效視窗控制代碼，判定為遊戲閃退，觸發重啟", "ERROR")
-                        WriteStep("收尾監測", "無效視窗命中達閾值，觸發重啟", "ERROR")
+                    if !IsRecentRewardMonitorLogLine(line, REWARD_LOG_RECENT_WINDOW_SEC)
+                        continue
+
+                    ; 暫停時只解析並保存命中，不做錄影、視窗、程序等外部動作。
+                    if (!paused && warmupFinished && !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()))
+                        TryStopScreenRecordingByLrmcTaskLine(line)
+
+                    if IsInvalidWindowHandleLogLine(line) {
+                        state.invalidHwndHits += 1
+                        state.lastInvalidHwndLine := line
+                        stateChanged := true
+                        WriteLog("監測命中『無效視窗控制代碼』累計次數: " state.invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT " | " line, "WARN")
+                        if (state.invalidHwndHits = 1 || Mod(state.invalidHwndHits, 3) = 0)
+                            WriteStep("收尾監測", "無效視窗控制代碼累計 " state.invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT, "WARN")
+                    }
+
+                    if (line ~= "i)(电台.*一键领取|電台.*一鍵領取)") {
+                        state.seenClickReward := true
+                        state.hit += 1
+                        stateChanged := true
+                        WriteLog("監測命中『電台_一鍵領取』(" state.hit "/" REWARD_MATCH_NEED_COUNT "): " line
+                            (paused ? "【PAUSE期間已保存】" : ""))
+                        WriteStep("收尾監測", "命中電台一鍵領取 " state.hit "/" REWARD_MATCH_NEED_COUNT)
+                    }
+
+                    if (line ~= "i)(没有奖励能领取|沒有獎勵能領取)") {
+                        state.seenNoReward := true
+                        stateChanged := true
+                        WriteLog("監測命中『沒有獎勵能領取』: " line (paused ? "【PAUSE期間已保存】" : ""))
+                    }
+
+                    if (line ~= "i)(领取每日奖励成功|領取每日獎勵成功)") {
+                        state.seenDailyRewardSuccess := true
+                        stateChanged := true
+                        WriteLog("監測命中『領取每日獎勵成功』: " line (paused ? "【PAUSE期間已保存】" : ""))
+                    }
+
+                    if (line ~= "i)(索拉奖励领取失败|索拉獎勵領取失敗|索拉獎勵錄取失敗)") {
+                        state.seenSolaraRewardFail := true
+                        stateChanged := true
+                        WriteLog("監測命中『索拉獎勵領取失敗』: " line (paused ? "【PAUSE期間已保存】" : ""))
+                    }
+                }
+
+                completionReason := GetRewardMonitorCompletionReason(state)
+                if (state.pendingReason = "" && completionReason != "") {
+                    state.pendingReason := completionReason
+                    state.pendingAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+                    __REWARD_MONITOR_COMPLETION_PENDING := true
+                    stateChanged := true
+                    WriteLog("收尾監測條件已達成並持久保存：" completionReason
+                        (paused ? "；目前為 PAUSE，等待 RUN 後才執行關閉" : ""))
+                    WriteStep("收尾監測", "條件已保存：" completionReason)
+                    if !paused
+                        ShowTip("✅ 收尾條件已達成", 2000)
+                }
+
+                ; 命中時連同當下游標立即保存；一般高頻日誌不反覆重寫設定檔。
+                if stateChanged
+                    SaveRewardMonitorRuntimeState(state)
+            }
+
+            ; 解析期間可能收到新的遠端命令，主動操作前重新取得即時狀態。
+            paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+            if (state.pendingReason != "" && !state.completionRecorded
+                && SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
+                if MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET, state.pendingAt) {
+                    state.completionRecorded := true
+                    SaveRewardMonitorRuntimeState(state)
+                    WriteLog("收尾條件已達成：已先持久標記伺服器『" CURRENT_SERVER_TARGET "』完成；實際關閉仍遵守 PAUSE", "INFO")
+                }
+            }
+
+            if (state.pendingReason != "") {
+                if paused {
+                    if !pendingPauseLogged {
+                        pendingPauseLogged := true
+                        WriteLog("收尾監測：完成條件已保存，PAUSE期間不關閉程式；將持續讀檔並等待 RUN", "WARN")
+                    }
+                } else if !warmupFinished {
+                    if !pendingWarmupLogged {
+                        pendingWarmupLogged := true
+                        WriteLog("收尾監測：暖機期間已命中完成條件，狀態已保存；暖機結束後安全收尾")
+                    }
+                } else {
+                    delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
+                    WriteLog("收尾監測：準備依已保存條件『" state.pendingReason "』於 " delaySec " 秒後關閉")
+                    ShowTip("✅ 收尾條件成立，" delaySec "秒後關閉", 2000)
+                    if !WaitRewardMonitorForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測命中後關閉延遲") {
+                        WriteLog("收尾關閉延遲期間收到停止指令，已提前結束監測", "WARN")
+                        return
+                    }
+
+                    ; 從最後一次 PAUSE 判斷到正式進入收尾必須是不可被計時器插入的單一提交點。
+                    ; 若 PAUSE 已先被遠端輪詢處理，這裡會延後；若命令在提交後才抵達，
+                    ; 主程序會直接完成既有收尾並退出，因此該筆命令不會被錯誤 ACK 成已套用。
+                    Critical "On"
+                    if (REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
+                        Critical "Off"
+                        pendingPauseLogged := false
+                        WriteLog("收尾監測：關閉前再次收到 PAUSE，保留完成狀態並延後關閉", "WARN")
+                    } else {
+                        ClearRewardMonitorRuntimeState(state.key)
+                        __REWARD_MONITOR_COMPLETION_PENDING := false
+                        try HandleCycleFinishAndShutdown(state.pendingAt)
+                        finally Critical "Off"
+                        return
+                    }
+                }
+            } else if (!paused && warmupFinished) {
+                ; 計時器可能在本輪任何兩行之間套用新的 PAUSE。
+                ; 每個外部動作前都重新讀取即時狀態，避免沿用本輪開頭的舊 paused=false。
+                activeAllowed := !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
+                if (activeAllowed && state.invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
+                    WriteLog("偵測到大量無效視窗控制代碼，判定為遊戲閃退，觸發重啟", "ERROR")
+                    WriteStep("收尾監測", "無效視窗命中達閾值，觸發重啟", "ERROR")
+                    if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
                         ShowTip("❌ 偵測遊戲閃退，準備重啟流程", 2500)
                         RequestRestart(
-                            "LRMCAI 日誌在收尾監測期間累計 " invalidHwndHits
+                            "LRMCAI 日誌在收尾監測期間累計 " state.invalidHwndHits
                                 " 次無效視窗控制代碼；門檻=" REWARD_INVALID_HWND_NEED_COUNT
-                                "；最後一行=" line,
+                                "；最後一行=" state.lastInvalidHwndLine,
                             "ERROR", true, "LRMCAI_INVALID_HWND_BURST", "收尾監測／LRMCAI 日誌")
                         return
                     }
                 }
 
-                if (line ~= "i)(电台.*一键领取|電台.*一鍵領取)") {
-                    seenClickReward := true
-                    hit += 1
-                    WriteLog("監測命中『電台_一鍵領取』(" hit "/" REWARD_MATCH_NEED_COUNT "): " line)
-                    WriteStep("收尾監測", "命中電台一鍵領取 " hit "/" REWARD_MATCH_NEED_COUNT)
-                    if (hit >= REWARD_MATCH_NEED_COUNT) {
-                        delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
-                        WriteLog("已監測到 " REWARD_MATCH_NEED_COUNT " 條『電台_一鍵領取』，" delaySec " 秒後開始關閉流程")
-                        WriteStep("收尾監測", "達到關閉條件：一鍵領取命中數")
-                        ShowTip("✅ 監測命中，" delaySec "秒後關閉程式", 2000)
-                        if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測命中後關閉延遲") {
-                            WriteLog("命中後關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
-                            return
-                        }
-                        HandleCycleFinishAndShutdown()
+                if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
+                    TryRecoverLrmcDuringRewardMonitor()
+
+                ; PAUSE 時不執行此檢查；RUN 後才根據當下狀態決定是否復原。
+                if (!(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
+                    && !WinExist("ahk_exe Client-Win64-Shipping.exe")) {
+                    WriteLog("收尾監測期間偵測鳴潮遊戲窗口已消失，判定為遊戲閃退", "ERROR")
+                    WriteStep("收尾監測", "鳴潮視窗消失，觸發重啟", "ERROR")
+                    if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
+                        ShowTip("❌ 收尾期間鳴潮閃退，準備重啟", 2500)
+                        RequestRestart(
+                            "收尾監測期間 Client-Win64-Shipping.exe 進程與遊戲視窗消失",
+                            "ERROR", true, "GAME_PROCESS_EXITED_DURING_REWARD_MONITOR", "收尾監測")
                         return
                     }
                 }
 
-                if (line ~= "i)(没有奖励能领取|沒有獎勵能領取)") {
-                    seenNoReward := true
-                    WriteLog("監測命中『沒有獎勵能領取』: " line)
-                }
+                ; 收尾監測只做背景模板搜尋；不可因每輪輪詢而置頂或切換到鳴潮。
+                ; 若實際找到登入按鈕，才會在點擊時啟用鳴潮。
+                if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
+                    ClickTemplateIfFound(A_ScriptDir "\登入.png", true, false)
+            }
 
-                if (line ~= "i)(领取每日奖励成功|領取每日獎勵成功)") {
-                    seenDailyRewardSuccess := true
-                    WriteLog("監測命中『領取每日獎勵成功』: " line)
-                }
+            if (!warmupFinishedLogged && warmupFinished) {
+                warmupFinishedLogged := true
+                WriteLog("收尾監測暖機完成；新增日誌在暖機期間已持續讀取並保存")
+                WriteStep("收尾監測", "暖機完成，開始主動檢查")
+            }
 
-                if (line ~= "i)(索拉奖励领取失败|索拉獎勵領取失敗|索拉獎勵錄取失敗)") {
-                    seenSolaraRewardFail := true
-                    WriteLog("監測命中『索拉獎勵領取失敗』: " line)
-                }
-
-                if (seenClickReward && seenNoReward) {
-                    delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
-                    WriteLog("已同時監測到『點擊電台一鍵領取』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
-                    WriteStep("收尾監測", "達到關閉條件：一鍵領取+無獎勵")
-                    ShowTip("✅ 監測到一鍵領取+無獎勵，" delaySec "秒後關閉", 2000)
-                    if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測條件達成後關閉延遲") {
-                        WriteLog("條件達成後關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
-                        return
-                    }
-                    HandleCycleFinishAndShutdown()
-                    return
-                }
-
-                if (seenDailyRewardSuccess && seenNoReward) {
-                    delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
-                    WriteLog("已同時監測到『領取每日獎勵成功』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
-                    WriteStep("收尾監測", "達到關閉條件：每日獎勵成功+無獎勵")
-                    ShowTip("✅ 監測到每日獎勵成功+無獎勵，" delaySec "秒後關閉", 2000)
-                    if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測每日獎勵關閉延遲") {
-                        WriteLog("每日獎勵關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
-                        return
-                    }
-                    HandleCycleFinishAndShutdown()
-                    return
-                }
-
-                if (seenSolaraRewardFail && seenNoReward) {
-                    delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
-                    WriteLog("已同時監測到『索拉獎勵領取失敗』與『沒有獎勵能領取』，" delaySec " 秒後開始關閉流程")
-                    WriteStep("收尾監測", "達到關閉條件：索拉失敗+無獎勵")
-                    ShowTip("✅ 監測到索拉獎勵失敗+無獎勵，" delaySec "秒後關閉", 2000)
-                    if !WaitInterruptibleForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測索拉失敗關閉延遲") {
-                        WriteLog("索拉失敗關閉延遲期間收到停止指令，略過收尾關閉流程", "WARN")
-                        return
-                    }
-                    HandleCycleFinishAndShutdown()
-                    return
-                }
+            if !WaitRewardMonitorForShutdown(REWARD_CHECK_INTERVAL_MS, "收尾監測輪詢間隔") {
+                WriteLog("收尾監測輪詢間隔期間收到停止指令，已提前結束監測", "WARN")
+                return
             }
         }
-        ; 收尾監測只做背景模板搜尋；不可因每輪輪詢而置頂或切換到鳴潮。
-        ; 若實際找到登入按鈕，才會在點擊時啟用鳴潮。
-        ClickTemplateIfFound(A_ScriptDir "\登入.png", true, false)
-        if !WaitInterruptibleForShutdown(REWARD_CHECK_INTERVAL_MS, "收尾監測輪詢間隔") {
-            WriteLog("收尾監測輪詢間隔期間收到停止指令，已提前結束監測", "WARN")
-            return
-        }
+    } finally {
+        __REWARD_MONITOR_ACTIVE := false
     }
 }
 
-WaitInterruptibleForShutdown(totalMs, phase := "") {
+WaitRewardMonitorForShutdown(totalMs, phase := "") {
     global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY
 
     if (totalMs <= 0)
@@ -4024,10 +4112,142 @@ WaitInterruptibleForShutdown(totalMs, phase := "") {
         chunk := (remain > 300) ? 300 : remain
         if (chunk < 1)
             break
-        Sleep chunk
+        ; 不走全域 Sleep() 的遠端暫停閘門。這個等待只供收尾監測使用，
+        ; 讓 PAUSE 期間主流程仍能回到讀檔迴圈；其他流程仍照常被 Sleep() 暫停。
+        RawSleep(chunk)
     }
 
     return !(REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY)
+}
+
+GetRewardMonitorStateKey(logPath) {
+    global CURRENT_SERVER_TARGET
+
+    cycleKey := GetDayCircleKey(A_Now)
+    if (cycleKey = "")
+        cycleKey := SubStr(A_Now, 1, 8)
+    serverKey := CURRENT_SERVER_TARGET != "" ? CURRENT_SERVER_TARGET : "(single)"
+    normalizedLogPath := StrLower(NormalizePath(logPath))
+    return cycleKey "|" serverKey "|" normalizedLogPath
+}
+
+LoadRewardMonitorRuntimeState(logPath, defaultPos) {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+
+    stateKey := GetRewardMonitorStateKey(logPath)
+    state := {
+        key: stateKey,
+        lastPos: defaultPos,
+        hit: 0,
+        seenClickReward: false,
+        seenNoReward: false,
+        seenDailyRewardSuccess: false,
+        seenSolaraRewardFail: false,
+        invalidHwndHits: 0,
+        lastInvalidHwndLine: "",
+        pendingReason: "",
+        pendingAt: "",
+        completionRecorded: false,
+        restored: false
+    }
+
+    savedKey := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key", ""), " `t`r`n")
+    if (savedKey != stateKey) {
+        SaveRewardMonitorRuntimeState(state)
+        return state
+    }
+
+    state.lastPos := ReadRewardMonitorStateInteger("last_pos", defaultPos)
+    state.hit := ReadRewardMonitorStateInteger("click_reward_hits", 0)
+    state.seenClickReward := ReadRewardMonitorStateBool("seen_click_reward")
+    state.seenNoReward := ReadRewardMonitorStateBool("seen_no_reward")
+    state.seenDailyRewardSuccess := ReadRewardMonitorStateBool("seen_daily_reward_success")
+    state.seenSolaraRewardFail := ReadRewardMonitorStateBool("seen_solara_reward_fail")
+    state.invalidHwndHits := ReadRewardMonitorStateInteger("invalid_hwnd_hits", 0)
+    state.lastInvalidHwndLine := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_invalid_hwnd_line", "")
+    state.pendingReason := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason", ""), " `t`r`n")
+    state.pendingAt := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at", ""), " `t`r`n")
+    if (state.pendingReason != "" && state.pendingAt = "")
+        state.pendingAt := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "updated_at", ""), " `t`r`n")
+    state.completionRecorded := ReadRewardMonitorStateBool("completion_recorded")
+    state.restored := true
+    return state
+}
+
+SaveRewardMonitorRuntimeState(state) {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+
+    try {
+        IniWrite state.key, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key"
+        IniWrite state.hit, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "click_reward_hits"
+        IniWrite state.seenClickReward ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_click_reward"
+        IniWrite state.seenNoReward ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_no_reward"
+        IniWrite state.seenDailyRewardSuccess ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_daily_reward_success"
+        IniWrite state.seenSolaraRewardFail ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_solara_reward_fail"
+        IniWrite state.invalidHwndHits, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "invalid_hwnd_hits"
+        IniWrite state.lastInvalidHwndLine, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_invalid_hwnd_line"
+        IniWrite state.pendingReason, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason"
+        IniWrite state.pendingAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at"
+        IniWrite state.completionRecorded ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "completion_recorded"
+        IniWrite FormatTime(, "yyyy-MM-dd HH:mm:ss"), CFG_FILE, REWARD_MONITOR_STATE_SECTION, "updated_at"
+        ; 游標最後寫入：若前面的狀態落盤中途失敗，重啟後最多重讀，不會先推進游標而漏掉命中。
+        IniWrite state.lastPos, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_pos"
+        return true
+    } catch as e {
+        WriteLog("收尾監測持久狀態寫入失敗：" e.Message, "ERROR")
+        return false
+    }
+}
+
+ClearRewardMonitorRuntimeState(expectedKey := "") {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+
+    try {
+        savedKey := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key", ""), " `t`r`n")
+        if (expectedKey != "" && savedKey != "" && savedKey != expectedKey) {
+            WriteLog("收尾監測狀態鍵已變更，略過清除：expected=" expectedKey " actual=" savedKey, "WARN")
+            return false
+        }
+
+        for key in [
+            "state_key", "last_pos", "click_reward_hits", "seen_click_reward", "seen_no_reward",
+            "seen_daily_reward_success", "seen_solara_reward_fail", "invalid_hwnd_hits",
+            "last_invalid_hwnd_line", "pending_reason", "pending_at", "completion_recorded", "updated_at"
+        ]
+            IniWrite "", CFG_FILE, REWARD_MONITOR_STATE_SECTION, key
+        WriteLog("收尾監測持久狀態已在正式收尾前清除")
+        return true
+    } catch as e {
+        WriteLog("清除收尾監測持久狀態失敗：" e.Message, "WARN")
+        return false
+    }
+}
+
+ReadRewardMonitorStateInteger(key, defaultValue := 0) {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+
+    raw := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, key, ""), " `t`r`n")
+    if (raw ~= "^\d+$")
+        return Integer(raw)
+    return defaultValue
+}
+
+ReadRewardMonitorStateBool(key) {
+    return ReadRewardMonitorStateInteger(key, 0) = 1
+}
+
+GetRewardMonitorCompletionReason(state) {
+    global REWARD_MATCH_NEED_COUNT
+
+    if (state.hit >= REWARD_MATCH_NEED_COUNT)
+        return "電台一鍵領取命中 " state.hit "/" REWARD_MATCH_NEED_COUNT
+    if (state.seenClickReward && state.seenNoReward)
+        return "一鍵領取＋沒有獎勵能領取"
+    if (state.seenDailyRewardSuccess && state.seenNoReward)
+        return "每日獎勵成功＋沒有獎勵能領取"
+    if (state.seenSolaraRewardFail && state.seenNoReward)
+        return "索拉獎勵失敗＋沒有獎勵能領取"
+    return ""
 }
 
 ResolveRewardLogPath() {
@@ -4225,11 +4445,13 @@ ResetRestartTrackingOnFreshStart() {
     WriteLog("正常首次啟動：已重置重啟計數器、重啟原因與 LRMCAI 接續狀態")
 }
 
-HandleCycleFinishAndShutdown() {
+HandleCycleFinishAndShutdown(completedTime := "") {
     ; 標記當前伺服器為已完成（收尾監測完成時才記錄）
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
     if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
-        MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET)
+        ; 使用實際命中時間，不用恢復 RUN 後的當下時間覆寫。
+        ; 如 PAUSE 跨過凌晨 4 點，仍會歸到命中當時的正確日循環。
+        MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET, completedTime)
     }
 
     if AdvanceServerScheduleForNextCycle() {

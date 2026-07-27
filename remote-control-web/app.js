@@ -1,5 +1,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
-import { getFirestore, collection, doc, getDocs, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+import {
+  collection,
+  doc,
+  getDocs,
+  getFirestore,
+  runTransaction,
+} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
 // TODO: 填入你自己的 Firebase 專案設定
 const FIREBASE_CONFIG = {
@@ -11,7 +17,9 @@ const FIREBASE_CONFIG = {
 const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const REFRESH_MS = 5_000;
-const WEB_BUILD = "20260718-1";
+const ACK_TIMEOUT_MS = 30_000;
+const COMMAND_HISTORY_LIMIT = 30;
+const WEB_BUILD = "20260727-2";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -21,19 +29,47 @@ const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
 const btnStop = document.getElementById("btnStop");
 const statusMsg = document.getElementById("statusMsg");
+const commandStatus = document.getElementById("commandStatus");
+const commandStatusTitle = document.getElementById("commandStatusTitle");
+const commandStatusDetail = document.getElementById("commandStatusDetail");
 const clientMeta = document.getElementById("clientMeta");
+const historyBody = document.getElementById("historyBody");
+const historyNote = document.getElementById("historyNote");
 
 let cache = new Map();
+let loadInFlight = false;
+let reconcileInFlightFor = "";
+let sending = false;
+let sendingState = "";
+let commandError = null;
 
-function fmtTs(ms) {
+function toInteger(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
+
+function toMillis(value) {
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (typeof value?.seconds === "number") {
+    return value.seconds * 1000 + Math.floor(Number(value.nanoseconds || 0) / 1_000_000);
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function fmtTs(value) {
+  const ms = toMillis(value);
   if (!ms) return "-";
-  const d = new Date(Number(ms));
+  const d = new Date(ms);
   return d.toLocaleString("zh-TW", { hour12: false });
 }
 
-function fmtAge(ms) {
+function fmtAge(value) {
+  const ms = toMillis(value);
   if (!ms) return "-";
-  const ageMs = Math.max(0, Date.now() - Number(ms));
+  const ageMs = Math.max(0, Date.now() - ms);
   const sec = Math.floor(ageMs / 1000);
   if (sec < 60) return `${sec} 秒前`;
   const min = Math.floor(sec / 60);
@@ -52,6 +88,117 @@ function normalizeStatus(v) {
   const s = String(v ?? "UNKNOWN").toUpperCase().replace(/[^A-Z]/g, "");
   if (s === "RUN" || s === "PAUSE" || s === "STOP" || s === "OFFLINE") return s;
   return "UNKNOWN";
+}
+
+function normalizeCommandState(value) {
+  const state = String(value ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+  if (state === "RUN" || state === "PAUSE" || state === "STOP") return state;
+  return "UNKNOWN";
+}
+
+function normalizeHistoryEntry(raw) {
+  const entry = raw && typeof raw === "object" ? raw : {};
+  return {
+    commandId: String(entry.commandId ?? ""),
+    commandNonce: Math.max(0, toInteger(entry.commandNonce, 0)),
+    requestedState: normalizeCommandState(entry.requestedState),
+    sentAt: toMillis(entry.sentAt),
+    status: String(entry.status ?? "WAITING_ACK").toUpperCase(),
+    ackAt: toMillis(entry.ackAt),
+    statusUpdatedAt: toMillis(entry.statusUpdatedAt),
+    statusReason: String(entry.statusReason ?? ""),
+  };
+}
+
+function readCommandHistory(data) {
+  const raw = Array.isArray(data?.commandHistory) ? data.commandHistory : [];
+  return raw
+    .map(normalizeHistoryEntry)
+    .filter((entry) => entry.commandNonce > 0 && entry.requestedState !== "UNKNOWN")
+    .sort((a, b) => b.commandNonce - a.commandNonce)
+    .slice(0, COMMAND_HISTORY_LIMIT);
+}
+
+function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
+  const current = normalizeHistoryEntry(entry);
+  const ackNonce = Math.max(0, toInteger(readField(clientData, "lastAckNonce", 0), 0));
+  const ackState = normalizeCommandState(readField(clientData, "lastAckState", ""));
+  const reportedAckAt = toMillis(readField(clientData, "lastAckAt", 0));
+  const previousStatus = current.status;
+
+  let nextStatus = "WAITING_ACK";
+  let nextAckAt = current.ackAt;
+  let nextReason = "";
+
+  // 一旦看過這筆精確 ACK，就永久保留；後續 ACK 前進不應把成功紀錄改成「被跨過」。
+  if (previousStatus === "ACKED") {
+    nextStatus = "ACKED";
+    nextReason = current.statusReason || "EXACT_ACK";
+  } else if (ackNonce === current.commandNonce && ackState === current.requestedState) {
+    nextStatus = "ACKED";
+    nextAckAt = reportedAckAt || current.ackAt;
+    nextReason = "EXACT_ACK";
+  } else if (ackNonce > current.commandNonce) {
+    nextStatus = "SUPERSEDED";
+    nextReason = "ACK_NONCE_ADVANCED";
+  } else if (current.sentAt > 0 && nowMs - current.sentAt >= ACK_TIMEOUT_MS) {
+    nextStatus = "UNRESPONSIVE";
+    nextReason =
+      ackNonce === current.commandNonce && ackState !== current.requestedState
+        ? "ACK_STATE_MISMATCH"
+        : "ACK_TIMEOUT";
+  }
+
+  const changed =
+    nextStatus !== current.status ||
+    nextAckAt !== current.ackAt ||
+    nextReason !== current.statusReason;
+
+  return {
+    ...current,
+    status: nextStatus,
+    ackAt: nextAckAt,
+    statusReason: nextReason,
+    statusUpdatedAt: changed ? nowMs : current.statusUpdatedAt,
+  };
+}
+
+function deriveCommandHistory(data, nowMs = Date.now()) {
+  return readCommandHistory(data).map((entry) => deriveHistoryEntry(entry, data, nowMs));
+}
+
+function historyStatusChanged(before, after) {
+  if (before.length !== after.length) return true;
+  for (let i = 0; i < before.length; i += 1) {
+    const a = before[i];
+    const b = after[i];
+    if (
+      a.commandId !== b.commandId ||
+      a.commandNonce !== b.commandNonce ||
+      a.status !== b.status ||
+      a.ackAt !== b.ackAt ||
+      a.statusReason !== b.statusReason ||
+      a.statusUpdatedAt !== b.statusUpdatedAt
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function selectedClientData() {
+  const id = pcDropdown.value;
+  if (!id || !cache.has(id)) return null;
+  return cache.get(id);
+}
+
+function setButtonsDisabled(disabled) {
+  const noClient = !pcDropdown.value || !cache.has(pcDropdown.value);
+  const value = Boolean(disabled || noClient);
+  pcDropdown.disabled = Boolean(disabled || cache.size === 0);
+  btnPause.disabled = value;
+  btnRun.disabled = value;
+  btnStop.disabled = value;
 }
 
 function renderClients() {
@@ -73,17 +220,17 @@ function renderClients() {
       displayName: readField(data, "displayName", id),
       status,
       lastHeartbeat: hb,
-      nonce: Number(readField(data, "nonce", 0)),
-      lastAckNonce: Number(readField(data, "lastAckNonce", 0)),
+      nonce: toInteger(readField(data, "nonce", 0), 0),
+      lastAckNonce: toInteger(readField(data, "lastAckNonce", 0), 0),
       lastAckState: readField(data, "lastAckState", ""),
-      lastAckAt: Number(readField(data, "lastAckAt", 0)),
+      lastAckAt: toMillis(readField(data, "lastAckAt", 0)),
       currentStep: readField(data, "currentStep", ""),
       currentStepDetail: readField(data, "currentStepDetail", ""),
       currentStepLevel: readField(data, "currentStepLevel", ""),
       currentServer: readField(data, "currentServer", ""),
       currentServerLabel: readField(data, "currentServerLabel", ""),
-      currentServerIndex: Number(readField(data, "currentServerIndex", 0)),
-      currentServerTotal: Number(readField(data, "currentServerTotal", 0)),
+      currentServerIndex: toInteger(readField(data, "currentServerIndex", 0), 0),
+      currentServerTotal: toInteger(readField(data, "currentServerTotal", 0), 0),
     });
   }
 
@@ -112,7 +259,7 @@ function renderClients() {
   }
 
   statusMsg.textContent = `可見 ${rows.length} 台，在線 ${onlineCount} 台`;
-  refreshMeta();
+  renderSelectedClient();
 }
 
 function refreshMeta() {
@@ -139,14 +286,208 @@ function refreshMeta() {
   }
 }
 
+function historyStatusLabel(entry) {
+  if (entry.status === "ACKED") return "已 ACK";
+  if (entry.status === "SUPERSEDED") return "被後續命令跨過";
+  if (entry.status === "UNRESPONSIVE") return "未回應";
+  return "等待 ACK";
+}
+
+function historyStatusClass(entry) {
+  if (entry.status === "ACKED") return "acked";
+  if (entry.status === "SUPERSEDED") return "superseded";
+  if (entry.status === "UNRESPONSIVE") return "unresponsive";
+  return "waiting";
+}
+
+function historyStatusDetail(entry, clientData) {
+  if (entry.status === "ACKED") {
+    return entry.ackAt ? `ACK：${fmtTs(entry.ackAt)}` : "已收到 nonce 與狀態完全相符的 ACK";
+  }
+  if (entry.status === "SUPERSEDED") {
+    return `ACK 已前進至 nonce=${toInteger(readField(clientData, "lastAckNonce", 0), 0)}，本筆沒有逐筆 ACK`;
+  }
+  if (entry.status === "UNRESPONSIVE") {
+    if (entry.statusReason === "ACK_STATE_MISMATCH") {
+      return `收到相同 nonce，但 ACK 狀態不是 ${entry.requestedState}`;
+    }
+    return `送出超過 ${ACK_TIMEOUT_MS / 1000} 秒仍沒有對應 ACK`;
+  }
+  return `等待 nonce=${entry.commandNonce}、state=${entry.requestedState} 的精確 ACK`;
+}
+
+function renderHistory() {
+  historyBody.replaceChildren();
+  const data = selectedClientData();
+  if (!data) {
+    historyNote.textContent = "請先選擇一台電腦。";
+    return;
+  }
+
+  const history = deriveCommandHistory(data);
+  if (history.length === 0) {
+    historyNote.textContent = "這台電腦尚無新版命令紀錄。";
+    return;
+  }
+
+  historyNote.textContent = `顯示最近 ${history.length} 筆；最多保留 ${COMMAND_HISTORY_LIMIT} 筆。`;
+  for (const entry of history) {
+    const row = document.createElement("tr");
+
+    const sentCell = document.createElement("td");
+    sentCell.textContent = fmtTs(entry.sentAt);
+
+    const stateCell = document.createElement("td");
+    stateCell.textContent = entry.requestedState;
+
+    const nonceCell = document.createElement("td");
+    nonceCell.textContent = String(entry.commandNonce);
+
+    const statusCell = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = `status-badge ${historyStatusClass(entry)}`;
+    badge.textContent = historyStatusLabel(entry);
+    statusCell.appendChild(badge);
+
+    const detailCell = document.createElement("td");
+    detailCell.textContent = historyStatusDetail(entry, data);
+
+    row.append(sentCell, stateCell, nonceCell, statusCell, detailCell);
+    historyBody.appendChild(row);
+  }
+}
+
+function setCommandStatus(kind, title, detail) {
+  commandStatus.dataset.status = kind;
+  commandStatusTitle.textContent = title;
+  commandStatusDetail.textContent = detail;
+}
+
+function renderCommandStatus() {
+  if (sending) {
+    setCommandStatus("sending", `正在送出 ${sendingState}…`, "Firestore 交易提交中，尚未宣告成功。");
+    return;
+  }
+
+  if (commandError && commandError.clientId === pcDropdown.value) {
+    setCommandStatus("error", `下發 ${commandError.state} 失敗`, commandError.message);
+    return;
+  }
+
+  const data = selectedClientData();
+  if (!data) {
+    setCommandStatus("idle", "尚未選擇電腦", "選擇裝置後才能送出命令。");
+    return;
+  }
+
+  const latest = deriveCommandHistory(data)[0];
+  if (!latest) {
+    setCommandStatus("idle", "尚未送出新版命令", "只有收到精確 ACK 才會顯示成功。");
+    return;
+  }
+
+  if (latest.status === "ACKED") {
+    setCommandStatus(
+      "acked",
+      `已 ACK：${latest.requestedState}（nonce=${latest.commandNonce}）`,
+      latest.ackAt ? `裝置回覆時間：${fmtTs(latest.ackAt)}` : "nonce 與狀態均已確認相符。",
+    );
+    return;
+  }
+
+  if (latest.status === "SUPERSEDED") {
+    setCommandStatus(
+      "superseded",
+      `未逐筆 ACK：${latest.requestedState}（nonce=${latest.commandNonce}）`,
+      historyStatusDetail(latest, data),
+    );
+    return;
+  }
+
+  if (latest.status === "UNRESPONSIVE") {
+    setCommandStatus(
+      "unresponsive",
+      `未回應：${latest.requestedState}（nonce=${latest.commandNonce}）`,
+      historyStatusDetail(latest, data),
+    );
+    return;
+  }
+
+  const elapsed = Math.max(0, Date.now() - latest.sentAt);
+  const secondsLeft = Math.max(0, Math.ceil((ACK_TIMEOUT_MS - elapsed) / 1000));
+  setCommandStatus(
+    "waiting",
+    `已送出 ${latest.requestedState}（nonce=${latest.commandNonce}），等待 ACK`,
+    `尚未確認成功；${secondsLeft} 秒後若仍沒有精確 ACK，會標示未回應。`,
+  );
+}
+
+function renderSelectedClient() {
+  refreshMeta();
+  renderHistory();
+  renderCommandStatus();
+  setButtonsDisabled(sending);
+}
+
+async function reconcileClientHistory(id) {
+  if (!id || reconcileInFlightFor) return;
+  const cachedData = cache.get(id);
+  if (!cachedData) return;
+  const cachedBefore = readCommandHistory(cachedData);
+  if (cachedBefore.length === 0) return;
+  const cachedAfter = cachedBefore.map((entry) => deriveHistoryEntry(entry, cachedData));
+  if (!historyStatusChanged(cachedBefore, cachedAfter)) return;
+
+  reconcileInFlightFor = id;
+
+  try {
+    const ref = doc(db, COLLECTION, id);
+    const result = await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) return null;
+
+      const data = snap.data();
+      const before = readCommandHistory(data);
+      if (before.length === 0) return { data, changed: false };
+
+      const after = before.map((entry) => deriveHistoryEntry(entry, data));
+      const changed = historyStatusChanged(before, after);
+      if (changed) {
+        transaction.update(ref, { commandHistory: after.slice(0, COMMAND_HISTORY_LIMIT) });
+      }
+      return {
+        data: changed ? { ...data, commandHistory: after } : data,
+        changed,
+      };
+    });
+
+    if (result?.data) {
+      cache.set(id, result.data);
+      if (pcDropdown.value === id) renderSelectedClient();
+    }
+  } catch (e) {
+    if (pcDropdown.value === id) {
+      historyNote.textContent = `命令狀態同步失敗：${e.message}`;
+    }
+  } finally {
+    reconcileInFlightFor = "";
+  }
+}
+
 async function loadClients() {
+  if (loadInFlight) return;
+  loadInFlight = true;
   try {
     const snap = await getDocs(collection(db, COLLECTION));
     cache.clear();
     snap.forEach((s) => cache.set(s.id, s.data()));
     renderClients();
+    const selectedId = pcDropdown.value;
+    if (selectedId) void reconcileClientHistory(selectedId);
   } catch (e) {
     statusMsg.textContent = `讀取失敗：${e.message}`;
+  } finally {
+    loadInFlight = false;
   }
 }
 
@@ -157,33 +498,96 @@ async function sendCommand(state) {
     return;
   }
 
+  const commandState = normalizeCommandState(state);
+  if (commandState === "UNKNOWN") {
+    setCommandStatus("error", "命令無效", `不支援的狀態：${state}`);
+    return;
+  }
+
+  sending = true;
+  sendingState = commandState;
+  commandError = null;
+  renderSelectedClient();
+
   try {
     const ref = doc(db, COLLECTION, id);
-    const current = await getDoc(ref);
-    const curNonce = Number(current.data()?.nonce || 0);
-    const nextNonce = curNonce + 1;
+    const sentAt = Date.now();
+    const result = await runTransaction(db, async (transaction) => {
+      const current = await transaction.get(ref);
+      if (!current.exists()) throw new Error("選取的電腦文件不存在");
 
-    await updateDoc(ref, {
-      desiredState: state,
-      nonce: nextNonce,
-      commandUpdatedAt: Date.now(),
+      const data = current.data();
+      const currentNonce = Math.max(0, toInteger(readField(data, "nonce", 0), 0));
+      const nextNonce = currentNonce + 1;
+      const reconciled = deriveCommandHistory(data, sentAt);
+      const newEntry = {
+        commandId: String(nextNonce),
+        commandNonce: nextNonce,
+        requestedState: commandState,
+        sentAt,
+        status: "WAITING_ACK",
+        ackAt: 0,
+        statusUpdatedAt: sentAt,
+        statusReason: "",
+      };
+      const commandHistory = [newEntry, ...reconciled]
+        .filter((entry, index, all) =>
+          all.findIndex((other) => other.commandNonce === entry.commandNonce) === index)
+        .sort((a, b) => b.commandNonce - a.commandNonce)
+        .slice(0, COMMAND_HISTORY_LIMIT);
+
+      // nonce、desiredState 與歷史在同一筆交易提交；多個頁面同時操作時交易會重試，
+      // 因而不會再產生相同 nonce。歷史內刻意使用 commandNonce/requestedState，
+      // 避免 AHK REST 端的欄位 regex 誤抓巢狀資料。
+      transaction.update(ref, {
+        desiredState: commandState,
+        nonce: nextNonce,
+        commandUpdatedAt: sentAt,
+        commandHistory,
+      });
+
+      return {
+        nextNonce,
+        data: {
+          ...data,
+          desiredState: commandState,
+          nonce: nextNonce,
+          commandUpdatedAt: sentAt,
+          commandHistory,
+        },
+      };
     });
 
-    statusMsg.textContent = `已送出 ${state} 指令（nonce=${nextNonce}）`;
-    setTimeout(loadClients, 1200);
+    cache.set(id, result.data);
+    sending = false;
+    sendingState = "";
+    commandError = null;
+    renderSelectedClient();
+    window.setTimeout(() => void loadClients(), 1200);
   } catch (e) {
-    statusMsg.textContent = `下發失敗：${e.message}`;
+    sending = false;
+    sendingState = "";
+    commandError = {
+      clientId: id,
+      state: commandState,
+      message: e?.message || String(e),
+    };
+    renderSelectedClient();
   }
 }
 
-btnPause.addEventListener("click", () => sendCommand("PAUSE"));
-btnRun.addEventListener("click", () => sendCommand("RUN"));
+btnPause.addEventListener("click", () => void sendCommand("PAUSE"));
+btnRun.addEventListener("click", () => void sendCommand("RUN"));
 btnStop.addEventListener("click", () => {
   if (!confirm("確定要遠端關閉腳本並完整關閉遊戲/OKWW/LRMCAI？")) return;
-  sendCommand("STOP");
+  void sendCommand("STOP");
 });
-pcDropdown.addEventListener("change", refreshMeta);
+pcDropdown.addEventListener("change", () => {
+  renderSelectedClient();
+  void reconcileClientHistory(pcDropdown.value);
+});
 
 statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
-loadClients();
-setInterval(loadClients, REFRESH_MS);
+void loadClients();
+window.setInterval(() => void loadClients(), REFRESH_MS);
+window.setInterval(renderCommandStatus, 1000);

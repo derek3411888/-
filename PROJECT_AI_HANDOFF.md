@@ -92,6 +92,21 @@
 - 登入／叉叉等模板預搜尋也預設走背景 client 比對。只有確定命中並準備實際滑鼠點擊時，才短暫還原、啟用及置頂鳴潮；`finally` 必須保證取消置頂。
 - 保留原本登入 OCR 主迴圈每秒呼叫 `TryAssistLoginTemplateBeforeOcr()` 的輔助點擊，也保留兩個 OKWW 啟動入口前的 `登入.png` 點擊；這些搜尋仍先走背景比對，只有模板命中並實際點擊時才短暫切到前景。
 
+### 3.14 遠端 PAUSE 期間的收尾監測
+- `MonitorRewardAndShutdown()` 在 300 秒暖機前就建立 LRMCAI 日誌游標；暖機與遠端 PAUSE 期間仍每 3 秒讀取新增日誌。
+- PAUSE 期間只允許讀檔、累積命中及寫入 `[reward_monitor_runtime]`；不得重啟 LRMCAI／遊戲、點擊模板、停止錄影、關閉程式或切換伺服器。
+- 日誌游標、命中數、各獎勵旗標、完成原因與實際命中時間會持久保存；同一循環日、伺服器及日誌路徑可跨程序恢復。
+- 寫入持久狀態時必須最後才推進 `last_pos`，避免異常中斷造成游標已前進、命中旗標卻尚未落盤。
+- 收尾條件在 PAUSE 期間成立時，先以實際命中時間標記伺服器完成，但延後關閉／切服直到收到 RUN。若已保存完成條件，RUN 不再等待登入 OCR 或送出 Ctrl+F1。
+- 最後一次 PAUSE 判斷到正式收尾必須用 `Critical` 形成不可插入的提交區段，避免命令計時器卡在判斷與關閉／切服之間。
+- 收尾專用等待必須走 `WaitRewardMonitorForShutdown()`／`RawSleep()`，不可再走受全域 PAUSE 閘門控制的 `Sleep()`。
+
+### 3.15 遠端命令 nonce、ACK 與歷史
+- `remote-control-web/app.js` 以 Firestore `runTransaction` 在同一交易原子遞增頂層 `nonce`、更新頂層 `desiredState` 並追加命令歷史，禁止再使用 `getDoc → nonce+1 → updateDoc`。
+- 每台 client 父文件的 `commandHistory` 最多保留最近 30 筆；歷史欄位使用 `commandNonce`、`requestedState`，不可使用精確欄名 `nonce` 或 `desiredState`，避免 AHK REST regex 誤抓巢狀欄位。
+- 只有 `lastAckNonce == commandNonce` 且 `lastAckState == requestedState` 才能顯示「已 ACK」。30 秒沒有精確 ACK 顯示「未回應」；ACK nonce 已前進則顯示「被後續命令跨過」。
+- 命令歷史只從部署新版網頁後開始建立，無法回補舊版已送出的命令。
+
 ## 4) 伺服器排程與完成判定（高風險區）
 ### 4.1 切日規則（非常重要）
 - 一個循環日定義為 04:00 到隔日 03:59。
