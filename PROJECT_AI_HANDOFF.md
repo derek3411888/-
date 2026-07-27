@@ -80,13 +80,14 @@
 ### 3.12 OKWW 啟動後的 F11 操作
 - `全自動.ahk` 不再 OCR OKWW 視窗中的「啟動遊戲／開始／F11」文字，也不再依 OCR 座標點擊，避免把版本說明中的「启动游戏」誤當按鈕。
 - 啟動 `自動開啟OKWW.ahk` 後，最多等待 45 秒，只接受由 `pythonw.exe` 承載的最終主視窗；標題同時相容 `OK-WW v版本 Global`（v3.5.18）及尾端帶 `- OK-WW` 的舊格式。
-- 同一個 HWND 必須連續確認兩次才算穩定。之後以 OKWW client 截圖做嚴格 OCR：先把 RapidOCR 可能混用的 `实／實、时／時、触／觸、发／發、动／動、战／戰、斗／鬥、启／啟` 統一，再接受 `實時觸發` 或 `即時觸發` 兩套地區用語，命中後進入頁面；再以「自動戰鬥」文字所在列為基準，只接受同列精確的「已啟用／未啟用」狀態。未啟用才點開，且必須連續兩次 OCR 確認已啟用才繼續。這裡不使用主題敏感的像素亮度門檻。
+- 同一個 HWND 必須連續確認兩次才算穩定。之後以 OKWW client 截圖做嚴格 OCR：先把 RapidOCR 可能混用的 `实／實、时／時、触／觸、发／發、动／動、战／戰、斗／鬥、启／啟` 統一。左側導覽項目限定在 `rect.right <= 180 × DPI scale` 的區域內，優先精確接受 `實時觸發` 或 `即時觸發`；精確文字不存在時，才允許等長且只有一個字不同的受限容錯（例如 `即時網發` 對應 `即時觸發`）。此容錯只用於左側導覽，進入頁面後仍以「自動戰鬥」文字所在列為基準，只接受同列精確的「已啟用／未啟用」狀態。未啟用才點開，且必須連續兩次 OCR 確認已啟用才繼續。這裡不使用主題敏感的像素亮度門檻。
 - 自動戰鬥確認成功後只送出一次 `F11`。優先切到前景以 `SendEvent` 發送，無法切前景時才以 `ControlSend` 定向發送；送出後等待 2 秒，再最小化 OKWW。
 - 自動戰鬥前置確認最多在同一個 OKWW 視窗重試 3 次。只有 F11 成功才最小化；失敗時保留視窗與左側 OCR 候選文字供診斷。
 - 兩個呼叫端都必須接收 `StartOKWWFlow()` 回傳值；失敗時依階段使用 `OKWW_MANAGER_LAUNCH_FAILED`、`OKWW_FINAL_WINDOW_TIMEOUT`、`OKWW_AUTOBATTLE_CHECK_FAILED` 或 `OKWW_F11_SEND_FAILED` 記錄重啟，不得繼續等待主畫面後誤報 `GAME_READY_CHECK_TIMEOUT`。
 
 ### 3.13 鳴潮前景與置頂原則
 - 一般 OCR 與模板輪詢均使用 ImagePut 的 `PrintWindow + PW_CLIENTONLY` 背景 client 截圖，不因輪詢而 `WinActivate` 或將鳴潮設為置頂。
+- 啟動階段將鳴潮移到右上角時，普通視窗只調整 X/Y，不傳入寬高，也不執行 `WinRestore` 或 `WinActivate`；移動後需驗證尺寸與視窗狀態不變。最大化視窗保持最大化並略過移動，最小化視窗保持最小化並延後重試。
 - `WaitEscMenuOCR()` 的 `icon_main.png` 驗證使用背景截圖右下 ROI；即使鳴潮被其他視窗遮住，也不應搶回前景。
 - 登入／叉叉等模板預搜尋也預設走背景 client 比對。只有確定命中並準備實際滑鼠點擊時，才短暫還原、啟用及置頂鳴潮；`finally` 必須保證取消置頂。
 - 保留原本登入 OCR 主迴圈每秒呼叫 `TryAssistLoginTemplateBeforeOcr()` 的輔助點擊，也保留兩個 OKWW 啟動入口前的 `登入.png` 點擊；這些搜尋仍先走背景比對，只有模板命中並實際點擊時才短暫切到前景。
@@ -126,8 +127,8 @@
 ## 8) 推版流程（維運）
 1. 修改腳本後先做語法/錯誤檢查
 2. 編譯 payload/全自動.ahk -> payload/全自動鋤地.exe
-3. 編譯 打包啟動器.ahk -> 根目錄 全自動鋤地.exe
-4. 重建 payload.zip
+3. 重建 payload.zip（根層直接放 payload 目錄內容，不可多包一層 payload）
+4. 編譯 打包啟動器.ahk -> 根目錄 全自動鋤地.exe（必須在重建 zip 後，才能內嵌最新版 payload.zip）
 5. 計算 payload.zip 與根目錄啟動器 EXE 的 SHA256
 6. 同時提升 payload 與 launcher 版本，更新 manifest 兩組版本、URL 與 SHA256
 7. git commit + push main，讓客戶端能直接取得更新

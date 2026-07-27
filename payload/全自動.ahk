@@ -1960,14 +1960,22 @@ EnsureOkwwAutoBattleEnabled(okwwHwnd) {
 
         ocr := RapidOcr()
         navResult := CaptureOkwwOcr(okwwHwnd, ocr, "尋找實時／即時觸發")
-        navMatch := FindExactOkwwOcrBlock(
-            navResult, ["实时触发", "實時觸發", "即时触发", "即時觸發"])
+        navMatch := FindOkwwRealtimeTriggerOcrBlock(navResult, scale)
         if !navMatch {
             navCandidates := SummarizeOkwwOcrBlocks(
                 navResult, Round(320 * scale), 30)
-            WriteLog("OKWW 自動戰鬥檢查失敗：OCR 找不到精確的「實時／即時觸發」"
+            WriteLog("OKWW 自動戰鬥檢查失敗：OCR 找不到左側「實時／即時觸發」"
+                "（含受限一字容錯）"
                 " | 左側候選=" navCandidates, "ERROR")
             return false
+        }
+
+        if (navMatch.matchType = "bounded_fuzzy") {
+            WriteLog("OKWW 左側導覽 OCR 受限容錯命中：raw=" navMatch.rawText
+                " normalized=" navMatch.text
+                " target=" navMatch.targetText
+                " distance=" navMatch.distance
+                " rectRight=" Round(navMatch.rect.right), "WARN")
         }
 
         navX := navMatch.rect.centerX
@@ -2149,6 +2157,79 @@ FindExactOkwwOcrBlock(result, acceptedTexts) {
         }
     }
     return 0
+}
+
+CountOkwwSameLengthDifferences(leftText, rightText, stopAfter := 1) {
+    leftLength := StrLen(leftText)
+    if (leftLength != StrLen(rightText))
+        return -1
+
+    differenceCount := 0
+    Loop leftLength {
+        if (SubStr(leftText, A_Index, 1) != SubStr(rightText, A_Index, 1)) {
+            differenceCount += 1
+            if (differenceCount > stopAfter)
+                return differenceCount
+        }
+    }
+    return differenceCount
+}
+
+FindOkwwRealtimeTriggerOcrBlock(result, scale := 1.0) {
+    if !IsObject(result)
+        return 0
+
+    ; 只放寬 OKWW 左側導覽項目，避免影響「自動戰鬥／已啟用」等安全確認。
+    acceptedTexts := ["實時觸發", "即時觸發"]
+    sidebarRight := Round(180 * scale)
+    bestFuzzy := 0
+    bestFuzzyDistance := 2147483647
+    bestFuzzyCenterX := 2147483647
+
+    for block in result {
+        if !block.HasOwnProp("text")
+            continue
+
+        rect := GetOkwwOcrBlockRect(block)
+        if !rect || rect.right > sidebarRight
+            continue
+
+        clean := NormalizeOkwwOcrText(block.text)
+        if (clean = "")
+            continue
+
+        for accepted in acceptedTexts {
+            distance := CountOkwwSameLengthDifferences(clean, accepted, 1)
+            if (distance = 0) {
+                return {
+                    text: clean,
+                    rawText: block.text,
+                    rect: rect,
+                    matchType: "exact",
+                    targetText: accepted,
+                    distance: 0
+                }
+            }
+
+            ; 僅允許等長文字的一個字辨識錯誤，例如「即時網發」。
+            if (distance = 1
+                && (distance < bestFuzzyDistance
+                    || (distance = bestFuzzyDistance && rect.centerX < bestFuzzyCenterX))) {
+                bestFuzzy := {
+                    text: clean,
+                    rawText: block.text,
+                    rect: rect,
+                    matchType: "bounded_fuzzy",
+                    targetText: accepted,
+                    distance: distance
+                }
+                bestFuzzyDistance := distance
+                bestFuzzyCenterX := rect.centerX
+            }
+        }
+    }
+
+    return bestFuzzy
 }
 
 SummarizeOkwwOcrBlocks(result, maxCenterX := 0, maxItems := 30) {
@@ -2827,7 +2908,7 @@ DetectWutheringAndExit(&loginDetected := false) {
 
             if okMove {
                 movedTopRight := true
-                WriteLog("視窗已固定在右上角，後續不再重試移動")
+                WriteLog("視窗位置處理完成（保留原尺寸與狀態），後續不再重試移動")
             } else {
                 nextMoveRetryTick := A_TickCount + 1500
             }
@@ -3334,7 +3415,7 @@ GetWorkArea() {
     }
 }
 
-; C) 將指定窗口貼齊螢幕右上角；若過大則縮到螢幕內（完全貼邊）
+; C) 將一般狀態的指定窗口貼齊螢幕右上角，不改變原始尺寸或最大化／最小化狀態
 MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
     if !hwnd {
         WriteLog("MoveWindowTopRight: 無效的視窗句柄", "ERROR")
@@ -3361,20 +3442,18 @@ MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
                 return false
             }
         }
-        
-        try {
-            ; 先還原視窗（避免最大化無法移動）
-            WinRestore "ahk_id " hwnd
-            Sleep 200  ; 等待視窗還原完成
-            
-            ; 確保視窗在前台
-            WinActivate "ahk_id " hwnd
-            Sleep 100
-        } catch as e {
-            WriteLog("視窗還原失敗: " e.Message, "WARN")
-        }
 
         try {
+            windowState := WinGetMinMax("ahk_id " hwnd)
+            if (windowState = 1) {
+                WriteLog("鳴潮視窗目前為最大化；保留原狀態與尺寸，略過右上角移動")
+                return true
+            }
+            if (windowState = -1) {
+                WriteLog("鳴潮視窗目前為最小化；保留原狀態與尺寸，稍後再嘗試移動", "WARN")
+                return false
+            }
+
             WinGetPos &x, &y, &w, &h, "ahk_id " hwnd
             if (w = "" || h = "" || w <= 0 || h <= 0) {
                 WriteLog("無法取得視窗尺寸: w=" w ", h=" h, "ERROR")
@@ -3386,25 +3465,29 @@ MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
             }
 
             wa := GetWorkArea()
-            maxW := wa.width - marginX
-            maxH := wa.height - marginY
-            newW := (w > maxW) ? maxW : w
-            newH := (h > maxH) ? maxH : h
-
-            newX := wa.right - newW - marginX  ; 貼齊工作區右側
+            newX := wa.right - w - marginX  ; 貼齊工作區右側但保留原寬度
             newY := wa.top + marginY           ; 貼齊工作區上側
             
-            WriteLog("移動視窗: 從 (" x "," y "," w "," h ") 到 (" newX "," newY "," newW "," newH ")")
-            WinMove(newX, newY, newW, newH, "ahk_id " hwnd)
+            WriteLog("移動視窗（保留尺寸）: 從 (" x "," y "," w "," h
+                ") 到 (" newX "," newY "," w "," h ")")
+            WinMove(newX, newY, , , "ahk_id " hwnd)
             Sleep 300  ; 等待視窗移動完成
             
-            ; 驗證移動結果
-            WinGetPos &actualX, &actualY, , , "ahk_id " hwnd
-            if (Abs(actualX - newX) <= 10 && Abs(actualY - newY) <= 10) {
-                WriteLog("✓ 視窗成功移動到右上角 (" actualX "," actualY ")")
+            ; 驗證位置、尺寸及視窗狀態均符合預期。
+            WinGetPos &actualX, &actualY, &actualW, &actualH, "ahk_id " hwnd
+            actualState := WinGetMinMax("ahk_id " hwnd)
+            positionOk := (Abs(actualX - newX) <= 10 && Abs(actualY - newY) <= 10)
+            sizeOk := (Abs(actualW - w) <= 2 && Abs(actualH - h) <= 2)
+            stateOk := (actualState = windowState)
+            if (positionOk && sizeOk && stateOk) {
+                WriteLog("✓ 視窗成功移動到右上角，尺寸與狀態保持不變 ("
+                    actualX "," actualY "," actualW "," actualH ")")
                 return true
             } else {
-                WriteLog("視窗移動位置不正確: 目標(" newX "," newY ") vs 實際(" actualX "," actualY ")", "WARN")
+                WriteLog("視窗移動驗證未通過：目標位置=(" newX "," newY
+                    ") 實際位置=(" actualX "," actualY
+                    ") | 原尺寸=" w "x" h " 實際尺寸=" actualW "x" actualH
+                    " | 原狀態=" windowState " 實際狀態=" actualState, "WARN")
                 if (attempt < 3) {
                     Sleep 500
                     continue
