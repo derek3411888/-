@@ -1607,8 +1607,16 @@ if (loginDetected) {
     WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
     ClickTemplateIfFound(A_ScriptDir "\登入.png")
-    StartOKWWFlow(isRestart)
-    okwwStarted := true
+    okwwResult := StartOKWWFlow(isRestart)
+    okwwStarted := okwwResult.ok
+    if !okwwStarted {
+        WriteLog("登入畫面 OKWW 接管失敗：" okwwResult.reason
+            "，停止本輪避免誤報遊戲主畫面超時", "ERROR")
+        RequestRestart(
+            okwwResult.reason,
+            "ERROR", CRASH_RESTART_MODE, okwwResult.code, okwwResult.stage)
+        return
+    }
     WriteLog("檢測到登入畫面後不再由全自動點擊遊戲視窗，等待 OKWW 執行")
     Sleep 3000
 }
@@ -1638,8 +1646,16 @@ if !okwwStarted {
     WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
     ClickTemplateIfFound(A_ScriptDir "\登入.png")
-    StartOKWWFlow(isRestart)
-    okwwStarted := true
+    okwwResult := StartOKWWFlow(isRestart)
+    okwwStarted := okwwResult.ok
+    if !okwwStarted {
+        WriteLog("遊戲可操作後啟動 OKWW 失敗：" okwwResult.reason
+            "，停止後續聲骸／LRMCAI 流程", "ERROR")
+        RequestRestart(
+            okwwResult.reason,
+            "ERROR", CRASH_RESTART_MODE, okwwResult.code, okwwResult.stage)
+        return
+    }
 }
 
 ; 5) 執行聲骸合成流程
@@ -1747,6 +1763,7 @@ ExitApp
 StartOKWWFlow(isRestart) {
     WriteStep("OKWW流程", "入口 isRestart=" (isRestart ? "1" : "0"))
     WriteLog("啟動 OKWW 管理腳本...")
+    managerLaunchError := ""
     if isRestart {
         ShowTip("🔄 重啟模式：重新啟動 OKWW", 1500)
         Sleep 1500
@@ -1757,6 +1774,7 @@ StartOKWWFlow(isRestart) {
         Run(ahkCommand)
         WriteLog("OKWW 管理腳本啟動成功" . (isRestart ? "（重啟模式）" : ""))
     } catch as e {
+        managerLaunchError := e.Message
         WriteLog("OKWW 管理腳本啟動失敗: " e.Message, "ERROR")
     }
     ShowTip("🟢 已啟動 OKWW 管理腳本" . (isRestart ? "（重新啟動）" : ""), 3000)
@@ -1830,14 +1848,27 @@ StartOKWWFlow(isRestart) {
     }
     
     f11Sent := false
+    autoBattleConfirmed := false
     if (okwwHwnd) {
         topmostCtx := PrepareOkwwTopmostOperation(okwwHwnd)
         try {
-            if EnsureOkwwAutoBattleEnabled(okwwHwnd) {
-                f11Sent := SendF11ToOkww(okwwHwnd)
-            } else {
-                WriteLog("OKWW 自動戰鬥未能確認為已啟用，為避免錯誤啟動，本次不發送 F11", "ERROR")
+            Loop 3 {
+                checkAttempt := A_Index
+                WriteLog("OKWW 自動戰鬥前置確認：attempt=" checkAttempt "/3")
+                if EnsureOkwwAutoBattleEnabled(okwwHwnd) {
+                    autoBattleConfirmed := true
+                    f11Sent := SendF11ToOkww(okwwHwnd)
+                    break
+                }
+
+                if (checkAttempt < 3) {
+                    WriteLog("OKWW 自動戰鬥本次未能確認，等待後重試；尚未發送 F11", "WARN")
+                    Sleep 1200
+                }
             }
+
+            if !f11Sent
+                WriteLog("OKWW 自動戰鬥連續 3 次未能確認，或 F11 發送失敗；本次不繼續", "ERROR")
         } finally {
             RestoreTopmostAfterOkwwOperation(topmostCtx)
         }
@@ -1845,13 +1876,56 @@ StartOKWWFlow(isRestart) {
         WriteLog("等待 " maxAttempts " 秒仍找不到 OKWW 最終主視窗，未發送 F11", "ERROR")
     }
     
-    if f11Sent
+    if f11Sent {
         WriteLog("F11 已送出，等待 2 秒後最小化 OKWW")
-    Sleep 2000
-    MinimizeOKWWWindows()
+        Sleep 2000
+        MinimizeOKWWWindows()
+    } else {
+        WriteLog("F11 未成功送出，保留 OKWW 視窗供診斷，不執行最小化", "WARN")
+    }
     WriteStepResult("OKWW流程", f11Sent,
         f11Sent ? "自動戰鬥已啟用、F11 已送出並完成最小化" : "前置確認或 F11 失敗")
-    return f11Sent
+    if f11Sent {
+        return {
+            ok: true,
+            code: "",
+            stage: "OKWW完成",
+            reason: ""
+        }
+    }
+
+    if !okwwHwnd {
+        if (managerLaunchError != "") {
+            return {
+                ok: false,
+                code: "OKWW_MANAGER_LAUNCH_FAILED",
+                stage: "OKWW管理腳本啟動",
+                reason: "OKWW 管理腳本啟動失敗，且 45 秒內未找到最終主視窗：" . managerLaunchError
+            }
+        }
+        return {
+            ok: false,
+            code: "OKWW_FINAL_WINDOW_TIMEOUT",
+            stage: "等待OKWW最終主視窗",
+            reason: "OKWW 管理腳本已送出，但 45 秒內未找到穩定的 pythonw 最終主視窗"
+        }
+    }
+
+    if !autoBattleConfirmed {
+        return {
+            ok: false,
+            code: "OKWW_AUTOBATTLE_CHECK_FAILED",
+            stage: "OKWW自動戰鬥確認",
+            reason: "已找到 OKWW 最終主視窗，但連續 3 次無法確認自動戰鬥為已啟用"
+        }
+    }
+
+    return {
+        ok: false,
+        code: "OKWW_F11_SEND_FAILED",
+        stage: "OKWW快捷鍵發送",
+        reason: "OKWW 自動戰鬥已確認啟用，但 F11 未能成功發送到最終主視窗"
+    }
 }
 
 EnsureOkwwAutoBattleEnabled(okwwHwnd) {
@@ -1885,10 +1959,14 @@ EnsureOkwwAutoBattleEnabled(okwwHwnd) {
         }
 
         ocr := RapidOcr()
-        navResult := CaptureOkwwOcr(okwwHwnd, ocr, "尋找實時觸發")
-        navMatch := FindExactOkwwOcrBlock(navResult, ["实时触发", "實時觸發"])
+        navResult := CaptureOkwwOcr(okwwHwnd, ocr, "尋找實時／即時觸發")
+        navMatch := FindExactOkwwOcrBlock(
+            navResult, ["实时触发", "實時觸發", "即时触发", "即時觸發"])
         if !navMatch {
-            WriteLog("OKWW 自動戰鬥檢查失敗：OCR 找不到精確的「實時觸發」", "ERROR")
+            navCandidates := SummarizeOkwwOcrBlocks(
+                navResult, Round(320 * scale), 30)
+            WriteLog("OKWW 自動戰鬥檢查失敗：OCR 找不到精確的「實時／即時觸發」"
+                " | 左側候選=" navCandidates, "ERROR")
             return false
         }
 
@@ -1998,6 +2076,15 @@ NormalizeOkwwOcrText(text) {
     clean := StrReplace(clean, "`t", "")
     clean := StrReplace(clean, " ", "")
     clean := StrReplace(clean, "　", "")
+    ; RapidOCR 可能在同一個詞內混用繁簡字形，先統一成繁體再做嚴格比對。
+    clean := StrReplace(clean, "实", "實")
+    clean := StrReplace(clean, "时", "時")
+    clean := StrReplace(clean, "触", "觸")
+    clean := StrReplace(clean, "发", "發")
+    clean := StrReplace(clean, "动", "動")
+    clean := StrReplace(clean, "战", "戰")
+    clean := StrReplace(clean, "斗", "鬥")
+    clean := StrReplace(clean, "启", "啟")
     return clean
 }
 
@@ -2062,6 +2149,32 @@ FindExactOkwwOcrBlock(result, acceptedTexts) {
         }
     }
     return 0
+}
+
+SummarizeOkwwOcrBlocks(result, maxCenterX := 0, maxItems := 30) {
+    if !IsObject(result)
+        return "(無 OCR 結果)"
+
+    summary := ""
+    count := 0
+    for block in result {
+        clean := NormalizeOkwwOcrText(block.text)
+        if (clean = "")
+            continue
+
+        rect := GetOkwwOcrBlockRect(block)
+        if !rect
+            continue
+        if (maxCenterX > 0 && rect.centerX > maxCenterX)
+            continue
+
+        count += 1
+        summary .= (summary = "" ? "" : " | ") clean "@" Round(rect.centerX) "," Round(rect.centerY)
+        if (count >= maxItems)
+            break
+    }
+
+    return summary != "" ? summary : "(左側無文字候選)"
 }
 
 ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
@@ -2849,16 +2962,13 @@ DetectWutheringAndExit(&loginDetected := false) {
     return "unknown"
 }
 
-; B) 去抖動主畫面模板比對（右下 ROI）
+; B) 去抖動主畫面模板比對（背景 client 截圖的右下 ROI）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     WriteStep("主畫面模板驗證", "入口 timeout=" timeoutSec "s")
-    oldPixelMode := A_CoordModePixel
-    CoordMode "Pixel", "Screen"
 
     if !hwnd {
         hwnd := GetWutheringGameHwnd()
         if !hwnd {
-            CoordMode "Pixel", oldPixelMode
             WriteStepResult("主畫面模板驗證", false, "無有效視窗")
             return false
         }
@@ -2868,7 +2978,6 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
 
     if !FileExist(templateFile) {
         WriteLog("模板驗證失敗：找不到模板檔 " templateFile, "WARN")
-        CoordMode "Pixel", oldPixelMode
         WriteStepResult("主畫面模板驗證", false, "模板不存在")
         return false
     }
@@ -2883,63 +2992,67 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     roiRightMargin := 0
     roiBottomMargin := 0
 
-    WriteLog("模板驗證參數: template=" templateFile " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
-
-    ; 城市操作時只做一次置頂脈衝，避免鳴潮長時間持續置頂
-    try {
-        WinRestore("ahk_id " hwnd)
-        WinSetAlwaysOnTop(1, "ahk_id " hwnd)
-        WinActivate("ahk_id " hwnd)
-        Sleep 120
-        WinSetAlwaysOnTop(0, "ahk_id " hwnd)
-    }
+    WriteLog("模板驗證參數: mode=background-client template=" templateFile
+        " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
 
     deadline := A_TickCount + timeoutSec*1000
     lastProgressLog := A_TickCount
     sampleCount := 0
     bestVar := 0
     while (A_TickCount < deadline) {
-        try WinActivate "ahk_id " hwnd
-        Sleep 120
         sampleCount += 1
 
+        if !WinExist("ahk_id " hwnd) {
+            newHwnd := GetWutheringGameHwnd()
+            if newHwnd {
+                hwnd := newHwnd
+                WriteLog("模板驗證期間遊戲視窗句柄已更新: hwnd=" hwnd, "WARN")
+            } else {
+                Sleep checkIntervalMs
+                continue
+            }
+        }
+
         try {
-            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
+            frame := ImagePutBuffer("ahk_id " hwnd)
         } catch as e {
-            WriteLog("模板驗證取視窗座標失敗: " e.Message, "WARN")
+            WriteLog("模板驗證背景截圖失敗: " e.Message, "WARN")
             Sleep checkIntervalMs
             continue
         }
 
-        x2 := wx + ww - roiRightMargin
-        y2 := wy + wh - roiBottomMargin
-        x1 := x2 - roiWidth
-        y1 := y2 - roiHeight
-        if (x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1) {
+        captureW := frame.width
+        captureH := frame.height
+        cropW := Min(roiWidth, captureW - roiRightMargin)
+        cropH := Min(roiHeight, captureH - roiBottomMargin)
+        cropX := captureW - roiRightMargin - cropW
+        cropY := captureH - roiBottomMargin - cropH
+        if (cropW <= 0 || cropH <= 0 || cropX < 0 || cropY < 0) {
             Sleep checkIntervalMs
             continue
         }
 
         found := false
         matchedVar := 0
-        for _, v in variations {
-            spec := "*" v " " templateFile
-            try {
-                if ImageSearch(&fx, &fy, x1, y1, x2, y2, spec) {
+        try {
+            roiFrame := frame.Crop(cropX, cropY, cropW, cropH)
+            for _, v in variations {
+                hit := roiFrame.ImageSearch(templateFile, v)
+                if IsValidImagePutSearchHit(hit, roiFrame) {
                     found := true
                     matchedVar := v
                     bestVar := v
                     break
                 }
-            } catch {
             }
+        } catch as e {
+            WriteLog("模板驗證背景比對失敗: " e.Message, "WARN")
         }
 
         if found {
             stable += 1
             ShowTip("✅ 模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）", 600)
             if (stable >= stableNeeded) {
-                CoordMode "Pixel", oldPixelMode
                 WriteStepResult("主畫面模板驗證", true, "樣本=" sampleCount " var=" matchedVar)
                 return true
             }
@@ -2957,7 +3070,6 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     }
 
     WriteLog("模板驗證超時: 樣本=" sampleCount " 未達連續命中 " stableNeeded, "WARN")
-    CoordMode "Pixel", oldPixelMode
     WriteStepResult("主畫面模板驗證", false, "超時樣本=" sampleCount)
     return false
 }
@@ -6669,21 +6781,78 @@ FindTemplateOnScreenWithTolerance(templatePath, &outX, &outY, x1, y1, x2, y2) {
     return false
 }
 
-FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := true) {
+IsValidImagePutSearchHit(hit, haystack) {
+    return IsObject(hit)
+        && hit.Length >= 2
+        && hit[1] >= 0
+        && hit[2] >= 0
+        && hit[1] < haystack.width
+        && hit[2] < haystack.height
+}
+
+FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := false) {
     outX := 0
     outY := 0
     hwnd := GetWutheringGameHwnd()
     if !hwnd
         return false
 
+    splitPath templatePath, &tplName
+
+    ; 預設採 PrintWindow client-only 背景截圖，不還原、不啟用、不置頂鳴潮。
+    ; 回傳值仍轉成螢幕座標，讓既有點擊流程可以直接使用。
+    if !activateWindow {
+        try {
+            ; ImagePut 遇最小化視窗可能先以 SW_SHOWNOACTIVATE 還原；
+            ; client 座標必須在截圖後取得，避免沿用最小化位置。
+            frame := ImagePutBuffer("ahk_id " hwnd)
+            WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " hwnd)
+            if (clientW <= 0 || clientH <= 0)
+                return false
+
+            searchFrame := frame
+            templateFrame := ImagePutBuffer(templatePath)
+            ; ImagePut 預設以模板中心為錨點；點擊流程需要左上座標。
+            templateFrame.x := 0
+            templateFrame.y := 0
+            offsetX := 0
+            offsetY := 0
+
+            ; 叉叉模板只搜尋背景 client 的右上區塊。
+            if (tplName = "0510.png") {
+                offsetX := Floor(frame.width * 0.50)
+                roiW := frame.width - offsetX
+                roiH := Max(1, Floor(frame.height * 0.25))
+                if (roiW <= 0 || roiH <= 0)
+                    return false
+                searchFrame := frame.Crop(offsetX, 0, roiW, roiH)
+            }
+
+            for _, v in [0, 20, 30, 40, 60] {
+                hit := searchFrame.ImageSearch(templateFrame, v)
+                if IsValidImagePutSearchHit(hit, searchFrame) {
+                    outX := clientX + offsetX + hit[1]
+                    outY := clientY + offsetY + hit[2]
+                    return true
+                }
+            }
+        } catch as e {
+            WriteLog("鳴潮背景模板搜尋失敗: " templatePath " | " e.Message, "WARN")
+        }
+        return false
+    }
+
     if (activateWindow) {
+        topmostPulse := false
         try {
             WinRestore("ahk_id " hwnd)
-            ; 只在模板檢測前做一次置頂脈衝，避免持續置頂影響其他視窗
             WinSetAlwaysOnTop(1, "ahk_id " hwnd)
+            topmostPulse := true
             WinActivate("ahk_id " hwnd)
             Sleep 80
-            WinSetAlwaysOnTop(0, "ahk_id " hwnd)
+        } finally {
+            if (topmostPulse && WinExist("ahk_id " hwnd))
+                try WinSetAlwaysOnTop(0, "ahk_id " hwnd)
         }
     }
 
@@ -6698,7 +6867,6 @@ FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := true
         y2 := Min(A_ScreenHeight - 1, wy + wh - 1)
 
         ; 叉叉模板只在遊戲視窗右上區塊搜尋，避免誤命中左上或中間的相似圖示。
-        splitPath templatePath, &tplName
         if (tplName = "0510.png") {
             roiLeft := wx + Floor(ww * 0.50)
             roiTop := wy
@@ -6720,7 +6888,7 @@ FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := true
     return false
 }
 
-ClickTemplateIfFound(templatePath, logIfMissing := true, activateWindowForSearch := true) {
+ClickTemplateIfFound(templatePath, logIfMissing := true, activateWindowForSearch := false) {
     x := 0
     y := 0
     oldMode := A_CoordModeMouse
