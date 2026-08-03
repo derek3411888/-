@@ -38,6 +38,7 @@
 ### 3.4 逾時參數
 - 收尾監測啟動前等待：300 秒（5 分鐘）
 - LRMCAI UI 視窗等待逾時：3 分鐘（60 次 * 3 秒）
+- 鳴潮更新後恢復視窗等待：300 秒（5 分鐘）；更新恢復期間必須停用一般 no-window 的 180 秒重啟門檻，避免新的 300 秒設定仍被提前截斷。
 
 ### 3.5 自動重啟上限
 - MAX_RESTART_COUNT 目前為 10。
@@ -79,11 +80,14 @@
 
 ### 3.12 OKWW 啟動後的 F11 操作
 - `全自動.ahk` 不再 OCR OKWW 視窗中的「啟動遊戲／開始／F11」文字，也不再依 OCR 座標點擊，避免把版本說明中的「启动游戏」誤當按鈕。
-- 啟動 `自動開啟OKWW.ahk` 後，最多等待 45 秒，只接受由 `pythonw.exe` 承載的最終主視窗；標題同時相容 `OK-WW v版本 Global`（v3.5.18）及尾端帶 `- OK-WW` 的舊格式。
-- 同一個 HWND 必須連續確認兩次才算穩定。之後以 OKWW client 截圖做嚴格 OCR：先把 RapidOCR 可能混用的 `实／實、时／時、触／觸、发／發、动／動、战／戰、斗／鬥、启／啟` 統一。左側導覽項目限定在 `rect.right <= 180 × DPI scale` 的區域內，優先精確接受 `實時觸發` 或 `即時觸發`；精確文字不存在時，才允許等長且只有一個字不同的受限容錯（例如 `即時網發` 對應 `即時觸發`）。此容錯只用於左側導覽，進入頁面後仍以「自動戰鬥」文字所在列為基準，只接受同列精確的「已啟用／未啟用」狀態。未啟用才點開，且必須連續兩次 OCR 確認已啟用才繼續。這裡不使用主題敏感的像素亮度門檻。
+- 啟動 `自動開啟OKWW.ahk` 後，最多等待 90 秒，只接受由 `pythonw.exe` 承載的最終主視窗；標題同時相容 `OK-WW v版本 Global`（v3.5.18）及尾端帶 `- OK-WW` 的舊格式。
+- 同一個 HWND 必須連續確認兩次才算穩定。之後以 OKWW client 截圖做嚴格 OCR：先把 RapidOCR 可能混用的 `实／實、时／時、触／觸、发／發、动／動、战／戰、斗／鬥、启／啟` 統一。左側導覽項目限定在 `rect.right <= 180 × DPI scale` 的區域內，優先精確接受 `實時觸發` 或 `即時觸發`；精確文字不存在時，才允許等長且只有一個字不同的受限容錯（例如 `即時網發` 對應 `即時觸發`）。此容錯只用於左側導覽。進入頁面後，「自動戰鬥」標題僅能在主內容第一列命中，接受獨立 exact block，或因 v3.5.25 同行排版而以「自動戰鬥」開頭的 merged block；狀態只接受 client 寬度 68% 以右、與標題中心差不超過 `24 × DPI scale` 的精確「已啟用／未啟用」，避免把相鄰第二列誤當第一列。未啟用才點開，且必須連續兩次 OCR 確認已啟用才繼續。缺失時須記錄受限區域候選，且不使用主題敏感的像素亮度門檻。
+- `自動開啟OKWW.ahk` 只把最終 `pythonw.exe` 的 `OK-WW v... Global` 視窗或標題完全為 `ok-ww` 的真正升級 UI 當作互動目標；`ok-ww-siw`／service 視窗只能忽略並繼續等待。更新檢測必須區分「有效 OCR 後未命中」與「截圖/OCR 失敗」，後者不得回報成不需更新。
 - 自動戰鬥確認成功後只送出一次 `F11`。優先切到前景以 `SendEvent` 發送，無法切前景時才以 `ControlSend` 定向發送；送出後等待 2 秒，再最小化 OKWW。
-- 自動戰鬥前置確認最多在同一個 OKWW 視窗重試 3 次。只有 F11 成功才最小化；失敗時保留視窗與左側 OCR 候選文字供診斷。
-- 兩個呼叫端都必須接收 `StartOKWWFlow()` 回傳值；失敗時依階段使用 `OKWW_MANAGER_LAUNCH_FAILED`、`OKWW_FINAL_WINDOW_TIMEOUT`、`OKWW_AUTOBATTLE_CHECK_FAILED` 或 `OKWW_F11_SEND_FAILED` 記錄重啟，不得繼續等待主畫面後誤報 `GAME_READY_CHECK_TIMEOUT`。
+- 自動戰鬥前置確認最多在同一個 OKWW 視窗重試 3 次。只有 F11 成功才最小化；失敗時保留視窗與受限 OCR 區域候選文字供診斷。
+- 兩個呼叫端都統一走 `StartOKWWFlowWithLocalRecovery()` 並接收結果；未被降級策略成功處理的失敗仍依階段使用 `OKWW_MANAGER_LAUNCH_FAILED`、`OKWW_FINAL_WINDOW_TIMEOUT` 或 `OKWW_F11_SEND_FAILED` 進入原 `RequestRestart()`，不得繼續等待主畫面後誤報 `GAME_READY_CHECK_TIMEOUT`。
+- `OKWW_AUTOBATTLE_CHECK_FAILED` 是唯一會做局部復原的錯誤：首次命中時只依序關閉 `自動開啟OKWW.ahk`、`ok-ww.exe` 與經命令列／視窗標題確認屬於 OKWW 的 Python PID；不可關鳴潮、LRMCAI 或其他 Python。局部重啟 OKWW 後只再試一次。
+- 局部重試後若仍是 `OKWW_AUTOBATTLE_CHECK_FAILED`，不停止本輪也不寄失敗信；`StartOKWWFlow()` 會把第二次已穩定鎖定的最終 `pythonw` HWND 回傳給 wrapper，由 wrapper 對該 HWND 做相同的程序名／標題安全檢查後直接送一次 `F11`。送出成功即等待 2 秒、最小化 OKWW 並回傳成功繼續流程；只有直接送鍵本身失敗，才改回 `OKWW_F11_SEND_FAILED` 並走原 `RequestRestart()`。
 
 ### 3.13 鳴潮前景與置頂原則
 - 一般 OCR 與模板輪詢均使用 ImagePut 的 `PrintWindow + PW_CLIENTONLY` 背景 client 截圖，不因輪詢而 `WinActivate` 或將鳴潮設為置頂。
@@ -106,6 +110,14 @@
 - 每台 client 父文件的 `commandHistory` 最多保留最近 30 筆；歷史欄位使用 `commandNonce`、`requestedState`，不可使用精確欄名 `nonce` 或 `desiredState`，避免 AHK REST regex 誤抓巢狀欄位。
 - 只有 `lastAckNonce == commandNonce` 且 `lastAckState == requestedState` 才能顯示「已 ACK」。30 秒沒有精確 ACK 顯示「未回應」；ACK nonce 已前進則顯示「被後續命令跨過」。
 - 命令歷史只從部署新版網頁後開始建立，無法回補舊版已送出的命令。
+
+### 3.16 Launcher 自我更新與舊版救援
+- Launcher 更新檢查與 payload 版本判斷彼此獨立；即使 payload 已是最新版，每次啟動仍須讀取 manifest 檢查 `launcher_version` 與 `launcher_sha256`。
+- pending 狀態檔必須以覆寫方式寫入，並依 `version → sha256 → launcher_pending_update.tmp` 的順序提交；禁止再用 `FileAppend`，避免多次下載路徑或版本字串黏在一起。
+- 新 launcher 下載後由外部 PowerShell helper 等目前 launcher PID 真正退出，再以 candidate／backup 方式替換。成功後才寫 `launcher_current_version.txt` 並清 pending；任一步失敗都要還原舊 EXE、保留 pending 供下次重試，結果寫入 `launcher_update_outcome.log`。
+- 若目前 EXE SHA 已等於 manifest，應補寫版本並清除 stale pending，禁止把舊 pending 套回而降級。版本文字相同但 SHA 不同時，必須重新下載修復，不能只信版本檔。
+- Launcher v4.42 的替換器本身有固定等待 2 秒、狀態檔追加寫入及成功分支未寫版本等缺陷，因此 payload 內保留一次性 bootstrap：只有啟動環境沒有 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1` 且存在 pending 時，才等待舊 launcher 退出並替換根目錄 EXE。它只接受 Temp／config 下、名稱為 `launcher_update_*.exe`、具有 MZ 標頭且大小合理的檔案；v4.42 黏接 marker 只能採用最後一個語法候選，最後候選遺失／越界即失敗，不可退回較舊 EXE 卻標成新版本。來源、candidate 與安裝後 target 必須 SHA256 相同；若有 pending SHA 也必須吻合。上次中斷留下的 `.pre_update.bak` 必須先驗證並還原，失敗 rollback 要明確記錄 `restored／FAILED`；不可操作任意路徑。
+- v4.43+ launcher 啟動 payload 前會設定 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1`，避免 launcher helper 與 payload bootstrap 同時競爭同一個 EXE。
 
 ## 4) 伺服器排程與完成判定（高風險區）
 ### 4.1 切日規則（非常重要）

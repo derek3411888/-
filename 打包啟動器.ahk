@@ -5,6 +5,7 @@ SetWorkingDir A_ScriptDir
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
+global SKIP_PENDING_LAUNCHER_APPLY := false
 
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT
@@ -176,6 +177,68 @@ HttpDownloadFile(url, destPath, extraHeaders := Map()) {
     stream.Close()
 }
 
+WriteTextFileReplace(path, text, encoding := "UTF-8-RAW") {
+    tmpPath := path ".write_" A_TickCount "_" DllCall("GetCurrentProcessId")
+    try {
+        if FileExist(tmpPath)
+            FileDelete(tmpPath)
+        FileAppend(text, tmpPath, encoding)
+        FileMove(tmpPath, path, 1)
+        return true
+    } catch as e {
+        try FileDelete(tmpPath)
+        WriteLog("覆寫狀態檔失敗: " path " | " e.Message, "WARN")
+        return false
+    }
+}
+
+ClearPendingLauncherState(dataDir) {
+    ; pending_update.tmp 是唯一的提交標記。清除它與配套中繼資料後，
+    ; 本輪結束時就不會再排程舊版本；下載檔本身留給後續維護清理，
+    ; 避免相信可能被竄改的狀態檔而刪到任意路徑。
+    cleared := true
+    for stateFile in [
+        dataDir "\\launcher_pending_update.tmp",
+        dataDir "\\launcher_pending_version.txt",
+        dataDir "\\launcher_pending_sha256.txt"
+    ] {
+        if !FileExist(stateFile)
+            continue
+        try FileDelete(stateFile)
+        catch as e {
+            cleared := false
+            WriteLog("清除 launcher pending 狀態失敗: " stateFile " | " e.Message, "WARN")
+        }
+        if FileExist(stateFile)
+            cleared := false
+    }
+    return cleared
+}
+
+FetchRemoteUpdateManifest(dataDir) {
+    cfgFile := dataDir "\\config.ini"
+    defaultManifestUrl := "https://api.github.com/repos/derek3411888/-/contents/update_manifest.example.json?ref=main"
+    enabled := IniReadSafe(cfgFile, "updater", "enabled", "1")
+    if (enabled != "1") {
+        WriteLog("遠端更新未啟用，略過 launcher 獨立檢查")
+        return ""
+    }
+
+    manifestUrl := Trim(IniReadSafe(cfgFile, "updater", "manifest_url", defaultManifestUrl), ' "')
+    if (manifestUrl = "") {
+        WriteLog("遠端更新已啟用但未設定 manifest_url", "WARN")
+        return ""
+    }
+
+    try {
+        manifestApiUrl := ConvertToGitHubApiUrl(manifestUrl)
+        return HttpGetText(manifestApiUrl, Map("Accept", "application/vnd.github.raw+v3"))
+    } catch as e {
+        WriteLog("launcher 獨立更新檢查無法下載 manifest: " e.Message, "WARN")
+        return ""
+    }
+}
+
 TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownload := false) {
     WriteLog("開始檢查遠端更新設定...")
     cfgFile := dataDir "\\config.ini"
@@ -315,8 +378,9 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 ; 檢查並應用 Launcher 遠端更新
 ; ===========================
 ; 檢查 launcher exe 是否需要更新，如需要則下載、驗證、替換
-; 注意：exe 本身被占用，無法直接覆蓋，需透過批處理進行延遲替換
+; 注意：exe 本身被占用，無法直接覆蓋，需透過外部 helper 等待退出後替換
 TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
+    global SKIP_PENDING_LAUNCHER_APPLY
     WriteLog("開始檢查 launcher 遠端更新...")
     
     try {
@@ -328,22 +392,51 @@ TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
             WriteLog("manifest 未提供 launcher 更新資訊，跳過更新檢查")
             return false
         }
+
+        if !(launcherVer ~= "^[0-9A-Za-z._-]+$") {
+            WriteLog("manifest 的 launcher_version 格式無效：" launcherVer, "WARN")
+            return false
+        }
+
+        ; launcher 是可執行檔，沒有完整 SHA256 就不得進入自動替換流程。
+        ; 同時限制字元集，避免遠端文字進入 helper 命令列時成為參數注入面。
+        if !(launcherSha ~= "^[0-9a-f]{64}$") {
+            WriteLog("manifest 缺少有效的 launcher_sha256，拒絕自動更新 launcher", "WARN")
+            return false
+        }
         
         currentVerFile := dataDir "\\launcher_current_version.txt"
         currentVer := ""
         if FileExist(currentVerFile) {
             try currentVer := Trim(FileRead(currentVerFile, "UTF-8"), " `t`r`n")
         }
+
+        ; 新安裝可能還沒有版本狀態檔；若目前執行檔的 SHA 已等於 manifest，
+        ; 直接補寫版本，避免下載並替換完全相同的 launcher。
+        currentLauncherSha := GetFileSha256(A_ScriptFullPath)
+        if (currentLauncherSha != "" && currentLauncherSha = launcherSha) {
+            ; 可能是手動換新 launcher，但舊版留下 pending。若不先清掉，
+            ; 本輪尾端會把舊 pending 套回去而造成降級。
+            SKIP_PENDING_LAUNCHER_APPLY := true
+            pendingCleared := ClearPendingLauncherState(dataDir)
+            if WriteTextFileReplace(currentVerFile, launcherVer)
+                WriteLog("目前 launcher SHA256 已是遠端版本，已補寫版本狀態"
+                    (pendingCleared ? "並清除舊 pending：" : "；本輪禁止套用未清除的舊 pending：") launcherVer)
+            else
+                WriteLog("目前 launcher SHA256 已是遠端版本，但版本狀態補寫失敗", "WARN")
+            return false
+        }
         
         if (launcherVer = currentVer) {
-            WriteLog("launcher 版本一致，無需更新：" launcherVer)
-            return false
+            ; 版本文字相同但檔案雜湊不同，代表狀態檔失真或 EXE 已損壞，
+            ; 必須重新下載，不能只信版本文字。
+            WriteLog("launcher 版本文字一致但 SHA256 不符，重新下載修復：" launcherVer, "WARN")
         }
         
         WriteLog("檢測到 launcher 新版本：" currentVer " -> " launcherVer)
         
         ; 下載新 launcher exe
-        exeTmp := A_Temp "\\launcher_update_" A_TickCount ".exe"
+        exeTmp := dataDir "\\launcher_update_" launcherVer "_" A_TickCount ".exe"
         try {
             WriteLog("正在下載新 launcher 版本 " launcherVer)
             HttpDownloadFile(launcherUrl, exeTmp)
@@ -370,25 +463,29 @@ TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
             WriteLog("launcher 更新包 SHA256 驗證通過")
         }
         
-        ; 儲存待替換的 exe 路徑用於下一次重啟後處理
+        ; 先寫中繼資料，最後才寫 pending_update.tmp 作為提交標記。
+        ; 如此即使中途斷電，也不會讓替換器讀到只有一半的狀態。
         launcherBackupFile := dataDir "\\launcher_pending_update.tmp"
-        try {
-            FileAppend(exeTmp, launcherBackupFile, "UTF-8")
-            WriteLog("launcher 待替換檔案已暫存：" exeTmp)
-        } catch as e {
-            WriteLog("無法儲存待替換檔案路徑: " e.Message, "WARN")
+        versionBackupFile := dataDir "\\launcher_pending_version.txt"
+        shaBackupFile := dataDir "\\launcher_pending_sha256.txt"
+        if !WriteTextFileReplace(versionBackupFile, launcherVer) {
+            ClearPendingLauncherState(dataDir)
             try FileDelete(exeTmp)
             return false
         }
-        
-        ; 記錄新版本號
-        versionBackupFile := dataDir "\\launcher_pending_version.txt"
-        try {
-            FileAppend(launcherVer, versionBackupFile, "UTF-8")
-            WriteLog("已記錄待更新版本號：" launcherVer)
-        } catch {
-            ; 版本號記錄失敗不影響更新流程
+        if !WriteTextFileReplace(shaBackupFile, launcherSha) {
+            ClearPendingLauncherState(dataDir)
+            try FileDelete(exeTmp)
+            return false
         }
+        if !WriteTextFileReplace(launcherBackupFile, exeTmp) {
+            WriteLog("無法儲存待替換檔案路徑", "WARN")
+            ClearPendingLauncherState(dataDir)
+            try FileDelete(exeTmp)
+            return false
+        }
+        WriteLog("launcher 待替換檔案已暫存：" exeTmp)
+        WriteLog("已記錄待更新版本號：" launcherVer)
         
         return true
     } catch as e {
@@ -397,9 +494,8 @@ TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
     }
 }
 
-; 應用待處理的 launcher 更新（如存在）
-; 此函數在啟動時被調用，用於檢查是否存在上一次下載的新 exe
-ApplyPendingLauncherUpdate(workDir, dataDir) {
+; v4.42 舊替換器留作版本差異追查；不可呼叫。
+ApplyPendingLauncherUpdateLegacyUnused(workDir, dataDir) {
     WriteLog("檢查是否有待應用的 launcher 更新...")
     
     launcherBackupFile := dataDir "\\launcher_pending_update.tmp"
@@ -471,6 +567,139 @@ ApplyPendingLauncherUpdate(workDir, dataDir) {
 ; 為批處理腳本中的路徑添加引號
 QuoteForBat(path) {
     return "`"" path "`""
+}
+
+; v4.43 起使用的安全替換器。主流程確認已啟動後才呼叫；helper 會等目前
+; launcher PID 真正退出，再做可回復且有雜湊驗證的替換。
+ApplyPendingLauncherUpdateV2(workDir, dataDir) {
+    WriteLog("檢查是否有待應用的 launcher 更新...")
+
+    launcherBackupFile := dataDir "\\launcher_pending_update.tmp"
+    versionBackupFile := dataDir "\\launcher_pending_version.txt"
+    shaBackupFile := dataDir "\\launcher_pending_sha256.txt"
+    if !FileExist(launcherBackupFile) {
+        WriteLog("無待應用的 launcher 更新")
+        return false
+    }
+
+    try {
+        newExePath := Trim(FileRead(launcherBackupFile, "UTF-8"), " `t`r`n")
+        if !FileExist(newExePath) {
+            WriteLog("待替換 exe 檔案不存在，清理狀態檔", "WARN")
+            try FileDelete(launcherBackupFile)
+            try FileDelete(versionBackupFile)
+            try FileDelete(shaBackupFile)
+            return false
+        }
+
+        pendingVersion := ""
+        pendingSha := ""
+        if FileExist(versionBackupFile)
+            try pendingVersion := Trim(FileRead(versionBackupFile, "UTF-8"), " `t`r`n")
+        if FileExist(shaBackupFile)
+            try pendingSha := StrLower(Trim(FileRead(shaBackupFile, "UTF-8"), " `t`r`n"))
+        if !(pendingVersion ~= "^[0-9A-Za-z._-]+$") {
+            WriteLog("待套用 launcher 版本號無效，保留待處理檔供下次修復", "WARN")
+            return false
+        }
+        if !(pendingSha ~= "^[0-9a-f]{64}$") {
+            WriteLog("待套用 launcher SHA256 格式無效，拒絕排程替換", "ERROR")
+            return false
+        }
+        pendingFileSha := GetFileSha256(newExePath)
+        if (pendingFileSha = "" || pendingFileSha != pendingSha) {
+            WriteLog("待套用 launcher SHA256 驗證失敗，拒絕排程替換", "ERROR")
+            return false
+        }
+
+        currentExePath := A_ScriptFullPath
+        if !FileExist(currentExePath) {
+            WriteLog("當前 exe 路徑無效", "WARN")
+            return false
+        }
+        currentExeSha := GetFileSha256(currentExePath)
+        if (currentExeSha != "" && currentExeSha = pendingSha) {
+            ; 替換其實已完成，只是上次來不及清理狀態。此時不可再次搬動 EXE。
+            if WriteTextFileReplace(dataDir "\\launcher_current_version.txt", pendingVersion) {
+                ClearPendingLauncherState(dataDir)
+                try FileDelete(newExePath)
+                WriteLog("目前 launcher 已符合 pending SHA256，已補寫版本並清理殘留 pending：" pendingVersion)
+            } else {
+                WriteLog("目前 launcher 已符合 pending SHA256，但版本狀態補寫失敗", "WARN")
+            }
+            return false
+        }
+        if !A_IsAdmin {
+            WriteLog("警告：無法應用待更新的 launcher，因無管理員權限", "WARN")
+            return false
+        }
+
+        replacePs1 := A_Temp "\\launcher_replace_" A_TickCount "_" DllCall("GetCurrentProcessId") ".ps1"
+        outcomeFile := dataDir "\\launcher_update_outcome.log"
+        currentVerFile := dataDir "\\launcher_current_version.txt"
+        helperLines := [
+            "param([int]$LauncherPid,[string]$SourcePath,[string]$TargetPath,[string]$PendingPath,[string]$PendingVersionPath,[string]$PendingShaPath,[string]$CurrentVersionPath,[string]$Version,[string]$ExpectedSha,[string]$OutcomePath)",
+            "$ErrorActionPreference = 'Stop'",
+            "$candidate = $TargetPath + '.update'",
+            "$backup = $TargetPath + '.pre_update.bak'",
+            "try {",
+            "  $deadline = (Get-Date).AddSeconds(60)",
+            "  while ((Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }",
+            "  if (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { throw 'launcher PID did not exit within 60 seconds' }",
+            "  if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) { throw 'pending launcher source is missing' }",
+            "  $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourcePath).Hash.ToLowerInvariant()",
+            "  if ($ExpectedSha -and $sourceHash -ne $ExpectedSha.ToLowerInvariant()) { throw 'pending launcher SHA256 mismatch' }",
+            "  Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue",
+            "  if ((-not (Test-Path -LiteralPath $TargetPath)) -and (Test-Path -LiteralPath $backup -PathType Leaf)) { Move-Item -LiteralPath $backup -Destination $TargetPath -Force }",
+            "  if ((Test-Path -LiteralPath $TargetPath -PathType Leaf) -and (Test-Path -LiteralPath $backup -PathType Leaf)) { Remove-Item -LiteralPath $backup -Force }",
+            "  Copy-Item -LiteralPath $SourcePath -Destination $candidate -Force",
+            "  if ((Get-Item -LiteralPath $candidate).Length -ne (Get-Item -LiteralPath $SourcePath).Length) { throw 'candidate size mismatch' }",
+            "  if (Test-Path -LiteralPath $TargetPath) { Move-Item -LiteralPath $TargetPath -Destination $backup -Force }",
+            "  Move-Item -LiteralPath $candidate -Destination $TargetPath -Force",
+            "  $targetHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $TargetPath).Hash.ToLowerInvariant()",
+            "  if ($targetHash -ne $sourceHash) { throw 'installed launcher SHA256 mismatch' }",
+            "  Set-Content -LiteralPath $CurrentVersionPath -Value $Version -Encoding Ascii -NoNewline",
+            "  Remove-Item -LiteralPath $PendingPath,$PendingVersionPath,$PendingShaPath,$SourcePath,$backup -Force -ErrorAction SilentlyContinue",
+            "  Add-Content -LiteralPath $OutcomePath -Encoding UTF8 -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' SUCCESS launcher=' + $Version + ' sha256=' + $targetHash)",
+            "} catch {",
+            "  $failureReason = $_.Exception.Message",
+            "  $rollback = 'not-needed'",
+            "  if (Test-Path -LiteralPath $backup -PathType Leaf) {",
+            "    try {",
+            "      if (Test-Path -LiteralPath $TargetPath) { Remove-Item -LiteralPath $TargetPath -Force }",
+            "      Move-Item -LiteralPath $backup -Destination $TargetPath -Force",
+            "      $rollback = 'restored'",
+            "    } catch {",
+            "      $rollback = 'FAILED: ' + $_.Exception.Message",
+            "    }",
+            "  }",
+            "  Add-Content -LiteralPath $OutcomePath -Encoding UTF8 -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' FAILED launcher=' + $Version + ' reason=' + $failureReason + ' rollback=' + $rollback)",
+            "} finally {",
+            "  Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue",
+            "  Start-Sleep -Milliseconds 300",
+            "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+            "}"
+        ]
+        helperContent := ""
+        for _, line in helperLines
+            helperContent .= line "`r`n"
+        FileAppend(helperContent, replacePs1, "UTF-8-RAW")
+
+        launcherPid := DllCall("GetCurrentProcessId")
+        cmd := 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' replacePs1 '"'
+        cmd .= ' -LauncherPid ' launcherPid
+        cmd .= ' -SourcePath "' newExePath '" -TargetPath "' currentExePath '"'
+        cmd .= ' -PendingPath "' launcherBackupFile '" -PendingVersionPath "' versionBackupFile '"'
+        cmd .= ' -PendingShaPath "' shaBackupFile '" -CurrentVersionPath "' currentVerFile '"'
+        cmd .= ' -Version "' pendingVersion '" -ExpectedSha "' pendingSha '" -OutcomePath "' outcomeFile '"'
+        Run(cmd, , "Hide")
+
+        WriteLog("launcher 更新替換 helper 已排程；成功與否將寫入 " outcomeFile)
+        return true
+    } catch as e {
+        WriteLog("應用待更新 launcher 時發生異常: " e.Message, "WARN")
+        return false
+    }
 }
 
 ExtractZipByPowerShell(zipPath, destDir) {
@@ -725,9 +954,14 @@ remotePreparedVersion := ""
 payloadMainPath := APP_DIR "\" MAIN_FILE
 payloadHealthy := DirExist(APP_DIR) && FileExist(payloadMainPath)
 
-; ========== 檢查 Launcher 更新 ==========
-; 首先嘗試應用上次下載的待更新 launcher（如存在）
-ApplyPendingLauncherUpdate(WORK_DIR, DATA_DIR)
+; ========== 獨立檢查 Launcher 更新 ==========
+; launcher 與 payload 使用同一份 manifest，但版本判斷彼此獨立；即使 payload
+; 已是最新版，launcher 仍必須能下載並於本輪結束時套用。
+manifestForLauncher := FetchRemoteUpdateManifest(DATA_DIR)
+if (manifestForLauncher != "") {
+    if TryPrepareRemoteLauncherUpdate(WORK_DIR, DATA_DIR, manifestForLauncher)
+        WriteLog("檢測到 launcher 新版本，已下載並等待本輪 launcher 退出後套用")
+}
 
 ; 若本地 payload 缺檔，優先嘗試從遠端重抓同版本內容修復
 if !payloadHealthy {
@@ -741,31 +975,6 @@ if !payloadHealthy {
 } else if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion) {
     needUnpack := true
     WriteLog("遠端更新已準備完成，強制執行解壓更新")
-    
-    ; 同時檢查 launcher 更新（必須在成功獲取 payload 後，因為需要 manifest 內容）
-    ; 注意：此處需要重新讀取 manifest 以取得 launcher 資訊
-    try {
-        cfgFile := DATA_DIR "\\config.ini"
-        defaultManifestUrl := "https://api.github.com/repos/derek3411888/-/contents/update_manifest.example.json?ref=main"
-        manifestUrl := Trim(IniReadSafe(cfgFile, "updater", "manifest_url", defaultManifestUrl), ' "')
-        
-        if (manifestUrl != "") {
-            try {
-                manifestApiUrl := ConvertToGitHubApiUrl(manifestUrl)
-                manifestText := HttpGetText(manifestApiUrl, Map("Accept", "application/vnd.github.raw+v3"))
-                
-                if (manifestText != "") {
-                    if TryPrepareRemoteLauncherUpdate(WORK_DIR, DATA_DIR, manifestText) {
-                        WriteLog("檢測到 launcher 新版本，已準備下載並待下次重啟時應用")
-                    }
-                }
-            } catch as e {
-                WriteLog("檢查 launcher 更新時失敗: " e.Message, "WARN")
-            }
-        }
-    } catch {
-        ; launcher 更新檢查失敗不應中斷主流程
-    }
 }
 
 ; 如果有命令列參數 --force-update，強制重新解壓
@@ -1076,6 +1285,9 @@ WriteLog("設置環境變數: APP_DIR=" APP_DIR)
 WriteLog("設置環境變數: DATA_DIR=" DATA_DIR)
 EnvSet("PACK_APP_DIR",  APP_DIR)
 EnvSet("PACK_DATA_DIR", DATA_DIR)
+; 新版 launcher 自己負責等待退出後替換；payload 只在舊 launcher 未提供此旗標時
+; 執行一次性相容修復，避免兩個替換器同時競爭同一個 EXE。
+EnvSet("PACK_LAUNCHER_HANDLES_SELF_UPDATE", "1")
 
 ; 解析主腳本路徑
 if (MAIN_FILE = "") {
@@ -1112,8 +1324,10 @@ WriteLog("工作目錄: " APP_DIR)
 
 ; 全自動腳本會自動協調其他腳本，無需在此處強制關閉現有實例
 
+mainLaunchSucceeded := false
 try {
     Run('"' ahkPath '" "' MAIN_PATH '"', APP_DIR)
+    mainLaunchSucceeded := true
     WriteLog("主腳本已成功啟動")
     
     ; 等待一小段時間確認腳本啟動
@@ -1172,6 +1386,11 @@ try {
     
     MsgBox(errDetails, "啟動錯誤", 16)
 }
+
+if (mainLaunchSucceeded && !SKIP_PENDING_LAUNCHER_APPLY)
+    ApplyPendingLauncherUpdateV2(WORK_DIR, DATA_DIR)
+else if SKIP_PENDING_LAUNCHER_APPLY
+    WriteLog("目前 launcher 已是 manifest 指定版本，本輪略過 pending 替換以避免降級")
 
 WriteLog("打包啟動器任務完成，即將退出")
 ExitApp

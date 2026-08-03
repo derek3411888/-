@@ -376,28 +376,32 @@ ListOkwwWindows() {
             if !isOkwwProcess
                 continue
             
-            ; 只檢測真正的OKWW程式視窗，排除編輯器
+            ; 只檢測真正的 OKWW 程式視窗，排除編輯器。
             if ((InStr(titleLower, "ok-ww") || InStr(titleLower, "okww")) && !isEditor) {
-                ; 🎯 重要：區分主程式和更新檢測程式，以及主視窗和背景服務視窗
-                ; ok-ww.exe 是主程式，pythonw.exe 是更新檢測程式
-                isMainProcess := (processName = "ok-ww.exe")
-                processType := isMainProcess ? "主程式" : "更新檢測"
-                
-                ; 💡 額外標記：識別背景服務視窗和升級視窗
+                ; 最終可操作 UI 由 pythonw.exe 承載；ok-ww.exe 的無版本號視窗才是升級 UI。
+                ; ok-ww-siw/service 僅為背景服務，絕不可當成 OCR／滑鼠操作目標。
                 isServiceWindow := InStr(titleLower, "-siw") || InStr(titleLower, "service")
-                isUpgradeWindow := (title = "ok-ww" || (InStr(titleLower, "ok-ww") && !RegExMatch(title, "v\d+\.\d+") && !InStr(titleLower, "global") && !InStr(titleLower, "-siw")))
+                isFinalWindow := (processLower = "pythonw.exe"
+                    && RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$"))
+                isUpgradeWindow := (processLower = "ok-ww.exe"
+                    && !isServiceWindow && Trim(titleLower) = "ok-ww")
+                isInteractiveWindow := isFinalWindow || isUpgradeWindow
+                windowType := isFinalWindow ? "最終主視窗"
+                    : (isUpgradeWindow ? "升級視窗"
+                    : (isServiceWindow ? "背景服務" : "其他非互動視窗"))
                 
-                windowType := isServiceWindow ? "背景服務" : (isUpgradeWindow ? "升級檢測" : "主程式")
-                
-                Log("找到OKWW視窗: pid=" pid " hwnd=" hwnd " title=" title " process=" processName " type=" processType " 視窗類型=" windowType)
+                Log("找到OKWW視窗: pid=" pid " hwnd=" hwnd " title=" title
+                    " process=" processName " 視窗類型=" windowType
+                    " interactive=" (isInteractiveWindow ? "yes" : "no"))
                 list.Push({
                     pid: pid, 
                     hwnd: hwnd, 
                     title: title, 
                     process: processName, 
-                    isMain: isMainProcess,
+                    isFinal: isFinalWindow,
                     isService: isServiceWindow,
-                    isUpgrade: isUpgradeWindow
+                    isUpgrade: isUpgradeWindow,
+                    isInteractive: isInteractiveWindow
                 })
             }
         } catch as e {
@@ -423,125 +427,41 @@ AttachNewestOkww(&curPid, &curHwnd, killOld := true) {
         return {attached: false, pid: 0, hwnd: 0}
     }
     
-    ; 🎯 優先選擇主程式（ok-ww.exe），並且智能識別升級視窗、主程式視窗和背景服務視窗
-    mainProcessWins := []
-    updateProcessWins := []
-    serviceWindows := []
+    finalWindows := []
     upgradeWindows := []
-    
+    ignoredWindows := []
+
     for i, w in wins {
-        if w.isMain {
-            if (w.HasOwnProp("isUpgrade") && w.isUpgrade) {
-                upgradeWindows.Push(w)  ; 升級檢測視窗
-            } else if (w.HasOwnProp("isService") && w.isService) {
-                serviceWindows.Push(w)  ; 背景服務視窗
-            } else {
-                mainProcessWins.Push(w)  ; 主用戶界面視窗
-            }
-        } else {
-            updateProcessWins.Push(w)
-        }
+        if (w.HasOwnProp("isFinal") && w.isFinal)
+            finalWindows.Push(w)
+        else if (w.HasOwnProp("isUpgrade") && w.isUpgrade)
+            upgradeWindows.Push(w)
+        else
+            ignoredWindows.Push(w)
     }
-    
-    Log("視窗分類結果: 升級視窗=" upgradeWindows.Length " 主界面視窗=" mainProcessWins.Length " 背景服務視窗=" serviceWindows.Length " 更新檢測視窗=" updateProcessWins.Length)
-    
-    ; 選擇目標視窗：智能判斷升級流程還是正常使用
+
+    Log("視窗分類結果: 最終主視窗=" finalWindows.Length
+        " 升級視窗=" upgradeWindows.Length
+        " 非互動/背景視窗=" ignoredWindows.Length)
+
+    ; 最終 pythonw v...Global 已存在時代表可操作 UI 已就緒，優先於殘留的升級視窗。
     newest := ""
-    if (upgradeWindows.Length > 0 && mainProcessWins.Length > 0) {
-        ; 🔄 同時存在升級視窗和主程式視窗，優先處理升級流程
-        newest := upgradeWindows[1]
-        for i, w in upgradeWindows {
-            if (w.pid > newest.pid) {
+    if (finalWindows.Length > 0) {
+        newest := finalWindows[1]
+        for i, w in finalWindows {
+            if (w.pid > newest.pid)
                 newest := w
-            }
         }
-        Log("AttachNewestOkww: 檢測到升級和主程式視窗並存，選擇升級視窗 '" newest.title "' PID=" newest.pid " 進行升級流程")
+        Log("AttachNewestOkww: 選擇最終 pythonw 主視窗 '" newest.title "' PID=" newest.pid)
     } else if (upgradeWindows.Length > 0) {
-        ; 🔄 只有升級視窗，選擇它進行升級
         newest := upgradeWindows[1]
         for i, w in upgradeWindows {
-            if (w.pid > newest.pid) {
+            if (w.pid > newest.pid)
                 newest := w
-            }
         }
-        Log("AttachNewestOkww: 選擇升級視窗 '" newest.title "' PID=" newest.pid " 準備升級流程")
-    } else if (mainProcessWins.Length > 0) {
-        ; 🎯 正常主程式視窗選擇邏輯（帶版本號的視窗）
-        ; 🎯 智能選擇主視窗：升級時選擇無版本號視窗，正常時選擇帶版本號視窗
-        versionWindow := ""
-        upgradeWindow := ""  ; 升級用的視窗（無版本號）
-        nonServiceWindow := ""
-        
-        for i, w in mainProcessWins {
-            titleLower := StrLower(w.title)
-            
-            ; 優先級1: 升級視窗檢測 - 純粹的 "ok-ww" 無版本號視窗
-            if (w.title = "ok-ww" || (InStr(titleLower, "ok-ww") && !RegExMatch(w.title, "v\d+\.\d+") && !InStr(titleLower, "global") && !InStr(titleLower, "-siw"))) {
-                if (!upgradeWindow || w.pid > upgradeWindow.pid) {
-                    upgradeWindow := w
-                }
-            }
-            ; 優先級2: 正常主程式視窗 - 包含版本號的視窗 (如 "OK-WW v2.6.19")
-            else if (RegExMatch(w.title, "v\d+\.\d+") || InStr(titleLower, "global") || InStr(titleLower, "版本")) {
-                if (!versionWindow || w.pid > versionWindow.pid) {
-                    versionWindow := w
-                }
-            }
-            ; 優先級3: 其他非服務背景視窗 (排除 ok-ww-siw)
-            else if (!InStr(titleLower, "-siw") && !InStr(titleLower, "service")) {
-                if (!nonServiceWindow || w.pid > nonServiceWindow.pid) {
-                    nonServiceWindow := w
-                }
-            }
-        }
-        
-        ; 🔄 選擇邏輯：升級視窗(無版本號) > 版本視窗(有版本號) > 非服務視窗 > 任意主程式視窗
-        ; 如果存在升級視窗，優先處理升級流程；否則使用正常的主程式視窗
-        if (upgradeWindow && versionWindow) {
-            ; 同時存在升級視窗和版本視窗，優先選擇升級視窗處理升級流程
-            newest := upgradeWindow
-            Log("AttachNewestOkww: 檢測到升級和主程式視窗並存，選擇升級視窗 '" newest.title "' PID=" newest.pid " 進行升級流程")
-        } else if (upgradeWindow) {
-            ; 只有升級視窗，選擇它
-            newest := upgradeWindow
-            Log("AttachNewestOkww: 選擇升級視窗 '" newest.title "' PID=" newest.pid " 準備升級流程")
-        } else if (versionWindow) {
-            ; 只有版本視窗，正常使用
-            newest := versionWindow
-            Log("AttachNewestOkww: 選擇帶版本號的主視窗 '" newest.title "' PID=" newest.pid " 正常運行")
-        } else if (nonServiceWindow) {
-            newest := nonServiceWindow
-            Log("AttachNewestOkww: 選擇非服務主視窗 '" newest.title "' PID=" newest.pid)
-        } else {
-            ; 備用方案：選擇PID最大的
-            newest := mainProcessWins[1]
-            for i, w in mainProcessWins {
-                if (w.pid > newest.pid) {
-                    newest := w
-                }
-            }
-            Log("AttachNewestOkww: 備用選擇主程式視窗 '" newest.title "' PID=" newest.pid, "WARN")
-        }
-    } else if (serviceWindows.Length > 0) {
-        ; 沒有主界面視窗，但有背景服務視窗，選擇PID最大的服務視窗
-        newest := serviceWindows[1]
-        for i, w in serviceWindows {
-            if (w.pid > newest.pid) {
-                newest := w
-            }
-        }
-        Log("AttachNewestOkww: 只找到背景服務視窗 '" newest.title "' PID=" newest.pid, "WARN")
-    } else if (updateProcessWins.Length > 0) {
-        ; 沒有主程式，選擇PID最大的更新程式
-        newest := updateProcessWins[1]
-        for i, w in updateProcessWins {
-            if (w.pid > newest.pid) {
-                newest := w
-            }
-        }
-        Log("AttachNewestOkww: 只找到更新檢測程式 pythonw.exe，PID=" newest.pid, "WARN")
+        Log("AttachNewestOkww: 尚無最終主視窗，選擇真正升級 UI '" newest.title "' PID=" newest.pid)
     } else {
-        Log("AttachNewestOkww: 沒有找到有效的OKWW視窗", "ERROR")
+        Log("AttachNewestOkww: 目前只有 service/非互動視窗，繼續等待有效 OKWW 視窗", "WARN")
         return {attached: false, pid: 0, hwnd: 0}
     }
     
@@ -554,9 +474,11 @@ AttachNewestOkww(&curPid, &curHwnd, killOld := true) {
     curHwnd := newest.hwnd
     Log("AttachNewestOkww: 接手視窗 hwnd=" curHwnd " pid=" curPid " title=" newest.title)
     
-    ; 確保窗口存在並活躍
-    if (!WinExist("ahk_id " . curHwnd)) {
-        Log("AttachNewestOkww: 接手的視窗句柄 " curHwnd " 已失效", "ERROR")
+    ; 標題或宿主可能在列舉後立即切換，再驗證一次，絕不讓 service 視窗混入。
+    if !IsInteractiveOkwwHwnd(curHwnd) {
+        Log("AttachNewestOkww: 接手前視窗已失效或轉為非互動視窗，hwnd=" curHwnd, "WARN")
+        curPid := 0
+        curHwnd := 0
         return {attached: false, pid: 0, hwnd: 0}
     }
     
@@ -573,6 +495,82 @@ AttachNewestOkww(&curPid, &curHwnd, killOld := true) {
     }
     
     return {attached: true, pid: curPid, hwnd: curHwnd, oldPidClosed: 0}
+}
+
+WaitForInteractiveOkww(&curPid, &curHwnd, maxAttempts := 30, delayMs := 3000) {
+    curHwnd := 0
+    Loop maxAttempts {
+        result := AttachNewestOkww(&curPid, &curHwnd, false)
+        if (result.attached && curHwnd) {
+            Log("等待後找到有效 OKWW 互動視窗，attempt=" A_Index "/" maxAttempts
+                " pid=" curPid " hwnd=" curHwnd)
+            return true
+        }
+
+        curHwnd := 0
+        if (Mod(A_Index, 5) = 0)
+            WriteStep("OKWW守門", "等待有效互動視窗 | attempt=" A_Index "/" maxAttempts, "WARN")
+        Log("尚未找到最終 pythonw／真正升級 UI，繼續等待，第 " A_Index "/" maxAttempts " 次", "WARN")
+        if (A_Index < maxAttempts)
+            Sleep delayMs
+    }
+
+    return false
+}
+
+LaunchNewOkwwAndWait(exePath, &curPid, &curHwnd) {
+    ; 僅清理由設定路徑解析出的同名啟動程式；pythonw 最終 UI 由全自動主流程依 PID/視窗管理。
+    SplitPath(exePath, &exeName)
+    if (exeName) {
+        processes := []
+        try {
+            for proc in ComObjGet("winmgmts:").ExecQuery(
+                "Select * from Win32_Process where Name = '" exeName "'")
+                processes.Push({pid: proc.ProcessId, name: proc.Name})
+        }
+
+        if (processes.Length > 0) {
+            Log("發現 " processes.Length " 個可能的 OKWW 啟動程式已在運行，依 PID 關閉")
+            for proc in processes {
+                try {
+                    ProcessClose(proc.pid)
+                    Log("關閉進程: " proc.name " (PID: " proc.pid ")")
+                    Sleep 200
+                } catch as e {
+                    Log("無法關閉進程 " proc.name " (PID: " proc.pid "): " e.Message, "WARN")
+                }
+            }
+            Sleep 500
+        }
+    }
+
+    Log("運行OKWW: " exePath)
+    Run exePath,,, &curPid
+    if (!curPid) {
+        WriteStep("啟動OKWW", "啟動失敗，無 PID", "ERROR")
+        Log("無法獲取新啟動進程的PID", "ERROR")
+        return false
+    }
+
+    WriteStep("啟動OKWW", "啟動成功 | pid=" curPid)
+    Log("OKWW已啟動，PID=" curPid)
+    try {
+        ProcessWait(curPid, 5)
+        Log("進程已成功運行")
+    } catch as e {
+        Log("等待進程運行失敗: " e.Message, "WARN")
+    }
+
+    Sleep 1500
+    Log("開始等待 OKWW 最終主視窗／真正升級 UI 出現...")
+    if WaitForInteractiveOkww(&curPid, &curHwnd, 30, 3000) {
+        WriteStep("等待OKWW主視窗", "成功 | pid=" curPid " hwnd=" curHwnd)
+        return true
+    }
+
+    WriteStep("等待OKWW主視窗", "90 秒內無有效互動視窗", "ERROR")
+    Log("等待 OKWW 有效互動視窗超時", "ERROR")
+    return false
 }
 
 
@@ -612,27 +610,12 @@ hasRunningOKWW := (wins0.Length > 0) || okwwProcess || pythonwWithOKWW
 if (hasRunningOKWW) {
     WriteStep("OKWW守門", "發現既有實例，改為接手")
     Log("發現已運行的OKWW (視窗:" wins0.Length " 進程:" (okwwProcess ? "yes" : "no") " pythonw:" (pythonwWithOKWW ? "yes" : "no") ")，嘗試接手")
-    if (wins0.Length > 0) {
-        result := AttachNewestOkww(&pid, &targetHwnd, false)  ; 改為 false，不關閉舊進程
-        Log("已成功接手現有OKWW進程，PID=" pid)
+    if WaitForInteractiveOkww(&pid, &targetHwnd, 30, 3000) {
+        Log("已成功接手現有 OKWW 互動視窗，PID=" pid)
         WriteStep("OKWW守門", "接手完成 | pid=" pid)
     } else {
-        Log("有OKWW進程但無視窗，等待視窗出現...")
-        WriteStep("OKWW守門", "有進程無視窗，等待視窗出現", "WARN")
-        ; 等待視窗出現，最多等30秒
-        Loop 10 {
-            Sleep 3000
-            wins1 := ListOkwwWindows()
-            if (wins1.Length > 0) {
-                Log("等待後發現OKWW視窗，接手進程")
-                result := AttachNewestOkww(&pid, &targetHwnd, false)
-                WriteStep("OKWW守門", "等待後接手成功 | pid=" pid)
-                break
-            }
-            if (Mod(A_Index, 3) = 0)
-                WriteStep("OKWW守門", "等待視窗中 | attempt=" A_Index "/10")
-            Log("等待OKWW視窗第" A_Index "次...")
-        }
+        Log("既有 OKWW 在 90 秒內仍沒有有效互動視窗", "ERROR")
+        WriteStep("OKWW守門", "既有實例無有效互動視窗", "ERROR")
     }
 } else {
     WriteStep("OKWW守門", "未發現既有實例，準備啟動新進程")
@@ -686,127 +669,31 @@ if (hasRunningOKWW) {
     finalProcessCheck := ProcessExist("ok-ww.exe")
     
     if (finalCheck.Length > 0 || finalProcessCheck) {
-        Log("最終檢查發現OKWW已啟動 (視窗:" finalCheck.Length " 進程:" (finalProcessCheck ? "yes" : "no") ")，取消啟動", "WARN")
-        WriteStep("啟動OKWW", "最終檢查發現已啟動，改為接手", "WARN")
-        if (finalCheck.Length > 0) {
-            result := AttachNewestOkww(&pid, &targetHwnd, false)
-            Log("改為接手已啟動的OKWW進程")
-        }
-        return  ; 取消啟動，避免重複
-    }
-    
-    ; 嘗試運行前先檢查是否有同名進程
-    SplitPath(exePath, &exeName)
-    if (exeName) {
-        processes := []
-        for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name = '" exeName "'")
-            processes.Push({pid: proc.ProcessId, name: proc.Name})
-        
-        if (processes.Length > 0) {
-            Log("發現 " processes.Length " 個可能的OKWW進程已在運行，嘗試關閉")
-            for proc in processes {
-                try {
-                    ProcessClose(proc.pid)
-                    Log("關閉進程: " proc.name " (PID: " proc.pid ")")
-                    Sleep 200
-                } catch as e {
-                    Log("無法關閉進程 " proc.name " (PID: " proc.pid "): " e.Message, "WARN")
-                }
-            }
-            Sleep 500  ; 給進程一些時間完全關閉
-        }
-    }
-    
-    ; 使用Run啟動
-    Log("運行OKWW: " exePath)
-    Run exePath,,, &pid
-    if (!pid) {
-        WriteStep("啟動OKWW", "啟動失敗，無 PID", "ERROR")
-        Log("無法獲取新啟動進程的PID", "ERROR")
-        MsgBox "啟動OKWW失敗"
-        ExitApp
-    }
-    WriteStep("啟動OKWW", "啟動成功 | pid=" pid)
-    
-    Log("OKWW已啟動，PID=" pid)
-    try {
-        ProcessWait(pid, 5)
-        Log("進程已成功運行")
-    } catch as e {
-        Log("等待進程運行失敗: " e.Message, "WARN")
-    }
-    
-    Sleep 1500  ; 給程序更多時間初始化
-    
-    ; 等主視窗（最多 ~90 秒）
-    windowFound := false
-    Log("開始等待OKWW主視窗出現...")
-    Loop 30 {
-        result := AttachNewestOkww(&pid, &targetHwnd, true)
-        if (targetHwnd) {
-            windowFound := true
-            Log("已找到OKWW主視窗，耗時=" (A_Index * 3) "秒")
-            WriteStep("等待OKWW主視窗", "成功 | 耗時=" (A_Index * 3) "秒")
-            break
-        }
-        if (Mod(A_Index, 5) = 0)
-            WriteStep("等待OKWW主視窗", "等待中 | attempt=" A_Index "/30")
-        Log("等待OKWW視窗，第 " A_Index " 次嘗試")
-        Sleep 3000
-    }
-    
-    if (!windowFound) {
-        WriteStep("等待OKWW主視窗", "超時，進入備援搜尋", "WARN")
-        Log("等待OKWW視窗超時", "WARN")
+        Log("最終檢查發現 OKWW 已在啟動中 (視窗:" finalCheck.Length
+            " 進程:" (finalProcessCheck ? "yes" : "no") ")，改為等待有效互動視窗", "WARN")
+        WriteStep("啟動OKWW", "並發啟動已存在，等待接手", "WARN")
+        WaitForInteractiveOkww(&pid, &targetHwnd, 30, 3000)
+    } else {
+        LaunchNewOkwwAndWait(exePath, &pid, &targetHwnd)
     }
 }
 
 if !targetHwnd {
-    WriteStep("OKWW主視窗", "常規搜尋失敗，嘗試備援條件", "WARN")
-    Log("無法找到OKWW視窗，嘗試額外的搜尋方式", "WARN")
-    
-    ; 使用更寬鬆的視窗搜尋標準
-    extraFoundHwnd := 0
-    for hwnd in WinGetList() {
-        try {
-            title := WinGetTitle(hwnd)
-            wclass := WinGetClass(hwnd)
-            
-            ; 擴大搜尋條件
-            if (InStr(title, "OK") || InStr(title, "WW") || InStr(title, "ww") || 
-                InStr(wclass, "OKWW") || InStr(wclass, "okww")) {
-                
-                extraFoundHwnd := hwnd
-                Log("使用備用條件找到可能的OKWW視窗: hwnd=" hwnd " title=" title " class=" wclass, "WARN")
-                
-                ; 嘗試激活此窗口
-                targetHwnd := hwnd
-                try WinActivate("ahk_id " . targetHwnd)
-                WriteStep("OKWW主視窗", "備援搜尋成功 | hwnd=" hwnd, "WARN")
-                break
-            }
-        } catch as e {
-            ; 忽略錯誤，繼續下一個視窗
-            Log("檢查視窗時出錯: " e.Message, "WARN")
-        }
-    }
-    
-    if (!extraFoundHwnd) {
-        WriteStep("OKWW主視窗", "備援搜尋失敗，結束", "ERROR")
-        Log("使用所有方法都無法找到OKWW視窗，退出", "ERROR")
-        MsgBox "❌ 無法找到 ok-ww 視窗，請手動啟動"
-        ExitApp
-    }
+    WriteStep("OKWW主視窗", "找不到最終 pythonw／真正升級 UI，結束", "ERROR")
+    Log("找不到有效 OKWW 互動視窗；拒絕使用 service/ok-ww-siw 或寬鬆標題備援", "ERROR")
+    MsgBox "❌ 無法找到有效的 OKWW 主視窗或升級視窗，請檢查 OKWW 是否正常啟動"
+    ExitApp
 }
 
 ; ====================== 截圖 + OCR 工具 ======================
 EnsureOkwwWindow() {
     global targetHwnd, pid
-    if IsValidHwnd(targetHwnd)
+    if IsInteractiveOkwwHwnd(targetHwnd)
         return true
-    Log("EnsureOkwwWindow: lost hwnd, reattach", "WARN")
+    Log("EnsureOkwwWindow: lost/invalid/non-interactive hwnd, reattach", "WARN")
+    targetHwnd := 0
     _ := AttachNewestOkww(&pid, &targetHwnd, true)
-    return IsValidHwnd(targetHwnd)
+    return IsInteractiveOkwwHwnd(targetHwnd)
 }
 
 IsValidHwnd(hwnd) {
@@ -817,13 +704,33 @@ IsValidHwnd(hwnd) {
     }
 }
 
+IsInteractiveOkwwHwnd(hwnd) {
+    if !IsValidHwnd(hwnd)
+        return false
+
+    try {
+        title := Trim(WinGetTitle("ahk_id " hwnd))
+        titleLower := StrLower(title)
+        processLower := StrLower(WinGetProcessName("ahk_id " hwnd))
+        if (InStr(titleLower, "-siw") || InStr(titleLower, "service"))
+            return false
+
+        isFinal := (processLower = "pythonw.exe"
+            && RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$"))
+        isUpgrade := (processLower = "ok-ww.exe" && titleLower = "ok-ww")
+        return isFinal || isUpgrade
+    } catch {
+        return false
+    }
+}
+
 CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
     global targetHwnd
     if !EnsureOkwwWindow()
-        return ""
+        return {ok: false, blocks: [], reason: "no_interactive_window"}
     if !IsValidHwnd(targetHwnd) {
         Log("CaptureAndOCR: invalid hwnd before capture", "WARN")
-        return ""
+        return {ok: false, blocks: [], reason: "invalid_hwnd_before_capture"}
     }
     try {
         try {
@@ -839,32 +746,32 @@ CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
     }
     if !IsValidHwnd(targetHwnd) {
         Log("CaptureAndOCR: hwnd became invalid after activate", "WARN")
-        return ""
+        return {ok: false, blocks: [], reason: "invalid_hwnd_after_activate"}
     }
     try {
         ImagePutFile(targetHwnd, imgPath)
-    } catch {
-        Log("ImagePutFile failed", "WARN")
-        return ""
+    } catch as e {
+        Log("ImagePutFile failed: " e.Message, "WARN")
+        return {ok: false, blocks: [], reason: "capture_failed"}
     }
     if !FileExist(imgPath) {
         Log("capture file not exist", "WARN")
-        return ""
+        return {ok: false, blocks: [], reason: "capture_file_missing"}
     }
     sz := FileGetSize(imgPath, "B")
     if (sz < minSize) {
         Log("capture too small size=" sz, "WARN")
-        return ""
+        return {ok: false, blocks: [], reason: "capture_too_small"}
     }
     try {
         ocr := RapidOcr()
         blocks := ocr.ocr_from_file(imgPath, , true)
         n := (blocks is Array) ? blocks.Length : 0
         Log("OCR done blocks=" n " size=" sz)
-        return (blocks is Array && blocks.Length) ? blocks : ""
-    } catch {
-        Log("OCR exception", "ERROR")
-        return ""
+        return {ok: true, blocks: (blocks is Array ? blocks : []), reason: ""}
+    } catch as e {
+        Log("OCR exception: " e.Message, "ERROR")
+        return {ok: false, blocks: [], reason: "ocr_exception"}
     }
 }
 
@@ -873,13 +780,19 @@ DetectOCRText(keyword, maxMs := 15000) {
     start := A_TickCount
     stableHit := 0
     needStable := 2
+    successfulCaptures := 0
+    captureFailures := 0
     while (A_TickCount - start < maxMs) {
         elapsed := A_TickCount - start
         interval := (elapsed < 3000) ? 500 : 1200  ; 從250/600ms改為500/1200ms，減少系統負擔
         Sleep interval
-        blocks := CaptureAndOCR(8192, "temp.png")
-        if (blocks = "")
+        capture := CaptureAndOCR(8192, "temp.png")
+        if !capture.ok {
+            captureFailures += 1
             continue
+        }
+        successfulCaptures += 1
+        blocks := capture.blocks
         hasKW := false
         for block in blocks {
             if !block.HasOwnProp("text")
@@ -895,7 +808,7 @@ DetectOCRText(keyword, maxMs := 15000) {
             Log("DetectOCRText hit " stableHit "/" needStable)
             if (stableHit >= needStable) {
                 Log("DetectOCRText success kw=" keyword)
-                return true
+                return "found"
             }
         } else {
             if (stableHit != 0)
@@ -903,8 +816,14 @@ DetectOCRText(keyword, maxMs := 15000) {
             stableHit := 0
         }
     }
-    Log("DetectOCRText timeout kw=" keyword, "WARN")
-    return false
+    if (successfulCaptures < 2) {
+        Log("DetectOCRText 無法可靠判斷：有效截圖/OCR=" successfulCaptures
+            " 截圖失敗=" captureFailures " kw=" keyword, "ERROR")
+        return "capture_failed"
+    }
+
+    Log("DetectOCRText 已完成 " successfulCaptures " 次有效 OCR，未找到 kw=" keyword, "WARN")
+    return "not_found"
 }
 
 DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts := 6) {
@@ -913,11 +832,14 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
     ShowTip(stageText, 600)
 
     loop attempts {
-        blocks := CaptureAndOCR(8192, "temp.png")
-        if (blocks = "") {
+        capture := CaptureAndOCR(8192, "temp.png")
+        if !capture.ok {
+            Log("DoOCRClick 截圖/OCR 失敗，reason=" capture.reason
+                " remain=" (attempts - A_Index), "WARN")
             Sleep 400
             continue
         }
+        blocks := capture.blocks
 
         best := ""
         bestScore := (mode = "leftmost") ?  999999999 : -999999999
@@ -975,10 +897,17 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
 
 ; ====================== 前檢查與四階段流程 ======================
 WriteStep("升級檢測", "檢查是否需要執行升級流程")
-if !DetectOCRText("升级APP", 15000) {
+upgradeDetectState := DetectOCRText("升级APP", 15000)
+if (upgradeDetectState = "capture_failed") {
+    WriteStep("升級檢測", "截圖/OCR 全程失敗，無法判定是否需更新", "ERROR")
+    ShowTip("❌ OKWW 截圖失敗，無法確認更新狀態", 1800)
+    Log("upgrade state unknown because capture/OCR failed; refusing to report no update", "ERROR")
+    ExitApp
+}
+if (upgradeDetectState != "found") {
     WriteStep("升級檢測", "未偵測到升级APP，流程結束")
     ShowTip("🔍 未偵測到「升级APP」，不執行升級", 1200)
-    Log("no upgrade needed, exit")
+    Log("no upgrade keyword after repeated valid OCR, exit")
     ExitApp
 }
 

@@ -90,9 +90,10 @@ global LAST_RESTART_LRMC_STATE := ""
 global PROCESS_DETECT_RETRY_COUNT := 6
 global PROCESS_DETECT_RETRY_DELAY_MS := 800
 global WUTHERING_STARTUP_WAIT_SEC := 45
-global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 120
+global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.43"
 global SERVER_SCHEDULE_ENABLED := false
 global SERVER_SCHEDULE_LIST := []
 global SERVER_SCHEDULE_INDEX := 1
@@ -155,6 +156,346 @@ ClearTipIfMatched(expireTick) {
 ; 去除路徑前後的引號和空白
 NormalizePath(p) {
     return Trim(p, ' "')
+}
+
+CanonicalLocalPath(path) {
+    path := NormalizePath(path)
+    if (path = "")
+        return ""
+
+    buf := Buffer(32768 * 2, 0)
+    len := DllCall("Kernel32\GetFullPathNameW", "str", path, "uint", 32768,
+        "ptr", buf, "ptr", 0, "uint")
+    if (len > 0 && len < 32768)
+        return StrGet(buf, len, "UTF-16")
+    return path
+}
+
+WriteBootstrapTextFile(path, text) {
+    tmpPath := path ".write_" A_TickCount "_" DllCall("GetCurrentProcessId")
+    try {
+        if FileExist(tmpPath)
+            FileDelete(tmpPath)
+        FileAppend(text, tmpPath, "UTF-8-RAW")
+        FileMove(tmpPath, path, 1)
+        return true
+    } catch as e {
+        try FileDelete(tmpPath)
+        WriteLog("payload 修復 launcher：覆寫狀態檔失敗 | path=" path " | " e.Message, "WARN")
+        return false
+    }
+}
+
+GetBootstrapFileSha256(filePath) {
+    if !FileExist(filePath)
+        return ""
+
+    token := A_TickCount "_" DllCall("GetCurrentProcessId")
+    scriptPath := A_Temp "\launcher_bootstrap_hash_" token ".ps1"
+    outputPath := A_Temp "\launcher_bootstrap_hash_" token ".txt"
+    try {
+        scriptLines := [
+            "param([string]$InputPath,[string]$OutputPath)",
+            "$ErrorActionPreference = 'Stop'",
+            "$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InputPath).Hash.ToLowerInvariant()",
+            "[System.IO.File]::WriteAllText($OutputPath, $hash, [System.Text.Encoding]::ASCII)"
+        ]
+        scriptText := ""
+        for _, line in scriptLines
+            scriptText .= line "`r`n"
+        FileAppend(scriptText, scriptPath, "UTF-8-RAW")
+
+        cmd := 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' scriptPath '"'
+        cmd .= ' -InputPath "' filePath '" -OutputPath "' outputPath '"'
+        if (RunWait(cmd, , "Hide") != 0 || !FileExist(outputPath))
+            return ""
+
+        hash := StrLower(Trim(FileRead(outputPath, "UTF-8"), " `t`r`n"))
+        return (hash ~= "^[0-9a-f]{64}$") ? hash : ""
+    } catch as e {
+        WriteLog("payload 修復 launcher：計算 SHA256 失敗 | path=" filePath
+            " | " e.Message, "WARN")
+        return ""
+    } finally {
+        try FileDelete(scriptPath)
+        try FileDelete(outputPath)
+    }
+}
+
+IsPlausibleLauncherExe(path, &fileSize) {
+    fileSize := 0
+    signature := 0
+    try {
+        fileSize := FileGetSize(path)
+        file := FileOpen(path, "r")
+        signature := file.ReadUShort()
+        file.Close()
+    } catch {
+        return false
+    }
+    return (fileSize >= 1048576 && signature = 0x5A4D)
+}
+
+RestoreLauncherBackupForBootstrap(targetPath, backupPath, expectedHash := "") {
+    if !FileExist(backupPath)
+        return {ok: false, hash: "", reason: "backup_missing"}
+
+    backupSize := 0
+    if !IsPlausibleLauncherExe(backupPath, &backupSize)
+        return {ok: false, hash: "", reason: "backup_invalid_pe_or_size"}
+
+    backupHash := GetBootstrapFileSha256(backupPath)
+    if (backupHash = "")
+        return {ok: false, hash: "", reason: "backup_hash_failed"}
+    if (expectedHash != "" && backupHash != expectedHash)
+        return {ok: false, hash: backupHash, reason: "backup_hash_not_original_target"}
+
+    try {
+        if FileExist(targetPath)
+            FileDelete(targetPath)
+        FileMove(backupPath, targetPath, 1)
+        if !FileExist(targetPath)
+            throw Error("restored_target_missing")
+        restoredHash := GetBootstrapFileSha256(targetPath)
+        if (restoredHash = "" || restoredHash != backupHash)
+            throw Error("restored_target_hash_mismatch")
+        return {ok: true, hash: restoredHash, reason: "restored"}
+    } catch as e {
+        return {ok: false, hash: backupHash, reason: e.Message}
+    }
+}
+
+IsSafePendingLauncherSource(path, dataDir) {
+    path := CanonicalLocalPath(path)
+    if (path = "" || !FileExist(path))
+        return false
+
+    SplitPath(path, &fileName)
+    if !(fileName ~= "i)^launcher_update_[0-9A-Za-z._-]+\.exe$")
+        return false
+
+    pathLower := StrLower(path)
+    dataRoot := StrLower(RTrim(CanonicalLocalPath(dataDir), "\") "\")
+    tempRoot := StrLower(RTrim(CanonicalLocalPath(A_Temp), "\") "\")
+    return (InStr(pathLower, dataRoot) = 1 || InStr(pathLower, tempRoot) = 1)
+}
+
+ResolvePendingLauncherSource(markerPath, dataDir) {
+    try markerText := FileRead(markerPath, "UTF-8")
+    catch as e {
+        WriteLog("payload 修復 launcher：無法讀取 pending marker | " e.Message, "WARN")
+        return ""
+    }
+
+    directPath := Trim(markerText, " `t`r`n")
+    if IsSafePendingLauncherSource(directPath, dataDir)
+        return CanonicalLocalPath(directPath)
+
+    ; v4.42 使用 FileAppend，可能把多次下載路徑無分隔地串在一起。
+    ; 逐一抽出 launcher_update_*.exe，選擇最後一個仍存在且位於 Temp/config 的候選。
+    lastCandidate := ""
+    pos := 1
+    pattern := "i)([A-Z]:\\(?:(?![A-Z]:\\)[\s\S])*?launcher_update_[0-9A-Za-z._-]+\.exe)"
+    while RegExMatch(markerText, pattern, &m, pos) {
+        lastCandidate := CanonicalLocalPath(m[1])
+        pos := m.Pos(0) + m.Len(0)
+    }
+
+    ; 串接 marker 只接受最後一次下載的語法候選。最後候選若遺失或越界，
+    ; 必須保留現場並失敗，不能退回仍存在的舊 EXE 後誤標成新版本。
+    if (lastCandidate != "" && IsSafePendingLauncherSource(lastCandidate, dataDir))
+        return lastCandidate
+    return ""
+}
+
+GetLauncherProcessAtPath(targetPath) {
+    targetLower := StrLower(CanonicalLocalPath(targetPath))
+    if (targetLower = "")
+        return {running: false, pid: 0}
+
+    try {
+        for proc in ComObjGet("winmgmts:").ExecQuery(
+            "Select ProcessId, ExecutablePath from Win32_Process where Name='全自動鋤地.exe'") {
+            executablePath := ""
+            try executablePath := proc.ExecutablePath
+            if (executablePath != ""
+                && StrLower(CanonicalLocalPath(executablePath)) = targetLower)
+                return {running: true, pid: proc.ProcessId + 0}
+        }
+    } catch as e {
+        WriteLog("payload 修復 launcher：掃描舊 launcher 進程失敗 | " e.Message, "WARN")
+    }
+    return {running: false, pid: 0}
+}
+
+RepairPendingLauncherUpdateFromPayload(dataDir) {
+    global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION
+
+    ; v4.43+ 會自行等待退出後替換；只有 v4.42 等舊 launcher 啟動 payload 時才接手。
+    if (EnvGet("PACK_LAUNCHER_HANDLES_SELF_UPDATE") = "1") {
+        WriteLog("launcher 更新由新版 launcher 自行處理，payload 略過相容修復")
+        return false
+    }
+
+    markerPath := dataDir "\\launcher_pending_update.tmp"
+    versionPath := dataDir "\\launcher_pending_version.txt"
+    shaPath := dataDir "\\launcher_pending_sha256.txt"
+    if !FileExist(markerPath)
+        return false
+
+    sourcePath := ResolvePendingLauncherSource(markerPath, dataDir)
+    if (sourcePath = "") {
+        WriteLog("payload 修復 launcher：pending marker 內沒有安全且存在的更新 EXE；保留現場供診斷", "ERROR")
+        return false
+    }
+
+    sourceSize := 0
+    if !IsPlausibleLauncherExe(sourcePath, &sourceSize) {
+        WriteLog("payload 修復 launcher：更新 EXE 的 MZ／大小驗證失敗 | size=" sourceSize, "ERROR")
+        return false
+    }
+
+    sourceSha := GetBootstrapFileSha256(sourcePath)
+    if (sourceSha = "") {
+        WriteLog("payload 修復 launcher：無法取得更新 EXE 的 SHA256", "ERROR")
+        return false
+    }
+
+    if FileExist(shaPath) {
+        pendingSha := ""
+        try pendingSha := StrLower(Trim(FileRead(shaPath, "UTF-8"), " `t`r`n"))
+        if !(pendingSha ~= "^[0-9a-f]{64}$") {
+            WriteLog("payload 修復 launcher：pending SHA256 格式無效，拒絕替換", "ERROR")
+            return false
+        }
+        if (pendingSha != sourceSha) {
+            WriteLog("payload 修復 launcher：pending SHA256 與來源檔不符，拒絕替換", "ERROR")
+            return false
+        }
+    }
+
+    pendingVersion := ""
+    if FileExist(versionPath)
+        try pendingVersion := Trim(FileRead(versionPath, "UTF-8"), " `t`r`n")
+    if !(pendingVersion ~= "^\d+\.\d+$")
+        pendingVersion := PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION
+
+    installRoot := CanonicalLocalPath(ResolvePersistentToolsRoot())
+    targetPath := CanonicalLocalPath(installRoot "\\全自動鋤地.exe")
+    if (targetPath = "") {
+        WriteLog("payload 修復 launcher：無法解析 launcher 安裝路徑", "WARN")
+        return false
+    }
+    candidatePath := targetPath ".payload_update"
+    backupPath := targetPath ".pre_update.bak"
+
+    WriteLog("偵測到舊 launcher 留下的待更新檔，等待舊 launcher 退出後套用 | source="
+        sourcePath " | target=" targetPath)
+    lastRunning := {running: false, pid: 0}
+    Loop 120 {
+        lastRunning := GetLauncherProcessAtPath(targetPath)
+        if !lastRunning.running
+            break
+        if (Mod(A_Index, 10) = 0)
+            WriteLog("payload 修復 launcher：仍等待舊 launcher PID=" lastRunning.pid
+                " 退出 | " Round(A_Index / 2) "/60 秒")
+        RawSleep(500)
+    }
+    lastRunning := GetLauncherProcessAtPath(targetPath)
+    if lastRunning.running {
+        WriteLog("payload 修復 launcher：等待 60 秒後舊 launcher 仍在執行，保留 pending 下次重試 | pid="
+            lastRunning.pid, "ERROR")
+        return false
+    }
+
+    ; 先收斂上次可能中斷的兩段式替換。若 target 已是來源 SHA，代表其實已完成；
+    ; 否則只要 backup 存在，就先驗證並還原，再從乾淨狀態重新嘗試。
+    if FileExist(targetPath) {
+        currentTargetSha := GetBootstrapFileSha256(targetPath)
+        if (currentTargetSha = sourceSha) {
+            if !WriteBootstrapTextFile(dataDir "\\launcher_current_version.txt", pendingVersion) {
+                WriteLog("payload 修復 launcher：target 已更新但無法補寫版本狀態", "ERROR")
+                return false
+            }
+            try FileDelete(markerPath)
+            try FileDelete(versionPath)
+            try FileDelete(shaPath)
+            try FileDelete(sourcePath)
+            try FileDelete(backupPath)
+            WriteLog("payload 修復 launcher：target 已符合 pending SHA，已完成狀態收尾 | version=" pendingVersion)
+            return true
+        }
+    }
+
+    if FileExist(backupPath) {
+        recovery := RestoreLauncherBackupForBootstrap(targetPath, backupPath)
+        if !recovery.ok {
+            WriteLog("payload 修復 launcher：偵測到未完成替換，但 backup 還原失敗"
+                " | rollback=FAILED | reason=" recovery.reason, "ERROR")
+            return false
+        }
+        WriteLog("payload 修復 launcher：已從上次中斷狀態還原舊 launcher"
+            " | rollback=restored | sha256=" recovery.hash, "WARN")
+    }
+
+    if !FileExist(targetPath) {
+        WriteLog("payload 修復 launcher：找不到安裝中的 launcher，且沒有可還原 backup"
+            " | target=" targetPath, "ERROR")
+        return false
+    }
+
+    originalTargetSize := 0
+    if !IsPlausibleLauncherExe(targetPath, &originalTargetSize) {
+        WriteLog("payload 修復 launcher：目前 launcher 的 MZ／大小驗證失敗，拒絕替換", "ERROR")
+        return false
+    }
+    originalTargetSha := GetBootstrapFileSha256(targetPath)
+    if (originalTargetSha = "") {
+        WriteLog("payload 修復 launcher：無法取得目前 launcher SHA256，拒絕替換", "ERROR")
+        return false
+    }
+
+    targetMoved := false
+    try {
+        try FileDelete(candidatePath)
+        FileCopy(sourcePath, candidatePath, 1)
+        if (FileGetSize(candidatePath) != sourceSize)
+            throw Error("候選檔大小與來源不一致")
+        candidateSha := GetBootstrapFileSha256(candidatePath)
+        if (candidateSha = "" || candidateSha != sourceSha)
+            throw Error("候選檔 SHA256 與來源不一致")
+
+        FileMove(targetPath, backupPath, 1)
+        targetMoved := true
+        FileMove(candidatePath, targetPath, 1)
+        if (!FileExist(targetPath) || FileGetSize(targetPath) != sourceSize)
+            throw Error("替換後檔案大小驗證失敗")
+        installedSha := GetBootstrapFileSha256(targetPath)
+        if (installedSha = "" || installedSha != sourceSha)
+            throw Error("替換後 SHA256 與來源不一致")
+        if !WriteBootstrapTextFile(dataDir "\\launcher_current_version.txt", pendingVersion)
+            throw Error("無法寫入 launcher_current_version.txt")
+
+        try FileDelete(markerPath)
+        try FileDelete(versionPath)
+        try FileDelete(shaPath)
+        try FileDelete(sourcePath)
+        try FileDelete(backupPath)
+        WriteLog("payload 已完成舊 launcher 一次性修復 | version=" pendingVersion
+            " | size=" sourceSize)
+        return true
+    } catch as e {
+        try FileDelete(candidatePath)
+        rollbackStatus := targetMoved ? "FAILED: backup_missing" : "not-needed"
+        if (targetMoved && FileExist(backupPath)) {
+            rollback := RestoreLauncherBackupForBootstrap(
+                targetPath, backupPath, originalTargetSha)
+            rollbackStatus := rollback.ok ? "restored" : "FAILED: " rollback.reason
+        }
+        WriteLog("payload 修復 launcher 失敗，已保留 pending 供下次重試"
+            " | reason=" e.Message " | rollback=" rollbackStatus, "ERROR")
+        return false
+    }
 }
 
 ResolveBundledAhkExe() {
@@ -1437,6 +1778,7 @@ if (dataDir = "") {
     }
 }
 DirCreate dataDir
+RepairPendingLauncherUpdateFromPayload(dataDir)
 global CFG_FILE := dataDir "\config.ini"
 WriteLog("dataDir=" dataDir)
 WriteLog("CFG_FILE=" CFG_FILE)
@@ -1572,7 +1914,8 @@ loop {
         }
 
         elapsedNoWindowSec := Floor((A_TickCount - noWindowSinceTick) / 1000)
-        if (elapsedNoWindowSec >= WUTHERING_NO_WINDOW_RESTART_SEC) {
+        ; 更新恢復有獨立的 300 秒門檻；不能再被一般 no_window 的 180 秒門檻提前截斷。
+        if (!updateRecoveryActive && elapsedNoWindowSec >= WUTHERING_NO_WINDOW_RESTART_SEC) {
             WriteLog("鳴潮長時間 no_window（" elapsedNoWindowSec " 秒），判定當機/閃退，執行完整重啟", "ERROR")
             ShowTip("❌ 鳴潮長時間無視窗，完整重啟流程", 2200)
             RequestRestart(
@@ -1623,7 +1966,7 @@ if (loginDetected) {
     WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
     ClickTemplateIfFound(A_ScriptDir "\登入.png")
-    okwwResult := StartOKWWFlow(isRestart)
+    okwwResult := StartOKWWFlowWithLocalRecovery(isRestart, "登入畫面階段")
     okwwStarted := okwwResult.ok
     if !okwwStarted {
         WriteLog("登入畫面 OKWW 接管失敗：" okwwResult.reason
@@ -1662,7 +2005,7 @@ if !okwwStarted {
     WriteStep("啟動OKWW", isRestart ? "重啟模式" : "一般模式")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
     ClickTemplateIfFound(A_ScriptDir "\登入.png")
-    okwwResult := StartOKWWFlow(isRestart)
+    okwwResult := StartOKWWFlowWithLocalRecovery(isRestart, "遊戲可操作後")
     okwwStarted := okwwResult.ok
     if !okwwStarted {
         WriteLog("遊戲可操作後啟動 OKWW 失敗：" okwwResult.reason
@@ -1775,6 +2118,67 @@ ExitApp
 
 ; ======================== 函式區 ========================
 
+; OKWW 自動戰鬥 OCR 首次失敗只局部重啟 OKWW 再試一次。
+; 第二次 OCR 仍失敗時，已鎖定的最終 pythonw 視窗仍可安全接收 F11，直接降級送鍵。
+StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
+    firstResult := StartOKWWFlow(isRestart)
+    if !IsOkwwAutoBattleCheckFailure(firstResult)
+        return firstResult
+
+    stageText := entryStage != "" ? entryStage : "未指定入口"
+    WriteLog("OKWW 自動戰鬥首次確認失敗，開始局部復原；entry=" stageText, "WARN")
+    WriteStep("OKWW局部復原", "首次 OKWW_AUTOBATTLE_CHECK_FAILED | entry=" stageText, "WARN")
+    recoverySummary := RestartOnlyOkwwForAutoBattleRetry()
+
+    WriteLog("OKWW 局部復原完成，僅重試 OKWW 流程一次；" recoverySummary, "WARN")
+    secondResult := StartOKWWFlow(true)
+    if IsOkwwAutoBattleCheckFailure(secondResult) {
+        fallbackHwnd := secondResult.HasOwnProp("okwwHwnd") ? secondResult.okwwHwnd : 0
+        WriteLog("OKWW 自動戰鬥兩輪 OCR 均未能確認；依降級策略直接對第二次最終視窗送 F11"
+            " | hwnd=" fallbackHwnd " | entry=" stageText, "WARN")
+
+        fallbackSent := false
+        if fallbackHwnd {
+            topmostCtx := PrepareOkwwTopmostOperation(fallbackHwnd)
+            try fallbackSent := SendF11ToOkww(fallbackHwnd)
+            finally RestoreTopmostAfterOkwwOperation(topmostCtx)
+        }
+
+        if fallbackSent {
+            WriteLog("OCR 降級 F11 已送出，等待 2 秒後最小化 OKWW", "WARN")
+            Sleep 2000
+            MinimizeOKWWWindows()
+            WriteStepResult("OKWW流程", true, "兩輪自動戰鬥 OCR 未確認；已對第二次最終 hwnd 直接送 F11 並最小化")
+            return {
+                ok: true,
+                code: "",
+                stage: "OKWW完成（OCR降級）",
+                reason: ""
+            }
+        }
+
+        WriteLog("兩輪自動戰鬥 OCR 未確認後，直接 F11 亦發送失敗；交由原 RequestRestart", "ERROR")
+        return {
+            ok: false,
+            code: "OKWW_F11_SEND_FAILED",
+            stage: "OKWW快捷鍵發送（OCR降級）",
+            reason: Format("OKWW 局部重啟前後皆無法由 OCR 確認自動戰鬥；對第二次鎖定的最終視窗直接發送 F11 亦失敗；hwnd={1}；局部復原={2}", fallbackHwnd, recoverySummary)
+        }
+    }
+
+    if secondResult.ok
+        WriteLog("OKWW 局部重啟後已通過自動戰鬥確認與 F11 流程")
+    else
+        WriteLog("OKWW 局部重啟後改為其他錯誤 code=" secondResult.code
+            "，維持原 RequestRestart 處理", "WARN")
+    return secondResult
+}
+
+IsOkwwAutoBattleCheckFailure(result) {
+    return IsObject(result) && result.HasOwnProp("ok") && !result.ok
+        && result.HasOwnProp("code") && result.code = "OKWW_AUTOBATTLE_CHECK_FAILED"
+}
+
 ; ★ OKWW 啟動＋前置流程（啟動 → 等待最終主視窗 → F11 → 最小化）
 StartOKWWFlow(isRestart) {
     WriteStep("OKWW流程", "入口 isRestart=" (isRestart ? "1" : "0"))
@@ -1800,7 +2204,7 @@ StartOKWWFlow(isRestart) {
     okwwHwnd := 0
     stableHwnd := 0
     stableHits := 0
-    maxAttempts := 45
+    maxAttempts := 90
     attempt := 0
     currentPID := DllCall("GetCurrentProcessId")
     
@@ -1916,14 +2320,14 @@ StartOKWWFlow(isRestart) {
                 ok: false,
                 code: "OKWW_MANAGER_LAUNCH_FAILED",
                 stage: "OKWW管理腳本啟動",
-                reason: "OKWW 管理腳本啟動失敗，且 45 秒內未找到最終主視窗：" . managerLaunchError
+                reason: "OKWW 管理腳本啟動失敗，且 " maxAttempts " 秒內未找到最終主視窗：" . managerLaunchError
             }
         }
         return {
             ok: false,
             code: "OKWW_FINAL_WINDOW_TIMEOUT",
             stage: "等待OKWW最終主視窗",
-            reason: "OKWW 管理腳本已送出，但 45 秒內未找到穩定的 pythonw 最終主視窗"
+            reason: "OKWW 管理腳本已送出，但 " maxAttempts " 秒內未找到穩定的 pythonw 最終主視窗"
         }
     }
 
@@ -1932,7 +2336,8 @@ StartOKWWFlow(isRestart) {
             ok: false,
             code: "OKWW_AUTOBATTLE_CHECK_FAILED",
             stage: "OKWW自動戰鬥確認",
-            reason: "已找到 OKWW 最終主視窗，但連續 3 次無法確認自動戰鬥為已啟用"
+            reason: "已找到 OKWW 最終主視窗，但連續 3 次無法確認自動戰鬥為已啟用",
+            okwwHwnd: okwwHwnd
         }
     }
 
@@ -2248,6 +2653,80 @@ FindOkwwRealtimeTriggerOcrBlock(result, scale := 1.0) {
     return bestFuzzy
 }
 
+FindOkwwAutoBattleLabelBlock(result, scale := 1.0) {
+    if !IsObject(result)
+        return 0
+
+    ; OKWW v3.5.25 將「自動戰鬥」與說明文字改成同一行，RapidOCR 可能把兩者合成一個 block。
+    ; 僅在主內容區第一列接受完整標題，或接受以完整標題開頭的合併 block，避免全頁 contains 誤判。
+    contentLeft := Round(180 * scale)
+    firstRowTop := Round(40 * scale)
+    firstRowBottom := Round(135 * scale)
+    expectedLabel := "自動戰鬥"
+
+    for block in result {
+        if !block.HasOwnProp("text")
+            continue
+
+        rect := GetOkwwOcrBlockRect(block)
+        if !rect
+            continue
+        if (rect.centerX <= contentLeft
+            || rect.centerY < firstRowTop
+            || rect.centerY > firstRowBottom)
+            continue
+
+        clean := NormalizeOkwwOcrText(block.text)
+        if (clean = expectedLabel || SubStr(clean, 1, StrLen(expectedLabel)) = expectedLabel) {
+            return {
+                text: expectedLabel,
+                rawText: block.text,
+                normalizedText: clean,
+                rect: rect,
+                matchType: (clean = expectedLabel ? "exact" : "merged_prefix")
+            }
+        }
+    }
+
+    return 0
+}
+
+SummarizeOkwwOcrRegion(result, minCenterX := 0, maxCenterX := 0,
+    minCenterY := 0, maxCenterY := 0, maxItems := 30) {
+    if !IsObject(result)
+        return "(無 OCR 結果)"
+
+    summary := ""
+    count := 0
+    for block in result {
+        if !block.HasOwnProp("text")
+            continue
+
+        rect := GetOkwwOcrBlockRect(block)
+        if !rect
+            continue
+        if (minCenterX > 0 && rect.centerX < minCenterX)
+            continue
+        if (maxCenterX > 0 && rect.centerX > maxCenterX)
+            continue
+        if (minCenterY > 0 && rect.centerY < minCenterY)
+            continue
+        if (maxCenterY > 0 && rect.centerY > maxCenterY)
+            continue
+
+        clean := NormalizeOkwwOcrText(block.text)
+        if (clean = "")
+            continue
+
+        count += 1
+        summary .= (summary = "" ? "" : " | ") clean "@" Round(rect.centerX) "," Round(rect.centerY)
+        if (count >= maxItems)
+            break
+    }
+
+    return summary != "" ? summary : "(指定區域無文字候選)"
+}
+
 SummarizeOkwwOcrBlocks(result, maxCenterX := 0, maxItems := 30) {
     if !IsObject(result)
         return "(無 OCR 結果)"
@@ -2276,20 +2755,32 @@ SummarizeOkwwOcrBlocks(result, maxCenterX := 0, maxItems := 30) {
 
 ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
     result := CaptureOkwwOcr(okwwHwnd, ocr, "辨識自動戰鬥狀態")
-    labelMatch := FindExactOkwwOcrBlock(result, ["自动战斗", "自動戰鬥"])
+    labelMatch := FindOkwwAutoBattleLabelBlock(result, scale)
     if !labelMatch {
-        WriteLog("OKWW OCR 找不到精確的「自動戰鬥」列", "WARN")
+        firstRowCandidates := SummarizeOkwwOcrRegion(
+            result, Round(180 * scale), 0, Round(40 * scale), Round(135 * scale), 30)
+        WriteLog("OKWW OCR 在主內容第一列找不到「自動戰鬥」標題"
+            "（接受 exact 或 merged-prefix） | 區域候選=" firstRowCandidates, "WARN")
         return {
             state: "unknown", rowY: 0, labelText: "", statusText: "",
             reason: "missing_auto_battle_label"
         }
     }
 
+    if (labelMatch.matchType = "merged_prefix") {
+        WriteLog("OKWW 自動戰鬥標題以合併 block 命中：raw=" labelMatch.rawText
+            " normalized=" labelMatch.normalizedText, "WARN")
+    }
+
     bestState := "unknown"
     bestStatusText := ""
     bestRowY := labelMatch.rect.centerY
     bestDistance := 2147483647
-    maxRowDistance := Round(55 * scale)
+    ; v3.5.25 的相鄰列距可能只有約 41px；舊的 55px 容忍會把第二列「未啟用」誤當第一列狀態。
+    maxRowDistance := Round(24 * scale)
+    clientW := 0
+    try WinGetClientPos(, , &clientW, , "ahk_id " okwwHwnd)
+    statusColumnLeft := clientW > 0 ? Round(clientW * 0.68) : labelMatch.rect.centerX
 
     for block in result {
         clean := NormalizeOkwwOcrText(block.text)
@@ -2303,7 +2794,9 @@ ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
         }
 
         rect := GetOkwwOcrBlockRect(block)
-        if !rect || rect.centerX <= labelMatch.rect.centerX
+        if (!rect
+            || rect.centerX <= labelMatch.rect.centerX
+            || rect.centerX < statusColumnLeft)
             continue
 
         distance := Abs(rect.centerY - labelMatch.rect.centerY)
@@ -2316,8 +2809,13 @@ ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
     }
 
     if (bestState = "unknown") {
+        sameRowCandidates := SummarizeOkwwOcrRegion(
+            result, statusColumnLeft, 0,
+            labelMatch.rect.centerY - maxRowDistance,
+            labelMatch.rect.centerY + maxRowDistance, 30)
         WriteLog("OKWW OCR 已找到「" labelMatch.text
-            "」，但同列找不到精確的「已啟用／未啟用」", "WARN")
+            "」，但右側同列找不到精確的「已啟用／未啟用」"
+            " | 同列候選=" sameRowCandidates, "WARN")
     }
 
     return {
@@ -2558,6 +3056,72 @@ CloseOkwwPythonProcesses() {
         WriteLog("掃描 OKWW Python 進程失敗：" e.Message, "WARN")
     }
     return closedCount
+}
+
+CloseOkwwProcessPid(pid, displayName) {
+    if (pid <= 0 || !ProcessExist(pid))
+        return false
+
+    WriteLog("局部關閉 " displayName "：PID=" pid)
+    try ProcessClose(pid)
+
+    waitUntil := A_TickCount + 2000
+    while (ProcessExist(pid) && A_TickCount < waitUntil)
+        Sleep 100
+
+    if ProcessExist(pid) {
+        WriteLog(displayName " 未在 2 秒內退出，僅依已確認 PID 強制關閉：" pid, "WARN")
+        try RunWait("taskkill /F /PID " pid, , "Hide")
+        Sleep 200
+    }
+
+    if ProcessExist(pid) {
+        WriteLog("無法關閉 " displayName " PID=" pid, "ERROR")
+        return false
+    }
+    return true
+}
+
+CloseOkwwManagerScriptsOnly() {
+    closedCount := 0
+    for item in EnumerateAuxManagedAhkProcesses() {
+        if (item.name != "自動開啟OKWW.ahk")
+            continue
+        if CloseOkwwProcessPid(item.pid, "自動開啟OKWW.ahk")
+            closedCount += 1
+    }
+    return closedCount
+}
+
+CloseOkwwLauncherProcessesOnly() {
+    closedCount := 0
+    try {
+        query := "Select ProcessId, Name from Win32_Process where Name='ok-ww.exe' or Name='OK-WW.exe'"
+        for proc in ComObjGet("winmgmts:").ExecQuery(query) {
+            pid := proc.ProcessId + 0
+            if CloseOkwwProcessPid(pid, proc.Name)
+                closedCount += 1
+        }
+    } catch as e {
+        WriteLog("掃描 ok-ww.exe 進程失敗：" e.Message, "WARN")
+    }
+    return closedCount
+}
+
+RestartOnlyOkwwForAutoBattleRetry() {
+    ; 固定先停管理腳本，避免它在關閉 runtime 後又把 OKWW 拉起。
+    managerClosed := CloseOkwwManagerScriptsOnly()
+    launcherClosed := CloseOkwwLauncherProcessesOnly()
+    pythonClosed := CloseOkwwPythonProcesses()
+    Sleep 1200
+
+    remaining := GetOkwwRuntimeSnapshotState()
+    summary := "manager_ahk_closed=" managerClosed
+        . " launcher_closed=" launcherClosed
+        . " okww_python_closed=" pythonClosed
+        . " remaining=" remaining
+    WriteStepResult("OKWW局部復原", true, summary)
+    return summary
 }
 
 ; ★ 啟動前檢測：關閉所有目標程式
@@ -3693,8 +4257,30 @@ SetLrmcRunResumeReady(ready, detail := "") {
 CaptureRestartProcessSnapshot() {
     gameState := ProcessExist("Client-Win64-Shipping.exe") ? "running" : "missing"
     lrmcState := ProcessExist("LRMCAI.exe") ? "running" : "missing"
-    okwwState := (ProcessExist("ok-ww.exe") || ProcessExist("OK-WW.exe")) ? "running" : "missing"
+    okwwState := GetOkwwRuntimeSnapshotState()
     return "game=" gameState ", lrmc=" lrmcState ", okww=" okwwState
+}
+
+GetOkwwRuntimeSnapshotState() {
+    try {
+        wmi := ComObjGet("winmgmts:")
+        query := "Select ProcessId, Name, CommandLine from Win32_Process where Name='pythonw.exe'"
+        for proc in wmi.ExecQuery(query) {
+            pid := proc.ProcessId + 0
+            cmdLine := ""
+            try cmdLine := proc.CommandLine
+            if IsOkwwPythonProcess(pid, cmdLine)
+                return "running(host=pythonw.exe,pid=" pid ")"
+        }
+    } catch as e {
+        WriteLog("建立重啟快照時掃描 OKWW pythonw 失敗：" e.Message, "WARN")
+    }
+
+    launcherPid := ProcessExist("ok-ww.exe")
+    if launcherPid
+        return "running(host=ok-ww.exe,pid=" launcherPid ")"
+
+    return "missing"
 }
 
 RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNSPECIFIED", stage := "未指定") {
