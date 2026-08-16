@@ -482,6 +482,11 @@ AttachNewestOkww(&curPid, &curHwnd, killOld := true) {
         return {attached: false, pid: 0, hwnd: 0}
     }
     
+    if (GetOkwwWindowKind(curHwnd) = "final") {
+        Log("AttachNewestOkww: 最終 pythonw 主視窗已就緒，立即交由全自動主程式；不再激活或 OCR")
+        return {attached: true, pid: curPid, hwnd: curHwnd, oldPidClosed: 0, kind: "final"}
+    }
+
     try {
         WinActivate("ahk_id " . curHwnd)
     } catch as e {
@@ -685,6 +690,12 @@ if !targetHwnd {
     ExitApp
 }
 
+if (GetOkwwWindowKind(targetHwnd) = "final") {
+    WriteStep("OKWW交接", "最終 pythonw 主視窗已就緒；不激活、不 OCR，交由全自動主程式")
+    Log("final pythonw ready; updater manager exits immediately")
+    ExitApp
+}
+
 ; ====================== 截圖 + OCR 工具 ======================
 EnsureOkwwWindow() {
     global targetHwnd, pid
@@ -705,22 +716,26 @@ IsValidHwnd(hwnd) {
 }
 
 IsInteractiveOkwwHwnd(hwnd) {
+    return GetOkwwWindowKind(hwnd) != ""
+}
+
+GetOkwwWindowKind(hwnd) {
     if !IsValidHwnd(hwnd)
-        return false
+        return ""
 
     try {
         title := Trim(WinGetTitle("ahk_id " hwnd))
         titleLower := StrLower(title)
         processLower := StrLower(WinGetProcessName("ahk_id " hwnd))
         if (InStr(titleLower, "-siw") || InStr(titleLower, "service"))
-            return false
+            return ""
 
         isFinal := (processLower = "pythonw.exe"
             && RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$"))
         isUpgrade := (processLower = "ok-ww.exe" && titleLower = "ok-ww")
-        return isFinal || isUpgrade
+        return isFinal ? "final" : (isUpgrade ? "upgrade" : "")
     } catch {
-        return false
+        return ""
     }
 }
 
@@ -728,6 +743,10 @@ CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
     global targetHwnd
     if !EnsureOkwwWindow()
         return {ok: false, blocks: [], reason: "no_interactive_window"}
+    if (GetOkwwWindowKind(targetHwnd) = "final") {
+        Log("CaptureAndOCR: 最終 pythonw 主視窗已出現，停止管理器 OCR 並交接")
+        return {ok: false, blocks: [], reason: "final_ready"}
+    }
     if !IsValidHwnd(targetHwnd) {
         Log("CaptureAndOCR: invalid hwnd before capture", "WARN")
         return {ok: false, blocks: [], reason: "invalid_hwnd_before_capture"}
@@ -788,6 +807,10 @@ DetectOCRText(keyword, maxMs := 15000) {
         Sleep interval
         capture := CaptureAndOCR(8192, "temp.png")
         if !capture.ok {
+            if (capture.reason = "final_ready") {
+                Log("DetectOCRText: 最終 pythonw 主視窗已就緒，停止升級偵測並交接")
+                return "final_ready"
+            }
             captureFailures += 1
             continue
         }
@@ -898,6 +921,10 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
 ; ====================== 前檢查與四階段流程 ======================
 WriteStep("升級檢測", "檢查是否需要執行升級流程")
 upgradeDetectState := DetectOCRText("升级APP", 15000)
+if (upgradeDetectState = "final_ready") {
+    WriteStep("OKWW交接", "升級偵測期間最終 pythonw 主視窗已出現；立即交接")
+    ExitApp
+}
 if (upgradeDetectState = "capture_failed") {
     WriteStep("升級檢測", "截圖/OCR 全程失敗，無法判定是否需更新", "ERROR")
     ShowTip("❌ OKWW 截圖失敗，無法確認更新狀態", 1800)

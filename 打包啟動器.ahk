@@ -3,6 +3,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
+global PACK_LAUNCHER_BUILD_VERSION := "4.44"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -72,7 +73,7 @@ LifecycleOnExit(exitReason, exitCode) {
     WriteLog("生命週期停止原因: reason=" exitReason " | exitCode=" exitCode)
 }
 
-WriteLog("打包啟動器開始: " A_ScriptFullPath)
+WriteLog("打包啟動器開始: " A_ScriptFullPath " | build=" PACK_LAUNCHER_BUILD_VERSION)
 WriteLog("生命週期啟動原因: " BuildStartupReason())
 OnExit(LifecycleOnExit)
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)

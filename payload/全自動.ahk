@@ -93,7 +93,9 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.43"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.44"
+global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
+global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
 global SERVER_SCHEDULE_LIST := []
 global SERVER_SCHEDULE_INDEX := 1
@@ -2118,60 +2120,46 @@ ExitApp
 
 ; ======================== 函式區 ========================
 
-; OKWW 自動戰鬥 OCR 首次失敗只局部重啟 OKWW 再試一次。
-; 第二次 OCR 仍失敗時，已鎖定的最終 pythonw 視窗仍可安全接收 F11，直接降級送鍵。
+; OKWW 自動戰鬥 OCR 在同一個最終視窗內檢查兩次。
+; 兩次仍無法確認時直接對該視窗送 F11，不再局部重啟 OKWW，避免重複開出多個視窗。
 StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
     firstResult := StartOKWWFlow(isRestart)
     if !IsOkwwAutoBattleCheckFailure(firstResult)
         return firstResult
 
     stageText := entryStage != "" ? entryStage : "未指定入口"
-    WriteLog("OKWW 自動戰鬥首次確認失敗，開始局部復原；entry=" stageText, "WARN")
-    WriteStep("OKWW局部復原", "首次 OKWW_AUTOBATTLE_CHECK_FAILED | entry=" stageText, "WARN")
-    recoverySummary := RestartOnlyOkwwForAutoBattleRetry()
+    fallbackHwnd := firstResult.HasOwnProp("okwwHwnd") ? firstResult.okwwHwnd : 0
+    WriteLog("OKWW 自動戰鬥同一視窗連續兩次 OCR 未能確認；不重啟 OKWW，直接送 F11"
+        " | hwnd=" fallbackHwnd " | entry=" stageText, "WARN")
+    WriteStep("OKWW OCR降級", "兩次未確認，沿用同一最終視窗送 F11 | entry=" stageText, "WARN")
 
-    WriteLog("OKWW 局部復原完成，僅重試 OKWW 流程一次；" recoverySummary, "WARN")
-    secondResult := StartOKWWFlow(true)
-    if IsOkwwAutoBattleCheckFailure(secondResult) {
-        fallbackHwnd := secondResult.HasOwnProp("okwwHwnd") ? secondResult.okwwHwnd : 0
-        WriteLog("OKWW 自動戰鬥兩輪 OCR 均未能確認；依降級策略直接對第二次最終視窗送 F11"
-            " | hwnd=" fallbackHwnd " | entry=" stageText, "WARN")
+    fallbackSent := false
+    if fallbackHwnd {
+        topmostCtx := PrepareOkwwTopmostOperation(fallbackHwnd)
+        try fallbackSent := SendF11ToOkww(fallbackHwnd)
+        finally RestoreTopmostAfterOkwwOperation(topmostCtx)
+    }
 
-        fallbackSent := false
-        if fallbackHwnd {
-            topmostCtx := PrepareOkwwTopmostOperation(fallbackHwnd)
-            try fallbackSent := SendF11ToOkww(fallbackHwnd)
-            finally RestoreTopmostAfterOkwwOperation(topmostCtx)
-        }
-
-        if fallbackSent {
-            WriteLog("OCR 降級 F11 已送出，等待 2 秒後最小化 OKWW", "WARN")
-            Sleep 2000
-            MinimizeOKWWWindows()
-            WriteStepResult("OKWW流程", true, "兩輪自動戰鬥 OCR 未確認；已對第二次最終 hwnd 直接送 F11 並最小化")
-            return {
-                ok: true,
-                code: "",
-                stage: "OKWW完成（OCR降級）",
-                reason: ""
-            }
-        }
-
-        WriteLog("兩輪自動戰鬥 OCR 未確認後，直接 F11 亦發送失敗；交由原 RequestRestart", "ERROR")
+    if fallbackSent {
+        WriteLog("OCR 降級 F11 已送出，等待 2 秒後開始 OKWW 最小化掃描", "WARN")
+        Sleep 2000
+        ScheduleOkwwMinimizeSweeps("OCR降級F11")
+        WriteStepResult("OKWW流程", true, "同一視窗兩次 OCR 未確認；已直接送 F11 並排程最小化")
         return {
-            ok: false,
-            code: "OKWW_F11_SEND_FAILED",
-            stage: "OKWW快捷鍵發送（OCR降級）",
-            reason: Format("OKWW 局部重啟前後皆無法由 OCR 確認自動戰鬥；對第二次鎖定的最終視窗直接發送 F11 亦失敗；hwnd={1}；局部復原={2}", fallbackHwnd, recoverySummary)
+            ok: true,
+            code: "",
+            stage: "OKWW完成（OCR降級）",
+            reason: ""
         }
     }
 
-    if secondResult.ok
-        WriteLog("OKWW 局部重啟後已通過自動戰鬥確認與 F11 流程")
-    else
-        WriteLog("OKWW 局部重啟後改為其他錯誤 code=" secondResult.code
-            "，維持原 RequestRestart 處理", "WARN")
-    return secondResult
+    WriteLog("同一 OKWW 視窗兩次 OCR 未確認後，直接 F11 亦發送失敗；交由原 RequestRestart", "ERROR")
+    return {
+        ok: false,
+        code: "OKWW_F11_SEND_FAILED",
+        stage: "OKWW快捷鍵發送（OCR降級）",
+        reason: Format("OKWW 同一最終視窗連續兩次無法由 OCR 確認自動戰鬥；直接發送 F11 亦失敗；hwnd={1}；entry={2}", fallbackHwnd, stageText)
+    }
 }
 
 IsOkwwAutoBattleCheckFailure(result) {
@@ -2272,23 +2260,23 @@ StartOKWWFlow(isRestart) {
     if (okwwHwnd) {
         topmostCtx := PrepareOkwwTopmostOperation(okwwHwnd)
         try {
-            Loop 3 {
+            Loop 2 {
                 checkAttempt := A_Index
-                WriteLog("OKWW 自動戰鬥前置確認：attempt=" checkAttempt "/3")
+                WriteLog("OKWW 自動戰鬥前置確認：attempt=" checkAttempt "/2")
                 if EnsureOkwwAutoBattleEnabled(okwwHwnd) {
                     autoBattleConfirmed := true
                     f11Sent := SendF11ToOkww(okwwHwnd)
                     break
                 }
 
-                if (checkAttempt < 3) {
+                if (checkAttempt < 2) {
                     WriteLog("OKWW 自動戰鬥本次未能確認，等待後重試；尚未發送 F11", "WARN")
                     Sleep 1200
                 }
             }
 
             if !f11Sent
-                WriteLog("OKWW 自動戰鬥連續 3 次未能確認，或 F11 發送失敗；本次不繼續", "ERROR")
+                WriteLog("OKWW 自動戰鬥連續 2 次未能確認，或 F11 發送失敗；交由同視窗 F11 降級處理", "WARN")
         } finally {
             RestoreTopmostAfterOkwwOperation(topmostCtx)
         }
@@ -2299,7 +2287,7 @@ StartOKWWFlow(isRestart) {
     if f11Sent {
         WriteLog("F11 已送出，等待 2 秒後最小化 OKWW")
         Sleep 2000
-        MinimizeOKWWWindows()
+        ScheduleOkwwMinimizeSweeps("自動戰鬥確認後F11")
     } else {
         WriteLog("F11 未成功送出，保留 OKWW 視窗供診斷，不執行最小化", "WARN")
     }
@@ -2336,7 +2324,7 @@ StartOKWWFlow(isRestart) {
             ok: false,
             code: "OKWW_AUTOBATTLE_CHECK_FAILED",
             stage: "OKWW自動戰鬥確認",
-            reason: "已找到 OKWW 最終主視窗，但連續 3 次無法確認自動戰鬥為已啟用",
+            reason: "已找到 OKWW 最終主視窗，但同一視窗連續 2 次無法確認自動戰鬥為已啟用",
             okwwHwnd: okwwHwnd
         }
     }
@@ -2677,13 +2665,21 @@ FindOkwwAutoBattleLabelBlock(result, scale := 1.0) {
             continue
 
         clean := NormalizeOkwwOcrText(block.text)
-        if (clean = expectedLabel || SubStr(clean, 1, StrLen(expectedLabel)) = expectedLabel) {
+        labelPos := InStr(clean, expectedLabel)
+        ; RapidOCR 在 v3.5.28 偶爾會在第一列前面混入極短雜訊（實測為「x,」）。
+        ; 只容許標題位於第 1～3 字元，且仍受主內容第一列與同列狀態的雙重限制。
+        hasBoundedLeadingNoise := (labelPos > 1 && labelPos <= 3)
+        if (clean = expectedLabel
+            || SubStr(clean, 1, StrLen(expectedLabel)) = expectedLabel
+            || hasBoundedLeadingNoise) {
+            matchType := clean = expectedLabel ? "exact"
+                : (labelPos = 1 ? "merged_prefix" : "leading_noise")
             return {
                 text: expectedLabel,
                 rawText: block.text,
                 normalizedText: clean,
                 rect: rect,
-                matchType: (clean = expectedLabel ? "exact" : "merged_prefix")
+                matchType: matchType
             }
         }
     }
@@ -2760,15 +2756,15 @@ ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
         firstRowCandidates := SummarizeOkwwOcrRegion(
             result, Round(180 * scale), 0, Round(40 * scale), Round(135 * scale), 30)
         WriteLog("OKWW OCR 在主內容第一列找不到「自動戰鬥」標題"
-            "（接受 exact 或 merged-prefix） | 區域候選=" firstRowCandidates, "WARN")
+            "（接受 exact、merged-prefix 或最多 2 字元前綴雜訊） | 區域候選=" firstRowCandidates, "WARN")
         return {
             state: "unknown", rowY: 0, labelText: "", statusText: "",
             reason: "missing_auto_battle_label"
         }
     }
 
-    if (labelMatch.matchType = "merged_prefix") {
-        WriteLog("OKWW 自動戰鬥標題以合併 block 命中：raw=" labelMatch.rawText
+    if (labelMatch.matchType = "merged_prefix" || labelMatch.matchType = "leading_noise") {
+        WriteLog("OKWW 自動戰鬥標題以 " labelMatch.matchType " 命中：raw=" labelMatch.rawText
             " normalized=" labelMatch.normalizedText, "WARN")
     }
 
@@ -2944,10 +2940,31 @@ RestoreTopmostAfterOkwwOperation(ctx) {
     }
 }
 
-; ★ 最小化 OKWW 視窗
-MinimizeOKWWWindows() {
-    WriteStep("最小化OKWW", "入口")
-    WriteLog("開始尋找並最小化 OKWW 視窗...")
+; F11 後 OKWW 的 pythonw 視窗可能延遲再次顯示；用非侵入式計時器補做掃描，絕不啟用視窗。
+ScheduleOkwwMinimizeSweeps(context := "") {
+    global __OKWW_MINIMIZE_SWEEP_REMAINING, __OKWW_MINIMIZE_SWEEP_CONTEXT
+    SetTimer(DelayedOkwwMinimizeSweep, 0)
+    __OKWW_MINIMIZE_SWEEP_REMAINING := 3
+    __OKWW_MINIMIZE_SWEEP_CONTEXT := context
+    MinimizeOKWWWindows(context "｜立即")
+    SetTimer(DelayedOkwwMinimizeSweep, -3000)
+}
+
+DelayedOkwwMinimizeSweep() {
+    global __OKWW_MINIMIZE_SWEEP_REMAINING, __OKWW_MINIMIZE_SWEEP_CONTEXT
+    if (__OKWW_MINIMIZE_SWEEP_REMAINING <= 0)
+        return
+
+    sweepIndex := 4 - __OKWW_MINIMIZE_SWEEP_REMAINING
+    MinimizeOKWWWindows(__OKWW_MINIMIZE_SWEEP_CONTEXT "｜延遲掃描" sweepIndex)
+    __OKWW_MINIMIZE_SWEEP_REMAINING -= 1
+    if (__OKWW_MINIMIZE_SWEEP_REMAINING > 0)
+        SetTimer(DelayedOkwwMinimizeSweep, -4000)
+}
+
+; ★ 最小化 OKWW 視窗（只按進程＋精確標題鎖定，不會碰其他 Python）
+MinimizeOKWWWindows(context := "") {
+    WriteLog("開始尋找並最小化 OKWW 視窗 | context=" context)
     foundCount := 0
     currentPID := DllCall("GetCurrentProcessId")
     
@@ -2966,26 +2983,11 @@ MinimizeOKWWWindows() {
             if (pid = currentPID || wclass = "tooltips_class32")
                 continue
             
-            ; 排除編輯器和開發工具
-            isEditor := (InStr(titleLower, "visual studio code") || 
-                        InStr(titleLower, "notepad") || 
-                        InStr(titleLower, "vscode") ||
-                        InStr(processName, "Code.exe") ||
-                        InStr(processName, "notepad"))
-            
-            ; 檢查是否為 OKWW 視窗
-            isOKWWWindow := false
-            
-            ; 方法1: 檢查標題包含 OKWW 或 OK-WW
-            if ((InStr(titleLower, "ok-ww") || InStr(titleLower, "okww")) && !isEditor) {
-                isOKWWWindow := true
-            }
-            
-            ; 方法2: 檢查是否為相關進程
-            if (processLower = "ok-ww.exe" || 
-                (processLower = "pythonw.exe" && (InStr(titleLower, "ok-ww") || InStr(titleLower, "okww")))) {
-                isOKWWWindow := true
-            }
+            ; 必須同時符合 OKWW 宿主進程與標題；不可只因標題含 OKWW 就動到其他程式。
+            isOKWWWindow := (processLower = "ok-ww.exe"
+                    && (titleLower = "ok-ww" || InStr(titleLower, "ok-ww-siw")))
+                || (processLower = "pythonw.exe"
+                    && RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$"))
             
             if (isOKWWWindow) {
                 try {
@@ -3003,12 +3005,10 @@ MinimizeOKWWWindows() {
     
     if (foundCount > 0) {
         WriteLog("成功最小化 " foundCount " 個 OKWW 視窗")
-        ShowTip("📥 已最小化 " foundCount " 個 OKWW 視窗", 1500)
-        WriteStepResult("最小化OKWW", true, "count=" foundCount)
     } else {
-        WriteLog("未找到可最小化的 OKWW 視窗", "WARN")
-        WriteStepResult("最小化OKWW", false, "count=0")
+        WriteLog("本次未找到可最小化的 OKWW 視窗 | context=" context)
     }
+    return foundCount
 }
 
 ; 僅識別由 OKWW 使用的 Python 進程，避免誤殺其他 python.exe/pythonw.exe。
@@ -3026,11 +3026,14 @@ IsOkwwPythonProcess(pid, commandLine := "") {
             if (InStr(titleLower, "ok-ww") || InStr(titleLower, "okww"))
                 return true
         }
+    } catch {
+        ; 無法讀取該 PID 的視窗時視為非 OKWW；不可因此誤殺其他 Python。
     }
 
     return false
 }
 
+; 舊局部重啟輔助函式僅保留供既有診斷相容；目前主流程不再呼叫。
 CloseOkwwPythonProcesses() {
     closedCount := 0
     try {
@@ -3109,7 +3112,6 @@ CloseOkwwLauncherProcessesOnly() {
 }
 
 RestartOnlyOkwwForAutoBattleRetry() {
-    ; 固定先停管理腳本，避免它在關閉 runtime 後又把 OKWW 拉起。
     managerClosed := CloseOkwwManagerScriptsOnly()
     launcherClosed := CloseOkwwLauncherProcessesOnly()
     pythonClosed := CloseOkwwPythonProcesses()
@@ -3648,6 +3650,8 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     stable := 0
     checkIntervalMs := 500
 
+    baselineWidth := 1280
+    baselineHeight := 720
     roiWidth := 500
     roiHeight := 140
     roiRightMargin := 0
@@ -3684,10 +3688,27 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
 
         captureW := frame.width
         captureH := frame.height
-        cropW := Min(roiWidth, captureW - roiRightMargin)
-        cropH := Min(roiHeight, captureH - roiBottomMargin)
-        cropX := captureW - roiRightMargin - cropW
-        cropY := captureH - roiBottomMargin - cropH
+        searchFrame := frame
+        searchMode := "native"
+        ; icon_main.png 是以 1280x720 UI 比例建立。不同電腦可能直接進入 1920/2560 全螢幕，
+        ; 先把背景截圖正規化後再比對，避免模板因等比例放大而永遠找不到。
+        if (Abs(captureW - baselineWidth) > 8 || Abs(captureH - baselineHeight) > 8) {
+            try {
+                searchFrame := ImagePutBuffer({Buffer: frame, scale: [baselineWidth, baselineHeight]})
+                searchMode := "normalized_1280x720"
+            } catch as e {
+                WriteLog("模板驗證正規化失敗，退回原尺寸比對: " e.Message, "WARN")
+                searchFrame := frame
+                searchMode := "native_fallback"
+            }
+        }
+
+        searchW := searchFrame.width
+        searchH := searchFrame.height
+        cropW := Min(roiWidth, searchW - roiRightMargin)
+        cropH := Min(roiHeight, searchH - roiBottomMargin)
+        cropX := searchW - roiRightMargin - cropW
+        cropY := searchH - roiBottomMargin - cropH
         if (cropW <= 0 || cropH <= 0 || cropX < 0 || cropY < 0) {
             Sleep checkIntervalMs
             continue
@@ -3696,7 +3717,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
         found := false
         matchedVar := 0
         try {
-            roiFrame := frame.Crop(cropX, cropY, cropW, cropH)
+            roiFrame := searchFrame.Crop(cropX, cropY, cropW, cropH)
             for _, v in variations {
                 hit := roiFrame.ImageSearch(templateFile, v)
                 if IsValidImagePutSearchHit(hit, roiFrame) {
@@ -3714,7 +3735,8 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             stable += 1
             ShowTip("✅ 模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）", 600)
             if (stable >= stableNeeded) {
-                WriteStepResult("主畫面模板驗證", true, "樣本=" sampleCount " var=" matchedVar)
+                WriteStepResult("主畫面模板驗證", true, "樣本=" sampleCount " var=" matchedVar
+                    " mode=" searchMode " capture=" captureW "x" captureH)
                 return true
             }
         } else {
@@ -3723,7 +3745,9 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
 
         if (A_TickCount - lastProgressLog >= 5000) {
             remainSec := Round((deadline - A_TickCount) / 1000.0, 1)
-            WriteLog("模板驗證進行中: 樣本=" sampleCount " 連續命中=" stable "/" stableNeeded " 最後Var=" (bestVar ? bestVar : "-") " 剩餘=" remainSec "s")
+            WriteLog("模板驗證進行中: 樣本=" sampleCount " 連續命中=" stable "/" stableNeeded
+                " 最後Var=" (bestVar ? bestVar : "-") " mode=" searchMode
+                " capture=" captureW "x" captureH " 剩餘=" remainSec "s")
             lastProgressLog := A_TickCount
         }
 

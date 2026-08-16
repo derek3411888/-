@@ -81,18 +81,17 @@
 ### 3.12 OKWW 啟動後的 F11 操作
 - `全自動.ahk` 不再 OCR OKWW 視窗中的「啟動遊戲／開始／F11」文字，也不再依 OCR 座標點擊，避免把版本說明中的「启动游戏」誤當按鈕。
 - 啟動 `自動開啟OKWW.ahk` 後，最多等待 90 秒，只接受由 `pythonw.exe` 承載的最終主視窗；標題同時相容 `OK-WW v版本 Global`（v3.5.18）及尾端帶 `- OK-WW` 的舊格式。
-- 同一個 HWND 必須連續確認兩次才算穩定。之後以 OKWW client 截圖做嚴格 OCR：先把 RapidOCR 可能混用的 `实／實、时／時、触／觸、发／發、动／動、战／戰、斗／鬥、启／啟` 統一。左側導覽項目限定在 `rect.right <= 180 × DPI scale` 的區域內，優先精確接受 `實時觸發` 或 `即時觸發`；精確文字不存在時，才允許等長且只有一個字不同的受限容錯（例如 `即時網發` 對應 `即時觸發`）。此容錯只用於左側導覽。進入頁面後，「自動戰鬥」標題僅能在主內容第一列命中，接受獨立 exact block，或因 v3.5.25 同行排版而以「自動戰鬥」開頭的 merged block；狀態只接受 client 寬度 68% 以右、與標題中心差不超過 `24 × DPI scale` 的精確「已啟用／未啟用」，避免把相鄰第二列誤當第一列。未啟用才點開，且必須連續兩次 OCR 確認已啟用才繼續。缺失時須記錄受限區域候選，且不使用主題敏感的像素亮度門檻。
-- `自動開啟OKWW.ahk` 只把最終 `pythonw.exe` 的 `OK-WW v... Global` 視窗或標題完全為 `ok-ww` 的真正升級 UI 當作互動目標；`ok-ww-siw`／service 視窗只能忽略並繼續等待。更新檢測必須區分「有效 OCR 後未命中」與「截圖/OCR 失敗」，後者不得回報成不需更新。
-- 自動戰鬥確認成功後只送出一次 `F11`。優先切到前景以 `SendEvent` 發送，無法切前景時才以 `ControlSend` 定向發送；送出後等待 2 秒，再最小化 OKWW。
-- 自動戰鬥前置確認最多在同一個 OKWW 視窗重試 3 次。只有 F11 成功才最小化；失敗時保留視窗與受限 OCR 區域候選文字供診斷。
-- 兩個呼叫端都統一走 `StartOKWWFlowWithLocalRecovery()` 並接收結果；未被降級策略成功處理的失敗仍依階段使用 `OKWW_MANAGER_LAUNCH_FAILED`、`OKWW_FINAL_WINDOW_TIMEOUT` 或 `OKWW_F11_SEND_FAILED` 進入原 `RequestRestart()`，不得繼續等待主畫面後誤報 `GAME_READY_CHECK_TIMEOUT`。
-- `OKWW_AUTOBATTLE_CHECK_FAILED` 是唯一會做局部復原的錯誤：首次命中時只依序關閉 `自動開啟OKWW.ahk`、`ok-ww.exe` 與經命令列／視窗標題確認屬於 OKWW 的 Python PID；不可關鳴潮、LRMCAI 或其他 Python。局部重啟 OKWW 後只再試一次。
-- 局部重試後若仍是 `OKWW_AUTOBATTLE_CHECK_FAILED`，不停止本輪也不寄失敗信；`StartOKWWFlow()` 會把第二次已穩定鎖定的最終 `pythonw` HWND 回傳給 wrapper，由 wrapper 對該 HWND 做相同的程序名／標題安全檢查後直接送一次 `F11`。送出成功即等待 2 秒、最小化 OKWW 並回傳成功繼續流程；只有直接送鍵本身失敗，才改回 `OKWW_F11_SEND_FAILED` 並走原 `RequestRestart()`。
+- 同一個 HWND 必須連續確認兩次才算穩定。之後以 OKWW client 截圖做嚴格 OCR：先把 RapidOCR 可能混用的 `实／實、时／時、触／觸、发／發、动／動、战／戰、斗／鬥、启／啟` 統一。左側導覽項目限定在 `rect.right <= 180 × DPI scale` 的區域內，優先精確接受 `實時觸發` 或 `即時觸發`；精確文字不存在時，才允許等長且只有一個字不同的受限容錯（例如 `即時網發` 對應 `即時觸發`）。此容錯只用於左側導覽。進入頁面後，「自動戰鬥」標題僅能在主內容第一列命中，接受獨立 exact block、以完整標題開頭的 merged block，或 OKWW v3.5.28 實測出現的最多 2 字元前綴雜訊（例如 `x,自動戰鬥...`）；狀態仍只接受 client 寬度 68% 以右、與標題中心差不超過 `24 × DPI scale` 的精確「已啟用／未啟用」，避免把相鄰第二列誤當第一列。未啟用才點開，且必須連續兩次 OCR 確認已啟用才繼續。缺失時須記錄受限區域候選，且不使用主題敏感的像素亮度門檻。
+- `自動開啟OKWW.ahk` 只把最終 `pythonw.exe` 的 `OK-WW v... Global` 視窗或標題完全為 `ok-ww` 的真正升級 UI 當作互動目標；`ok-ww-siw`／service 視窗只能忽略並繼續等待。最終 pythonw 一出現就立刻交由主程式，管理器不可再激活或拿它做 `升级APP` OCR，避免兩支腳本搶同一視窗。更新檢測必須區分「有效 OCR 後未命中」與「截圖/OCR 失敗」，後者不得回報成不需更新。
+- 自動戰鬥確認成功後只送出一次 `F11`。優先切到前景以 `SendEvent` 發送，無法切前景時才以 `ControlSend` 定向發送；送出後等待 2 秒立即最小化，並於約 3、7、11 秒非侵入式補掃延遲出現的 OKWW 視窗。最小化只接受 `ok-ww.exe` 的精確升級標題，或 `pythonw.exe + OK-WW v... Global`，不可碰其他 Python。
+- 自動戰鬥前置確認只在同一個 OKWW 視窗嘗試 2 次。兩次仍無法確認時，不關閉、不重啟、不再開第二輪 OKWW，直接沿用同一個已鎖定 HWND 送一次 F11。
+- 兩個呼叫端都統一走 `StartOKWWFlowWithLocalRecovery()` 並接收結果；此名稱只為相容既有呼叫，現在已不會重啟 OKWW，而是同視窗 F11 降級。未被降級策略成功處理的失敗仍依階段使用 `OKWW_MANAGER_LAUNCH_FAILED`、`OKWW_FINAL_WINDOW_TIMEOUT` 或 `OKWW_F11_SEND_FAILED` 進入原 `RequestRestart()`，不得繼續等待主畫面後誤報 `GAME_READY_CHECK_TIMEOUT`。
+- `OKWW_AUTOBATTLE_CHECK_FAILED` 不再觸發舊的局部復原函式；wrapper 只取回同一次流程已穩定鎖定的最終 `pythonw` HWND，做相同的程序名／標題安全檢查後直接送一次 `F11`。送出成功即排程最小化並回傳成功繼續流程；只有直接送鍵本身失敗，才改回 `OKWW_F11_SEND_FAILED` 並走原 `RequestRestart()`。
 
 ### 3.13 鳴潮前景與置頂原則
 - 一般 OCR 與模板輪詢均使用 ImagePut 的 `PrintWindow + PW_CLIENTONLY` 背景 client 截圖，不因輪詢而 `WinActivate` 或將鳴潮設為置頂。
 - 啟動階段將鳴潮移到右上角時，普通視窗只調整 X/Y，不傳入寬高，也不執行 `WinRestore` 或 `WinActivate`；移動後需驗證尺寸與視窗狀態不變。最大化視窗保持最大化並略過移動，最小化視窗保持最小化並延後重試。
-- `WaitEscMenuOCR()` 的 `icon_main.png` 驗證使用背景截圖右下 ROI；即使鳴潮被其他視窗遮住，也不應搶回前景。
+- `WaitEscMenuOCR()` 的 `icon_main.png` 驗證使用背景截圖右下 ROI；即使鳴潮被其他視窗遮住，也不應搶回前景。模板以 1280×720 UI 比例建立，捕獲尺寸不同時先正規化為 1280×720 再比對；已用 2560×1440 與 2560×1400 錄影畫面驗證可命中。
 - 登入／叉叉等模板預搜尋也預設走背景 client 比對。只有確定命中並準備實際滑鼠點擊時，才短暫還原、啟用及置頂鳴潮；`finally` 必須保證取消置頂。
 - 保留原本登入 OCR 主迴圈每秒呼叫 `TryAssistLoginTemplateBeforeOcr()` 的輔助點擊，也保留兩個 OKWW 啟動入口前的 `登入.png` 點擊；這些搜尋仍先走背景比對，只有模板命中並實際點擊時才短暫切到前景。
 
