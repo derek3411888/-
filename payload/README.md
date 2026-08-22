@@ -38,8 +38,19 @@ AutoHotkey64.exe 自動開啟OKWW.ahk
 - 錄影先寫入 `%LOCALAPPDATA%\WutheringAuto\recording_staging`，預設每 5 分鐘封口一段，再把已完成分段補傳到目的端。網路暫斷不會中止錄影。
 - 正常結束時會先讓 FFmpeg 完成最後一段，再無損合併。只有成品複製與大小驗證成功，才清除本機暫存與目的端分段。
 - 收尾時共用資料夾離線會保留本機檔案並背景重試；下次啟動也會恢復未完成工作階段。
+- 成功且開啟自動合併：成品在 `<輸出資料夾>\wuthering_auto_recording_日期_時間.mkv`。
+- 錄影中或收尾失敗：可播放分段保留在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\<工作階段>`；已補傳的五分鐘分段在 `<輸出資料夾>\wuthering_auto_recording_日期_時間_segments`。
+- 最後狀態固定保存在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，背景收尾紀錄在同層 `recording_worker.log`。控制網站會同步顯示這些路徑並提供「複製路徑」。
 
 ## 即時回看
 
 - 啟用 `[runtime_diagnostics]` 後，本機 `latest.jpg` 會持續覆寫，警告／錯誤畫面則依設定份數保留。
-- 遠端控制啟用時，控制網頁會顯示低畫質最新畫面與最近 50 筆流程事件。這會把螢幕畫面寫入目前的 Firestore client 文件，請確認 Firestore 存取規則符合你的隱私需求。
+- 遠端控制啟用時，控制網頁會顯示低畫質最新畫面、每 60 秒更新一次的最近 6 秒 MP4 短影片、錄影成功／失敗位置與最近 50 筆流程事件。
+- 網站短影片只是覆寫式即時預覽，完整 6～7 小時影片不會上傳，仍只保存在設定的本機／網路輸出資料夾。短影片本機副本為 `%LOCALAPPDATA%\WutheringAuto\diagnostics\latest_preview.mp4`。
+- 畫面與短影片會寫入目前的 Firestore client 文件，請確認 Firestore 存取規則符合你的隱私需求；可在設定取消「網站顯示最近 6 秒短影片」。
+
+## OCR 模型
+
+- 預設高品質模型已由實際重複的 PP-OCRv3 更新為官方 PP-OCRv4 mobile 中文偵測／辨識模型，混合繁體、簡體與英文的鳴潮／OKWW 畫面辨識較穩。
+- 舊 PP-OCRv3 仍保留在 `plugin\RapidOcr\models` 作相容回退。
+- 目前隨附的 RapidOcrOnnx 1.2.2 DLL 無法載入 PP-OCRv5／v6，因此程式會略過檔名標示為 v5／v6 的模型，避免初始化崩潰。

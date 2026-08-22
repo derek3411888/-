@@ -26,7 +26,9 @@ if (mutexHandle <= 0) {
             break
     }
     if (mutexHandle <= 0) {
-        WorkerLog(sessionDir, "收尾等待既有同步工具 90 秒仍未取得鎖；保留工作階段供下次恢復", "WARN")
+        detail := "收尾等待既有同步工具 90 秒仍未取得鎖；保留工作階段供下次恢復"
+        WorkerWriteState(sessionDir, "finalize_waiting", detail)
+        WorkerLog(sessionDir, detail, "WARN")
         ExitApp(7)
     }
 }
@@ -34,6 +36,9 @@ if (mutexHandle <= 0) {
 try {
     if (mode = "sync")
         ExitApp(WorkerSyncSession(sessionDir, false) ? 0 : 4)
+
+    ; finalize 只會在螢幕擷取程序已停止後執行；同步把狀態寫成非錄影中。
+    try IniWrite("0", sessionDir "\session.ini", "recording", "capture_active")
 
     ; 正常流程已退出後仍由這個背景 worker 負責收尾。若家中共用資料夾暫時
     ; 離線，只針對網路同步／複製失敗每分鐘重試，最多兩小時；本機分段與
@@ -50,8 +55,9 @@ try {
     }
     ExitApp(6)
 } catch as e {
-    WorkerLog(sessionDir, "未處理例外: " e.Message " | line=" e.Line " | what=" e.What
-        " | stack=" StrReplace(e.Stack, "`n", " <- "), "ERROR")
+    detail := "背景收尾未處理例外: " e.Message " | line=" e.Line " | what=" e.What
+    try WorkerWriteState(sessionDir, "worker_error", SubStr(detail, 1, 1000))
+    WorkerLog(sessionDir, detail " | stack=" StrReplace(e.Stack, "`n", " <- "), "ERROR")
     ExitApp(9)
 }
 
@@ -121,6 +127,8 @@ WorkerReadSession(sessionDir) {
         destinationDir: WorkerNormalizePath(IniRead(ini, "recording", "destination_dir", "")),
         baseName: Trim(IniRead(ini, "recording", "base_name", ""), ' "`t`r`n'),
         ffmpegExe: WorkerNormalizePath(IniRead(ini, "recording", "ffmpeg_exe", "")),
+        configPath: WorkerNormalizePath(IniRead(ini, "recording", "config_path", "")),
+        captureActive: IniRead(ini, "recording", "capture_active", "0") = "1",
         autoMerge: IniRead(ini, "recording", "auto_merge", "1") = "1",
         keepFinalCount: WorkerToIntRange(IniRead(ini, "recording", "keep_final_count", "5"), 5, 1, 50)
     }
@@ -132,9 +140,158 @@ WorkerIsSafeBaseName(baseName) {
 
 WorkerWriteState(sessionDir, state, detail := "") {
     ini := sessionDir "\session.ini"
+    updatedAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    updatedMs := WorkerUnixMs()
     try IniWrite(state, ini, "recording", "state")
     try IniWrite(detail, ini, "recording", "state_detail")
-    try IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), ini, "recording", "state_updated_at")
+    try IniWrite(updatedAt, ini, "recording", "state_updated_at")
+    try IniWrite(updatedMs, ini, "recording", "state_updated_unix_ms")
+
+    status := WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs)
+    WorkerPersistRecordingStatus(status)
+    WorkerPublishRecordingStatus(status)
+}
+
+WorkerUnixMs() {
+    ft := Buffer(8, 0)
+    DllCall("GetSystemTimeAsFileTime", "ptr", ft.Ptr)
+    t := NumGet(ft, 0, "Int64")
+    return (t // 10000) - 11644473600000
+}
+
+WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs) {
+    cfg := WorkerReadSession(sessionDir)
+    destinationSegments := ""
+    finalPath := ""
+    resultPath := ""
+    if (cfg.destinationDir != "" && WorkerIsSafeBaseName(cfg.baseName)) {
+        destinationSegments := cfg.destinationDir "\" cfg.baseName "_segments"
+        if cfg.autoMerge
+            finalPath := cfg.destinationDir "\" cfg.baseName ".mkv"
+        resultPath := cfg.autoMerge ? finalPath : destinationSegments
+    }
+
+    root := ""
+    SplitPath(sessionDir, , &root)
+    workerLogPath := root != "" ? root "\recording_worker.log" : ""
+    return {
+        state: state,
+        detail: detail,
+        updatedAt: updatedAt,
+        updatedMs: updatedMs,
+        sessionDir: sessionDir,
+        destinationDir: cfg.destinationDir,
+        destinationSegments: destinationSegments,
+        finalPath: finalPath,
+        resultPath: resultPath,
+        failureStorage: sessionDir,
+        workerLogPath: workerLogPath,
+        baseName: cfg.baseName,
+        autoMerge: cfg.autoMerge,
+        captureActive: cfg.captureActive,
+        configPath: cfg.configPath,
+        root: root
+    }
+}
+
+WorkerPersistRecordingStatus(status) {
+    if (status.root = "")
+        return false
+    statusPath := status.root "\recording_status.ini"
+    try {
+        IniWrite(status.state, statusPath, "recording", "state")
+        IniWrite(status.detail, statusPath, "recording", "state_detail")
+        IniWrite(status.updatedAt, statusPath, "recording", "state_updated_at")
+        IniWrite(status.updatedMs, statusPath, "recording", "state_updated_unix_ms")
+        IniWrite(status.sessionDir, statusPath, "recording", "local_session_dir")
+        IniWrite(status.destinationDir, statusPath, "recording", "destination_dir")
+        IniWrite(status.destinationSegments, statusPath, "recording", "destination_segments_dir")
+        IniWrite(status.finalPath, statusPath, "recording", "final_path")
+        IniWrite(status.resultPath, statusPath, "recording", "result_path")
+        IniWrite(status.failureStorage, statusPath, "recording", "failure_storage")
+        IniWrite(status.workerLogPath, statusPath, "recording", "worker_log_path")
+        IniWrite(status.baseName, statusPath, "recording", "base_name")
+        IniWrite(status.autoMerge ? "1" : "0", statusPath, "recording", "auto_merge")
+        IniWrite(status.captureActive ? "1" : "0", statusPath, "recording", "capture_active")
+        return true
+    } catch {
+        return false
+    }
+}
+
+WorkerJsonEsc(textValue) {
+    s := textValue
+    s := StrReplace(s, "\", "\\")
+    s := StrReplace(s, '"', '\"')
+    s := StrReplace(s, "`r", "\r")
+    s := StrReplace(s, "`n", "\n")
+    s := StrReplace(s, "`t", "\t")
+    return s
+}
+
+WorkerPublishRecordingStatus(status) {
+    cfgPath := status.configPath
+    if (cfgPath = "" || !FileExist(cfgPath))
+        return false
+
+    try {
+        enabled := IniRead(cfgPath, "remote_control", "enabled", "0")
+        projectId := Trim(IniRead(cfgPath, "remote_control", "project_id", ""), " `t`r`n")
+        apiKey := Trim(IniRead(cfgPath, "remote_control", "api_key", ""), " `t`r`n")
+        collection := Trim(IniRead(cfgPath, "remote_control", "collection", "ahk_clients"), " `t`r`n")
+        uid := Trim(IniRead(cfgPath, "remote_control", "uid", ""), " `t`r`n")
+        timeoutMs := WorkerToIntRange(IniRead(cfgPath, "remote_control", "http_timeout_ms", "2500"), 2500, 800, 10000)
+    } catch {
+        return false
+    }
+    if (enabled != "1")
+        return false
+    if (projectId = "" || apiKey = "" || collection = "" || uid = "")
+        return false
+
+    detail := SubStr(status.detail, 1, 1000)
+    body := "{"
+    body .= '"fields":{'
+    body .= '"recordingStatusAvailable":{"booleanValue":true},'
+    body .= '"recordingEnabled":{"booleanValue":true},'
+    body .= '"recordingActive":{"booleanValue":' (status.captureActive ? "true" : "false") '},'
+    body .= '"recordingState":{"stringValue":"' WorkerJsonEsc(status.state) '"},'
+    body .= '"recordingStateDetail":{"stringValue":"' WorkerJsonEsc(detail) '"},'
+    body .= '"recordingStateUpdatedAt":{"integerValue":"' status.updatedMs '"},'
+    body .= '"recordingLocalSessionDir":{"stringValue":"' WorkerJsonEsc(status.sessionDir) '"},'
+    body .= '"recordingDestinationDir":{"stringValue":"' WorkerJsonEsc(status.destinationDir) '"},'
+    body .= '"recordingDestinationSegmentsDir":{"stringValue":"' WorkerJsonEsc(status.destinationSegments) '"},'
+    body .= '"recordingFinalPath":{"stringValue":"' WorkerJsonEsc(status.finalPath) '"},'
+    body .= '"recordingResultPath":{"stringValue":"' WorkerJsonEsc(status.resultPath) '"},'
+    body .= '"recordingFailureStorage":{"stringValue":"' WorkerJsonEsc(status.failureStorage) '"},'
+    body .= '"recordingWorkerLogPath":{"stringValue":"' WorkerJsonEsc(status.workerLogPath) '"},'
+    body .= '"recordingBaseName":{"stringValue":"' WorkerJsonEsc(status.baseName) '"},'
+    body .= '"recordingAutoMerge":{"booleanValue":' (status.autoMerge ? "true" : "false") '}'
+    body .= "}"
+    body .= "}"
+
+    url := "https://firestore.googleapis.com/v1/projects/" projectId
+        . "/databases/(default)/documents/" collection "/" uid "?key=" apiKey
+    for fieldName in [
+        "recordingStatusAvailable", "recordingEnabled", "recordingActive", "recordingState",
+        "recordingStateDetail", "recordingStateUpdatedAt", "recordingLocalSessionDir",
+        "recordingDestinationDir", "recordingDestinationSegmentsDir", "recordingFinalPath",
+        "recordingResultPath", "recordingFailureStorage", "recordingWorkerLogPath",
+        "recordingBaseName", "recordingAutoMerge"
+    ]
+        url .= "&updateMask.fieldPaths=" fieldName
+
+    try {
+        http := ComObject("WinHttp.WinHttpRequest.5.1")
+        http.SetTimeouts(timeoutMs, timeoutMs, timeoutMs, timeoutMs)
+        http.Open("PATCH", url, false)
+        http.SetRequestHeader("Content-Type", "application/json; charset=utf-8")
+        http.Send(body)
+        return http.Status >= 200 && http.Status < 300
+    } catch {
+        ; 網路回報失敗不可影響本機錄影保全；狀態已先寫入 recording_status.ini。
+        return false
+    }
 }
 
 WorkerToIntRange(value, defaultValue, minValue, maxValue) {

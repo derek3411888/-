@@ -127,7 +127,15 @@
 - Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
 - 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
 - 即時診斷預設每 30 秒以 ImagePut 擷取低畫質 JPEG，本機 `latest.jpg` 原子覆寫；WARN／ERROR 另存固定份數。遠端控制啟用時，同一 Firestore client 文件會覆寫最新畫面，AHK 命令輪詢用 field mask 避免每 5 秒下載 JPEG；控制網頁使用 `onSnapshot`，只在文件變更時取得新內容。
+- `[runtime_diagnostics] video_preview_enabled=1` 時，另以自有精確 PID 的 FFmpeg 每 60 秒非同步擷取最近 6 秒、2 FPS、480px 寬的 MP4；本機覆寫 `diagnostics\latest_preview.mp4`，Firestore 只保留最新一份 data URI。命令列含 `WUTHERING_RUNTIME_PREVIEW_V1`，所有主錄影掃描必須排除它，停止診斷也只能關閉自己持有的短影片 PID。
+- 網頁的短影片只是故障即時預覽，完整長影片不得上傳 Firestore。錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
+- `RecordingFinalizeWorker.ahk` 必須在主程式已退出後仍直接 PATCH 錄影欄位；網路回報失敗不可影響本機保全，下一次主程式心跳會再從 `recording_status.ini` 補報。
 - `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
+
+### 3.18 OCR 模型相容性
+- `plugin\RapidOcr\models_zh_hq` 現在使用官方 PP-OCRv4 mobile 中文 det／rec 與 `ppocr_keys_v1.txt`，舊 PP-OCRv3 保留在 `models` 當回退。
+- 現有 RapidOcrOnnx 1.2.2 DLL 實測無法初始化 PP-OCRv5 mobile；PP-OCRv4 server 雖可載入但全螢幕單次約 38 秒，不可用於輪詢。v4 mobile 在實際 2560×1440 錄影畫面約 0.65 秒，且能正確讀出舊 v3 誤辨的「設定任務」。
+- wrapper 會略過檔名標示 v5／v6 的 ONNX，避免不相容模型使 OCR 初始化崩潰。升級到 v5／v6 必須先一併替換支援新 graph 的 OCR runtime，不可只換模型檔。
 
 ## 4) 伺服器排程與完成判定（高風險區）
 ### 4.1 切日規則（非常重要）

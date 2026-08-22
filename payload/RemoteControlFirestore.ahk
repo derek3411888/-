@@ -162,7 +162,7 @@ RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height 
     global RC_ENABLED
     if !RC_ENABLED
         return false
-    if (dataUri = "" || StrLen(dataUri) > 850000) {
+    if (dataUri = "" || StrLen(dataUri) > 300000) {
         RC_Log("Runtime snapshot skipped: empty or too large (chars=" StrLen(dataUri) ")", "WARN")
         return false
     }
@@ -186,6 +186,40 @@ RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height 
     r := RC_HttpRequest("PATCH", url, body)
     if !r.ok {
         RC_Log("Runtime snapshot patch failed: " r.msg, "WARN")
+        return false
+    }
+    return true
+}
+
+RC_PublishRuntimeVideoPreview(dataUri, capturedAt, durationSec := 6, width := 0, height := 0, sizeBytes := 0) {
+    global RC_ENABLED
+    if !RC_ENABLED
+        return false
+    if (dataUri = "" || StrLen(dataUri) > 430000) {
+        RC_Log("Runtime video preview skipped: empty or too large (chars=" StrLen(dataUri) ")", "WARN")
+        return false
+    }
+
+    body := "{"
+    body .= '"fields":{'
+    body .= '"latestVideoPreviewDataUri":{"stringValue":"' RC_JsonEsc(dataUri) '"},'
+    body .= '"latestVideoPreviewAt":{"integerValue":"' capturedAt '"},'
+    body .= '"latestVideoPreviewDurationSec":{"integerValue":"' durationSec '"},'
+    body .= '"latestVideoPreviewWidth":{"integerValue":"' width '"},'
+    body .= '"latestVideoPreviewHeight":{"integerValue":"' height '"},'
+    body .= '"latestVideoPreviewBytes":{"integerValue":"' sizeBytes '"}'
+    body .= "}"
+    body .= "}"
+
+    url := RC_ClientDocUrl()
+    for fieldName in [
+        "latestVideoPreviewDataUri", "latestVideoPreviewAt", "latestVideoPreviewDurationSec",
+        "latestVideoPreviewWidth", "latestVideoPreviewHeight", "latestVideoPreviewBytes"
+    ]
+        url .= "&updateMask.fieldPaths=" fieldName
+    r := RC_HttpRequest("PATCH", url, body)
+    if !r.ok {
+        RC_Log("Runtime video preview patch failed: " r.msg, "WARN")
         return false
     }
     return true
@@ -283,11 +317,46 @@ RC_GetPrimaryMacAddress() {
     return ""
 }
 
+RC_ReadRecordingStatus() {
+    localBase := Trim(EnvGet("LOCALAPPDATA"), ' "`t`r`n')
+    if (localBase = "")
+        localBase := A_Temp
+    stagingRoot := RTrim(StrReplace(localBase, "/", "\"), "\") "\WutheringAuto\recording_staging"
+    statusPath := stagingRoot "\recording_status.ini"
+    available := FileExist(statusPath) ? true : false
+    if !available {
+        return {
+            available: false, state: "", detail: "", updatedMs: 0,
+            localSessionDir: "", destinationDir: "", destinationSegmentsDir: "",
+            finalPath: "", resultPath: "", failureStorage: "", workerLogPath: stagingRoot "\recording_worker.log",
+            baseName: "", autoMerge: true, captureActive: false
+        }
+    }
+
+    return {
+        available: true,
+        state: RC_IniReadSafe(statusPath, "recording", "state", ""),
+        detail: RC_IniReadSafe(statusPath, "recording", "state_detail", ""),
+        updatedMs: RC_ToIntRange(RC_IniReadSafe(statusPath, "recording", "state_updated_unix_ms", "0"), 0, 0, 9999999999999),
+        localSessionDir: RC_IniReadSafe(statusPath, "recording", "local_session_dir", ""),
+        destinationDir: RC_IniReadSafe(statusPath, "recording", "destination_dir", ""),
+        destinationSegmentsDir: RC_IniReadSafe(statusPath, "recording", "destination_segments_dir", ""),
+        finalPath: RC_IniReadSafe(statusPath, "recording", "final_path", ""),
+        resultPath: RC_IniReadSafe(statusPath, "recording", "result_path", ""),
+        failureStorage: RC_IniReadSafe(statusPath, "recording", "failure_storage", ""),
+        workerLogPath: RC_IniReadSafe(statusPath, "recording", "worker_log_path", stagingRoot "\recording_worker.log"),
+        baseName: RC_IniReadSafe(statusPath, "recording", "base_name", ""),
+        autoMerge: RC_IniReadSafe(statusPath, "recording", "auto_merge", "1") = "1",
+        captureActive: RC_IniReadSafe(statusPath, "recording", "capture_active", "0") = "1"
+    }
+}
+
 RC_PatchClientState(state, isShutdown) {
     global RC_LAST_HEARTBEAT_OK, RC_LAST_ERROR_MSG
     global RC_LAST_EVENT_AT, RC_RECENT_EVENTS
     global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
+    global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
     nowMs := RC_UnixMs()
 
     currentStepName := Trim(CURRENT_STEP_NAME, " `t`r`n")
@@ -301,6 +370,9 @@ RC_PatchClientState(state, isShutdown) {
     if (serverTotal > 1 && currentServer != "")
         currentServerLabel := serverIndex "/" serverTotal " | " currentServer
     recentEventsJson := RC_BuildRecentEventsJson()
+    recording := RC_ReadRecordingStatus()
+    recordingActive := __SCREEN_RECORDING_ACTIVE ? true : false
+    recordingDetail := SubStr(recording.detail, 1, 1000)
 
     body := "{"
     body .= '"fields":{'
@@ -319,7 +391,22 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"updatedAt":{"integerValue":"' nowMs '"},'
     body .= '"recentEventsJson":{"stringValue":"' RC_JsonEsc(recentEventsJson) '"},'
     body .= '"recentEventCount":{"integerValue":"' RC_RECENT_EVENTS.Length '"},'
-    body .= '"lastRuntimeEventAt":{"integerValue":"' RC_LAST_EVENT_AT '"}'
+    body .= '"lastRuntimeEventAt":{"integerValue":"' RC_LAST_EVENT_AT '"},'
+    body .= '"recordingStatusAvailable":{"booleanValue":' (recording.available ? "true" : "false") '},'
+    body .= '"recordingEnabled":{"booleanValue":' (SCREEN_RECORDING_ENABLED ? "true" : "false") '},'
+    body .= '"recordingActive":{"booleanValue":' (recordingActive ? "true" : "false") '},'
+    body .= '"recordingState":{"stringValue":"' RC_JsonEsc(recording.state) '"},'
+    body .= '"recordingStateDetail":{"stringValue":"' RC_JsonEsc(recordingDetail) '"},'
+    body .= '"recordingStateUpdatedAt":{"integerValue":"' recording.updatedMs '"},'
+    body .= '"recordingLocalSessionDir":{"stringValue":"' RC_JsonEsc(recording.localSessionDir) '"},'
+    body .= '"recordingDestinationDir":{"stringValue":"' RC_JsonEsc(recording.destinationDir) '"},'
+    body .= '"recordingDestinationSegmentsDir":{"stringValue":"' RC_JsonEsc(recording.destinationSegmentsDir) '"},'
+    body .= '"recordingFinalPath":{"stringValue":"' RC_JsonEsc(recording.finalPath) '"},'
+    body .= '"recordingResultPath":{"stringValue":"' RC_JsonEsc(recording.resultPath) '"},'
+    body .= '"recordingFailureStorage":{"stringValue":"' RC_JsonEsc(recording.failureStorage) '"},'
+    body .= '"recordingWorkerLogPath":{"stringValue":"' RC_JsonEsc(recording.workerLogPath) '"},'
+    body .= '"recordingBaseName":{"stringValue":"' RC_JsonEsc(recording.baseName) '"},'
+    body .= '"recordingAutoMerge":{"booleanValue":' (recording.autoMerge ? "true" : "false") '}'
     body .= "}"
     body .= "}"
 
@@ -340,6 +427,21 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=recentEventsJson"
     url .= "&updateMask.fieldPaths=recentEventCount"
     url .= "&updateMask.fieldPaths=lastRuntimeEventAt"
+    url .= "&updateMask.fieldPaths=recordingStatusAvailable"
+    url .= "&updateMask.fieldPaths=recordingEnabled"
+    url .= "&updateMask.fieldPaths=recordingActive"
+    url .= "&updateMask.fieldPaths=recordingState"
+    url .= "&updateMask.fieldPaths=recordingStateDetail"
+    url .= "&updateMask.fieldPaths=recordingStateUpdatedAt"
+    url .= "&updateMask.fieldPaths=recordingLocalSessionDir"
+    url .= "&updateMask.fieldPaths=recordingDestinationDir"
+    url .= "&updateMask.fieldPaths=recordingDestinationSegmentsDir"
+    url .= "&updateMask.fieldPaths=recordingFinalPath"
+    url .= "&updateMask.fieldPaths=recordingResultPath"
+    url .= "&updateMask.fieldPaths=recordingFailureStorage"
+    url .= "&updateMask.fieldPaths=recordingWorkerLogPath"
+    url .= "&updateMask.fieldPaths=recordingBaseName"
+    url .= "&updateMask.fieldPaths=recordingAutoMerge"
 
     r := RC_HttpRequest("PATCH", url, body)
     if (r.ok) {

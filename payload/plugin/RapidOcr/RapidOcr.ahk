@@ -3,7 +3,7 @@
  * A cross platform OCR Library based on PaddleOCR & OnnxRuntime
  * @author thqby, RapidAI
  * @date 2024/08/07
- * @version 1.0.2
+ * @version 1.1.0 (bundled PP-OCRv4 mobile compatibility profile)
  * @license Apache-2.0
  ***********************************************************************/
 
@@ -99,6 +99,10 @@ class RapidOcr {
 		bestPath := ''
 		bestScore := -2147483648
 		for path in candidates {
+			; 目前隨附的 RapidOcrOnnx 1.2.2 DLL 無法載入 PP-OCRv5/v6 graph。
+			; 明確略過，避免使用者額外放入新模型後初始化直接崩潰。
+			if RegExMatch(StrLower(path), 'pp[-_]?ocrv?[56]|ocrv[56]')
+				continue
 			score := RapidOcr.ScoreModelPath(path, role)
 			if (score > bestScore) {
 				bestScore := score
@@ -106,6 +110,17 @@ class RapidOcr {
 			}
 		}
 		return bestPath
+	}
+
+	static DescribeDefaultModels() {
+		dir := RapidOcr.ResolveDefaultModelsDir()
+		files := []
+		loop files dir '\*.onnx', 'F'
+			files.Push(A_LoopFileName)
+		text := 'dir=' dir
+		for name in files
+			text .= ' | ' name
+		return text
 	}
 
 	static ScoreModelPath(path, role) {

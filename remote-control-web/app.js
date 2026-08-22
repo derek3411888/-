@@ -19,7 +19,7 @@ const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
-const WEB_BUILD = "20260822-2";
+const WEB_BUILD = "20260822-3";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -41,6 +41,13 @@ const snapshotMeta = document.getElementById("snapshotMeta");
 const btnRefreshSnapshot = document.getElementById("btnRefreshSnapshot");
 const runtimeEventsBody = document.getElementById("runtimeEventsBody");
 const runtimeEventsNote = document.getElementById("runtimeEventsNote");
+const latestVideoPreview = document.getElementById("latestVideoPreview");
+const videoPreviewPlaceholder = document.getElementById("videoPreviewPlaceholder");
+const videoPreviewMeta = document.getElementById("videoPreviewMeta");
+const recordingStatusBadge = document.getElementById("recordingStatusBadge");
+const recordingStatusUpdated = document.getElementById("recordingStatusUpdated");
+const recordingStatusNote = document.getElementById("recordingStatusNote");
+const recordingPaths = document.getElementById("recordingPaths");
 
 let cache = new Map();
 let loadInFlight = false;
@@ -49,6 +56,7 @@ let sending = false;
 let sendingState = "";
 let commandError = null;
 let renderedScreenshotKey = "";
+let renderedVideoKey = "";
 
 function toInteger(value, fallback = 0) {
   const n = Number(value);
@@ -84,6 +92,14 @@ function fmtAge(value) {
   const hr = Math.floor(min / 60);
   const remMin = min % 60;
   return `${hr} 小時 ${remMin} 分鐘前`;
+}
+
+function fmtBytes(value) {
+  const bytes = Math.max(0, toInteger(value, 0));
+  if (!bytes) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function readField(docData, key, def = "") {
@@ -306,6 +322,8 @@ function refreshMeta() {
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
     `距今: ${fmtAge(readField(d, "lastHeartbeat", 0))}`,
     `最後畫面: ${fmtTs(readField(d, "latestScreenshotAt", 0))}（${fmtAge(readField(d, "latestScreenshotAt", 0))}）`,
+    `最後短影片: ${fmtTs(readField(d, "latestVideoPreviewAt", 0))}（${fmtAge(readField(d, "latestVideoPreviewAt", 0))}）`,
+    `錄影狀態: ${recordingStateLabel(String(readField(d, "recordingState", "") || ""))}`,
     `最後 ACK: nonce=${readField(d, "lastAckNonce", 0)} state=${readField(d, "lastAckState", "-")} at=${fmtTs(readField(d, "lastAckAt", 0))}`,
   ];
   for (const t of lines) {
@@ -351,6 +369,198 @@ function renderSnapshot() {
   latestScreenshot.hidden = false;
   snapshotPlaceholder.hidden = true;
   snapshotMeta.textContent = `${fmtTs(capturedAt)}（${fmtAge(capturedAt)}）｜${reason}${width && height ? `｜${width}×${height}` : ""}`;
+}
+
+function recordingStateLabel(state) {
+  const labels = {
+    starting: "準備啟動錄影",
+    recording: "錄影中",
+    segments_synced: "錄影中（分段已同步）",
+    sync_waiting: "目的端暫時不可用",
+    stopping: "正在停止並封口",
+    finalize_pending: "等待背景收尾",
+    finalize_waiting: "收尾等待中",
+    merging: "正在無損合併",
+    merge_waiting: "合併失敗／等待處理",
+    copying_final: "正在複製完整影片",
+    copy_waiting: "目的端複製失敗／等待重試",
+    complete: "已成功完成",
+    start_failed: "錄影啟動失敗",
+    stop_failed: "錄影停止失敗",
+    worker_missing: "缺少背景收尾工具",
+    worker_start_failed: "背景收尾工具啟動失敗",
+    worker_error: "背景收尾發生錯誤",
+  };
+  return labels[state] || (state ? state : "尚無資料");
+}
+
+function recordingStateClass(state, active) {
+  if (active || ["starting", "recording", "segments_synced", "stopping", "finalize_pending", "merging", "copying_final"].includes(state)) {
+    return "running";
+  }
+  if (state === "complete") return "success";
+  if (["start_failed", "stop_failed", "worker_missing", "worker_start_failed", "worker_error"].includes(state)) {
+    return "error";
+  }
+  if (state.includes("waiting")) return "warning";
+  return "idle";
+}
+
+async function copyPathToClipboard(path, button) {
+  const original = button.textContent;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(path);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = path;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      if (!document.execCommand("copy")) throw new Error("瀏覽器不允許複製");
+      input.remove();
+    }
+    button.textContent = "已複製";
+  } catch {
+    button.textContent = "複製失敗";
+  }
+  window.setTimeout(() => { button.textContent = original; }, 1800);
+}
+
+function addRecordingPath(label, path, hint = "") {
+  const value = String(path || "").trim();
+  if (!value) return;
+  const row = document.createElement("div");
+  row.className = "recording-path-row";
+  const content = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const code = document.createElement("code");
+  code.textContent = value;
+  code.title = value;
+  content.append(title, code);
+  if (hint) {
+    const small = document.createElement("span");
+    small.textContent = hint;
+    content.appendChild(small);
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "複製路徑";
+  button.addEventListener("click", () => void copyPathToClipboard(value, button));
+  row.append(content, button);
+  recordingPaths.appendChild(row);
+}
+
+function renderRecordingStatus() {
+  recordingPaths.replaceChildren();
+  const data = selectedClientData();
+  if (!data) {
+    recordingStatusBadge.className = "recording-status-badge idle";
+    recordingStatusBadge.textContent = "尚無資料";
+    recordingStatusUpdated.textContent = "請先選擇一台電腦。";
+    recordingStatusNote.textContent = "選擇電腦後會顯示成功、失敗原因與實際保留位置。";
+    return;
+  }
+
+  const available = Boolean(readField(data, "recordingStatusAvailable", false));
+  const enabled = Boolean(readField(data, "recordingEnabled", false));
+  const active = Boolean(readField(data, "recordingActive", false));
+  const state = String(readField(data, "recordingState", "") || "");
+  const detail = String(readField(data, "recordingStateDetail", "") || "");
+  const updatedAt = toMillis(readField(data, "recordingStateUpdatedAt", 0));
+  const autoMerge = Boolean(readField(data, "recordingAutoMerge", true));
+
+  if (!available && !state) {
+    recordingStatusBadge.className = "recording-status-badge idle";
+    recordingStatusBadge.textContent = enabled ? "尚未開始" : "錄影已停用";
+    recordingStatusUpdated.textContent = "尚未收到任何錄影工作階段。";
+    recordingStatusNote.textContent = enabled
+      ? "首次開始錄影後，這裡會持續保留最後一次成功或失敗結果。"
+      : "可在啟動器設定中啟用螢幕錄影。";
+    return;
+  }
+
+  const stateClass = recordingStateClass(state, active);
+  recordingStatusBadge.className = `recording-status-badge ${stateClass}`;
+  recordingStatusBadge.textContent = recordingStateLabel(state);
+  recordingStatusUpdated.textContent = updatedAt
+    ? `最後更新：${fmtTs(updatedAt)}（${fmtAge(updatedAt)}）`
+    : "狀態時間未知";
+  recordingStatusNote.textContent = detail || (state === "complete"
+    ? "目的端檔案已完成驗證。"
+    : "背景工具尚未提供詳細說明。");
+
+  const resultPath = readField(data, "recordingResultPath", "");
+  const finalPath = readField(data, "recordingFinalPath", "");
+  const segmentPath = readField(data, "recordingDestinationSegmentsDir", "");
+  const destinationDir = readField(data, "recordingDestinationDir", "");
+  const failureStorage = readField(data, "recordingFailureStorage", readField(data, "recordingLocalSessionDir", ""));
+  const workerLogPath = readField(data, "recordingWorkerLogPath", "");
+  const completed = state === "complete";
+
+  addRecordingPath(
+    autoMerge ? (completed ? "成功的完整影片" : "預定完整影片") : (completed ? "成功的分段資料夾" : "預定分段資料夾"),
+    resultPath || (autoMerge ? finalPath : segmentPath),
+    completed ? "背景工具已驗證完成" : "尚未顯示完成前，請勿當成最終成品",
+  );
+  addRecordingPath("設定的輸出資料夾", destinationDir);
+  if (autoMerge && segmentPath && segmentPath !== resultPath) {
+    addRecordingPath("目的端五分鐘分段", segmentPath, "合併成功後會自動清理；失敗時可逐段播放");
+  }
+  if (!completed) {
+    addRecordingPath("本機暫存／失敗保留位置", failureStorage, "網路、合併或複製失敗時，分段會保留在這裡");
+  }
+  addRecordingPath("錄影背景工具 log", workerLogPath);
+}
+
+function renderVideoPreview() {
+  const data = selectedClientData();
+  if (!data) {
+    renderedVideoKey = "";
+    latestVideoPreview.pause();
+    latestVideoPreview.hidden = true;
+    latestVideoPreview.removeAttribute("src");
+    videoPreviewPlaceholder.hidden = false;
+    videoPreviewPlaceholder.textContent = "請先選擇一台電腦。";
+    videoPreviewMeta.textContent = "尚未收到短影片。";
+    return;
+  }
+
+  const dataUri = String(readField(data, "latestVideoPreviewDataUri", "") || "");
+  const capturedAt = toMillis(readField(data, "latestVideoPreviewAt", 0));
+  const duration = toInteger(readField(data, "latestVideoPreviewDurationSec", 0), 0);
+  const width = toInteger(readField(data, "latestVideoPreviewWidth", 0), 0);
+  const height = toInteger(readField(data, "latestVideoPreviewHeight", 0), 0);
+  const bytes = toInteger(readField(data, "latestVideoPreviewBytes", 0), 0);
+
+  if (!dataUri.startsWith("data:video/mp4;base64,")) {
+    renderedVideoKey = "";
+    latestVideoPreview.pause();
+    latestVideoPreview.hidden = true;
+    latestVideoPreview.removeAttribute("src");
+    videoPreviewPlaceholder.hidden = false;
+    videoPreviewPlaceholder.textContent = "尚未收到短影片；請確認新版程式的『網站顯示最近 6 秒短影片』已啟用且 ffmpeg 可用。";
+    videoPreviewMeta.textContent = "截圖與短影片是兩個獨立項目。";
+    return;
+  }
+
+  const nextKey = `${pcDropdown.value}:${capturedAt}:${dataUri.length}`;
+  if (renderedVideoKey !== nextKey) {
+    latestVideoPreview.src = dataUri;
+    latestVideoPreview.load();
+    void latestVideoPreview.play().catch(() => {});
+    renderedVideoKey = nextKey;
+  }
+  latestVideoPreview.hidden = false;
+  videoPreviewPlaceholder.hidden = true;
+  const stale = capturedAt > 0 && Date.now() - capturedAt > 150_000;
+  videoPreviewMeta.textContent = `${fmtTs(capturedAt)}（${fmtAge(capturedAt)}）`
+    + `${duration ? `｜${duration} 秒` : ""}${width && height ? `｜${width}×${height}` : ""}`
+    + `${bytes ? `｜${fmtBytes(bytes)}` : ""}`
+    + (stale ? "｜⚠ 已超過 2.5 分鐘未更新" : "｜持續更新中");
 }
 
 function runtimeLevelClass(level) {
@@ -530,7 +740,9 @@ function renderCommandStatus() {
 
 function renderSelectedClient() {
   refreshMeta();
+  renderRecordingStatus();
   renderSnapshot();
+  renderVideoPreview();
   renderRuntimeEvents();
   renderHistory();
   renderCommandStatus();
@@ -708,6 +920,7 @@ btnStop.addEventListener("click", () => {
 });
 pcDropdown.addEventListener("change", () => {
   renderedScreenshotKey = "";
+  renderedVideoKey = "";
   renderSelectedClient();
   void reconcileClientHistory(pcDropdown.value);
 });

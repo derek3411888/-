@@ -135,8 +135,89 @@ button:disabled { cursor: wait; opacity: 0.55; }
   background: #111;
 }
 
-.latest-screenshot[hidden] {
+.latest-video-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 520px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #111;
+}
+
+.latest-screenshot[hidden],
+.latest-video-preview[hidden] {
   display: none;
+}
+
+.privacy-note {
+  margin-bottom: 0;
+}
+
+.recording-status-badge {
+  display: inline-block;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.recording-status-badge.idle { color: var(--muted); background: #f8fbfd; }
+.recording-status-badge.running { color: var(--info); border-color: #aac9e1; background: #f2f8fc; }
+.recording-status-badge.success { color: var(--ok); border-color: #a8d8c3; background: #f2fbf6; }
+.recording-status-badge.warning { color: var(--warn); border-color: #e6b9a6; background: #fff9f3; }
+.recording-status-badge.error { color: var(--danger); border-color: #e6a6a6; background: #fff5f5; }
+
+.recording-status-note {
+  margin: 8px 0 0;
+  border-left: 4px solid var(--line);
+  padding: 8px 10px;
+  color: var(--muted);
+  background: #f8fbfd;
+}
+
+.recording-paths {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.recording-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: #fbfcfd;
+}
+
+.recording-path-row > div {
+  min-width: 0;
+}
+
+.recording-path-row strong,
+.recording-path-row span,
+.recording-path-row code {
+  display: block;
+}
+
+.recording-path-row code {
+  overflow-wrap: anywhere;
+  margin-top: 3px;
+  color: var(--ink);
+  font-family: Consolas, "Microsoft JhengHei UI", monospace;
+  font-size: 13px;
+}
+
+.recording-path-row span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .runtime-events-table {
@@ -214,6 +295,14 @@ tbody tr:last-child td {
   .heading-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .recording-path-row {
+    grid-template-columns: 1fr;
+  }
+
+  .recording-path-row button {
+    width: 100%;
   }
 }
 

@@ -31,6 +31,18 @@
       <ul id="clientMeta"></ul>
     </section>
 
+    <section class="card" aria-labelledby="recordingStatusTitle">
+      <div class="section-heading heading-row">
+        <div>
+          <h2 id="recordingStatusTitle">完整錄影狀態與存放位置</h2>
+          <p id="recordingStatusUpdated" class="sub">尚未收到錄影狀態。</p>
+        </div>
+        <span id="recordingStatusBadge" class="recording-status-badge idle">尚無資料</span>
+      </div>
+      <p id="recordingStatusNote" class="recording-status-note">選擇電腦後會顯示成功、失敗原因與實際保留位置。</p>
+      <div id="recordingPaths" class="recording-paths"></div>
+    </section>
+
     <section class="card" aria-labelledby="snapshotTitle">
       <div class="section-heading heading-row">
         <div>
@@ -41,6 +53,16 @@
       </div>
       <div id="snapshotPlaceholder" class="snapshot-placeholder">裝置啟用即時診斷後，每 30 秒更新一次。</div>
       <img id="latestScreenshot" class="latest-screenshot" alt="裝置最新執行畫面" hidden />
+    </section>
+
+    <section class="card" aria-labelledby="videoPreviewTitle">
+      <div class="section-heading">
+        <h2 id="videoPreviewTitle">最近 6 秒短影片預覽</h2>
+        <p id="videoPreviewMeta" class="sub">尚未收到短影片。</p>
+      </div>
+      <div id="videoPreviewPlaceholder" class="snapshot-placeholder">這是每 60 秒更新的短影片預覽，不是完整 6～7 小時錄影。</div>
+      <video id="latestVideoPreview" class="latest-video-preview" controls autoplay muted loop playsinline hidden></video>
+      <p class="sub privacy-note">完整長影片不會上傳到網站，請依上方「完整錄影狀態與存放位置」回到電腦或網路共用查看。</p>
     </section>
 
     <section class="card" aria-labelledby="runtimeEventsTitle">
@@ -85,6 +107,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260822-2"></script>
+  <script type="module" src="app.js?v=20260822-3"></script>
 </body>
 </html>
