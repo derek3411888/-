@@ -280,6 +280,8 @@ WorkerPublishRecordingStatus(status) {
         "recordingBaseName", "recordingAutoMerge"
     ]
         url .= "&updateMask.fieldPaths=" fieldName
+    ; 背景收尾只需知道 PATCH 是否成功，不下載整份 client 文件。
+    url .= "&mask.fieldPaths=recordingStateUpdatedAt"
 
     try {
         http := ComObject("WinHttp.WinHttpRequest.5.1")

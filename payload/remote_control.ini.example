@@ -25,7 +25,7 @@ display_name=
 
 ; 心跳/輪詢/HTTP timeout（毫秒）
 heartbeat_interval_ms=90000
-poll_interval_ms=5000
+poll_interval_ms=10000
 http_timeout_ms=2500
 
 ; 結束時標記 OFFLINE（目前採 patch 狀態）
@@ -35,9 +35,11 @@ delete_on_exit=0
 last_nonce=0
 
 [runtime_diagnostics]
-; 低畫質最新畫面會覆寫本機 latest.jpg，並在遠端控制啟用時同步到控制網頁
+; 低畫質最新畫面會覆寫本機 latest.jpg，並在遠端控制啟用時同步到獨立 media 文件
 enabled=1
-snapshot_interval_sec=30
+snapshot_interval_sec=60
 error_keep_count=30
 snapshot_max_width=640
 jpeg_quality=45
+; 網路影片功能暫停實作；舊設定會自動改為 0
+video_preview_enabled=0

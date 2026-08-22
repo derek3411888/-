@@ -10,7 +10,7 @@ global RC_UID := ""
 global RC_DISPLAY_NAME := ""
 global RC_DEVICE_ALIAS := ""
 global RC_HEARTBEAT_INTERVAL_MS := 90000
-global RC_POLL_INTERVAL_MS := 5000
+global RC_POLL_INTERVAL_MS := 10000
 global RC_TIMEOUT_MS := 2500
 global RC_LAST_NONCE := 0
 global RC_REMOTE_DESIRED_STATE := "RUN"
@@ -43,9 +43,13 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
     if (RC_COLLECTION = "")
         RC_COLLECTION := "ahk_clients"
 
-    RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "heartbeat_interval_ms", "90000"), 90000, 3000, 300000)
-    RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "poll_interval_ms", "5000"), 5000, 1000, 30000)
+    ; 免費額度保護：心跳至少 60 秒、命令輪詢至少 10 秒。
+    ; 一般命令平均約 5 秒、最慢約 10 秒收到，不再以 5 秒頻率整天讀取文件。
+    RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "heartbeat_interval_ms", "90000"), 90000, 60000, 300000)
+    RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "poll_interval_ms", "10000"), 10000, 10000, 30000)
     RC_TIMEOUT_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "http_timeout_ms", "2500"), 2500, 800, 10000)
+    try IniWrite(RC_HEARTBEAT_INTERVAL_MS, cfgPath, "remote_control", "heartbeat_interval_ms")
+    try IniWrite(RC_POLL_INTERVAL_MS, cfgPath, "remote_control", "poll_interval_ms")
 
     RC_UID := Trim(RC_IniReadSafe(cfgPath, "remote_control", "uid", ""), " `t`r`n")
     if (RC_UID = "") {
@@ -66,7 +70,8 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
 
     RC_StartupDefaultRun()
 
-    RC_Log("RemoteControl initialized. uid=" RC_UID " display=" RC_DISPLAY_NAME " collection=" RC_COLLECTION)
+    RC_Log("RemoteControl initialized. uid=" RC_UID " display=" RC_DISPLAY_NAME " collection=" RC_COLLECTION
+        " poll=" RC_POLL_INTERVAL_MS "ms heartbeat=" RC_HEARTBEAT_INTERVAL_MS "ms")
     RC_Start()
     return true
 }
@@ -95,6 +100,7 @@ RC_Start() {
         return
 
     RC_HeartbeatTick()
+    RC_CleanupLegacyMediaFields()
     RC_PollCommandTick()
     SetTimer(RC_HeartbeatTick, RC_HEARTBEAT_INTERVAL_MS)
     SetTimer(RC_PollCommandTick, RC_POLL_INTERVAL_MS)
@@ -159,7 +165,7 @@ RC_BuildRecentEventsJson() {
 }
 
 RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height := 0) {
-    global RC_ENABLED
+    global RC_ENABLED, RC_UID
     if !RC_ENABLED
         return false
     if (dataUri = "" || StrLen(dataUri) > 300000) {
@@ -169,6 +175,8 @@ RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height 
 
     body := "{"
     body .= '"fields":{'
+    body .= '"docKind":{"stringValue":"media"},'
+    body .= '"clientUid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"latestScreenshotDataUri":{"stringValue":"' RC_JsonEsc(dataUri) '"},'
     body .= '"latestScreenshotAt":{"integerValue":"' capturedAt '"},'
     body .= '"latestScreenshotReason":{"stringValue":"' RC_JsonEsc(reason) '"},'
@@ -177,12 +185,16 @@ RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height 
     body .= "}"
     body .= "}"
 
-    url := RC_ClientDocUrl()
+    url := RC_ClientMediaDocUrl()
+    url .= "&updateMask.fieldPaths=docKind"
+    url .= "&updateMask.fieldPaths=clientUid"
     url .= "&updateMask.fieldPaths=latestScreenshotDataUri"
     url .= "&updateMask.fieldPaths=latestScreenshotAt"
     url .= "&updateMask.fieldPaths=latestScreenshotReason"
     url .= "&updateMask.fieldPaths=latestScreenshotWidth"
     url .= "&updateMask.fieldPaths=latestScreenshotHeight"
+    ; PATCH 回應只取時間戳，避免伺服器把剛上傳的整張 JPEG 再傳回來。
+    url .= "&mask.fieldPaths=latestScreenshotAt"
     r := RC_HttpRequest("PATCH", url, body)
     if !r.ok {
         RC_Log("Runtime snapshot patch failed: " r.msg, "WARN")
@@ -192,36 +204,30 @@ RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height 
 }
 
 RC_PublishRuntimeVideoPreview(dataUri, capturedAt, durationSec := 6, width := 0, height := 0, sizeBytes := 0) {
-    global RC_ENABLED
-    if !RC_ENABLED
-        return false
-    if (dataUri = "" || StrLen(dataUri) > 430000) {
-        RC_Log("Runtime video preview skipped: empty or too large (chars=" StrLen(dataUri) ")", "WARN")
-        return false
-    }
+    ; 網路影片功能暫停實作。保留函式只為相容舊呼叫，永遠不送出資料。
+    return false
+}
 
-    body := "{"
-    body .= '"fields":{'
-    body .= '"latestVideoPreviewDataUri":{"stringValue":"' RC_JsonEsc(dataUri) '"},'
-    body .= '"latestVideoPreviewAt":{"integerValue":"' capturedAt '"},'
-    body .= '"latestVideoPreviewDurationSec":{"integerValue":"' durationSec '"},'
-    body .= '"latestVideoPreviewWidth":{"integerValue":"' width '"},'
-    body .= '"latestVideoPreviewHeight":{"integerValue":"' height '"},'
-    body .= '"latestVideoPreviewBytes":{"integerValue":"' sizeBytes '"}'
-    body .= "}"
-    body .= "}"
-
+RC_CleanupLegacyMediaFields() {
+    ; 4.36 曾把 JPEG／MP4 Base64 放在控制文件。新版第一次啟動即刪除這些欄位，
+    ; 否則即使停止上傳，Firestore 仍會在網頁監聽或 PATCH 回應中傳送舊內容。
+    body := '{"fields":{"mediaSchemaVersion":{"integerValue":"2"}}}'
     url := RC_ClientDocUrl()
     for fieldName in [
+        "latestScreenshotDataUri", "latestScreenshotAt", "latestScreenshotReason",
+        "latestScreenshotWidth", "latestScreenshotHeight",
         "latestVideoPreviewDataUri", "latestVideoPreviewAt", "latestVideoPreviewDurationSec",
-        "latestVideoPreviewWidth", "latestVideoPreviewHeight", "latestVideoPreviewBytes"
+        "latestVideoPreviewWidth", "latestVideoPreviewHeight", "latestVideoPreviewBytes",
+        "mediaSchemaVersion"
     ]
         url .= "&updateMask.fieldPaths=" fieldName
+    url .= "&mask.fieldPaths=mediaSchemaVersion"
     r := RC_HttpRequest("PATCH", url, body)
     if !r.ok {
-        RC_Log("Runtime video preview patch failed: " r.msg, "WARN")
+        RC_Log("Legacy media cleanup failed: " r.msg, "WARN")
         return false
     }
+    RC_Log("Legacy Firestore media fields cleared; screenshot now uses companion media document")
     return true
 }
 
@@ -376,6 +382,8 @@ RC_PatchClientState(state, isShutdown) {
 
     body := "{"
     body .= '"fields":{'
+    body .= '"docKind":{"stringValue":"client"},'
+    body .= '"schemaVersion":{"integerValue":"2"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
@@ -411,6 +419,8 @@ RC_PatchClientState(state, isShutdown) {
     body .= "}"
 
     url := RC_ClientDocUrl()
+    url .= "&updateMask.fieldPaths=docKind"
+    url .= "&updateMask.fieldPaths=schemaVersion"
     url .= "&updateMask.fieldPaths=uid"
     url .= "&updateMask.fieldPaths=displayName"
     url .= "&updateMask.fieldPaths=computerName"
@@ -442,6 +452,8 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=recordingWorkerLogPath"
     url .= "&updateMask.fieldPaths=recordingBaseName"
     url .= "&updateMask.fieldPaths=recordingAutoMerge"
+    ; PATCH 只需要確認 updatedAt，不下載整份狀態文件。
+    url .= "&mask.fieldPaths=updatedAt"
 
     r := RC_HttpRequest("PATCH", url, body)
     if (r.ok) {
@@ -471,6 +483,7 @@ RC_PatchCommandAck(nonce, stateApplied) {
     url .= "&updateMask.fieldPaths=lastAckNonce"
     url .= "&updateMask.fieldPaths=lastAckState"
     url .= "&updateMask.fieldPaths=lastAckAt"
+    url .= "&mask.fieldPaths=lastAckAt"
 
     r := RC_HttpRequest("PATCH", url, body)
     if !r.ok
@@ -478,8 +491,7 @@ RC_PatchCommandAck(nonce, stateApplied) {
 }
 
 RC_FirestoreGetClientDoc() {
-    ; 輪詢命令只需要兩個欄位。即時快照可能有數十到數百 KB，使用 field mask
-    ; 避免每 5 秒把同一張 JPEG 下載回執行端。
+    ; 輪詢命令只需要兩個欄位，使用 field mask 保持每次回應極小。
     url := RC_ClientDocUrl()
     url .= "&mask.fieldPaths=desiredState"
     url .= "&mask.fieldPaths=nonce"
@@ -494,6 +506,11 @@ RC_FirestoreGetClientDoc() {
 RC_ClientDocUrl() {
     global RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_UID
     return "https://firestore.googleapis.com/v1/projects/" RC_PROJECT_ID "/databases/(default)/documents/" RC_COLLECTION "/" RC_UID "?key=" RC_API_KEY
+}
+
+RC_ClientMediaDocUrl() {
+    global RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_UID
+    return "https://firestore.googleapis.com/v1/projects/" RC_PROJECT_ID "/databases/(default)/documents/" RC_COLLECTION "/" RC_UID "__media?key=" RC_API_KEY
 }
 
 RC_HttpRequest(method, url, body := "") {
@@ -577,7 +594,7 @@ RC_EnsureRemoteControlDefaults(cfgPath) {
         "device_alias", "",
         "display_name", "",
         "heartbeat_interval_ms", "90000",
-        "poll_interval_ms", "5000",
+        "poll_interval_ms", "10000",
         "http_timeout_ms", "2500",
         "delete_on_exit", "0",
         "last_nonce", "0"

@@ -45,9 +45,9 @@ AutoHotkey64.exe 自動開啟OKWW.ahk
 ## 即時回看
 
 - 啟用 `[runtime_diagnostics]` 後，本機 `latest.jpg` 會持續覆寫，警告／錯誤畫面則依設定份數保留。
-- 遠端控制啟用時，控制網頁會顯示低畫質最新畫面、每 60 秒更新一次的最近 6 秒 MP4 短影片、錄影成功／失敗位置與最近 50 筆流程事件。
-- 網站短影片只是覆寫式即時預覽，完整 6～7 小時影片不會上傳，仍只保存在設定的本機／網路輸出資料夾。短影片本機副本為 `%LOCALAPPDATA%\WutheringAuto\diagnostics\latest_preview.mp4`。
-- 畫面與短影片會寫入目前的 Firestore client 文件，請確認 Firestore 存取規則符合你的隱私需求；可在設定取消「網站顯示最近 6 秒短影片」。
+- 遠端控制啟用時，控制網頁會顯示每 60 秒更新的低畫質最新畫面、錄影成功／失敗位置與最近 50 筆流程事件。
+- 網路短影片目前停用且不會上傳；完整 6～7 小時影片仍只保存在設定的本機／網路輸出資料夾。
+- 畫面改寫入同集合的 `UID__media` companion 文件，控制／心跳文件不再夾帶 JPEG；AHK 每 10 秒輪詢時只下載 `desiredState` 與 `nonce`，降低 Firestore 讀取流量。
 
 ## OCR 模型
 

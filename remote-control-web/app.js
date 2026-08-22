@@ -5,7 +5,9 @@ import {
   getDocs,
   getFirestore,
   onSnapshot,
+  query,
   runTransaction,
+  where,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
 // TODO: 填入你自己的 Firebase 專案設定
@@ -16,13 +18,15 @@ const FIREBASE_CONFIG = {
 };
 
 const COLLECTION = "ahk_clients";
+const MEDIA_DOC_SUFFIX = "__media";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
 const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
-const WEB_BUILD = "20260822-3";
+const WEB_BUILD = "20260822-4";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
+const clientsQuery = query(collection(db, COLLECTION), where("docKind", "==", "client"));
 
 const pcDropdown = document.getElementById("pcDropdown");
 const btnPause = document.getElementById("btnPause");
@@ -41,9 +45,6 @@ const snapshotMeta = document.getElementById("snapshotMeta");
 const btnRefreshSnapshot = document.getElementById("btnRefreshSnapshot");
 const runtimeEventsBody = document.getElementById("runtimeEventsBody");
 const runtimeEventsNote = document.getElementById("runtimeEventsNote");
-const latestVideoPreview = document.getElementById("latestVideoPreview");
-const videoPreviewPlaceholder = document.getElementById("videoPreviewPlaceholder");
-const videoPreviewMeta = document.getElementById("videoPreviewMeta");
 const recordingStatusBadge = document.getElementById("recordingStatusBadge");
 const recordingStatusUpdated = document.getElementById("recordingStatusUpdated");
 const recordingStatusNote = document.getElementById("recordingStatusNote");
@@ -56,7 +57,9 @@ let sending = false;
 let sendingState = "";
 let commandError = null;
 let renderedScreenshotKey = "";
-let renderedVideoKey = "";
+let selectedMediaClientId = "";
+let selectedMediaData = null;
+let stopSelectedMediaListener = null;
 
 function toInteger(value, fallback = 0) {
   const n = Number(value);
@@ -92,14 +95,6 @@ function fmtAge(value) {
   const hr = Math.floor(min / 60);
   const remMin = min % 60;
   return `${hr} 小時 ${remMin} 分鐘前`;
-}
-
-function fmtBytes(value) {
-  const bytes = Math.max(0, toInteger(value, 0));
-  if (!bytes) return "-";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function readField(docData, key, def = "") {
@@ -236,6 +231,46 @@ function selectedClientData() {
   return cache.get(id);
 }
 
+function currentMediaData() {
+  const id = pcDropdown.value;
+  if (!id || selectedMediaClientId !== id) return null;
+  return selectedMediaData;
+}
+
+function startSelectedMediaSubscription(force = false) {
+  const id = pcDropdown.value;
+  if (!force && id && selectedMediaClientId === id && stopSelectedMediaListener) return;
+
+  if (stopSelectedMediaListener) stopSelectedMediaListener();
+  stopSelectedMediaListener = null;
+  selectedMediaClientId = id || "";
+  selectedMediaData = null;
+  renderedScreenshotKey = "";
+
+  if (!id) {
+    renderSnapshot();
+    return;
+  }
+
+  const mediaRef = doc(db, COLLECTION, `${id}${MEDIA_DOC_SUFFIX}`);
+  stopSelectedMediaListener = onSnapshot(
+    mediaRef,
+    (snap) => {
+      if (pcDropdown.value !== id) return;
+      selectedMediaData = snap.exists() ? snap.data() : null;
+      refreshMeta();
+      renderSnapshot();
+    },
+    (e) => {
+      if (pcDropdown.value !== id) return;
+      selectedMediaData = null;
+      renderedScreenshotKey = "";
+      renderSnapshot();
+      snapshotMeta.textContent = `讀取快照失敗：${e.message}`;
+    },
+  );
+}
+
 function setButtonsDisabled(disabled) {
   const noClient = !pcDropdown.value || !cache.has(pcDropdown.value);
   const value = Boolean(disabled || noClient);
@@ -303,6 +338,7 @@ function renderClients() {
   }
 
   statusMsg.textContent = `可見 ${rows.length} 台，在線 ${onlineCount} 台`;
+  startSelectedMediaSubscription();
   renderSelectedClient();
 }
 
@@ -311,6 +347,7 @@ function refreshMeta() {
   clientMeta.innerHTML = "";
   if (!id || !cache.has(id)) return;
   const d = cache.get(id);
+  const media = currentMediaData() || {};
   const lines = [
     `UID: ${id}`,
     `顯示名稱: ${readField(d, "displayName", "-")}`,
@@ -321,8 +358,7 @@ function refreshMeta() {
     `目前伺服器: ${readField(d, "currentServerLabel", readField(d, "currentServer", "-"))}`,
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
     `距今: ${fmtAge(readField(d, "lastHeartbeat", 0))}`,
-    `最後畫面: ${fmtTs(readField(d, "latestScreenshotAt", 0))}（${fmtAge(readField(d, "latestScreenshotAt", 0))}）`,
-    `最後短影片: ${fmtTs(readField(d, "latestVideoPreviewAt", 0))}（${fmtAge(readField(d, "latestVideoPreviewAt", 0))}）`,
+    `最後畫面: ${fmtTs(readField(media, "latestScreenshotAt", 0))}（${fmtAge(readField(media, "latestScreenshotAt", 0))}）`,
     `錄影狀態: ${recordingStateLabel(String(readField(d, "recordingState", "") || ""))}`,
     `最後 ACK: nonce=${readField(d, "lastAckNonce", 0)} state=${readField(d, "lastAckState", "-")} at=${fmtTs(readField(d, "lastAckAt", 0))}`,
   ];
@@ -334,14 +370,25 @@ function refreshMeta() {
 }
 
 function renderSnapshot() {
-  const data = selectedClientData();
-  if (!data) {
+  const client = selectedClientData();
+  if (!client) {
     renderedScreenshotKey = "";
     latestScreenshot.hidden = true;
     latestScreenshot.removeAttribute("src");
     snapshotPlaceholder.hidden = false;
     snapshotPlaceholder.textContent = "請先選擇一台電腦。";
     snapshotMeta.textContent = "尚未收到快照。";
+    return;
+  }
+
+  const data = currentMediaData();
+  if (!data) {
+    renderedScreenshotKey = "";
+    latestScreenshot.hidden = true;
+    latestScreenshot.removeAttribute("src");
+    snapshotPlaceholder.hidden = false;
+    snapshotPlaceholder.textContent = "等待這台裝置的獨立快照資料；控制狀態不會夾帶圖片。";
+    snapshotMeta.textContent = "尚未收到新版快照。";
     return;
   }
 
@@ -514,53 +561,6 @@ function renderRecordingStatus() {
     addRecordingPath("本機暫存／失敗保留位置", failureStorage, "網路、合併或複製失敗時，分段會保留在這裡");
   }
   addRecordingPath("錄影背景工具 log", workerLogPath);
-}
-
-function renderVideoPreview() {
-  const data = selectedClientData();
-  if (!data) {
-    renderedVideoKey = "";
-    latestVideoPreview.pause();
-    latestVideoPreview.hidden = true;
-    latestVideoPreview.removeAttribute("src");
-    videoPreviewPlaceholder.hidden = false;
-    videoPreviewPlaceholder.textContent = "請先選擇一台電腦。";
-    videoPreviewMeta.textContent = "尚未收到短影片。";
-    return;
-  }
-
-  const dataUri = String(readField(data, "latestVideoPreviewDataUri", "") || "");
-  const capturedAt = toMillis(readField(data, "latestVideoPreviewAt", 0));
-  const duration = toInteger(readField(data, "latestVideoPreviewDurationSec", 0), 0);
-  const width = toInteger(readField(data, "latestVideoPreviewWidth", 0), 0);
-  const height = toInteger(readField(data, "latestVideoPreviewHeight", 0), 0);
-  const bytes = toInteger(readField(data, "latestVideoPreviewBytes", 0), 0);
-
-  if (!dataUri.startsWith("data:video/mp4;base64,")) {
-    renderedVideoKey = "";
-    latestVideoPreview.pause();
-    latestVideoPreview.hidden = true;
-    latestVideoPreview.removeAttribute("src");
-    videoPreviewPlaceholder.hidden = false;
-    videoPreviewPlaceholder.textContent = "尚未收到短影片；請確認新版程式的『網站顯示最近 6 秒短影片』已啟用且 ffmpeg 可用。";
-    videoPreviewMeta.textContent = "截圖與短影片是兩個獨立項目。";
-    return;
-  }
-
-  const nextKey = `${pcDropdown.value}:${capturedAt}:${dataUri.length}`;
-  if (renderedVideoKey !== nextKey) {
-    latestVideoPreview.src = dataUri;
-    latestVideoPreview.load();
-    void latestVideoPreview.play().catch(() => {});
-    renderedVideoKey = nextKey;
-  }
-  latestVideoPreview.hidden = false;
-  videoPreviewPlaceholder.hidden = true;
-  const stale = capturedAt > 0 && Date.now() - capturedAt > 150_000;
-  videoPreviewMeta.textContent = `${fmtTs(capturedAt)}（${fmtAge(capturedAt)}）`
-    + `${duration ? `｜${duration} 秒` : ""}${width && height ? `｜${width}×${height}` : ""}`
-    + `${bytes ? `｜${fmtBytes(bytes)}` : ""}`
-    + (stale ? "｜⚠ 已超過 2.5 分鐘未更新" : "｜持續更新中");
 }
 
 function runtimeLevelClass(level) {
@@ -742,7 +742,6 @@ function renderSelectedClient() {
   refreshMeta();
   renderRecordingStatus();
   renderSnapshot();
-  renderVideoPreview();
   renderRuntimeEvents();
   renderHistory();
   renderCommandStatus();
@@ -798,7 +797,7 @@ async function loadClients() {
   if (loadInFlight) return;
   loadInFlight = true;
   try {
-    const snap = await getDocs(collection(db, COLLECTION));
+    const snap = await getDocs(clientsQuery);
     cache.clear();
     snap.forEach((s) => cache.set(s.id, s.data()));
     renderClients();
@@ -813,7 +812,7 @@ async function loadClients() {
 
 function startClientListener() {
   return onSnapshot(
-    collection(db, COLLECTION),
+    clientsQuery,
     (snap) => {
       cache.clear();
       snap.forEach((s) => cache.set(s.id, s.data()));
@@ -920,11 +919,13 @@ btnStop.addEventListener("click", () => {
 });
 pcDropdown.addEventListener("change", () => {
   renderedScreenshotKey = "";
-  renderedVideoKey = "";
+  startSelectedMediaSubscription(true);
   renderSelectedClient();
   void reconcileClientHistory(pcDropdown.value);
 });
-btnRefreshSnapshot.addEventListener("click", () => void loadClients());
+btnRefreshSnapshot.addEventListener("click", () => {
+  startSelectedMediaSubscription(true);
+});
 
 statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
 startClientListener();

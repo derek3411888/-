@@ -14,11 +14,11 @@
 
 預設集合是 `ahk_clients`，每台電腦以 AHK UID 作為文件 ID。AHK 會自動寫入心跳、執行狀態與 ACK 欄位。
 
-新版 client 也會寫入低畫質最新畫面、最近 6 秒 MP4 短影片、錄影收尾狀態／檔案位置與最近 50 筆流程事件。畫面與短影片存在同一個 client 文件，定時覆寫而不累積；本機可在設定中停用短影片。由於內容可能包含桌面畫面與本機／網路路徑，正式使用前請收緊 Firestore Rules，不要把集合公開給不受信任的使用者。
+新版 client 會寫入低畫質最新畫面、錄影收尾狀態／檔案位置與最近 50 筆流程事件。控制文件使用 UID，畫面改放在同集合的 `UID__media` companion 文件；控制台主查詢只監聽 `docKind=client`，選定裝置後才監聽該裝置的 media 文件，避免心跳、ACK 與命令輪詢反覆傳輸 JPEG。由於內容可能包含桌面畫面與本機／網路路徑，正式使用前請收緊 Firestore Rules，不要把集合公開給不受信任的使用者。
 
-短影片預設每 60 秒重新擷取一次，只用來快速確認當下卡在哪裡，不是完整錄影。完整影片仍由錄影背景工具存到設定的本機或 UNC 目的地；網站的錄影狀態卡會顯示成功成品、目的端分段、本機失敗保留位置及 `recording_worker.log`，並提供複製路徑按鈕。
+網路短影片目前停用且不會上傳。完整影片仍由錄影背景工具存到設定的本機或 UNC 目的地；網站的錄影狀態卡會顯示成功成品、目的端分段、本機失敗保留位置及 `recording_worker.log`，並提供複製路徑按鈕。
 
-控制台使用 Firestore 即時監聽，只在文件變更時接收新內容；不再每 5 秒重複下載同一張畫面。「立即重讀」仍可手動發出一次完整查詢。
+控制台使用 Firestore 即時監聽，只在文件變更時接收新內容；「立即重讀」只會重新訂閱所選裝置的畫面。AHK 命令輪詢固定至少 10 秒且只取 `desiredState`、`nonce`，PATCH 回應也使用 field mask。
 
 網頁送出命令時會使用 Firestore `runTransaction`，在同一筆交易內：
 
@@ -64,15 +64,15 @@ project_id=YOUR_PROJECT_ID
 api_key=YOUR_API_KEY
 collection=ahk_clients
 display_name=客廳電腦
-heartbeat_interval_ms=30000
-poll_interval_ms=5000
+heartbeat_interval_ms=90000
+poll_interval_ms=10000
 http_timeout_ms=2500
 
 [runtime_diagnostics]
 enabled=1
-snapshot_interval_sec=30
+snapshot_interval_sec=60
 error_keep_count=30
-video_preview_enabled=1
+video_preview_enabled=0
 ```
 
 `uid` 留空時會由 AHK 在第一次啟動時自動產生。

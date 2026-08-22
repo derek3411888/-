@@ -100,7 +100,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.47"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.48"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -123,28 +123,18 @@ global CURRENT_STEP_DETAIL := ""
 global CURRENT_STEP_LEVEL := "INFO"
 global RUNTIME_DIAGNOSTICS_SECTION := "runtime_diagnostics"
 global RUNTIME_DIAGNOSTICS_ENABLED := 1
-global RUNTIME_DIAGNOSTICS_INTERVAL_SEC := 30
+global RUNTIME_DIAGNOSTICS_INTERVAL_SEC := 60
 global RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := 30
 global RUNTIME_DIAGNOSTICS_MAX_WIDTH := 640
 global RUNTIME_DIAGNOSTICS_JPEG_QUALITY := 45
-global RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED := 1
-global RUNTIME_DIAGNOSTICS_VIDEO_INTERVAL_SEC := 60
-global RUNTIME_DIAGNOSTICS_VIDEO_DURATION_SEC := 6
-global RUNTIME_DIAGNOSTICS_VIDEO_MAX_WIDTH := 480
-global RUNTIME_DIAGNOSTICS_VIDEO_MAX_DATA_URI_CHARS := 420000
+global RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED := 0
 global RUNTIME_DIAGNOSTICS_VIDEO_OWNER_MARKER := "WUTHERING_RUNTIME_PREVIEW_V1"
 global __RUNTIME_DIAGNOSTICS_ACTIVE := false
 global __RUNTIME_SNAPSHOT_BUSY := false
 global __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := 0
+global __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK := 0
 global __RUNTIME_ERROR_SNAPSHOT_PENDING := false
 global __RUNTIME_PENDING_REASON := ""
-global __RUNTIME_VIDEO_PREVIEW_PID := 0
-global __RUNTIME_VIDEO_PREVIEW_PATH := ""
-global __RUNTIME_VIDEO_PREVIEW_STARTED_TICK := 0
-global __RUNTIME_VIDEO_LAST_CAPTURE_TICK := 0
-global __RUNTIME_VIDEO_PREVIEW_WIDTH := 0
-global __RUNTIME_VIDEO_PREVIEW_HEIGHT := 0
-global __RUNTIME_VIDEO_FFMPEG_MISSING_WARNED := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -5427,11 +5417,11 @@ ReadCombinedConfigState() {
     state.runtimeDiagnosticsEnabled := ParseBool01(
         IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "enabled", "1"), 1)
     state.runtimeDiagnosticsIntervalSec := ToIntRange(
-        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec", "30"), 30, 15, 600)
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec", "60"), 60, 60, 600)
     state.runtimeDiagnosticsErrorKeepCount := ToIntRange(
         IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "error_keep_count", "30"), 30, 5, 200)
-    state.runtimeDiagnosticsVideoPreviewEnabled := ParseBool01(
-        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "video_preview_enabled", "1"), 1)
+    ; 雲端短影片暫停實作，舊設定即使為 1 也不可重新啟用。
+    state.runtimeDiagnosticsVideoPreviewEnabled := 0
     MAIL_NOTIFY_ENABLED := state.sendEnabled
     SCREEN_RECORDING_ENABLED := state.screenRecordingEnabled
     SCREEN_RECORDING_ENGINE := state.screenRecordingEngine
@@ -5719,9 +5709,10 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("x+15 w95", "錯誤圖保留")
     edRuntimeDiagnosticsKeepCount := g.AddEdit("x+5 w60", state.runtimeDiagnosticsErrorKeepCount)
     g.AddText("x+5 w30", "張")
-    cbRuntimeVideoPreviewEnabled := g.AddCheckbox("xs y+8 w440", "網站顯示最近 6 秒短影片（每 60 秒更新）")
-    cbRuntimeVideoPreviewEnabled.Value := state.runtimeDiagnosticsVideoPreviewEnabled ? 1 : 0
-    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h48", "網頁顯示最新畫面、短影片、錄影結果路徑與最近 50 筆事件；完整長影片仍存到錄影輸出資料夾。")
+    cbRuntimeVideoPreviewEnabled := g.AddCheckbox("xs y+8 w440", "網路短影片暫停實作（不會上傳影片）")
+    cbRuntimeVideoPreviewEnabled.Value := 0
+    cbRuntimeVideoPreviewEnabled.Enabled := false
+    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h48", "網頁只顯示每 60 秒更新的最新截圖、錄影結果路徑與最近 50 筆事件；完整長影片仍存到錄影輸出資料夾。")
 
     ; === 底部按鈕區 ===
     btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
@@ -6006,10 +5997,10 @@ OnCombinedSetupSave(*) {
     remoteDeviceAliasVal := Trim(st.edRemoteDeviceAlias.Value, " `t`r`n")
     remoteDisplayNameVal := Trim(st.edRemoteDisplayName.Value, " `t`r`n")
     runtimeDiagnosticsEnabledVal := st.cbRuntimeDiagnosticsEnabled.Value ? 1 : 0
-    runtimeDiagnosticsVideoPreviewEnabledVal := st.cbRuntimeVideoPreviewEnabled.Value ? 1 : 0
+    runtimeDiagnosticsVideoPreviewEnabledVal := 0
     runtimeDiagnosticsIntervalText := Trim(st.edRuntimeDiagnosticsInterval.Value, " `t`r`n")
     runtimeDiagnosticsKeepText := Trim(st.edRuntimeDiagnosticsKeepCount.Value, " `t`r`n")
-    runtimeDiagnosticsIntervalVal := ToIntRange(runtimeDiagnosticsIntervalText, 30, 15, 600)
+    runtimeDiagnosticsIntervalVal := ToIntRange(runtimeDiagnosticsIntervalText, 60, 60, 600)
     runtimeDiagnosticsKeepVal := ToIntRange(runtimeDiagnosticsKeepText, 30, 5, 200)
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
@@ -6416,11 +6407,10 @@ RefreshRuntimeDiagnosticsInputsEnabled() {
     enabled := __MAIL_SETUP.cbRuntimeDiagnosticsEnabled.Value ? true : false
     __MAIL_SETUP.edRuntimeDiagnosticsInterval.Enabled := enabled
     __MAIL_SETUP.edRuntimeDiagnosticsKeepCount.Enabled := enabled
-    __MAIL_SETUP.cbRuntimeVideoPreviewEnabled.Enabled := enabled
+    __MAIL_SETUP.cbRuntimeVideoPreviewEnabled.Enabled := false
+    __MAIL_SETUP.cbRuntimeVideoPreviewEnabled.Value := 0
     __MAIL_SETUP.txtRuntimeDiagnosticsHint.Value := enabled
-        ? (__MAIL_SETUP.cbRuntimeVideoPreviewEnabled.Value
-            ? "網頁顯示最新畫面、最近 6 秒短影片與錄影結果路徑；完整長影片不會上傳。"
-            : "網頁顯示最新畫面與錄影結果路徑；短影片預覽目前停用。")
+        ? "網頁顯示每 60 秒更新的最新截圖與錄影結果路徑；短影片不會上傳。"
         : "即時診斷已停用；遠端頁面仍保留基本步驟與心跳。"
 }
 
@@ -6713,8 +6703,8 @@ LoadRuntimeDiagnosticsSettings() {
     RUNTIME_DIAGNOSTICS_ENABLED := ParseBool01(
         IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "enabled", "1"), 1)
     RUNTIME_DIAGNOSTICS_INTERVAL_SEC := ToIntRange(
-        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec", "30"),
-        30, 15, 600)
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec", "60"),
+        60, 60, 600)
     RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := ToIntRange(
         IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "error_keep_count", "30"),
         30, 5, 200)
@@ -6724,11 +6714,13 @@ LoadRuntimeDiagnosticsSettings() {
     RUNTIME_DIAGNOSTICS_JPEG_QUALITY := ToIntRange(
         IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "jpeg_quality", "45"),
         45, 20, 80)
-    RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED := ParseBool01(
-        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "video_preview_enabled", "1"), 1)
+    RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED := 0
+    ; 自動遷移舊設定，避免更新後因殘留 video_preview_enabled=1 又啟動上傳。
+    try IniWrite(RUNTIME_DIAGNOSTICS_INTERVAL_SEC, CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec")
+    try IniWrite(0, CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "video_preview_enabled")
     WriteLog("即時診斷 enabled=" RUNTIME_DIAGNOSTICS_ENABLED
         " interval=" RUNTIME_DIAGNOSTICS_INTERVAL_SEC "s error_keep=" RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT
-        " video_preview=" RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED)
+        " video_preview=0 (cloud video disabled)")
 }
 
 ResolveRuntimeDiagnosticsDir() {
@@ -6740,9 +6732,7 @@ ResolveRuntimeDiagnosticsDir() {
 
 StartRuntimeDiagnostics() {
     global RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC
-    global RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED, REMOTE_CONTROL_ACTIVE
-    global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_VIDEO_LAST_CAPTURE_TICK
-    global __RUNTIME_VIDEO_FFMPEG_MISSING_WARNED
+    global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK
 
     StopRuntimeDiagnostics()
     if !RUNTIME_DIAGNOSTICS_ENABLED {
@@ -6758,227 +6748,24 @@ StartRuntimeDiagnostics() {
     }
 
     __RUNTIME_DIAGNOSTICS_ACTIVE := true
-    intervalMs := Max(15000, RUNTIME_DIAGNOSTICS_INTERVAL_SEC * 1000)
+    __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK := 0
+    intervalMs := Max(60000, RUNTIME_DIAGNOSTICS_INTERVAL_SEC * 1000)
     SetTimer(RuntimeSnapshotTick, intervalMs)
     SetTimer(() => CaptureRuntimeSnapshot("啟動／設定完成", false), -800)
-    __RUNTIME_VIDEO_LAST_CAPTURE_TICK := 0
-    __RUNTIME_VIDEO_FFMPEG_MISSING_WARNED := false
-    if (RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED && REMOTE_CONTROL_ACTIVE)
-        SetTimer(RuntimeVideoPreviewTick, 1000)
-    WriteLog("即時診斷已啟動，每 " RUNTIME_DIAGNOSTICS_INTERVAL_SEC " 秒更新畫面"
-        " | 6秒短影片=" (RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED && REMOTE_CONTROL_ACTIVE ? "啟用" : "停用"))
+    try FileDelete(diagDir "\latest_preview.mp4")
+    WriteLog("即時診斷已啟動，每 " RUNTIME_DIAGNOSTICS_INTERVAL_SEC " 秒更新畫面 | 雲端短影片=停用")
     return true
 }
 
 StopRuntimeDiagnostics() {
-    global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_VIDEO_PREVIEW_PID
-    global __RUNTIME_VIDEO_PREVIEW_PATH, __RUNTIME_VIDEO_PREVIEW_STARTED_TICK
+    global __RUNTIME_DIAGNOSTICS_ACTIVE
     __RUNTIME_DIAGNOSTICS_ACTIVE := false
     try SetTimer(RuntimeSnapshotTick, 0)
     try SetTimer(RuntimeErrorSnapshotTick, 0)
-    try SetTimer(RuntimeVideoPreviewTick, 0)
-    if (__RUNTIME_VIDEO_PREVIEW_PID > 0 && ProcessExist(__RUNTIME_VIDEO_PREVIEW_PID)
-        && IsOwnedRuntimeVideoPreviewPid(__RUNTIME_VIDEO_PREVIEW_PID)) {
-        ; 只關閉本次由即時診斷啟動並持有 PID 的短影片 ffmpeg，不掃描或誤殺其他程序。
-        try ProcessClose(__RUNTIME_VIDEO_PREVIEW_PID)
-    }
-    __RUNTIME_VIDEO_PREVIEW_PID := 0
-    __RUNTIME_VIDEO_PREVIEW_STARTED_TICK := 0
-    if (__RUNTIME_VIDEO_PREVIEW_PATH != "")
-        try FileDelete(__RUNTIME_VIDEO_PREVIEW_PATH)
-    __RUNTIME_VIDEO_PREVIEW_PATH := ""
 }
 
 RuntimeSnapshotTick() {
     CaptureRuntimeSnapshot("定時快照", false)
-}
-
-IsOwnedRuntimeVideoPreviewPid(pid) {
-    if (pid <= 0)
-        return false
-    try {
-        query := "Select Name, CommandLine from Win32_Process where ProcessId=" Integer(pid)
-        for proc in ComObjGet("winmgmts:").ExecQuery(query) {
-            name := ""
-            cmdLine := ""
-            try name := proc.Name
-            try cmdLine := proc.CommandLine
-            return StrLower(name) = "ffmpeg.exe" && IsRuntimeVideoPreviewFfmpegCommand(cmdLine)
-        }
-    }
-    return false
-}
-
-ResolveRuntimeVideoPreviewFfmpegExe() {
-    global SCREEN_RECORDING_FFMPEG_EXE
-    configured := NormalizePath(SCREEN_RECORDING_FFMPEG_EXE)
-    if (configured != "") {
-        if RegExMatch(configured, "i)^[a-z]:\\") || SubStr(configured, 1, 2) = "\\" {
-            if FileExist(configured)
-                return configured
-        } else if (configured != "ffmpeg" && configured != "ffmpeg.exe") {
-            rootDir := ResolvePersistentToolsRoot()
-            candidate := rootDir != "" ? rootDir "\" configured : A_ScriptDir "\" configured
-            if FileExist(candidate)
-                return candidate
-        }
-    }
-    return FindBundledFfmpegExe()
-}
-
-ReadBinaryFileBase64(filePath) {
-    data := FileRead(filePath, "RAW")
-    if !(data is Buffer) || data.Size <= 0
-        return ""
-
-    chars := 0
-    flags := 0x40000001 ; CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF
-    if !DllCall("Crypt32\CryptBinaryToStringW", "ptr", data.Ptr, "uint", data.Size,
-        "uint", flags, "ptr", 0, "uint*", &chars)
-        return ""
-    encoded := Buffer(chars * 2, 0)
-    if !DllCall("Crypt32\CryptBinaryToStringW", "ptr", data.Ptr, "uint", data.Size,
-        "uint", flags, "ptr", encoded.Ptr, "uint*", &chars)
-        return ""
-    return StrGet(encoded, "UTF-16")
-}
-
-PublishCompletedRuntimeVideoPreview(tempPath, width, height) {
-    global RUNTIME_DIAGNOSTICS_VIDEO_DURATION_SEC, RUNTIME_DIAGNOSTICS_VIDEO_MAX_DATA_URI_CHARS
-    global REMOTE_CONTROL_ACTIVE
-
-    if (tempPath = "" || !FileExist(tempPath))
-        return false
-    sizeBytes := 0
-    try sizeBytes := FileGetSize(tempPath)
-    if (sizeBytes <= 1024) {
-        WriteLog("即時診斷短影片未建立有效檔案，略過上傳", "INFO")
-        return false
-    }
-
-    diagDir := ResolveRuntimeDiagnosticsDir()
-    latestPath := diagDir "\latest_preview.mp4"
-    try FileMove(tempPath, latestPath, 1)
-    catch as e {
-        WriteLog("即時診斷短影片整理失敗: " e.Message, "INFO")
-        return false
-    }
-
-    try {
-        base64 := ReadBinaryFileBase64(latestPath)
-        dataUri := "data:video/mp4;base64," base64
-        if (base64 = "" || StrLen(dataUri) > RUNTIME_DIAGNOSTICS_VIDEO_MAX_DATA_URI_CHARS) {
-            WriteLog("即時診斷短影片過大，略過上傳 | bytes=" sizeBytes
-                " chars=" StrLen(dataUri), "INFO")
-            return false
-        }
-        if REMOTE_CONTROL_ACTIVE
-            return RC_PublishRuntimeVideoPreview(dataUri, RC_UnixMs(),
-                RUNTIME_DIAGNOSTICS_VIDEO_DURATION_SEC, width, height, sizeBytes)
-    } catch as e {
-        WriteLog("即時診斷短影片上傳準備失敗: " e.Message, "INFO")
-    }
-    return false
-}
-
-RuntimeVideoPreviewTick() {
-    global __RUNTIME_DIAGNOSTICS_ACTIVE, RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED
-    global RUNTIME_DIAGNOSTICS_VIDEO_INTERVAL_SEC, RUNTIME_DIAGNOSTICS_VIDEO_DURATION_SEC
-    global RUNTIME_DIAGNOSTICS_VIDEO_MAX_WIDTH, RUNTIME_DIAGNOSTICS_VIDEO_OWNER_MARKER
-    global __RUNTIME_VIDEO_PREVIEW_PID, __RUNTIME_VIDEO_PREVIEW_PATH
-    global __RUNTIME_VIDEO_PREVIEW_STARTED_TICK, __RUNTIME_VIDEO_LAST_CAPTURE_TICK
-    global __RUNTIME_VIDEO_PREVIEW_WIDTH, __RUNTIME_VIDEO_PREVIEW_HEIGHT
-    global __RUNTIME_VIDEO_FFMPEG_MISSING_WARNED, REMOTE_CONTROL_ACTIVE
-
-    if !__RUNTIME_DIAGNOSTICS_ACTIVE || !RUNTIME_DIAGNOSTICS_VIDEO_PREVIEW_ENABLED || !REMOTE_CONTROL_ACTIVE
-        return
-
-    if (__RUNTIME_VIDEO_PREVIEW_PID > 0) {
-        if (ProcessExist(__RUNTIME_VIDEO_PREVIEW_PID)
-            && IsOwnedRuntimeVideoPreviewPid(__RUNTIME_VIDEO_PREVIEW_PID)) {
-            timeoutMs := (RUNTIME_DIAGNOSTICS_VIDEO_DURATION_SEC + 30) * 1000
-            if (__RUNTIME_VIDEO_PREVIEW_STARTED_TICK > 0
-                && A_TickCount - __RUNTIME_VIDEO_PREVIEW_STARTED_TICK > timeoutMs) {
-                timedOutPid := __RUNTIME_VIDEO_PREVIEW_PID
-                if IsOwnedRuntimeVideoPreviewPid(timedOutPid) {
-                    try ProcessClose(timedOutPid)
-                    WriteLog("即時診斷短影片逾時，已只停止自有 PID=" timedOutPid, "INFO")
-                } else {
-                    WriteLog("即時診斷短影片逾時，但 PID 身分已改變；不執行停止以避免誤殺 PID=" timedOutPid, "INFO")
-                }
-                __RUNTIME_VIDEO_PREVIEW_PID := 0
-                __RUNTIME_VIDEO_PREVIEW_STARTED_TICK := 0
-                if (__RUNTIME_VIDEO_PREVIEW_PATH != "")
-                    try FileDelete(__RUNTIME_VIDEO_PREVIEW_PATH)
-                __RUNTIME_VIDEO_PREVIEW_PATH := ""
-                __RUNTIME_VIDEO_LAST_CAPTURE_TICK := A_TickCount
-            }
-            return
-        }
-
-        finishedPath := __RUNTIME_VIDEO_PREVIEW_PATH
-        finishedWidth := __RUNTIME_VIDEO_PREVIEW_WIDTH
-        finishedHeight := __RUNTIME_VIDEO_PREVIEW_HEIGHT
-        __RUNTIME_VIDEO_PREVIEW_PID := 0
-        __RUNTIME_VIDEO_PREVIEW_PATH := ""
-        __RUNTIME_VIDEO_PREVIEW_STARTED_TICK := 0
-        __RUNTIME_VIDEO_LAST_CAPTURE_TICK := A_TickCount
-        PublishCompletedRuntimeVideoPreview(finishedPath, finishedWidth, finishedHeight)
-        try FileDelete(finishedPath)
-        return
-    }
-
-    if (__RUNTIME_VIDEO_LAST_CAPTURE_TICK > 0
-        && A_TickCount - __RUNTIME_VIDEO_LAST_CAPTURE_TICK < RUNTIME_DIAGNOSTICS_VIDEO_INTERVAL_SEC * 1000)
-        return
-
-    ffmpegExe := ResolveRuntimeVideoPreviewFfmpegExe()
-    if (ffmpegExe = "" || !FileExist(ffmpegExe)) {
-        if !__RUNTIME_VIDEO_FFMPEG_MISSING_WARNED {
-            __RUNTIME_VIDEO_FFMPEG_MISSING_WARNED := true
-            WriteLog("即時診斷短影片略過：找不到 ffmpeg.exe；截圖與錄影狀態仍會正常顯示", "INFO")
-        }
-        __RUNTIME_VIDEO_LAST_CAPTURE_TICK := A_TickCount
-        return
-    }
-    __RUNTIME_VIDEO_FFMPEG_MISSING_WARNED := false
-
-    diagDir := ResolveRuntimeDiagnosticsDir()
-    try DirCreate(diagDir)
-    catch {
-        __RUNTIME_VIDEO_LAST_CAPTURE_TICK := A_TickCount
-        return
-    }
-
-    width := Min(A_ScreenWidth, RUNTIME_DIAGNOSTICS_VIDEO_MAX_WIDTH)
-    if Mod(width, 2)
-        width -= 1
-    width := Max(2, width)
-    height := Max(2, Round(A_ScreenHeight * width / Max(1, A_ScreenWidth)))
-    if Mod(height, 2)
-        height -= 1
-    tempPath := diagDir "\preview_" DllCall("GetCurrentProcessId") "_" A_TickCount ".tmp.mp4"
-    try FileDelete(tempPath)
-
-    cmd := '"' ffmpegExe '" -hide_banner -loglevel error -nostdin -y'
-    cmd .= ' -f gdigrab -framerate 2 -i desktop -t ' RUNTIME_DIAGNOSTICS_VIDEO_DURATION_SEC
-    cmd .= ' -vf "scale=' width ':-2" -an -c:v libx264 -preset ultrafast -tune zerolatency'
-    cmd .= ' -b:v 160k -maxrate 180k -bufsize 360k -pix_fmt yuv420p -movflags +faststart'
-    cmd .= ' -metadata comment="' RUNTIME_DIAGNOSTICS_VIDEO_OWNER_MARKER '" -f mp4 "' tempPath '"'
-    try {
-        Run(cmd, "", "Hide", &previewPid)
-        if (previewPid <= 0)
-            throw Error("沒有取得 PID")
-        __RUNTIME_VIDEO_PREVIEW_PID := previewPid
-        __RUNTIME_VIDEO_PREVIEW_PATH := tempPath
-        __RUNTIME_VIDEO_PREVIEW_STARTED_TICK := A_TickCount
-        __RUNTIME_VIDEO_PREVIEW_WIDTH := width
-        __RUNTIME_VIDEO_PREVIEW_HEIGHT := height
-    } catch as e {
-        __RUNTIME_VIDEO_LAST_CAPTURE_TICK := A_TickCount
-        try FileDelete(tempPath)
-        WriteLog("啟動即時診斷短影片失敗: " e.Message, "INFO")
-    }
 }
 
 ScheduleRuntimeErrorSnapshot(message, level := "WARN") {
@@ -7040,6 +6827,7 @@ PruneRuntimeDiagnosticScreenshots(keepCount) {
 CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
     global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_SNAPSHOT_BUSY
     global __RUNTIME_LAST_ERROR_SNAPSHOT_TICK, RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT
+    global __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK
     global RUNTIME_DIAGNOSTICS_MAX_WIDTH, RUNTIME_DIAGNOSTICS_JPEG_QUALITY
     global REMOTE_CONTROL_ACTIVE
 
@@ -7068,10 +6856,15 @@ CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
             PruneRuntimeDiagnosticScreenshots(RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT)
         }
 
-        if REMOTE_CONTROL_ACTIVE {
+        ; 本機錯誤圖可即時保存，但 Firestore 截圖最多每 60 秒寫一次，
+        ; 避免錯誤連發時消耗免費寫入與對外流量額度。
+        canPublishRemote := (__RUNTIME_LAST_REMOTE_SNAPSHOT_TICK <= 0
+            || A_TickCount - __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK >= 60000)
+        if (REMOTE_CONTROL_ACTIVE && canPublishRemote) {
+            __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK := A_TickCount
             base64 := ImagePutBase64(latestPath)
             dataUri := "data:image/jpeg;base64," base64
-            ; 同一 Firestore 文件也會保存短影片與事件；截圖固定壓在約 28 萬字元內。
+            ; 截圖寫入獨立 media 文件，不會再膨脹命令／心跳控制文件。
             if (StrLen(dataUri) > 280000) {
                 retryPath := diagDir "\latest_retry_" A_TickCount ".tmp.jpg"
                 retryWidth := Min(A_ScreenWidth, 400)

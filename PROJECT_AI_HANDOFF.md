@@ -126,9 +126,11 @@
 - 選擇器預設顯示「這台電腦」，並固定提供「瀏覽網路」及「直接輸入 UNC」，不再依賴 Windows 對話框左側欄。根目錄 launcher 的 `--pick-folder` 只作 helper 遺失時的後備，且固定從 CSIDL_DRIVES 開始。
 - Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
 - 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
-- 即時診斷預設每 30 秒以 ImagePut 擷取低畫質 JPEG，本機 `latest.jpg` 原子覆寫；WARN／ERROR 另存固定份數。遠端控制啟用時，同一 Firestore client 文件會覆寫最新畫面，AHK 命令輪詢用 field mask 避免每 5 秒下載 JPEG；控制網頁使用 `onSnapshot`，只在文件變更時取得新內容。
-- `[runtime_diagnostics] video_preview_enabled=1` 時，另以自有精確 PID 的 FFmpeg 每 60 秒非同步擷取最近 6 秒、2 FPS、480px 寬的 MP4；本機覆寫 `diagnostics\latest_preview.mp4`，Firestore 只保留最新一份 data URI。命令列含 `WUTHERING_RUNTIME_PREVIEW_V1`，所有主錄影掃描必須排除它，停止診斷也只能關閉自己持有的短影片 PID。
-- 網頁的短影片只是故障即時預覽，完整長影片不得上傳 Firestore。錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
+- 即時診斷預設每 60 秒以 ImagePut 擷取低畫質 JPEG，本機 `latest.jpg` 原子覆寫；WARN／ERROR 仍可即時另存固定份數，但 Firestore 上傳硬性限制最多每 60 秒一次，避免錯誤連發耗盡額度。
+- 網路短影片功能目前暫停實作：`video_preview_enabled` 啟動時會強制遷移為 `0`，設定介面不可啟用，網站不顯示影片播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。完整長影片維持本機／UNC 分段錄影與背景收尾，不受影響。舊版 preview FFmpeg marker 判斷保留，只為避免更新交界誤把殘留預覽程序當主錄影。
+- Firestore 控制文件為 `ahk_clients/{UID}` 且含 `docKind=client`；JPEG 改放同集合的 `{UID}__media` 且含 `docKind=media`。網頁主查詢只監聽 client 文件，並只為目前選取裝置訂閱一份 media 文件。新版第一次心跳後會清除舊控制文件內所有 `latestScreenshot*`、`latestVideoPreview*` Base64 欄位。
+- AHK 命令輪詢至少 10 秒且 GET 只取 `desiredState`／`nonce`；心跳至少 60 秒（預設 90 秒）。心跳、ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
+- 錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
 - `RecordingFinalizeWorker.ahk` 必須在主程式已退出後仍直接 PATCH 錄影欄位；網路回報失敗不可影響本機保全，下一次主程式心跳會再從 `recording_status.ini` 補報。
 - `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
 
@@ -181,6 +183,8 @@
 7. git commit + push main，讓客戶端能直接取得更新
 
 > 維運約定：以後每次「打包更新」都必須同時重新編譯、升版並發布 Payload 與 Launcher，不可只更新其中一個。
+
+> 品質門檻：每次交付前都要檢查 VS Code「問題」面板並以 0 個問題為目標，同時執行可用的 AHK 編譯／語法與 Web 靜態檢查。若仍有工具誤報或確認不影響執行的診斷，交付時必須列出檔案、診斷內容與不影響理由，不可默默忽略或把非 0 說成 0。
 
 ## 9) 本檔用途
 - 這份文件提供給接手 AI/開發者快速理解專案脈絡。
