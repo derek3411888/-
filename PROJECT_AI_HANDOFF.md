@@ -122,8 +122,9 @@
 - v4.43+ launcher 啟動 payload 前會設定 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1`，避免 launcher helper 與 payload bootstrap 同時競爭同一個 EXE。
 
 ### 3.17 網路資料夾瀏覽與即時診斷
-- 主流程以管理員權限執行，通常看不到一般使用者的映射磁碟。設定介面會透過根目錄 launcher 的 `--pick-folder` 模式，交由桌面 Explorer 以一般權限開啟選擇器，再把映射路徑轉成 UNC 回傳；helper 必須在提權、自我更新及主 launcher mutex 之前結束。
-- Launcher 因此使用 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
+- 主流程以管理員權限執行，通常看不到一般使用者的映射磁碟。主要選擇器為 `payload/FolderPickerHelper.ahk`，由桌面 Explorer 以一般權限啟動；它主動彙整目前權杖映射、WScript.Network、`HKCU\Network` 持久映射及檔案總管 Network Shortcuts，再把結果轉成 UNC 回傳。
+- 選擇器預設顯示「這台電腦」，並固定提供「瀏覽網路」及「直接輸入 UNC」，不再依賴 Windows 對話框左側欄。根目錄 launcher 的 `--pick-folder` 只作 helper 遺失時的後備，且固定從 CSIDL_DRIVES 開始。
+- Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
 - 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
 - 即時診斷預設每 30 秒以 ImagePut 擷取低畫質 JPEG，本機 `latest.jpg` 原子覆寫；WARN／ERROR 另存固定份數。遠端控制啟用時，同一 Firestore client 文件會覆寫最新畫面，AHK 命令輪詢用 field mask 避免每 5 秒下載 JPEG；控制網頁使用 `onSnapshot`，只在文件變更時取得新內容。
 - `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
@@ -149,6 +150,7 @@
 
 ## 6) 子腳本關係
 - payload/全自動.ahk：主控流程
+- payload/FolderPickerHelper.ahk：一般權限網路／映射磁碟／UNC 資料夾選擇器
 - payload/RecordingFinalizeWorker.ahk：錄影分段補傳、合併、驗證與安全清理
 - payload/開啟LRMC.ahk：啟動並操作 LRMCAI
 - payload/自動開啟OKWW.ahk：OKWW 啟動管理

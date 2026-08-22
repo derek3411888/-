@@ -3,15 +3,14 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.45"
+global PACK_LAUNCHER_BUILD_VERSION := "4.46"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
 global PACK_MAIN_MUTEX_HANDLE := 0
 
-; 資料夾選擇 helper 必須在任何提權、自我更新與解壓流程之前執行。
-; payload 會透過 Explorer 以一般使用者權限啟動這個模式，讓選擇器能看到
-; 與檔案總管相同的映射網路磁碟；完成後只以回覆檔把結果交回管理員程序。
+; payload 內的 FolderPickerHelper 是主要資料夾選擇器；此模式只作為舊 payload
+; 或 helper 遺失時的相容後備，且必須在提權、自我更新與主 mutex 之前執行。
 if LauncherHasArg("--pick-folder") {
     LauncherRunFolderPickerMode()
     ExitApp
@@ -176,10 +175,14 @@ LauncherRunFolderPickerMode() {
         return
 
     try {
-        startAt := initialPath
-        if (startAt != "" && !DirExist(startAt))
-            startAt := ""
-        selected := DirSelect(startAt, 3, "選擇錄影輸出資料夾（可選網路磁碟／共用資料夾）")
+        ; 後備模式至少固定從「這台電腦」開始，避免目前工作目錄讓 Windows
+        ; 對話框只顯示本機資料夾；新版 payload 會改用完整的自訂選擇器。
+        shell := ComObject("Shell.Application")
+        folder := shell.BrowseForFolder(0,
+            "選擇錄影輸出資料夾（可選本機、映射磁碟或網路共用）", 0x8051, 17)
+        selected := ""
+        if IsObject(folder)
+            try selected := folder.Self.Path
         if (selected = "") {
             LauncherWriteFolderPickerReply(replyPath, "cancel")
             return

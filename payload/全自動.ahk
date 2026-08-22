@@ -100,7 +100,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.45"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.46"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -6273,47 +6273,64 @@ QuoteFolderPickerArg(value) {
 }
 
 SelectRecordingOutputFolderWithUserToken(initialPath := "") {
+    global BUNDLED_AHK_EXE
     launcherPath := ResolvePersistentToolsRoot() "\全自動鋤地.exe"
-    if !FileExist(launcherPath)
-        return {ok: false, cancelled: false, path: "", message: "找不到現有啟動器，無法開啟一般權限選擇器"}
+    helperScript := A_ScriptDir "\FolderPickerHelper.ahk"
+    if ((!FileExist(helperScript) || !FileExist(BUNDLED_AHK_EXE)) && !FileExist(launcherPath))
+        return {ok: false, cancelled: false, path: "", message: "找不到資料夾選擇 helper／啟動器"}
 
     replyPath := A_Temp "\wuthering_folder_picker_" DllCall("GetCurrentProcessId") "_" A_TickCount ".ini"
     try FileDelete(replyPath)
     initialResolved := ResolveConfiguredDirectoryPath(initialPath)
-    args := "--pick-folder --reply " QuoteFolderPickerArg(replyPath)
-    args .= " --initial " QuoteFolderPickerArg(initialResolved)
+    if (FileExist(helperScript) && FileExist(BUNDLED_AHK_EXE)) {
+        pickerExe := BUNDLED_AHK_EXE
+        args := QuoteFolderPickerArg(helperScript) " --reply " QuoteFolderPickerArg(replyPath)
+        args .= " --initial " QuoteFolderPickerArg(initialResolved)
+        pickerWorkDir := A_ScriptDir
+        pickerKind := "payload_helper"
+    } else {
+        pickerExe := launcherPath
+        args := "--pick-folder --reply " QuoteFolderPickerArg(replyPath)
+        args .= " --initial " QuoteFolderPickerArg(initialResolved)
+        pickerWorkDir := ResolvePersistentToolsRoot()
+        pickerKind := "launcher_fallback"
+    }
 
     try {
         ; Shell.Application 由桌面 Explorer 代理啟動，子程序使用一般使用者權杖，
-        ; 因此能看到一般檔案總管中的映射磁碟與已儲存網路位置。
+        ; 新 helper 還會自行列出映射磁碟／網路位置，並提供 UNC 直接輸入。
         shell := ComObject("Shell.Application")
-        shell.ShellExecute(launcherPath, args, ResolvePersistentToolsRoot(), "open", 1)
+        shell.ShellExecute(pickerExe, args, pickerWorkDir, "open", 1)
     } catch as e {
         return {ok: false, cancelled: false, path: "", message: "啟動資料夾選擇器失敗: " e.Message}
     }
 
-    deadline := A_TickCount + 180000
+    deadline := A_TickCount + 600000
     while (A_TickCount < deadline) {
         if FileExist(replyPath)
             break
         Sleep 100
     }
     if !FileExist(replyPath)
-        return {ok: false, cancelled: false, path: "", message: "資料夾選擇器 180 秒內沒有回覆"}
+        return {ok: false, cancelled: false, path: "", message: "資料夾選擇器 10 分鐘內沒有回覆"}
 
     try {
         status := IniRead(replyPath, "result", "status", "error")
         selected := IniRead(replyPath, "result", "path", "")
         message := IniRead(replyPath, "result", "message", "")
         helperWasAdmin := IniRead(replyPath, "result", "helper_was_admin", "0")
+        networkCount := IniRead(replyPath, "result", "network_count", "0")
+        pickerSource := IniRead(replyPath, "result", "source", "")
         try FileDelete(replyPath)
         if (status = "cancel")
             return {ok: false, cancelled: true, path: "", message: ""}
         if (status != "ok" || selected = "")
             return {ok: false, cancelled: false, path: "", message: message != "" ? message : "選擇器未回傳路徑"}
         selected := ConvertMappedPathToUnc(selected)
-        note := helperWasAdmin = "1" ? "（選擇器仍為管理員權限；若看不到映射磁碟可直接選『網路』或貼 UNC）" : ""
-        return {ok: true, cancelled: false, path: selected, message: note}
+        note := helperWasAdmin = "1" ? "（helper 為管理員權限；已提供持久映射與 UNC 輸入保底）" : ""
+        return {ok: true, cancelled: false, path: selected, message: note,
+            helperWasAdmin: helperWasAdmin, networkCount: networkCount,
+            pickerSource: pickerSource, pickerKind: pickerKind}
     } catch as e {
         try FileDelete(replyPath)
         return {ok: false, cancelled: false, path: "", message: "讀取選擇結果失敗: " e.Message}
@@ -6335,10 +6352,14 @@ OnBrowseScreenRecordingOutputDir(*) {
     }
 
     __MAIL_SETUP.edScreenRecordingOutputDir.Value := picked.path
+    WriteLog("錄影輸出選擇完成 | path=" picked.path
+        " | helper_admin=" picked.helperWasAdmin " | network_count=" picked.networkCount
+        " | source=" picked.pickerSource " | picker=" picked.pickerKind)
     testResult := TestWritableDirectory(picked.path)
     if testResult.ok {
         __MAIL_SETUP.edScreenRecordingOutputDir.Value := testResult.path
         __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "✅ " testResult.message " | " testResult.path
+            (picked.message != "" ? " " picked.message : "")
     } else
         __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "⚠ 已選取，但目前無法寫入：" testResult.message
 }
