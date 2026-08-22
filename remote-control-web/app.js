@@ -4,6 +4,7 @@ import {
   doc,
   getDocs,
   getFirestore,
+  onSnapshot,
   runTransaction,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
@@ -16,10 +17,9 @@ const FIREBASE_CONFIG = {
 
 const COLLECTION = "ahk_clients";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
-const REFRESH_MS = 5_000;
 const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
-const WEB_BUILD = "20260727-2";
+const WEB_BUILD = "20260822-2";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -35,6 +35,12 @@ const commandStatusDetail = document.getElementById("commandStatusDetail");
 const clientMeta = document.getElementById("clientMeta");
 const historyBody = document.getElementById("historyBody");
 const historyNote = document.getElementById("historyNote");
+const latestScreenshot = document.getElementById("latestScreenshot");
+const snapshotPlaceholder = document.getElementById("snapshotPlaceholder");
+const snapshotMeta = document.getElementById("snapshotMeta");
+const btnRefreshSnapshot = document.getElementById("btnRefreshSnapshot");
+const runtimeEventsBody = document.getElementById("runtimeEventsBody");
+const runtimeEventsNote = document.getElementById("runtimeEventsNote");
 
 let cache = new Map();
 let loadInFlight = false;
@@ -42,6 +48,7 @@ let reconcileInFlightFor = "";
 let sending = false;
 let sendingState = "";
 let commandError = null;
+let renderedScreenshotKey = "";
 
 function toInteger(value, fallback = 0) {
   const n = Number(value);
@@ -117,6 +124,27 @@ function readCommandHistory(data) {
     .filter((entry) => entry.commandNonce > 0 && entry.requestedState !== "UNKNOWN")
     .sort((a, b) => b.commandNonce - a.commandNonce)
     .slice(0, COMMAND_HISTORY_LIMIT);
+}
+
+function readRuntimeEvents(data) {
+  const raw = String(readField(data, "recentEventsJson", "") || "");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) => ({
+        at: toMillis(entry?.at),
+        name: String(entry?.name ?? "事件"),
+        detail: String(entry?.detail ?? ""),
+        level: String(entry?.level ?? "INFO").toUpperCase(),
+      }))
+      .filter((entry) => entry.at > 0 || entry.name || entry.detail)
+      .slice(-50)
+      .reverse();
+  } catch {
+    return [];
+  }
 }
 
 function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
@@ -277,12 +305,90 @@ function refreshMeta() {
     `目前伺服器: ${readField(d, "currentServerLabel", readField(d, "currentServer", "-"))}`,
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
     `距今: ${fmtAge(readField(d, "lastHeartbeat", 0))}`,
+    `最後畫面: ${fmtTs(readField(d, "latestScreenshotAt", 0))}（${fmtAge(readField(d, "latestScreenshotAt", 0))}）`,
     `最後 ACK: nonce=${readField(d, "lastAckNonce", 0)} state=${readField(d, "lastAckState", "-")} at=${fmtTs(readField(d, "lastAckAt", 0))}`,
   ];
   for (const t of lines) {
     const li = document.createElement("li");
     li.textContent = t;
     clientMeta.appendChild(li);
+  }
+}
+
+function renderSnapshot() {
+  const data = selectedClientData();
+  if (!data) {
+    renderedScreenshotKey = "";
+    latestScreenshot.hidden = true;
+    latestScreenshot.removeAttribute("src");
+    snapshotPlaceholder.hidden = false;
+    snapshotPlaceholder.textContent = "請先選擇一台電腦。";
+    snapshotMeta.textContent = "尚未收到快照。";
+    return;
+  }
+
+  const dataUri = String(readField(data, "latestScreenshotDataUri", "") || "");
+  const capturedAt = toMillis(readField(data, "latestScreenshotAt", 0));
+  const reason = String(readField(data, "latestScreenshotReason", "") || "定時快照");
+  const width = toInteger(readField(data, "latestScreenshotWidth", 0), 0);
+  const height = toInteger(readField(data, "latestScreenshotHeight", 0), 0);
+
+  if (!dataUri.startsWith("data:image/jpeg;base64,")) {
+    renderedScreenshotKey = "";
+    latestScreenshot.hidden = true;
+    latestScreenshot.removeAttribute("src");
+    snapshotPlaceholder.hidden = false;
+    snapshotPlaceholder.textContent = "裝置尚未上傳畫面；請確認即時診斷已啟用。";
+    snapshotMeta.textContent = "尚未收到快照。";
+    return;
+  }
+
+  const nextKey = `${pcDropdown.value}:${capturedAt}:${dataUri.length}`;
+  if (renderedScreenshotKey !== nextKey) {
+    latestScreenshot.src = dataUri;
+    renderedScreenshotKey = nextKey;
+  }
+  latestScreenshot.hidden = false;
+  snapshotPlaceholder.hidden = true;
+  snapshotMeta.textContent = `${fmtTs(capturedAt)}（${fmtAge(capturedAt)}）｜${reason}${width && height ? `｜${width}×${height}` : ""}`;
+}
+
+function runtimeLevelClass(level) {
+  if (level === "ERROR") return "error";
+  if (level === "WARN") return "warn";
+  return "info";
+}
+
+function renderRuntimeEvents() {
+  runtimeEventsBody.replaceChildren();
+  const data = selectedClientData();
+  if (!data) {
+    runtimeEventsNote.textContent = "請先選擇一台電腦。";
+    return;
+  }
+
+  const events = readRuntimeEvents(data);
+  if (events.length === 0) {
+    runtimeEventsNote.textContent = "尚未收到新版流程事件。";
+    return;
+  }
+  runtimeEventsNote.textContent = `顯示最近 ${events.length} 筆，最新事件在最上方。`;
+
+  for (const entry of events) {
+    const row = document.createElement("tr");
+    const timeCell = document.createElement("td");
+    timeCell.textContent = fmtTs(entry.at);
+    const levelCell = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = `event-level ${runtimeLevelClass(entry.level)}`;
+    badge.textContent = entry.level;
+    levelCell.appendChild(badge);
+    const nameCell = document.createElement("td");
+    nameCell.textContent = entry.name;
+    const detailCell = document.createElement("td");
+    detailCell.textContent = entry.detail || "-";
+    row.append(timeCell, levelCell, nameCell, detailCell);
+    runtimeEventsBody.appendChild(row);
   }
 }
 
@@ -424,6 +530,8 @@ function renderCommandStatus() {
 
 function renderSelectedClient() {
   refreshMeta();
+  renderSnapshot();
+  renderRuntimeEvents();
   renderHistory();
   renderCommandStatus();
   setButtonsDisabled(sending);
@@ -489,6 +597,22 @@ async function loadClients() {
   } finally {
     loadInFlight = false;
   }
+}
+
+function startClientListener() {
+  return onSnapshot(
+    collection(db, COLLECTION),
+    (snap) => {
+      cache.clear();
+      snap.forEach((s) => cache.set(s.id, s.data()));
+      renderClients();
+      const selectedId = pcDropdown.value;
+      if (selectedId) void reconcileClientHistory(selectedId);
+    },
+    (e) => {
+      statusMsg.textContent = `即時監聽失敗：${e.message}`;
+    },
+  );
 }
 
 async function sendCommand(state) {
@@ -583,11 +707,12 @@ btnStop.addEventListener("click", () => {
   void sendCommand("STOP");
 });
 pcDropdown.addEventListener("change", () => {
+  renderedScreenshotKey = "";
   renderSelectedClient();
   void reconcileClientHistory(pcDropdown.value);
 });
+btnRefreshSnapshot.addEventListener("click", () => void loadClients());
 
 statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
-void loadClients();
-window.setInterval(() => void loadClients(), REFRESH_MS);
+startClientListener();
 window.setInterval(renderCommandStatus, 1000);

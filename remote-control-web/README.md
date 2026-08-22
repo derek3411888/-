@@ -14,6 +14,10 @@
 
 預設集合是 `ahk_clients`，每台電腦以 AHK UID 作為文件 ID。AHK 會自動寫入心跳、執行狀態與 ACK 欄位。
 
+新版 client 也會寫入低畫質最新畫面與最近 50 筆流程事件。畫面存在同一個 client 文件，定時覆寫而不累積；本機可在設定中停用。由於畫面可能包含桌面內容，正式使用前請收緊 Firestore Rules，不要把集合公開給不受信任的使用者。
+
+控制台使用 Firestore 即時監聽，只在文件變更時接收新內容；不再每 5 秒重複下載同一張畫面。「立即重讀」仍可手動發出一次完整查詢。
+
 網頁送出命令時會使用 Firestore `runTransaction`，在同一筆交易內：
 
 1. 讀取目前頂層 `nonce`。
@@ -61,6 +65,11 @@ display_name=客廳電腦
 heartbeat_interval_ms=30000
 poll_interval_ms=5000
 http_timeout_ms=2500
+
+[runtime_diagnostics]
+enabled=1
+snapshot_interval_sec=30
+error_keep_count=30
 ```
 
 `uid` 留空時會由 AHK 在第一次啟動時自動產生。

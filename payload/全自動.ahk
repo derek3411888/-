@@ -58,6 +58,9 @@ global SCREEN_RECORDING_ENGINE := "ffmpeg"
 global SCREEN_RECORDING_FFMPEG_EXE := ""
 global SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
 global SCREEN_RECORDING_OUTPUT_DIR := "recordings"
+global SCREEN_RECORDING_SEGMENT_MINUTES := 5
+global SCREEN_RECORDING_AUTO_MERGE := 1
+global SCREEN_RECORDING_KEEP_FINAL_COUNT := 5
 global SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
 global SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := 1
 global SCREEN_RECORDING_OWNER_MARKER := "WUTHERING_AUTO_RECORDER_V1"
@@ -71,6 +74,10 @@ global SCREEN_RECORDING_STOP_LRMC_TASK := ""
 global __SCREEN_RECORDING_ACTIVE := false
 global __SCREEN_RECORDING_PID := 0
 global __SCREEN_RECORDING_OUTPUT_PATH := ""
+global __SCREEN_RECORDING_SESSION_DIR := ""
+global __SCREEN_RECORDING_SYNC_WORKER_PID := 0
+global __SCREEN_RECORDING_LAST_WORKER_STATE := ""
+global SCREEN_RECORDING_MAINTENANCE_INTERVAL_MS := 30000
 global __SCREEN_RECORDING_TEMPLATE_WARNED := false
 global __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
 global __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := 0
@@ -93,7 +100,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.44"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.45"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -114,6 +121,17 @@ global __REMOTE_PAUSED_AUX_PIDS := []
 global CURRENT_STEP_NAME := ""
 global CURRENT_STEP_DETAIL := ""
 global CURRENT_STEP_LEVEL := "INFO"
+global RUNTIME_DIAGNOSTICS_SECTION := "runtime_diagnostics"
+global RUNTIME_DIAGNOSTICS_ENABLED := 1
+global RUNTIME_DIAGNOSTICS_INTERVAL_SEC := 30
+global RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := 30
+global RUNTIME_DIAGNOSTICS_MAX_WIDTH := 640
+global RUNTIME_DIAGNOSTICS_JPEG_QUALITY := 45
+global __RUNTIME_DIAGNOSTICS_ACTIVE := false
+global __RUNTIME_SNAPSHOT_BUSY := false
+global __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := 0
+global __RUNTIME_ERROR_SNAPSHOT_PENDING := false
+global __RUNTIME_PENDING_REASON := ""
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -952,6 +970,8 @@ UnmuteWutheringAudio(reason := "") {
 RestoreWutheringAudioOnExit(exitReason, exitCode) {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, TOOLTIP_SLOT
     try ToolTip(, , , TOOLTIP_SLOT)
+    try StopRuntimeDiagnostics()
+    try SetTimer(ScreenRecordingMaintenanceTick, 0)
     try RC_Shutdown()
     if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
         WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
@@ -1711,7 +1731,7 @@ namespace AudioUtil {
 
 ; 日誌函數（使用新的日誌系統）
 WriteLog(msg, level := "INFO") {
-    global logger, RUN_ID
+    global logger, RUN_ID, REMOTE_CONTROL_ACTIVE
     if IsSet(logger) && IsObject(logger) {
         logger.log("[" RUN_ID "] " msg, level)
     } else {
@@ -1719,6 +1739,16 @@ WriteLog(msg, level := "INFO") {
         ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
         line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
         try FileAppend(line, A_ScriptDir "\main_fallback.log", "UTF-8")
+    }
+
+    normalizedLevel := StrUpper(Trim(level, " `t`r`n"))
+    if (normalizedLevel = "WARN" || normalizedLevel = "ERROR") {
+        ; RemoteControl 自己的 HTTP 錯誤不可再次觸發遠端事件，避免失敗遞迴。
+        isRemoteInternal := InStr(msg, "[RemoteControl]") ? true : false
+        if (REMOTE_CONTROL_ACTIVE && !isRemoteInternal)
+            try RC_RecordRuntimeEvent(normalizedLevel = "ERROR" ? "錯誤" : "警告", msg, normalizedLevel)
+        if !isRemoteInternal
+            try ScheduleRuntimeErrorSnapshot(msg, normalizedLevel)
     }
 }
 
@@ -1729,6 +1759,8 @@ WriteStep(stepName, detail := "", level := "INFO") {
     CURRENT_STEP_NAME := stepName
     CURRENT_STEP_DETAIL := detail
     CURRENT_STEP_LEVEL := level
+    if (REMOTE_CONTROL_ACTIVE)
+        try RC_RecordRuntimeEvent(stepName, detail, level)
     msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
@@ -1787,6 +1819,7 @@ WriteLog("CFG_FILE=" CFG_FILE)
 WriteStep("載入設定", "config=" CFG_FILE)
 LoadMailNotifyEnabled()
 LoadScreenRecordingEnabled()
+LoadRuntimeDiagnosticsSettings()
 REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged")
 if REMOTE_CONTROL_ACTIVE
     WriteLog("遠端控制：已啟用")
@@ -1797,6 +1830,9 @@ SetupTrayMenu()
 ; ★ 流程開始前統一檢查：程式路徑 + 郵件通知設定
 WriteStep("前置檢查", "程式路徑與通知設定")
 EnsureAllConfigAtStartup()
+LoadRuntimeDiagnosticsSettings()
+StartRuntimeDiagnostics()
+RecoverPendingRecordingSessions()
 
 ; ★ 啟動前檢測：確保三個程式都沒有在運行
 WriteLog("執行啟動前檢測，確保所有目標程式都已關閉...")
@@ -5318,7 +5354,10 @@ EnsureAllConfigAtStartup(force := false, reason := "") {
 ReadCombinedConfigState() {
     global CFG_FILE, MAIL_NOTIFY_ENABLED, MAIL_SECTION, REWARD_LOG_FILE, SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_SECTION
     global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
+    global SCREEN_RECORDING_SEGMENT_MINUTES, SCREEN_RECORDING_AUTO_MERGE, SCREEN_RECORDING_KEEP_FINAL_COUNT
     global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, SCREEN_RECORDING_STOP_LRMC_TASK
+    global RUNTIME_DIAGNOSTICS_SECTION, RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC
+    global RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT
 
     state := {}
     state.okwwPath := NormalizePath(IniReadSafe(CFG_FILE, "paths", "OKWW", ""))
@@ -5354,6 +5393,12 @@ ReadCombinedConfigState() {
     state.screenRecordingOutputDir := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
     if (state.screenRecordingOutputDir = "")
         state.screenRecordingOutputDir := "recordings"
+    state.screenRecordingSegmentMinutes := ToIntRange(
+        IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "segment_minutes", "5"), 5, 1, 60)
+    state.screenRecordingAutoMerge := ParseBool01(
+        IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_merge", "1"), 1)
+    state.screenRecordingKeepFinalCount := ToIntRange(
+        IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "keep_final_count", "5"), 5, 1, 50)
     state.screenRecordingStopMode := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "reward_end"))
     state.screenRecordingStopTemplate := NormalizeScreenRecordingStopTemplate(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template", "login"))
     state.screenRecordingStopTemplateCustom := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template_custom", ""))
@@ -5365,14 +5410,26 @@ ReadCombinedConfigState() {
     state.remoteUid := Trim(IniReadSafe(CFG_FILE, "remote_control", "uid", ""), " `t`r`n")
     state.remoteDeviceAlias := Trim(IniReadSafe(CFG_FILE, "remote_control", "device_alias", ""), " `t`r`n")
     state.remoteDisplayName := Trim(IniReadSafe(CFG_FILE, "remote_control", "display_name", ""), " `t`r`n")
+    state.runtimeDiagnosticsEnabled := ParseBool01(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "enabled", "1"), 1)
+    state.runtimeDiagnosticsIntervalSec := ToIntRange(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec", "30"), 30, 15, 600)
+    state.runtimeDiagnosticsErrorKeepCount := ToIntRange(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "error_keep_count", "30"), 30, 5, 200)
     MAIL_NOTIFY_ENABLED := state.sendEnabled
     SCREEN_RECORDING_ENABLED := state.screenRecordingEnabled
     SCREEN_RECORDING_ENGINE := state.screenRecordingEngine
     SCREEN_RECORDING_FFMPEG_EXE := state.screenRecordingFfmpegExe
     SCREEN_RECORDING_FFMPEG_ARGS := state.screenRecordingFfmpegArgs
     SCREEN_RECORDING_OUTPUT_DIR := state.screenRecordingOutputDir
+    SCREEN_RECORDING_SEGMENT_MINUTES := state.screenRecordingSegmentMinutes
+    SCREEN_RECORDING_AUTO_MERGE := state.screenRecordingAutoMerge
+    SCREEN_RECORDING_KEEP_FINAL_COUNT := state.screenRecordingKeepFinalCount
     SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
     SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := state.screenRecordingAutoStopExternalFfmpeg
+    RUNTIME_DIAGNOSTICS_ENABLED := state.runtimeDiagnosticsEnabled
+    RUNTIME_DIAGNOSTICS_INTERVAL_SEC := state.runtimeDiagnosticsIntervalSec
+    RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := state.runtimeDiagnosticsErrorKeepCount
     SCREEN_RECORDING_STOP_MODE := state.screenRecordingStopMode
     SCREEN_RECORDING_STOP_TEMPLATE := state.screenRecordingStopTemplate
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := state.screenRecordingStopTemplateCustom
@@ -5465,6 +5522,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "screen_recording.ffmpeg_args: " state.screenRecordingFfmpegArgs "`r`n"
     summary .= "screen_recording.auto_stop_external_ffmpeg: " state.screenRecordingAutoStopExternalFfmpeg "`r`n"
     summary .= "screen_recording.output_dir: " state.screenRecordingOutputDir "`r`n"
+    summary .= "screen_recording.segment_minutes: " state.screenRecordingSegmentMinutes "`r`n"
+    summary .= "screen_recording.auto_merge: " state.screenRecordingAutoMerge "`r`n"
+    summary .= "screen_recording.keep_final_count: " state.screenRecordingKeepFinalCount "`r`n"
     summary .= "screen_recording.stop_mode: " state.screenRecordingStopMode "`r`n"
     summary .= "screen_recording.stop_template: " state.screenRecordingStopTemplate "`r`n"
     summary .= "screen_recording.stop_template_custom: " state.screenRecordingStopTemplateCustom "`r`n"
@@ -5475,6 +5535,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "remote_control.device_alias: " state.remoteDeviceAlias "`r`n"
     summary .= "remote_control.display_name: " state.remoteDisplayName "`r`n"
     summary .= "remote_control.uid: " state.remoteUid "`r`n"
+    summary .= "runtime_diagnostics.enabled: " state.runtimeDiagnosticsEnabled "`r`n"
+    summary .= "runtime_diagnostics.snapshot_interval_sec: " state.runtimeDiagnosticsIntervalSec "`r`n"
+    summary .= "runtime_diagnostics.error_keep_count: " state.runtimeDiagnosticsErrorKeepCount "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     g.AddEdit("xm w1510 r8 ReadOnly", summary)
 
@@ -5588,8 +5651,19 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     txtScreenRecordingArgsHint := g.AddText("xs y+4 w440 c666666", "簡易模式會自動生成，進階可手動修改")
 
     g.AddText("xs y+8 w80", "輸出資料夾")
-    edScreenRecordingOutputDir := g.AddEdit("x+5 w280", state.screenRecordingOutputDir)
+    edScreenRecordingOutputDir := g.AddEdit("x+5 w205", state.screenRecordingOutputDir)
     btnScreenRecordingOutputDir := g.AddButton("x+5 w70", "瀏覽...")
+    btnScreenRecordingTestOutput := g.AddButton("x+5 w70", "測試寫入")
+    txtScreenRecordingOutputHint := g.AddText("xs y+4 w440 c666666", "可選本機、映射磁碟或 \\電腦\共用；選取後會保存為 UNC。")
+
+    g.AddText("xs y+8 w80", "分段分鐘")
+    edScreenRecordingSegmentMinutes := g.AddEdit("x+5 w60", state.screenRecordingSegmentMinutes)
+    g.AddText("x+12 w80", "保留成品")
+    edScreenRecordingKeepFinalCount := g.AddEdit("x+5 w60", state.screenRecordingKeepFinalCount)
+    g.AddText("x+5 w30", "份")
+
+    cbScreenRecordingAutoMerge := g.AddCheckbox("xs y+7 w440", "正常結束後無損合併，驗證成功才刪除分段")
+    cbScreenRecordingAutoMerge.Value := state.screenRecordingAutoMerge ? 1 : 0
 
     g.AddText("xs y+8 w80", "停止時機")
     ddScreenRecordingStopMode := g.AddDropDownList("x+5 w355", ["reward_end:收尾監測達標時", "lrmc_task_end:LRMCAI任務完成時"])
@@ -5616,6 +5690,18 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edRemoteUid := g.AddEdit("x+5 w355 ReadOnly", state.remoteUid)
 
     g.AddText("xs y+6 w440 c666666", "提示：若顯示名稱留空，會自動使用 別名@電腦名-短碼。")
+
+    g.AddText("xs y+24 w440", "【即時診斷】")
+    cbRuntimeDiagnosticsEnabled := g.AddCheckbox("xs y+8 w440", "啟用定時畫面與警告／錯誤快照")
+    cbRuntimeDiagnosticsEnabled.Value := state.runtimeDiagnosticsEnabled ? 1 : 0
+
+    g.AddText("xs y+8 w80", "快照間隔")
+    edRuntimeDiagnosticsInterval := g.AddEdit("x+5 w60", state.runtimeDiagnosticsIntervalSec)
+    g.AddText("x+5 w30", "秒")
+    g.AddText("x+15 w95", "錯誤圖保留")
+    edRuntimeDiagnosticsKeepCount := g.AddEdit("x+5 w60", state.runtimeDiagnosticsErrorKeepCount)
+    g.AddText("x+5 w30", "張")
+    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h34", "網頁顯示最新低畫質畫面與最近 50 筆事件；本機 latest.jpg 持續覆蓋。")
 
     ; === 底部按鈕區 ===
     btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
@@ -5665,13 +5751,22 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         txtScreenRecordingArgsHint: txtScreenRecordingArgsHint,
         edScreenRecordingOutputDir: edScreenRecordingOutputDir,
         btnScreenRecordingOutputDir: btnScreenRecordingOutputDir,
+        btnScreenRecordingTestOutput: btnScreenRecordingTestOutput,
+        txtScreenRecordingOutputHint: txtScreenRecordingOutputHint,
+        edScreenRecordingSegmentMinutes: edScreenRecordingSegmentMinutes,
+        edScreenRecordingKeepFinalCount: edScreenRecordingKeepFinalCount,
+        cbScreenRecordingAutoMerge: cbScreenRecordingAutoMerge,
         ddScreenRecordingStopMode: ddScreenRecordingStopMode,
         edScreenRecordingStopLrmcTask: edScreenRecordingStopLrmcTask,
         txtScreenRecordingHint: txtScreenRecordingHint,
         txtMailHint: txtMailHint,
         edRemoteDeviceAlias: edRemoteDeviceAlias,
         edRemoteDisplayName: edRemoteDisplayName,
-        edRemoteUid: edRemoteUid
+        edRemoteUid: edRemoteUid,
+        cbRuntimeDiagnosticsEnabled: cbRuntimeDiagnosticsEnabled,
+        edRuntimeDiagnosticsInterval: edRuntimeDiagnosticsInterval,
+        edRuntimeDiagnosticsKeepCount: edRuntimeDiagnosticsKeepCount,
+        txtRuntimeDiagnosticsHint: txtRuntimeDiagnosticsHint
     }
 
     btnOkww.OnEvent("Click", OnCombinedBrowseOkww)
@@ -5693,6 +5788,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     ddScreenRecordingStopMode.OnEvent("Change", OnScreenRecordingSettingChanged)
     btnScreenRecordingFfmpegExe.OnEvent("Click", OnBrowseScreenRecordingFfmpegExe)
     btnScreenRecordingOutputDir.OnEvent("Click", OnBrowseScreenRecordingOutputDir)
+    btnScreenRecordingTestOutput.OnEvent("Click", OnTestScreenRecordingOutputDir)
+    cbRuntimeDiagnosticsEnabled.OnEvent("Click", OnRuntimeDiagnosticsSettingChanged)
     btnSave.OnEvent("Click", OnCombinedSetupSave)
     btnCancel.OnEvent("Click", OnCombinedSetupCancel)
     g.OnEvent("Size", OnCombinedSetupGuiSize)
@@ -5702,6 +5799,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     RefreshMailInputsEnabled()
     RefreshServerScheduleInputsEnabled()
     RefreshScreenRecordingInputsEnabled()
+    RefreshRuntimeDiagnosticsInputsEnabled()
 
     ShowGuiFitToScreen(g)
     ReflowCombinedSetupFooterButtons()
@@ -5837,7 +5935,9 @@ RefreshFallbackLogHint() {
 OnCombinedSetupSave(*) {
     global __MAIL_SETUP, MAIL_NOTIFY_ENABLED, SCREEN_RECORDING_ENABLED
     global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
+    global SCREEN_RECORDING_SEGMENT_MINUTES, SCREEN_RECORDING_AUTO_MERGE, SCREEN_RECORDING_KEEP_FINAL_COUNT
     global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, SCREEN_RECORDING_STOP_LRMC_TASK
+    global RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC, RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT
     st := __MAIL_SETUP
 
     okwwPath := NormalizePath(st.edOkww.Value)
@@ -5870,13 +5970,23 @@ OnCombinedSetupSave(*) {
     crfVal := ToIntRange(crfText, 23, 0, 51)
     ffmpegExeVal := NormalizePath(st.edScreenRecordingFfmpegExe.Value)
     ffmpegArgsVal := Trim(st.edScreenRecordingFfmpegArgs.Value, " `t`r`n")
-    outputDirVal := NormalizePath(st.edScreenRecordingOutputDir.Value)
+    outputDirVal := ConvertMappedPathToUnc(NormalizePath(st.edScreenRecordingOutputDir.Value))
+    segmentMinutesText := Trim(st.edScreenRecordingSegmentMinutes.Value, " `t`r`n")
+    keepFinalCountText := Trim(st.edScreenRecordingKeepFinalCount.Value, " `t`r`n")
+    segmentMinutesVal := ToIntRange(segmentMinutesText, 5, 1, 60)
+    keepFinalCountVal := ToIntRange(keepFinalCountText, 5, 1, 50)
+    autoMergeVal := st.cbScreenRecordingAutoMerge.Value ? 1 : 0
     stopModeVal := NormalizeScreenRecordingStopMode(StrSplit(st.ddScreenRecordingStopMode.Text, ":")[1])
     stopTemplateVal := "login"
     stopTemplateCustomVal := ""
     stopLrmcTaskVal := Trim(st.edScreenRecordingStopLrmcTask.Value, " `t`r`n")
     remoteDeviceAliasVal := Trim(st.edRemoteDeviceAlias.Value, " `t`r`n")
     remoteDisplayNameVal := Trim(st.edRemoteDisplayName.Value, " `t`r`n")
+    runtimeDiagnosticsEnabledVal := st.cbRuntimeDiagnosticsEnabled.Value ? 1 : 0
+    runtimeDiagnosticsIntervalText := Trim(st.edRuntimeDiagnosticsInterval.Value, " `t`r`n")
+    runtimeDiagnosticsKeepText := Trim(st.edRuntimeDiagnosticsKeepCount.Value, " `t`r`n")
+    runtimeDiagnosticsIntervalVal := ToIntRange(runtimeDiagnosticsIntervalText, 30, 15, 600)
+    runtimeDiagnosticsKeepVal := ToIntRange(runtimeDiagnosticsKeepText, 30, 5, 200)
 
     if (okwwPath = "" || !FileExist(okwwPath)) {
         MsgBox "OKWW 路徑空白或不存在", "整合設定", "Iconx"
@@ -5944,6 +6054,50 @@ OnCombinedSetupSave(*) {
             MsgBox "使用 FFmpeg 錄影時，輸出資料夾不可空白", "整合設定", "Iconx"
             return
         }
+        if !RegExMatch(segmentMinutesText, "^\d+$") {
+            MsgBox "分段分鐘必須是 1～60 的數字", "整合設定", "Iconx"
+            return
+        }
+        if (Integer(segmentMinutesText) < 1 || Integer(segmentMinutesText) > 60) {
+            MsgBox "分段分鐘必須介於 1～60", "整合設定", "Iconx"
+            return
+        }
+        if !RegExMatch(keepFinalCountText, "^\d+$") {
+            MsgBox "成品保留份數必須是 1～50 的數字", "整合設定", "Iconx"
+            return
+        }
+        if (Integer(keepFinalCountText) < 1 || Integer(keepFinalCountText) > 50) {
+            MsgBox "成品保留份數必須介於 1～50", "整合設定", "Iconx"
+            return
+        }
+
+        writeTest := TestWritableDirectory(outputDirVal)
+        if !writeTest.ok {
+            st.txtScreenRecordingOutputHint.Value := "❌ " writeTest.message
+            MsgBox "錄影輸出資料夾無法寫入：`n" writeTest.path "`n`n" writeTest.message,
+                "整合設定", "Iconx"
+            return
+        }
+        outputDirVal := writeTest.path
+    }
+
+    if runtimeDiagnosticsEnabledVal {
+        if !RegExMatch(runtimeDiagnosticsIntervalText, "^\d+$") {
+            MsgBox "快照間隔必須是 15～600 秒的數字", "整合設定", "Iconx"
+            return
+        }
+        if (Integer(runtimeDiagnosticsIntervalText) < 15 || Integer(runtimeDiagnosticsIntervalText) > 600) {
+            MsgBox "快照間隔必須介於 15～600 秒", "整合設定", "Iconx"
+            return
+        }
+        if !RegExMatch(runtimeDiagnosticsKeepText, "^\d+$") {
+            MsgBox "錯誤圖保留數量必須是 5～200 的數字", "整合設定", "Iconx"
+            return
+        }
+        if (Integer(runtimeDiagnosticsKeepText) < 5 || Integer(runtimeDiagnosticsKeepText) > 200) {
+            MsgBox "錯誤圖保留數量必須介於 5～200", "整合設定", "Iconx"
+            return
+        }
     }
 
     IniWrite okwwPath, st.cfgPath, "paths", "OKWW"
@@ -5981,12 +6135,18 @@ OnCombinedSetupSave(*) {
     IniWrite (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal), st.cfgPath, "screen_recording", "ffmpeg_exe"
     IniWrite (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
     IniWrite (outputDirVal = "" ? "recordings" : outputDirVal), st.cfgPath, "screen_recording", "output_dir"
+    IniWrite segmentMinutesVal, st.cfgPath, "screen_recording", "segment_minutes"
+    IniWrite autoMergeVal, st.cfgPath, "screen_recording", "auto_merge"
+    IniWrite keepFinalCountVal, st.cfgPath, "screen_recording", "keep_final_count"
     IniWrite stopModeVal, st.cfgPath, "screen_recording", "stop_mode"
     IniWrite stopTemplateVal, st.cfgPath, "screen_recording", "stop_template"
     IniWrite stopTemplateCustomVal, st.cfgPath, "screen_recording", "stop_template_custom"
     IniWrite stopLrmcTaskVal, st.cfgPath, "screen_recording", "stop_lrmc_task"
     IniWrite remoteDeviceAliasVal, st.cfgPath, "remote_control", "device_alias"
     IniWrite remoteDisplayNameVal, st.cfgPath, "remote_control", "display_name"
+    IniWrite runtimeDiagnosticsEnabledVal, st.cfgPath, "runtime_diagnostics", "enabled"
+    IniWrite runtimeDiagnosticsIntervalVal, st.cfgPath, "runtime_diagnostics", "snapshot_interval_sec"
+    IniWrite runtimeDiagnosticsKeepVal, st.cfgPath, "runtime_diagnostics", "error_keep_count"
 
     MAIL_NOTIFY_ENABLED := sendEnabledVal
     SCREEN_RECORDING_ENABLED := screenRecordingEnabledVal
@@ -5995,11 +6155,18 @@ OnCombinedSetupSave(*) {
     SCREEN_RECORDING_FFMPEG_EXE := (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal)
     SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal)
     SCREEN_RECORDING_OUTPUT_DIR := (outputDirVal = "" ? "recordings" : outputDirVal)
+    SCREEN_RECORDING_SEGMENT_MINUTES := segmentMinutesVal
+    SCREEN_RECORDING_AUTO_MERGE := autoMergeVal
+    SCREEN_RECORDING_KEEP_FINAL_COUNT := keepFinalCountVal
     SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := autoStopExternalFfmpegVal
     SCREEN_RECORDING_STOP_MODE := stopModeVal
     SCREEN_RECORDING_STOP_TEMPLATE := stopTemplateVal
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := stopTemplateCustomVal
     SCREEN_RECORDING_STOP_LRMC_TASK := stopLrmcTaskVal
+    RUNTIME_DIAGNOSTICS_ENABLED := runtimeDiagnosticsEnabledVal
+    RUNTIME_DIAGNOSTICS_INTERVAL_SEC := runtimeDiagnosticsIntervalVal
+    RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := runtimeDiagnosticsKeepVal
+    StartRuntimeDiagnostics()
 
     __MAIL_SETUP.saved := true
     __MAIL_SETUP.done := true
@@ -6024,14 +6191,187 @@ OnBrowseScreenRecordingFfmpegExe(*) {
         __MAIL_SETUP.edScreenRecordingFfmpegExe.Value := p
 }
 
+ConvertMappedPathToUnc(pathValue) {
+    p := NormalizePath(pathValue)
+    p := StrReplace(p, "/", "\")
+    if (p = "" || SubStr(p, 1, 2) = "\\")
+        return p
+    if !RegExMatch(p, "i)^([a-z]:)(\\.*)?$", &m)
+        return p
+
+    required := 0
+    rc := DllCall("Mpr\WNetGetUniversalNameW", "str", p, "uint", 1,
+        "ptr", 0, "uint*", &required, "uint")
+    if (rc = 234 && required > A_PtrSize) {
+        info := Buffer(required, 0)
+        rc := DllCall("Mpr\WNetGetUniversalNameW", "str", p, "uint", 1,
+            "ptr", info.Ptr, "uint*", &required, "uint")
+        if (rc = 0) {
+            uncPtr := NumGet(info, 0, "ptr")
+            if (uncPtr)
+                return RTrim(StrGet(uncPtr, "UTF-16"), "\")
+        }
+    }
+
+    ; 管理員工作階段可能看不到映射連線，但同一使用者的持久映射仍在 HKCU。
+    try {
+        driveLetter := SubStr(m[1], 1, 1)
+        remoteRoot := Trim(RegRead("HKCU\Network\" driveLetter, "RemotePath"), ' "`t`r`n')
+        if (remoteRoot != "") {
+            suffix := m[2]
+            return RTrim(remoteRoot, "\") suffix
+        }
+    }
+    return p
+}
+
+ResolveConfiguredDirectoryPath(pathValue) {
+    p := ConvertMappedPathToUnc(NormalizePath(pathValue))
+    if (p = "")
+        return ""
+    if RegExMatch(p, "i)^[a-z]:\\") || SubStr(p, 1, 2) = "\\"
+        return p
+    return A_ScriptDir "\" p
+}
+
+TestWritableDirectory(pathValue) {
+    resolved := ResolveConfiguredDirectoryPath(pathValue)
+    result := {ok: false, path: resolved, message: ""}
+    if (resolved = "") {
+        result.message := "路徑不可空白"
+        return result
+    }
+    if RegExMatch(resolved, "i)^(?:shell:|::\{)") {
+        result.message := "這是檔案總管捷徑位置，不是真實檔案路徑；請選擇 SMB 共用資料夾"
+        return result
+    }
+
+    testPath := resolved "\.wuthering_write_test_" DllCall("GetCurrentProcessId") "_" A_TickCount ".tmp"
+    token := "write-test-" A_TickCount
+    try {
+        if !DirExist(resolved)
+            DirCreate(resolved)
+        FileAppend(token, testPath, "UTF-8")
+        readBack := FileRead(testPath, "UTF-8")
+        if (readBack != token)
+            throw Error("測試檔寫入後讀回內容不一致")
+        FileDelete(testPath)
+        result.ok := true
+        result.message := "寫入、讀取與刪除測試成功"
+        return result
+    } catch as e {
+        try FileDelete(testPath)
+        result.message := e.Message
+        if (SubStr(resolved, 1, 2) = "\\")
+            result.message .= "；請確認共用權限、資料夾安全性權限及 Windows 認證"
+        return result
+    }
+}
+
+QuoteFolderPickerArg(value) {
+    return '"' StrReplace(value, '"', '') '"'
+}
+
+SelectRecordingOutputFolderWithUserToken(initialPath := "") {
+    launcherPath := ResolvePersistentToolsRoot() "\全自動鋤地.exe"
+    if !FileExist(launcherPath)
+        return {ok: false, cancelled: false, path: "", message: "找不到現有啟動器，無法開啟一般權限選擇器"}
+
+    replyPath := A_Temp "\wuthering_folder_picker_" DllCall("GetCurrentProcessId") "_" A_TickCount ".ini"
+    try FileDelete(replyPath)
+    initialResolved := ResolveConfiguredDirectoryPath(initialPath)
+    args := "--pick-folder --reply " QuoteFolderPickerArg(replyPath)
+    args .= " --initial " QuoteFolderPickerArg(initialResolved)
+
+    try {
+        ; Shell.Application 由桌面 Explorer 代理啟動，子程序使用一般使用者權杖，
+        ; 因此能看到一般檔案總管中的映射磁碟與已儲存網路位置。
+        shell := ComObject("Shell.Application")
+        shell.ShellExecute(launcherPath, args, ResolvePersistentToolsRoot(), "open", 1)
+    } catch as e {
+        return {ok: false, cancelled: false, path: "", message: "啟動資料夾選擇器失敗: " e.Message}
+    }
+
+    deadline := A_TickCount + 180000
+    while (A_TickCount < deadline) {
+        if FileExist(replyPath)
+            break
+        Sleep 100
+    }
+    if !FileExist(replyPath)
+        return {ok: false, cancelled: false, path: "", message: "資料夾選擇器 180 秒內沒有回覆"}
+
+    try {
+        status := IniRead(replyPath, "result", "status", "error")
+        selected := IniRead(replyPath, "result", "path", "")
+        message := IniRead(replyPath, "result", "message", "")
+        helperWasAdmin := IniRead(replyPath, "result", "helper_was_admin", "0")
+        try FileDelete(replyPath)
+        if (status = "cancel")
+            return {ok: false, cancelled: true, path: "", message: ""}
+        if (status != "ok" || selected = "")
+            return {ok: false, cancelled: false, path: "", message: message != "" ? message : "選擇器未回傳路徑"}
+        selected := ConvertMappedPathToUnc(selected)
+        note := helperWasAdmin = "1" ? "（選擇器仍為管理員權限；若看不到映射磁碟可直接選『網路』或貼 UNC）" : ""
+        return {ok: true, cancelled: false, path: selected, message: note}
+    } catch as e {
+        try FileDelete(replyPath)
+        return {ok: false, cancelled: false, path: "", message: "讀取選擇結果失敗: " e.Message}
+    }
+}
+
 OnBrowseScreenRecordingOutputDir(*) {
     global __MAIL_SETUP
     if !IsObject(__MAIL_SETUP)
         return
 
-    p := DirSelect("", 3, "選擇錄影輸出資料夾")
-    if (p)
-        __MAIL_SETUP.edScreenRecordingOutputDir.Value := p
+    picked := SelectRecordingOutputFolderWithUserToken(__MAIL_SETUP.edScreenRecordingOutputDir.Value)
+    if picked.cancelled
+        return
+    if !picked.ok {
+        __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "❌ " picked.message
+        MsgBox picked.message, "錄影輸出資料夾", "Iconx"
+        return
+    }
+
+    __MAIL_SETUP.edScreenRecordingOutputDir.Value := picked.path
+    testResult := TestWritableDirectory(picked.path)
+    if testResult.ok {
+        __MAIL_SETUP.edScreenRecordingOutputDir.Value := testResult.path
+        __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "✅ " testResult.message " | " testResult.path
+    } else
+        __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "⚠ 已選取，但目前無法寫入：" testResult.message
+}
+
+OnTestScreenRecordingOutputDir(*) {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+    result := TestWritableDirectory(__MAIL_SETUP.edScreenRecordingOutputDir.Value)
+    if result.ok {
+        __MAIL_SETUP.edScreenRecordingOutputDir.Value := result.path
+        __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "✅ " result.message " | " result.path
+        MsgBox "資料夾可正常寫入：`n" result.path, "錄影輸出測試", "Iconi"
+    } else {
+        __MAIL_SETUP.txtScreenRecordingOutputHint.Value := "❌ " result.message
+        MsgBox "資料夾無法寫入：`n" result.path "`n`n" result.message, "錄影輸出測試", "Iconx"
+    }
+}
+
+OnRuntimeDiagnosticsSettingChanged(*) {
+    RefreshRuntimeDiagnosticsInputsEnabled()
+}
+
+RefreshRuntimeDiagnosticsInputsEnabled() {
+    global __MAIL_SETUP
+    if !IsObject(__MAIL_SETUP)
+        return
+    enabled := __MAIL_SETUP.cbRuntimeDiagnosticsEnabled.Value ? true : false
+    __MAIL_SETUP.edRuntimeDiagnosticsInterval.Enabled := enabled
+    __MAIL_SETUP.edRuntimeDiagnosticsKeepCount.Enabled := enabled
+    __MAIL_SETUP.txtRuntimeDiagnosticsHint.Value := enabled
+        ? "網頁顯示最新低畫質畫面與最近 50 筆事件；本機 latest.jpg 持續覆蓋。"
+        : "即時診斷已停用；遠端頁面仍保留基本步驟與心跳。"
 }
 
 OnServerScheduleEnabledChanged(*) {
@@ -6061,6 +6401,10 @@ RefreshScreenRecordingInputsEnabled() {
     __MAIL_SETUP.edScreenRecordingFfmpegArgs.Enabled := useFfmpeg && !useSimple
     __MAIL_SETUP.edScreenRecordingOutputDir.Enabled := useFfmpeg
     __MAIL_SETUP.btnScreenRecordingOutputDir.Enabled := useFfmpeg
+    __MAIL_SETUP.btnScreenRecordingTestOutput.Enabled := useFfmpeg
+    __MAIL_SETUP.edScreenRecordingSegmentMinutes.Enabled := useFfmpeg
+    __MAIL_SETUP.edScreenRecordingKeepFinalCount.Enabled := useFfmpeg
+    __MAIL_SETUP.cbScreenRecordingAutoMerge.Enabled := useFfmpeg
     __MAIL_SETUP.ddScreenRecordingStopMode.Enabled := enabled
 
     if useSimple {
@@ -6310,11 +6654,196 @@ LoadMailNotifyEnabled() {
     WriteLog("郵件通知開關(send_enabled)=" MAIL_NOTIFY_ENABLED)
 }
 
+LoadRuntimeDiagnosticsSettings() {
+    global CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION
+    global RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC
+    global RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT, RUNTIME_DIAGNOSTICS_MAX_WIDTH
+    global RUNTIME_DIAGNOSTICS_JPEG_QUALITY
+
+    RUNTIME_DIAGNOSTICS_ENABLED := ParseBool01(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "enabled", "1"), 1)
+    RUNTIME_DIAGNOSTICS_INTERVAL_SEC := ToIntRange(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_interval_sec", "30"),
+        30, 15, 600)
+    RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := ToIntRange(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "error_keep_count", "30"),
+        30, 5, 200)
+    RUNTIME_DIAGNOSTICS_MAX_WIDTH := ToIntRange(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "snapshot_max_width", "640"),
+        640, 320, 1280)
+    RUNTIME_DIAGNOSTICS_JPEG_QUALITY := ToIntRange(
+        IniReadSafe(CFG_FILE, RUNTIME_DIAGNOSTICS_SECTION, "jpeg_quality", "45"),
+        45, 20, 80)
+    WriteLog("即時診斷 enabled=" RUNTIME_DIAGNOSTICS_ENABLED
+        " interval=" RUNTIME_DIAGNOSTICS_INTERVAL_SEC "s error_keep=" RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT)
+}
+
+ResolveRuntimeDiagnosticsDir() {
+    localBase := NormalizePath(EnvGet("LOCALAPPDATA"))
+    if (localBase = "")
+        localBase := A_Temp
+    return localBase "\WutheringAuto\diagnostics"
+}
+
+StartRuntimeDiagnostics() {
+    global RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC
+    global __RUNTIME_DIAGNOSTICS_ACTIVE
+
+    StopRuntimeDiagnostics()
+    if !RUNTIME_DIAGNOSTICS_ENABLED {
+        WriteLog("即時診斷已停用")
+        return false
+    }
+
+    diagDir := ResolveRuntimeDiagnosticsDir()
+    try DirCreate(diagDir)
+    catch as e {
+        WriteLog("建立即時診斷資料夾失敗: " e.Message, "WARN")
+        return false
+    }
+
+    __RUNTIME_DIAGNOSTICS_ACTIVE := true
+    intervalMs := Max(15000, RUNTIME_DIAGNOSTICS_INTERVAL_SEC * 1000)
+    SetTimer(RuntimeSnapshotTick, intervalMs)
+    SetTimer(() => CaptureRuntimeSnapshot("啟動／設定完成", false), -800)
+    WriteLog("即時診斷已啟動，每 " RUNTIME_DIAGNOSTICS_INTERVAL_SEC " 秒更新畫面")
+    return true
+}
+
+StopRuntimeDiagnostics() {
+    global __RUNTIME_DIAGNOSTICS_ACTIVE
+    __RUNTIME_DIAGNOSTICS_ACTIVE := false
+    try SetTimer(RuntimeSnapshotTick, 0)
+    try SetTimer(RuntimeErrorSnapshotTick, 0)
+}
+
+RuntimeSnapshotTick() {
+    CaptureRuntimeSnapshot("定時快照", false)
+}
+
+ScheduleRuntimeErrorSnapshot(message, level := "WARN") {
+    global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_SNAPSHOT_BUSY
+    global __RUNTIME_LAST_ERROR_SNAPSHOT_TICK, __RUNTIME_ERROR_SNAPSHOT_PENDING
+    global __RUNTIME_PENDING_REASON
+
+    if !__RUNTIME_DIAGNOSTICS_ACTIVE || __RUNTIME_SNAPSHOT_BUSY || __RUNTIME_ERROR_SNAPSHOT_PENDING
+        return false
+    if (__RUNTIME_LAST_ERROR_SNAPSHOT_TICK > 0
+        && A_TickCount - __RUNTIME_LAST_ERROR_SNAPSHOT_TICK < 10000)
+        return false
+
+    __RUNTIME_ERROR_SNAPSHOT_PENDING := true
+    __RUNTIME_PENDING_REASON := SubStr(level ": " message, 1, 180)
+    SetTimer(RuntimeErrorSnapshotTick, -200)
+    return true
+}
+
+RuntimeErrorSnapshotTick() {
+    global __RUNTIME_ERROR_SNAPSHOT_PENDING, __RUNTIME_PENDING_REASON
+    __RUNTIME_ERROR_SNAPSHOT_PENDING := false
+    reason := IsSet(__RUNTIME_PENDING_REASON) ? __RUNTIME_PENDING_REASON : "警告／錯誤"
+    CaptureRuntimeSnapshot(reason, true)
+}
+
+PruneRuntimeDiagnosticScreenshots(keepCount) {
+    diagDir := ResolveRuntimeDiagnosticsDir()
+    files := []
+    Loop Files, diagDir "\error_*.jpg", "F" {
+        files.Push({path: A_LoopFileFullPath, modified: A_LoopFileTimeModified})
+    }
+    if (files.Length <= keepCount)
+        return 0
+
+    i := 1
+    while (i <= files.Length - 1) {
+        j := i + 1
+        while (j <= files.Length) {
+            if (files[i].modified < files[j].modified) {
+                tmp := files[i]
+                files[i] := files[j]
+                files[j] := tmp
+            }
+            j += 1
+        }
+        i += 1
+    }
+    deleted := 0
+    Loop files.Length - keepCount {
+        try {
+            FileDelete(files[keepCount + A_Index].path)
+            deleted += 1
+        }
+    }
+    return deleted
+}
+
+CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
+    global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_SNAPSHOT_BUSY
+    global __RUNTIME_LAST_ERROR_SNAPSHOT_TICK, RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT
+    global RUNTIME_DIAGNOSTICS_MAX_WIDTH, RUNTIME_DIAGNOSTICS_JPEG_QUALITY
+    global REMOTE_CONTROL_ACTIVE
+
+    if !__RUNTIME_DIAGNOSTICS_ACTIVE || __RUNTIME_SNAPSHOT_BUSY
+        return false
+    __RUNTIME_SNAPSHOT_BUSY := true
+
+    try {
+        diagDir := ResolveRuntimeDiagnosticsDir()
+        DirCreate(diagDir)
+        latestPath := diagDir "\latest.jpg"
+        tempPath := diagDir "\latest_" DllCall("GetCurrentProcessId") "_" A_TickCount ".tmp.jpg"
+        targetWidth := Min(A_ScreenWidth, RUNTIME_DIAGNOSTICS_MAX_WIDTH)
+        targetHeight := Max(1, Round(A_ScreenHeight * targetWidth / Max(1, A_ScreenWidth)))
+        captureSpec := {Screenshot: [0, 0, A_ScreenWidth, A_ScreenHeight], scale: [targetWidth, ""]}
+
+        ImagePutFile(captureSpec, tempPath, RUNTIME_DIAGNOSTICS_JPEG_QUALITY)
+        if !FileExist(tempPath)
+            throw Error("截圖檔未建立")
+        FileMove(tempPath, latestPath, 1)
+
+        if preserveErrorCopy {
+            errorPath := diagDir "\error_" FormatTime(, "yyyyMMdd_HHmmss") "_" A_TickCount ".jpg"
+            FileCopy(latestPath, errorPath, 1)
+            __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := A_TickCount
+            PruneRuntimeDiagnosticScreenshots(RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT)
+        }
+
+        if REMOTE_CONTROL_ACTIVE {
+            base64 := ImagePutBase64(latestPath)
+            dataUri := "data:image/jpeg;base64," base64
+            ; 保底限制 Firestore 單文件大小；極端高雜訊畫面改用更小尺寸與品質重試。
+            if (StrLen(dataUri) > 800000) {
+                retryPath := diagDir "\latest_retry_" A_TickCount ".tmp.jpg"
+                retryWidth := Min(A_ScreenWidth, 480)
+                retryHeight := Max(1, Round(A_ScreenHeight * retryWidth / Max(1, A_ScreenWidth)))
+                ImagePutFile({Screenshot: [0, 0, A_ScreenWidth, A_ScreenHeight], scale: [retryWidth, ""]},
+                    retryPath, 35)
+                FileMove(retryPath, latestPath, 1)
+                targetWidth := retryWidth
+                targetHeight := retryHeight
+                dataUri := "data:image/jpeg;base64," ImagePutBase64(latestPath)
+            }
+            RC_PublishRuntimeSnapshot(dataUri, RC_UnixMs(), SubStr(reason, 1, 180),
+                targetWidth, targetHeight)
+        }
+        return true
+    } catch as e {
+        ; 這裡不能使用 WARN，否則截圖失敗會再次排程錯誤截圖。
+        WriteLog("即時診斷截圖失敗: " e.Message, "INFO")
+        return false
+    } finally {
+        __RUNTIME_SNAPSHOT_BUSY := false
+        try FileDelete(tempPath)
+        try FileDelete(retryPath)
+    }
+}
+
 LoadScreenRecordingEnabled() {
     global CFG_FILE, SCREEN_RECORDING_SECTION, SCREEN_RECORDING_ENABLED
     global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
+    global SCREEN_RECORDING_SEGMENT_MINUTES, SCREEN_RECORDING_AUTO_MERGE, SCREEN_RECORDING_KEEP_FINAL_COUNT
     global SCREEN_RECORDING_STOP_MODE, SCREEN_RECORDING_STOP_TEMPLATE, SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM, SCREEN_RECORDING_STOP_LRMC_TASK
-    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_TEMPLATE_WARNED, __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_TEMPLATE_WARNED, __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH, __SCREEN_RECORDING_SESSION_DIR
     SCREEN_RECORDING_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "enabled", "0"), 0)
     SCREEN_RECORDING_ENGINE := NormalizeScreenRecordingEngine(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "engine", "ffmpeg"))
     SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
@@ -6325,9 +6854,15 @@ LoadScreenRecordingEnabled() {
     if (SCREEN_RECORDING_FFMPEG_ARGS = "")
         SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
     SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_stop_external_ffmpeg", "1"), 1)
-    SCREEN_RECORDING_OUTPUT_DIR := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
+    SCREEN_RECORDING_OUTPUT_DIR := ConvertMappedPathToUnc(NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings")))
     if (SCREEN_RECORDING_OUTPUT_DIR = "")
         SCREEN_RECORDING_OUTPUT_DIR := "recordings"
+    SCREEN_RECORDING_SEGMENT_MINUTES := ToIntRange(
+        IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "segment_minutes", "5"), 5, 1, 60)
+    SCREEN_RECORDING_AUTO_MERGE := ParseBool01(
+        IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_merge", "1"), 1)
+    SCREEN_RECORDING_KEEP_FINAL_COUNT := ToIntRange(
+        IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "keep_final_count", "5"), 5, 1, 50)
     SCREEN_RECORDING_STOP_MODE := NormalizeScreenRecordingStopMode(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_mode", "reward_end"))
     SCREEN_RECORDING_STOP_TEMPLATE := NormalizeScreenRecordingStopTemplate(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template", "login"))
     SCREEN_RECORDING_STOP_TEMPLATE_CUSTOM := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "stop_template_custom", ""))
@@ -6338,15 +6873,17 @@ LoadScreenRecordingEnabled() {
     if !__SCREEN_RECORDING_ACTIVE {
         __SCREEN_RECORDING_PID := 0
         __SCREEN_RECORDING_OUTPUT_PATH := ""
+        __SCREEN_RECORDING_SESSION_DIR := ""
     }
     WriteLog("螢幕錄影開關(enabled)=" SCREEN_RECORDING_ENABLED)
     WriteLog("螢幕錄影引擎(engine)=" SCREEN_RECORDING_ENGINE " ffmpeg_exe=" SCREEN_RECORDING_FFMPEG_EXE " allow_hotkey_fallback=" SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK " auto_stop_external_ffmpeg=" SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG)
+    WriteLog("螢幕錄影分段=" SCREEN_RECORDING_SEGMENT_MINUTES " 分鐘 auto_merge=" SCREEN_RECORDING_AUTO_MERGE " destination=" ResolveScreenRecordingOutputDir())
     WriteLog("螢幕錄影停止條件 stop_mode=" SCREEN_RECORDING_STOP_MODE " stop_template=" SCREEN_RECORDING_STOP_TEMPLATE)
 }
 
 TryStartScreenRecording(reason := "") {
     global SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_ENGINE, __SCREEN_RECORDING_ACTIVE
-    global __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH, __SCREEN_RECORDING_SESSION_DIR, __SCREEN_RECORDING_LAST_WORKER_STATE
 
     if !SCREEN_RECORDING_ENABLED {
         WriteLog("螢幕錄影未啟用，略過開始", "INFO")
@@ -6367,6 +6904,9 @@ TryStartScreenRecording(reason := "") {
         __SCREEN_RECORDING_ACTIVE := true
         __SCREEN_RECORDING_PID := existingPid
         __SCREEN_RECORDING_OUTPUT_PATH := existingPath
+        __SCREEN_RECORDING_SESSION_DIR := GetRecordingSessionDirFromOutputPattern(existingPath)
+        __SCREEN_RECORDING_LAST_WORKER_STATE := ""
+        StartScreenRecordingMaintenance()
         msg := "沿用既有 FFmpeg 螢幕錄影 PID=" existingPid
         if (existingPath != "")
             msg .= " 檔案=" existingPath
@@ -6384,6 +6924,9 @@ TryStartScreenRecording(reason := "") {
         __SCREEN_RECORDING_ACTIVE := true
         __SCREEN_RECORDING_PID := pid
         __SCREEN_RECORDING_OUTPUT_PATH := outPath
+        __SCREEN_RECORDING_SESSION_DIR := GetRecordingSessionDirFromOutputPattern(outPath)
+        __SCREEN_RECORDING_LAST_WORKER_STATE := ""
+        StartScreenRecordingMaintenance()
         msg := "已啟動 FFmpeg 螢幕錄影 PID=" pid " 檔案=" outPath
         if (reason != "")
             msg .= "（" reason "）"
@@ -6396,7 +6939,7 @@ TryStartScreenRecording(reason := "") {
 }
 
 AttachManagedScreenRecordingOnRestart(reason := "") {
-    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH, __SCREEN_RECORDING_SESSION_DIR, __SCREEN_RECORDING_LAST_WORKER_STATE
 
     existingPid := 0
     existingPath := ""
@@ -6415,6 +6958,9 @@ AttachManagedScreenRecordingOnRestart(reason := "") {
         __SCREEN_RECORDING_ACTIVE := true
         __SCREEN_RECORDING_PID := existingPid
         __SCREEN_RECORDING_OUTPUT_PATH := existingPath
+        __SCREEN_RECORDING_SESSION_DIR := GetRecordingSessionDirFromOutputPattern(existingPath)
+        __SCREEN_RECORDING_LAST_WORKER_STATE := ""
+        StartScreenRecordingMaintenance()
         msg := "重啟接管成功：PID=" existingPid
         if (existingPath != "")
             msg .= " 檔案=" existingPath
@@ -6427,6 +6973,7 @@ AttachManagedScreenRecordingOnRestart(reason := "") {
     __SCREEN_RECORDING_ACTIVE := false
     __SCREEN_RECORDING_PID := 0
     __SCREEN_RECORDING_OUTPUT_PATH := ""
+    __SCREEN_RECORDING_SESSION_DIR := ""
     msg := "重啟接管未命中：未找到受管 FFmpeg 錄影"
     if (reason != "")
         msg .= "（" reason "）"
@@ -6435,7 +6982,7 @@ AttachManagedScreenRecordingOnRestart(reason := "") {
 }
 
 TryStopScreenRecording(reason := "") {
-    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH, __SCREEN_RECORDING_SESSION_DIR
 
     if !__SCREEN_RECORDING_ACTIVE
         return false
@@ -6446,7 +6993,11 @@ TryStopScreenRecording(reason := "") {
     }
 
     pid := __SCREEN_RECORDING_PID
+    sessionDir := __SCREEN_RECORDING_SESSION_DIR
+    if (sessionDir = "")
+        sessionDir := GetRecordingSessionDirFromOutputPattern(__SCREEN_RECORDING_OUTPUT_PATH)
     if StopFfmpegScreenRecording(pid) {
+        SetTimer(ScreenRecordingMaintenanceTick, 0)
         __SCREEN_RECORDING_ACTIVE := false
         __SCREEN_RECORDING_PID := 0
         msg := "已停止 FFmpeg 螢幕錄影 PID=" pid
@@ -6455,8 +7006,10 @@ TryStopScreenRecording(reason := "") {
         if (reason != "")
             msg .= "（" reason "）"
         WriteLog(msg)
-        PruneScreenRecordingFiles(5)
+        if (sessionDir != "")
+            LaunchRecordingWorker("finalize", sessionDir)
         __SCREEN_RECORDING_OUTPUT_PATH := ""
+        __SCREEN_RECORDING_SESSION_DIR := ""
         return true
     }
 
@@ -6465,15 +7018,21 @@ TryStopScreenRecording(reason := "") {
 }
 
 ForceStopManagedScreenRecording(reason := "") {
-    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID, __SCREEN_RECORDING_OUTPUT_PATH, __SCREEN_RECORDING_SESSION_DIR
 
     attempted := 0
     stopped := 0
     seen := Map()
+    finalizeSessions := Map()
 
     if (__SCREEN_RECORDING_PID > 0) {
         pidKey := String(__SCREEN_RECORDING_PID)
         seen[pidKey] := 1
+        rememberedSession := __SCREEN_RECORDING_SESSION_DIR
+        if (rememberedSession = "")
+            rememberedSession := GetRecordingSessionDirFromOutputPattern(__SCREEN_RECORDING_OUTPUT_PATH)
+        if (rememberedSession != "")
+            finalizeSessions[StrLower(rememberedSession)] := rememberedSession
         attempted += 1
         if StopFfmpegScreenRecording(__SCREEN_RECORDING_PID) {
             stopped += 1
@@ -6493,6 +7052,9 @@ ForceStopManagedScreenRecording(reason := "") {
         if seen.Has(pidKey)
             continue
         seen[pidKey] := 1
+        itemSession := GetRecordingSessionDirFromOutputPattern(ParseFfmpegOutputPathFromCommandLine(item.cmdLine))
+        if (itemSession != "")
+            finalizeSessions[StrLower(itemSession)] := itemSession
 
         attempted += 1
         if StopFfmpegScreenRecording(item.pid) {
@@ -6504,14 +7066,17 @@ ForceStopManagedScreenRecording(reason := "") {
     }
 
     if (stopped > 0) {
+        SetTimer(ScreenRecordingMaintenanceTick, 0)
         __SCREEN_RECORDING_ACTIVE := false
         __SCREEN_RECORDING_PID := 0
         __SCREEN_RECORDING_OUTPUT_PATH := ""
+        __SCREEN_RECORDING_SESSION_DIR := ""
         msg := "保底停錄完成：共停止 " stopped " 個受管 FFmpeg"
         if (reason != "")
             msg .= "（" reason "）"
         WriteLog(msg)
-        PruneScreenRecordingFiles(5)
+        for _, sessionDir in finalizeSessions
+            LaunchRecordingWorker("finalize", sessionDir)
         return true
     }
 
@@ -6534,15 +7099,165 @@ NormalizeScreenRecordingEngine(val) {
 ResolveScreenRecordingOutputDir() {
     global SCREEN_RECORDING_OUTPUT_DIR
 
-    p := NormalizePath(SCREEN_RECORDING_OUTPUT_DIR)
+    p := ConvertMappedPathToUnc(NormalizePath(SCREEN_RECORDING_OUTPUT_DIR))
     if (p = "")
         p := "recordings"
 
     if RegExMatch(p, "i)^[a-z]:\\")
         return p
-    if (SubStr(p, 1, 2) = "\\\\")
+    if (SubStr(p, 1, 2) = "\\")
         return p
-    return A_ScriptDir "\\" p
+    return A_ScriptDir "\" p
+}
+
+ResolveRecordingStagingRoot() {
+    localBase := NormalizePath(EnvGet("LOCALAPPDATA"))
+    if (localBase = "")
+        localBase := A_Temp
+    return localBase "\WutheringAuto\recording_staging"
+}
+
+GetRecordingSessionDirFromOutputPattern(outputPath) {
+    p := NormalizePath(outputPath)
+    if (p = "")
+        return ""
+    dir := ""
+    SplitPath(p, , &dir)
+    if (dir = "" || !FileExist(dir "\.wuthering_recording_session"))
+        return ""
+    return dir
+}
+
+WriteRecordingSessionMetadata(sessionDir, destinationDir, baseName, ffmpegExe) {
+    global SCREEN_RECORDING_SEGMENT_MINUTES, SCREEN_RECORDING_AUTO_MERGE, SCREEN_RECORDING_KEEP_FINAL_COUNT
+    try {
+        DirCreate(sessionDir)
+        marker := sessionDir "\.wuthering_recording_session"
+        if !FileExist(marker)
+            FileAppend("WUTHERING_RECORDING_SESSION_V2", marker, "UTF-8")
+        ini := sessionDir "\session.ini"
+        IniWrite(destinationDir, ini, "recording", "destination_dir")
+        IniWrite(baseName, ini, "recording", "base_name")
+        IniWrite(ffmpegExe, ini, "recording", "ffmpeg_exe")
+        IniWrite(SCREEN_RECORDING_SEGMENT_MINUTES, ini, "recording", "segment_minutes")
+        IniWrite(SCREEN_RECORDING_AUTO_MERGE ? "1" : "0", ini, "recording", "auto_merge")
+        IniWrite(SCREEN_RECORDING_KEEP_FINAL_COUNT, ini, "recording", "keep_final_count")
+        IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), ini, "recording", "started_at")
+        IniWrite("recording", ini, "recording", "state")
+        return true
+    } catch as e {
+        WriteLog("建立錄影工作階段失敗: " e.Message, "ERROR")
+        return false
+    }
+}
+
+StartScreenRecordingMaintenance() {
+    global SCREEN_RECORDING_MAINTENANCE_INTERVAL_MS
+    SetTimer(ScreenRecordingMaintenanceTick, 0)
+    SetTimer(ScreenRecordingMaintenanceTick, SCREEN_RECORDING_MAINTENANCE_INTERVAL_MS)
+    SetTimer(() => ScreenRecordingMaintenanceTick(), -3000)
+}
+
+ScreenRecordingMaintenanceTick() {
+    global __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_SESSION_DIR
+    global __SCREEN_RECORDING_SYNC_WORKER_PID, __SCREEN_RECORDING_LAST_WORKER_STATE
+    if !__SCREEN_RECORDING_ACTIVE || __SCREEN_RECORDING_SESSION_DIR = ""
+        return
+    if (__SCREEN_RECORDING_SYNC_WORKER_PID > 0 && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID))
+        return
+    __SCREEN_RECORDING_SYNC_WORKER_PID := 0
+
+    state := ""
+    detail := ""
+    try state := IniRead(__SCREEN_RECORDING_SESSION_DIR "\session.ini", "recording", "state", "")
+    try detail := IniRead(__SCREEN_RECORDING_SESSION_DIR "\session.ini", "recording", "state_detail", "")
+    stateSignature := state "|" detail
+    if (stateSignature != "|" && stateSignature != __SCREEN_RECORDING_LAST_WORKER_STATE) {
+        __SCREEN_RECORDING_LAST_WORKER_STATE := stateSignature
+        if InStr(state, "waiting")
+            WriteLog("錄影補傳狀態=" state " | " detail, "WARN")
+        else
+            WriteLog("錄影補傳狀態=" state " | " detail)
+    }
+    LaunchRecordingWorker("sync", __SCREEN_RECORDING_SESSION_DIR)
+}
+
+LaunchRecordingWorker(mode, sessionDir) {
+    global BUNDLED_AHK_EXE, __SCREEN_RECORDING_SYNC_WORKER_PID
+    workerPath := A_ScriptDir "\RecordingFinalizeWorker.ahk"
+    if (!FileExist(workerPath) || !FileExist(BUNDLED_AHK_EXE)) {
+        WriteLog("錄影背景工具缺失，無法執行 " mode " | worker=" workerPath, "ERROR")
+        return false
+    }
+    if (sessionDir = "" || !FileExist(sessionDir "\.wuthering_recording_session"))
+        return false
+
+    normalizedMode := StrLower(mode)
+    if (normalizedMode = "sync") {
+        if (__SCREEN_RECORDING_SYNC_WORKER_PID > 0 && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID))
+            return true
+    } else if (normalizedMode = "finalize") {
+        ; 若剛好仍在補傳上一段，先給它完成；逾時就停止我們自己的 helper，
+        ; 殘留 .partial 會由收尾 worker 覆寫，不會當成完成檔。
+        if (__SCREEN_RECORDING_SYNC_WORKER_PID > 0 && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID)) {
+            deadline := A_TickCount + 30000
+            while (A_TickCount < deadline && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID))
+                Sleep 200
+            if ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID) {
+                try ProcessClose(__SCREEN_RECORDING_SYNC_WORKER_PID)
+                Sleep 300
+            }
+        }
+        __SCREEN_RECORDING_SYNC_WORKER_PID := 0
+        try IniWrite("finalize_pending", sessionDir "\session.ini", "recording", "state")
+    } else
+        return false
+
+    cmd := '"' BUNDLED_AHK_EXE '" "' workerPath '" --mode ' normalizedMode
+    cmd .= ' --session "' sessionDir '"'
+    try {
+        Run(cmd, A_ScriptDir, "Hide", &workerPid)
+        if (normalizedMode = "sync")
+            __SCREEN_RECORDING_SYNC_WORKER_PID := workerPid
+        WriteLog("已啟動錄影背景工具 mode=" normalizedMode " PID=" workerPid " session=" sessionDir)
+        return workerPid > 0
+    } catch as e {
+        WriteLog("啟動錄影背景工具失敗 mode=" normalizedMode " | " e.Message, "ERROR")
+        return false
+    }
+}
+
+RecoverPendingRecordingSessions() {
+    stagingRoot := ResolveRecordingStagingRoot()
+    if !DirExist(stagingRoot)
+        return 0
+
+    activeDirs := Map()
+    for item in EnumerateRunningFfmpegProcesses() {
+        if !IsManagedByCurrentScriptFfmpegCommand(item.cmdLine)
+            continue
+        activeDir := GetRecordingSessionDirFromOutputPattern(ParseFfmpegOutputPathFromCommandLine(item.cmdLine))
+        if (activeDir != "")
+            activeDirs[StrLower(activeDir)] := 1
+    }
+
+    launched := 0
+    Loop Files, stagingRoot "\wuthering_auto_recording_*", "D" {
+        sessionDir := A_LoopFileFullPath
+        if !FileExist(sessionDir "\.wuthering_recording_session")
+            continue
+        if activeDirs.Has(StrLower(sessionDir))
+            continue
+        state := ""
+        try state := IniRead(sessionDir "\session.ini", "recording", "state", "")
+        if (state = "complete")
+            continue
+        if LaunchRecordingWorker("finalize", sessionDir)
+            launched += 1
+    }
+    if (launched > 0)
+        WriteLog("已恢復待收尾錄影工作階段 " launched " 個", "WARN")
+    return launched
 }
 
 PruneScreenRecordingFiles(keepCount := 5) {
@@ -6589,6 +7304,7 @@ PruneScreenRecordingFiles(keepCount := 5) {
 
 StartFfmpegScreenRecording(&outPath, &pid) {
     global SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OWNER_MARKER
+    global SCREEN_RECORDING_SEGMENT_MINUTES
 
     outPath := ""
     pid := 0
@@ -6599,26 +7315,66 @@ StartFfmpegScreenRecording(&outPath, &pid) {
         return false
     }
 
-    outDir := ResolveScreenRecordingOutputDir()
-    try DirCreate(outDir)
-
     ts := FormatTime(A_Now, "yyyyMMdd_HHmmss")
-    outPath := outDir "\\wuthering_auto_recording_" ts ".mkv"
+    baseName := "wuthering_auto_recording_" ts
+    destinationDir := ResolveScreenRecordingOutputDir()
+    ; 執行期不在主執行緒碰網路分享，避免離線 SMB 的系統 timeout 卡住自動流程。
+    ; 真正的建立／複製／重試全部交給獨立 worker；錄影永遠先在本機開始。
+    WriteLog("錄影採本機優先；目的端將由背景工具檢查與補傳 | destination=" destinationDir)
+
+    stagingRoot := ResolveRecordingStagingRoot()
+    try DirCreate(stagingRoot)
+    catch as e {
+        WriteLog("建立本機錄影暫存資料夾失敗: " e.Message, "ERROR")
+        return false
+    }
+    sessionDir := stagingRoot "\" baseName "_" A_TickCount
+    try DirCreate(sessionDir)
+    catch as e {
+        WriteLog("建立錄影工作階段資料夾失敗: " e.Message, "ERROR")
+        return false
+    }
+    if !WriteRecordingSessionMetadata(sessionDir, destinationDir, baseName, ffmpegExe) {
+        try DirDelete(sessionDir, true)
+        return false
+    }
+
+    outPath := sessionDir "\segment_%05d.mkv"
+    segmentListPath := sessionDir "\segments.ffconcat"
     args := Trim(SCREEN_RECORDING_FFMPEG_ARGS, " `t`r`n")
     if (args = "")
         args := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+    ; 舊設定把單一輸出的 matroska muxer 放在參數尾端；分段模式改由 segment muxer
+    ; 管理每個 MKV，因此只移除尾端的輸出格式宣告，保留所有擷取與編碼參數。
+    args := RegExReplace(args, "i)\s+-f\s+matroska\s*$", "")
+    segmentSeconds := Max(60, SCREEN_RECORDING_SEGMENT_MINUTES * 60)
+    keyframeArgs := ""
+    if RegExMatch(args, "i)(libx264|libx265|h264_nvenc|hevc_nvenc)")
+        keyframeArgs := ' -force_key_frames "expr:gte(t,n_forced*' segmentSeconds ')"'
 
-    cmd := '"' ffmpegExe '" ' args ' -metadata comment="' SCREEN_RECORDING_OWNER_MARKER '" "' outPath '"'
+    cmd := '"' ffmpegExe '" ' args keyframeArgs
+    cmd .= ' -metadata comment="' SCREEN_RECORDING_OWNER_MARKER '"'
+    cmd .= ' -f segment -segment_time ' segmentSeconds
+    cmd .= ' -reset_timestamps 1 -segment_format matroska'
+    cmd .= ' -segment_list_type ffconcat -segment_list "' segmentListPath '"'
+    cmd .= ' "' outPath '"'
     try {
         Run(cmd, "", "Hide", &pid)
-        if (pid <= 0)
+        if (pid <= 0) {
+            try DirDelete(sessionDir, true)
             return false
+        }
 
-        Sleep 300
-        if !ProcessExist(pid)
+        Sleep 800
+        if !ProcessExist(pid) {
+            try IniWrite("start_failed", sessionDir "\session.ini", "recording", "state")
             return false
+        }
+        WriteLog("FFmpeg 分段錄影已啟動 | segment=" SCREEN_RECORDING_SEGMENT_MINUTES
+            "min | staging=" sessionDir " | destination=" destinationDir)
         return true
     } catch as e {
+        try IniWrite("start_failed", sessionDir "\session.ini", "recording", "state")
         WriteLog("啟動 FFmpeg 失敗: " e.Message, "WARN")
         return false
     }
@@ -6756,23 +7512,49 @@ StopFfmpegScreenRecording(pid) {
     if (pid <= 0)
         return false
 
-    ; 先嘗試溫和關閉，盡量讓 ffmpeg 正常收尾（mkv 可降低強制中止時損壞風險）
+    if !ProcessExist(pid)
+        return true
+
+    ; 先把目前程序附加到 FFmpeg 的 console，送出 Ctrl+C，讓 FFmpeg 寫完
+    ; 當前 MKV 的 cues/index 後自行結束。舊版在等待前就 taskkill，正是最後影片
+    ; 可能損壞的主因。SetConsoleCtrlHandler 讓本腳本忽略同一個 Ctrl+C。
+    signaled := false
+    attached := false
     try {
-        hwnd := WinExist("ahk_pid " pid)
-        if hwnd
-            WinClose("ahk_id " hwnd)
+        attached := DllCall("Kernel32\AttachConsole", "uint", pid, "int") ? true : false
+        if attached {
+            DllCall("Kernel32\SetConsoleCtrlHandler", "ptr", 0, "int", true)
+            signaled := DllCall("Kernel32\GenerateConsoleCtrlEvent", "uint", 0, "uint", 0, "int") ? true : false
+            Sleep 120
+            DllCall("Kernel32\FreeConsole")
+            DllCall("Kernel32\SetConsoleCtrlHandler", "ptr", 0, "int", false)
+        }
+    } catch {
+        if attached
+            try DllCall("Kernel32\FreeConsole")
+        try DllCall("Kernel32\SetConsoleCtrlHandler", "ptr", 0, "int", false)
     }
 
-    try RunWait('taskkill /PID ' pid, , "Hide")
+    if signaled
+        WriteLog("已向 FFmpeg PID=" pid " 送出 Ctrl+C，等待分段正常封口")
+    else {
+        WriteLog("無法向 FFmpeg PID=" pid " 送出 Ctrl+C，改嘗試關閉視窗", "WARN")
+        try {
+            hwnd := WinExist("ahk_pid " pid)
+            if hwnd
+                WinClose("ahk_id " hwnd)
+        }
+    }
 
-    deadlineSoft := A_TickCount + 3000
+    deadlineSoft := A_TickCount + 15000
     while (A_TickCount < deadlineSoft) {
         if !ProcessExist(pid)
             return true
         Sleep 100
     }
 
-    ; 若溫和關閉失敗，再走強制關閉保底
+    ; 超過 15 秒仍未結束才強制停止；之前已完成的五分鐘分段不受影響。
+    WriteLog("FFmpeg PID=" pid " 在 15 秒內未正常結束，執行強制停止；最後未封口分段可能需捨棄", "WARN")
     try ProcessClose(pid)
 
     deadlineHard := A_TickCount + 2000

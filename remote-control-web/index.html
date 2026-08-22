@@ -31,6 +31,38 @@
       <ul id="clientMeta"></ul>
     </section>
 
+    <section class="card" aria-labelledby="snapshotTitle">
+      <div class="section-heading heading-row">
+        <div>
+          <h2 id="snapshotTitle">最新執行畫面</h2>
+          <p id="snapshotMeta" class="sub">尚未收到快照。</p>
+        </div>
+        <button id="btnRefreshSnapshot" type="button">立即重讀</button>
+      </div>
+      <div id="snapshotPlaceholder" class="snapshot-placeholder">裝置啟用即時診斷後，每 30 秒更新一次。</div>
+      <img id="latestScreenshot" class="latest-screenshot" alt="裝置最新執行畫面" hidden />
+    </section>
+
+    <section class="card" aria-labelledby="runtimeEventsTitle">
+      <div class="section-heading">
+        <h2 id="runtimeEventsTitle">最近流程事件</h2>
+        <p id="runtimeEventsNote" class="sub">請先選擇一台電腦。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="runtime-events-table">
+          <thead>
+            <tr>
+              <th scope="col">時間</th>
+              <th scope="col">等級</th>
+              <th scope="col">步驟／事件</th>
+              <th scope="col">詳細內容</th>
+            </tr>
+          </thead>
+          <tbody id="runtimeEventsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="card" aria-labelledby="historyTitle">
       <div class="section-heading">
         <h2 id="historyTitle">命令歷史</h2>
@@ -53,6 +85,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260727-2"></script>
+  <script type="module" src="app.js?v=20260822-2"></script>
 </body>
 </html>

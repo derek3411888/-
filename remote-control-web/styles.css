@@ -103,6 +103,61 @@ button:disabled { cursor: wait; opacity: 0.55; }
   margin-bottom: 0;
 }
 
+.heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.heading-row button {
+  flex: 0 0 auto;
+}
+
+.snapshot-placeholder {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: #f8fbfd;
+  text-align: center;
+  padding: 20px;
+}
+
+.latest-screenshot {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #111;
+}
+
+.latest-screenshot[hidden] {
+  display: none;
+}
+
+.runtime-events-table {
+  min-width: 760px;
+}
+
+.event-level {
+  display: inline-block;
+  min-width: 52px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.event-level.info { color: var(--info); border-color: #aac9e1; background: #f2f8fc; }
+.event-level.warn { color: var(--warn); border-color: #e6b9a6; background: #fff9f3; }
+.event-level.error { color: var(--danger); border-color: #e6a6a6; background: #fff5f5; }
+
 .table-scroll {
   overflow-x: auto;
 }
@@ -154,6 +209,11 @@ tbody tr:last-child td {
 
   .row.buttons button {
     flex: 1 1 30%;
+  }
+
+  .heading-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

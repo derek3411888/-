@@ -33,3 +33,11 @@ delete_on_exit=0
 
 ; 命令去重（可留 0）
 last_nonce=0
+
+[runtime_diagnostics]
+; 低畫質最新畫面會覆寫本機 latest.jpg，並在遠端控制啟用時同步到控制網頁
+enabled=1
+snapshot_interval_sec=30
+error_keep_count=30
+snapshot_max_width=640
+jpeg_quality=45

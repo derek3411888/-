@@ -58,7 +58,10 @@
 ### 3.8 重啟上限與錄影收尾
 - 一般重啟會保留既有 FFmpeg，讓下一個腳本接管同一段錄影。
 - 超過 `MAX_RESTART_COUNT` 已是終止流程，不可再沿用重啟旗標。
-- 達上限時會先停止崩潰監看、清除重啟旗標並呼叫受管 FFmpeg 保底停錄，完成後才退出，避免錄影程序殘留或影片遭外力中止。
+- 達上限時會先停止崩潰監看、清除重啟旗標並向受管 FFmpeg 送出 Ctrl+C，最多等待 15 秒完成 MKV 封口；只有逾時才強制停止。
+- 錄影預設每 5 分鐘寫入本機 `%LOCALAPPDATA%\WutheringAuto\recording_staging` 的獨立 MKV 分段。進行中只補傳已封口分段，不直接把尚在寫入的檔案放到網路分享。
+- 正常結束後由 `RecordingFinalizeWorker.ahk` 補傳全部分段、以 FFmpeg stream copy 無損合併，再用精確檔案大小驗證目的端成品。只有驗證成功，才刪除本機工作階段與帶安全標記的目的端分段資料夾。
+- 網路離線時本機錄影不中斷；收尾工具每分鐘重試最多 2 小時，之後仍保留資料並由下次主程式啟動恢復。
 
 ### 3.9 聲骸合成前的月相觀測卡畫面
 - `payload/聲骸合成.ahk` 在第一次按 Esc 前，會 OCR 遊戲畫面下半部。
@@ -118,6 +121,13 @@
 - Launcher v4.42 的替換器本身有固定等待 2 秒、狀態檔追加寫入及成功分支未寫版本等缺陷，因此 payload 內保留一次性 bootstrap：只有啟動環境沒有 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1` 且存在 pending 時，才等待舊 launcher 退出並替換根目錄 EXE。它只接受 Temp／config 下、名稱為 `launcher_update_*.exe`、具有 MZ 標頭且大小合理的檔案；v4.42 黏接 marker 只能採用最後一個語法候選，最後候選遺失／越界即失敗，不可退回較舊 EXE 卻標成新版本。來源、candidate 與安裝後 target 必須 SHA256 相同；若有 pending SHA 也必須吻合。上次中斷留下的 `.pre_update.bak` 必須先驗證並還原，失敗 rollback 要明確記錄 `restored／FAILED`；不可操作任意路徑。
 - v4.43+ launcher 啟動 payload 前會設定 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1`，避免 launcher helper 與 payload bootstrap 同時競爭同一個 EXE。
 
+### 3.17 網路資料夾瀏覽與即時診斷
+- 主流程以管理員權限執行，通常看不到一般使用者的映射磁碟。設定介面會透過根目錄 launcher 的 `--pick-folder` 模式，交由桌面 Explorer 以一般權限開啟選擇器，再把映射路徑轉成 UNC 回傳；helper 必須在提權、自我更新及主 launcher mutex 之前結束。
+- Launcher 因此使用 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
+- 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
+- 即時診斷預設每 30 秒以 ImagePut 擷取低畫質 JPEG，本機 `latest.jpg` 原子覆寫；WARN／ERROR 另存固定份數。遠端控制啟用時，同一 Firestore client 文件會覆寫最新畫面，AHK 命令輪詢用 field mask 避免每 5 秒下載 JPEG；控制網頁使用 `onSnapshot`，只在文件變更時取得新內容。
+- `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
+
 ## 4) 伺服器排程與完成判定（高風險區）
 ### 4.1 切日規則（非常重要）
 - 一個循環日定義為 04:00 到隔日 03:59。
@@ -139,6 +149,7 @@
 
 ## 6) 子腳本關係
 - payload/全自動.ahk：主控流程
+- payload/RecordingFinalizeWorker.ahk：錄影分段補傳、合併、驗證與安全清理
 - payload/開啟LRMC.ahk：啟動並操作 LRMCAI
 - payload/自動開啟OKWW.ahk：OKWW 啟動管理
 - payload/聲骸合成.ahk：聲骸流程

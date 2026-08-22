@@ -1,12 +1,21 @@
 ﻿#Requires AutoHotkey v2.0+
-#SingleInstance Force
+#SingleInstance Off
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.44"
+global PACK_LAUNCHER_BUILD_VERSION := "4.45"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
+global PACK_MAIN_MUTEX_HANDLE := 0
+
+; 資料夾選擇 helper 必須在任何提權、自我更新與解壓流程之前執行。
+; payload 會透過 Explorer 以一般使用者權限啟動這個模式，讓選擇器能看到
+; 與檔案總管相同的映射網路磁碟；完成後只以回覆檔把結果交回管理員程序。
+if LauncherHasArg("--pick-folder") {
+    LauncherRunFolderPickerMode()
+    ExitApp
+}
 
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT
@@ -67,6 +76,142 @@ BuildStartupReason() {
 
     parts.Push("source=" (A_Args.Length > 0 ? "arg-trigger" : "external-trigger(manual-or-scheduler)"))
     return JoinArray(parts, " | ")
+}
+
+LauncherHasArg(name) {
+    for _, arg in A_Args {
+        if (StrLower(arg) = StrLower(name))
+            return true
+    }
+    return false
+}
+
+LauncherArgValue(name, defaultValue := "") {
+    target := StrLower(name)
+    for idx, arg in A_Args {
+        if (StrLower(arg) = target && idx < A_Args.Length)
+            return A_Args[idx + 1]
+    }
+    return defaultValue
+}
+
+LauncherNormalizePath(pathValue) {
+    p := Trim(pathValue, ' "`t`r`n')
+    if (p = "")
+        return ""
+    p := StrReplace(p, "/", "\")
+    if (StrLen(p) > 3)
+        p := RTrim(p, "\")
+    return p
+}
+
+LauncherMappedPathToUnc(pathValue) {
+    p := LauncherNormalizePath(pathValue)
+    if (p = "" || SubStr(p, 1, 2) = "\\")
+        return p
+    if !RegExMatch(p, "i)^([a-z]:)(\\.*)?$", &m)
+        return p
+
+    ; 在一般權限 helper 中優先讓 Windows 網路提供者直接解析完整路徑。
+    required := 0
+    rc := DllCall("Mpr\WNetGetUniversalNameW", "str", p, "uint", 1,
+        "ptr", 0, "uint*", &required, "uint")
+    if (rc = 234 && required > A_PtrSize) { ; ERROR_MORE_DATA
+        info := Buffer(required, 0)
+        rc := DllCall("Mpr\WNetGetUniversalNameW", "str", p, "uint", 1,
+            "ptr", info.Ptr, "uint*", &required, "uint")
+        if (rc = 0) {
+            uncPtr := NumGet(info, 0, "ptr")
+            if (uncPtr)
+                return LauncherNormalizePath(StrGet(uncPtr, "UTF-16"))
+        }
+    }
+
+    ; 某些網路提供者不支援 UniversalName，改查磁碟代號的遠端根路徑。
+    remoteBuf := Buffer(65536, 0)
+    remoteChars := 32768
+    rc := DllCall("Mpr\WNetGetConnectionW", "str", m[1], "ptr", remoteBuf.Ptr,
+        "uint*", &remoteChars, "uint")
+    if (rc = 0) {
+        remoteRoot := RTrim(StrGet(remoteBuf.Ptr, "UTF-16"), "\")
+        suffix := m[2]
+        return LauncherNormalizePath(remoteRoot suffix)
+    }
+
+    ; 持久映射會記錄在目前使用者 HKCU；這也是網路暫斷時的最後後備。
+    try {
+        driveLetter := SubStr(m[1], 1, 1)
+        remoteRoot := Trim(RegRead("HKCU\Network\" driveLetter, "RemotePath"), ' "`t`r`n')
+        if (remoteRoot != "") {
+            suffix := m[2]
+            return LauncherNormalizePath(RTrim(remoteRoot, "\") suffix)
+        }
+    }
+    return p
+}
+
+LauncherWriteFolderPickerReply(replyPath, status, selectedPath := "", message := "") {
+    if (replyPath = "")
+        return false
+    try {
+        replyDir := ""
+        SplitPath(replyPath, , &replyDir)
+        if (replyDir != "" && !DirExist(replyDir))
+            DirCreate(replyDir)
+        try FileDelete(replyPath)
+        IniWrite(status, replyPath, "result", "status")
+        IniWrite(selectedPath, replyPath, "result", "path")
+        IniWrite(message, replyPath, "result", "message")
+        IniWrite(A_IsAdmin ? "1" : "0", replyPath, "result", "helper_was_admin")
+        return true
+    } catch {
+        return false
+    }
+}
+
+LauncherRunFolderPickerMode() {
+    replyPath := LauncherNormalizePath(LauncherArgValue("--reply", ""))
+    initialPath := LauncherNormalizePath(LauncherArgValue("--initial", ""))
+    if (replyPath = "")
+        return
+
+    try {
+        startAt := initialPath
+        if (startAt != "" && !DirExist(startAt))
+            startAt := ""
+        selected := DirSelect(startAt, 3, "選擇錄影輸出資料夾（可選網路磁碟／共用資料夾）")
+        if (selected = "") {
+            LauncherWriteFolderPickerReply(replyPath, "cancel")
+            return
+        }
+        resolved := LauncherMappedPathToUnc(selected)
+        LauncherWriteFolderPickerReply(replyPath, "ok", resolved)
+    } catch as e {
+        LauncherWriteFolderPickerReply(replyPath, "error", "", e.Message)
+    }
+}
+
+LauncherHashText(textValue) {
+    ; 32-bit FNV-1a，只用來產生合法且依安裝路徑區分的 mutex 名稱。
+    hash := 2166136261
+    Loop Parse, StrLower(textValue) {
+        hash := (hash ^ Ord(A_LoopField)) & 0xFFFFFFFF
+        hash := Mod(hash * 16777619, 0x100000000)
+    }
+    return Format("{:08X}", hash)
+}
+
+LauncherAcquireMainMutex() {
+    name := "Local\WutheringAutoLauncher_" LauncherHashText(A_ScriptFullPath)
+    handle := DllCall("CreateMutexW", "ptr", 0, "int", true, "str", name, "ptr")
+    lastErr := A_LastError
+    if (!handle)
+        return 0
+    if (lastErr = 183) { ; ERROR_ALREADY_EXISTS
+        DllCall("CloseHandle", "ptr", handle)
+        return -1
+    }
+    return handle
 }
 
 LifecycleOnExit(exitReason, exitCode) {
@@ -739,6 +884,18 @@ if !A_IsAdmin {
     }
     ExitApp
 }
+
+; #SingleInstance 必須關閉，才能讓同一個 EXE 另開一般權限的資料夾選擇 helper。
+; 主啟動流程改用「依完整安裝路徑區分」的 mutex，避免重複啟動，同時不妨礙
+; 第一次執行時從原位置搬到 自動鋤地 子資料夾後重新啟動。
+PACK_MAIN_MUTEX_HANDLE := LauncherAcquireMainMutex()
+if (PACK_MAIN_MUTEX_HANDLE = -1) {
+    WriteLog("同一路徑的啟動器已在執行，略過重複啟動", "WARN")
+    MsgBox("全自動鋤地啟動器已在執行。", "啟動器", 48)
+    ExitApp
+}
+if (PACK_MAIN_MUTEX_HANDLE = 0)
+    WriteLog("建立啟動器 mutex 失敗，仍繼續執行", "WARN")
 
 ; =========================
 ; 自我組織功能：建立專用資料夾並移動exe

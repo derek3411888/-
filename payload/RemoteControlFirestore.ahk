@@ -18,6 +18,9 @@ global RC_REMOTE_PAUSED := false
 global RC_LAST_HEARTBEAT_OK := 0
 global RC_LAST_ERROR_MSG := ""
 global RC_ON_STATE_CHANGED := ""
+global RC_RECENT_EVENTS := []
+global RC_RECENT_EVENT_LIMIT := 50
+global RC_LAST_EVENT_AT := 0
 
 RC_Init(cfgPath, onStateChangedCallback := "") {
     global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME, RC_DEVICE_ALIAS
@@ -117,6 +120,77 @@ RC_ReportRuntimeState() {
     RC_PatchClientState(RC_REMOTE_PAUSED ? "PAUSE" : "RUN", false)
 }
 
+RC_RecordRuntimeEvent(name, detail := "", level := "INFO") {
+    global RC_RECENT_EVENTS, RC_RECENT_EVENT_LIMIT, RC_LAST_EVENT_AT
+
+    nowMs := RC_UnixMs()
+    eventName := Trim(name, " `t`r`n")
+    eventDetail := Trim(detail, " `t`r`n")
+    eventLevel := StrUpper(Trim(level, " `t`r`n"))
+    if (eventName = "")
+        eventName := "事件"
+    if (eventLevel != "WARN" && eventLevel != "ERROR")
+        eventLevel := "INFO"
+
+    ; 避免單一 OCR/例外訊息把 Firestore 文件撐大。
+    if (StrLen(eventDetail) > 600)
+        eventDetail := SubStr(eventDetail, 1, 600) "…"
+
+    RC_RECENT_EVENTS.Push({at: nowMs, name: eventName, detail: eventDetail, level: eventLevel})
+    while (RC_RECENT_EVENTS.Length > RC_RECENT_EVENT_LIMIT)
+        RC_RECENT_EVENTS.RemoveAt(1)
+    RC_LAST_EVENT_AT := nowMs
+}
+
+RC_BuildRecentEventsJson() {
+    global RC_RECENT_EVENTS
+    json := "["
+    for idx, item in RC_RECENT_EVENTS {
+        if (idx > 1)
+            json .= ","
+        json .= "{"
+        json .= '"at":' item.at ","
+        json .= '"name":"' RC_JsonEsc(item.name) '",'
+        json .= '"detail":"' RC_JsonEsc(item.detail) '",'
+        json .= '"level":"' RC_JsonEsc(item.level) '"'
+        json .= "}"
+    }
+    return json "]"
+}
+
+RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height := 0) {
+    global RC_ENABLED
+    if !RC_ENABLED
+        return false
+    if (dataUri = "" || StrLen(dataUri) > 850000) {
+        RC_Log("Runtime snapshot skipped: empty or too large (chars=" StrLen(dataUri) ")", "WARN")
+        return false
+    }
+
+    body := "{"
+    body .= '"fields":{'
+    body .= '"latestScreenshotDataUri":{"stringValue":"' RC_JsonEsc(dataUri) '"},'
+    body .= '"latestScreenshotAt":{"integerValue":"' capturedAt '"},'
+    body .= '"latestScreenshotReason":{"stringValue":"' RC_JsonEsc(reason) '"},'
+    body .= '"latestScreenshotWidth":{"integerValue":"' width '"},'
+    body .= '"latestScreenshotHeight":{"integerValue":"' height '"}'
+    body .= "}"
+    body .= "}"
+
+    url := RC_ClientDocUrl()
+    url .= "&updateMask.fieldPaths=latestScreenshotDataUri"
+    url .= "&updateMask.fieldPaths=latestScreenshotAt"
+    url .= "&updateMask.fieldPaths=latestScreenshotReason"
+    url .= "&updateMask.fieldPaths=latestScreenshotWidth"
+    url .= "&updateMask.fieldPaths=latestScreenshotHeight"
+    r := RC_HttpRequest("PATCH", url, body)
+    if !r.ok {
+        RC_Log("Runtime snapshot patch failed: " r.msg, "WARN")
+        return false
+    }
+    return true
+}
+
 RC_PollCommandTick() {
     global RC_ENABLED, RC_LAST_NONCE, RC_LAST_ERROR_MSG
     if !RC_ENABLED
@@ -211,6 +285,7 @@ RC_GetPrimaryMacAddress() {
 
 RC_PatchClientState(state, isShutdown) {
     global RC_LAST_HEARTBEAT_OK, RC_LAST_ERROR_MSG
+    global RC_LAST_EVENT_AT, RC_RECENT_EVENTS
     global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     nowMs := RC_UnixMs()
@@ -225,6 +300,7 @@ RC_PatchClientState(state, isShutdown) {
     currentServerLabel := currentServer
     if (serverTotal > 1 && currentServer != "")
         currentServerLabel := serverIndex "/" serverTotal " | " currentServer
+    recentEventsJson := RC_BuildRecentEventsJson()
 
     body := "{"
     body .= '"fields":{'
@@ -240,7 +316,10 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"currentServerIndex":{"integerValue":"' serverIndex '"},'
     body .= '"currentServerTotal":{"integerValue":"' serverTotal '"},'
     body .= '"lastHeartbeat":{"integerValue":"' nowMs '"},'
-    body .= '"updatedAt":{"integerValue":"' nowMs '"}'
+    body .= '"updatedAt":{"integerValue":"' nowMs '"},'
+    body .= '"recentEventsJson":{"stringValue":"' RC_JsonEsc(recentEventsJson) '"},'
+    body .= '"recentEventCount":{"integerValue":"' RC_RECENT_EVENTS.Length '"},'
+    body .= '"lastRuntimeEventAt":{"integerValue":"' RC_LAST_EVENT_AT '"}'
     body .= "}"
     body .= "}"
 
@@ -258,6 +337,9 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=currentServerTotal"
     url .= "&updateMask.fieldPaths=lastHeartbeat"
     url .= "&updateMask.fieldPaths=updatedAt"
+    url .= "&updateMask.fieldPaths=recentEventsJson"
+    url .= "&updateMask.fieldPaths=recentEventCount"
+    url .= "&updateMask.fieldPaths=lastRuntimeEventAt"
 
     r := RC_HttpRequest("PATCH", url, body)
     if (r.ok) {
@@ -294,7 +376,12 @@ RC_PatchCommandAck(nonce, stateApplied) {
 }
 
 RC_FirestoreGetClientDoc() {
-    r := RC_HttpRequest("GET", RC_ClientDocUrl(), "")
+    ; 輪詢命令只需要兩個欄位。即時快照可能有數十到數百 KB，使用 field mask
+    ; 避免每 5 秒把同一張 JPEG 下載回執行端。
+    url := RC_ClientDocUrl()
+    url .= "&mask.fieldPaths=desiredState"
+    url .= "&mask.fieldPaths=nonce"
+    r := RC_HttpRequest("GET", url, "")
     if !r.ok {
         RC_Log("RemoteControl poll failed: " r.msg, "WARN")
         return ""
@@ -338,8 +425,8 @@ RC_JsonGetString(jsonText, fieldName) {
     p1 := '"' fieldName '"\s*:\s*\{[^\}]*"stringValue"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"'
     if RegExMatch(jsonText, p1, &m) {
         v := m[1]
-        v := StrReplace(v, '\\"', '"')
-        v := StrReplace(v, "\\\\", "\\")
+        v := StrReplace(v, '\"', '"')
+        v := StrReplace(v, "\\", "\")
         return v
     }
     return ""
@@ -355,10 +442,11 @@ RC_JsonGetInteger(jsonText, fieldName, defaultVal := 0) {
 
 RC_JsonEsc(txt) {
     s := txt
-    s := StrReplace(s, "\\", "\\\\")
-    s := StrReplace(s, '"', '\\"')
-    s := StrReplace(s, "`r", "\\r")
-    s := StrReplace(s, "`n", "\\n")
+    s := StrReplace(s, "\", "\\")
+    s := StrReplace(s, '"', '\"')
+    s := StrReplace(s, "`r", "\r")
+    s := StrReplace(s, "`n", "\n")
+    s := StrReplace(s, "`t", "\t")
     return s
 }
 
