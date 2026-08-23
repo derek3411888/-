@@ -26,6 +26,7 @@ catch
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
+#Include RuntimeFilePaths.ahk
 #Include RemoteControlFirestore.ahk
 
 ; 初始化新的日誌系統
@@ -100,7 +101,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.48"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.49"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -135,6 +136,7 @@ global __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := 0
 global __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK := 0
 global __RUNTIME_ERROR_SNAPSHOT_PENDING := false
 global __RUNTIME_PENDING_REASON := ""
+global __CLEAN_FINAL_EXIT_REQUESTED := false
 
 ; 保底：任何方式離開腳本時都嘗試恢復聲音
 OnExit(RestoreWutheringAudioOnExit)
@@ -975,12 +977,26 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
     try ToolTip(, , , TOOLTIP_SLOT)
     try StopRuntimeDiagnostics()
     try SetTimer(ScreenRecordingMaintenanceTick, 0)
-    try RC_Shutdown()
+    cleanFinalExit := IsCleanFinalScriptExit(exitReason)
+    try RC_Shutdown(cleanFinalExit)
     if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
         WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
     else
         ForceStopManagedScreenRecording("腳本結束保底")
     UnmuteWutheringAudio("腳本結束保底")
+}
+
+IsCleanFinalScriptExit(exitReason) {
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __CLEAN_FINAL_EXIT_REQUESTED
+    if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+        return false
+    if !__CLEAN_FINAL_EXIT_REQUESTED
+        return false
+
+    ; Error／系統關機／重新載入都保留最後畫面，方便事後診斷。
+    ; 正常流程 ExitApp、托盤離開或視窗關閉才移除雲端最新畫面。
+    reason := StrLower(Trim(exitReason))
+    return (reason = "exit" || reason = "menu" || reason = "close")
 }
 
 OnRemoteControlStateChanged(state) {
@@ -1154,7 +1170,7 @@ IsLoginScreenByOcr(hwnd) {
     loginKeywords := ["點擊開始", "点击开始", "點選開始", "点选开始", "開始遊戲", "开始游戏",
                       "點擊連接", "点击连接", "點選連接", "点选连接",
                       "伺服器", "服务器", "賬號", "账号", "帳號", "账户"]
-    tempFile := A_Temp "\ahk_login_ocr_" A_TickCount ".png"
+    tempFile := RuntimeFiles_NewImagePath("login_ocr")
     try {
         ImagePutFile("ahk_id " hwnd, tempFile)
         ocr := RapidOcr()
@@ -2509,8 +2525,7 @@ EnsureOkwwAutoBattleEnabled(okwwHwnd) {
 }
 
 CaptureOkwwOcr(okwwHwnd, ocr, purpose := "") {
-    tempFile := (A_Temp "\okww_state_" DllCall("GetCurrentProcessId")
-        "_" A_TickCount ".png")
+    tempFile := RuntimeFiles_NewImagePath("okww_state")
     try {
         ImagePutFile("ahk_id " okwwHwnd, tempFile)
         result := ocr.ocr_from_file(tempFile, , true)
@@ -3354,7 +3369,7 @@ CrashWatcherTick() {
             " RECT=" crashWindow.x "," crashWindow.y "," crashWindow.w "x" crashWindow.h, "ERROR")
         ocr := RapidOcr()
         ; 使用唯一臨時檔案名，避免衝突
-        tempFile := A_ScriptDir "\ue4crash_" A_TickCount ".png"
+        tempFile := RuntimeFiles_NewImagePath("ue4crash")
         try {
             ImagePutFile("ahk_id " hwndC, tempFile)
             res := ocr.ocr_from_file(tempFile, , true)
@@ -3558,7 +3573,7 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
 
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
-        tempFile := A_ScriptDir "\temp_update_" A_TickCount ".png"
+        tempFile := RuntimeFiles_NewImagePath("update_ocr")
         try {
             ImagePutFile("ahk_id " hwnd, tempFile)
             ocr := RapidOcr()
@@ -5119,7 +5134,9 @@ HandleCycleFinishAndShutdown(completedTime := "") {
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false) {
-    global __RESTART_IN_PROGRESS
+    global __RESTART_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+    if (!relaunchForNextServer && !__RESTART_IN_PROGRESS)
+        __CLEAN_FINAL_EXIT_REQUESTED := true
     SetLrmcRunResumeReady(false, relaunchForNextServer ? "切換下一伺服器" : "正常／手動收尾")
     if (__RESTART_IN_PROGRESS || relaunchForNextServer)
         WriteLog("重啟模式：保留錄影不中斷，略過收尾保底停止", "WARN")
@@ -5545,6 +5562,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "runtime_diagnostics.enabled: " state.runtimeDiagnosticsEnabled "`r`n"
     summary .= "runtime_diagnostics.snapshot_interval_sec: " state.runtimeDiagnosticsIntervalSec "`r`n"
     summary .= "runtime_diagnostics.error_keep_count: " state.runtimeDiagnosticsErrorKeepCount "`r`n"
+    summary .= "runtime_diagnostics.image_dir: " ResolveRuntimeDiagnosticsDir() "`r`n"
     summary .= "runtime_diagnostics.video_preview_enabled: " state.runtimeDiagnosticsVideoPreviewEnabled "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     g.AddEdit("xm w1510 r8 ReadOnly", summary)
@@ -5712,7 +5730,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbRuntimeVideoPreviewEnabled := g.AddCheckbox("xs y+8 w440", "網路短影片暫停實作（不會上傳影片）")
     cbRuntimeVideoPreviewEnabled.Value := 0
     cbRuntimeVideoPreviewEnabled.Enabled := false
-    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h48", "網頁只顯示每 60 秒更新的最新截圖、錄影結果路徑與最近 50 筆事件；完整長影片仍存到錄影輸出資料夾。")
+    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h66", "網頁只顯示每 60 秒更新的最新截圖、錄影結果路徑與最近 50 筆事件；本機圖片集中在程式資料夾的『診斷快照』，完整長影片仍存到錄影輸出資料夾。")
 
     ; === 底部按鈕區 ===
     btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
@@ -6410,7 +6428,7 @@ RefreshRuntimeDiagnosticsInputsEnabled() {
     __MAIL_SETUP.cbRuntimeVideoPreviewEnabled.Enabled := false
     __MAIL_SETUP.cbRuntimeVideoPreviewEnabled.Value := 0
     __MAIL_SETUP.txtRuntimeDiagnosticsHint.Value := enabled
-        ? "網頁顯示每 60 秒更新的最新截圖與錄影結果路徑；短影片不會上傳。"
+        ? "網頁顯示每 60 秒更新的最新截圖；本機圖片在程式資料夾\診斷快照，短影片不會上傳。"
         : "即時診斷已停用；遠端頁面仍保留基本步驟與心跳。"
 }
 
@@ -6724,10 +6742,7 @@ LoadRuntimeDiagnosticsSettings() {
 }
 
 ResolveRuntimeDiagnosticsDir() {
-    localBase := NormalizePath(EnvGet("LOCALAPPDATA"))
-    if (localBase = "")
-        localBase := A_Temp
-    return localBase "\WutheringAuto\diagnostics"
+    return RuntimeFiles_DiagnosticsDir()
 }
 
 StartRuntimeDiagnostics() {
@@ -6735,15 +6750,23 @@ StartRuntimeDiagnostics() {
     global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK
 
     StopRuntimeDiagnostics()
-    if !RUNTIME_DIAGNOSTICS_ENABLED {
-        WriteLog("即時診斷已停用")
-        return false
-    }
-
     diagDir := ResolveRuntimeDiagnosticsDir()
+    EnvSet("WUTHERING_DIAGNOSTICS_DIR", diagDir)
     try DirCreate(diagDir)
     catch as e {
         WriteLog("建立即時診斷資料夾失敗: " e.Message, "WARN")
+        return false
+    }
+
+    migrated := 0
+    staleTempDeleted := 0
+    try migrated := RuntimeFiles_MigrateLegacyDiagnosticImages()
+    try migrated += RuntimeFiles_MigrateLegacyPayloadImages()
+    try staleTempDeleted := RuntimeFiles_DeleteStaleTempImages(24)
+    try RuntimeFiles_PruneDiagnosticImages(RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT)
+
+    if !RUNTIME_DIAGNOSTICS_ENABLED {
+        WriteLog("即時診斷已停用 | 圖片資料夾=" diagDir " | 舊圖搬移=" migrated " | 過期暫存清理=" staleTempDeleted)
         return false
     }
 
@@ -6753,7 +6776,8 @@ StartRuntimeDiagnostics() {
     SetTimer(RuntimeSnapshotTick, intervalMs)
     SetTimer(() => CaptureRuntimeSnapshot("啟動／設定完成", false), -800)
     try FileDelete(diagDir "\latest_preview.mp4")
-    WriteLog("即時診斷已啟動，每 " RUNTIME_DIAGNOSTICS_INTERVAL_SEC " 秒更新畫面 | 雲端短影片=停用")
+    WriteLog("即時診斷已啟動，每 " RUNTIME_DIAGNOSTICS_INTERVAL_SEC " 秒更新畫面 | 圖片資料夾=" diagDir
+        " | 舊圖搬移=" migrated " | 過期暫存清理=" staleTempDeleted " | 雲端短影片=停用")
     return true
 }
 
@@ -6793,35 +6817,7 @@ RuntimeErrorSnapshotTick() {
 }
 
 PruneRuntimeDiagnosticScreenshots(keepCount) {
-    diagDir := ResolveRuntimeDiagnosticsDir()
-    files := []
-    Loop Files, diagDir "\error_*.jpg", "F" {
-        files.Push({path: A_LoopFileFullPath, modified: A_LoopFileTimeModified})
-    }
-    if (files.Length <= keepCount)
-        return 0
-
-    i := 1
-    while (i <= files.Length - 1) {
-        j := i + 1
-        while (j <= files.Length) {
-            if (files[i].modified < files[j].modified) {
-                tmp := files[i]
-                files[i] := files[j]
-                files[j] := tmp
-            }
-            j += 1
-        }
-        i += 1
-    }
-    deleted := 0
-    Loop files.Length - keepCount {
-        try {
-            FileDelete(files[keepCount + A_Index].path)
-            deleted += 1
-        }
-    }
-    return deleted
+    return RuntimeFiles_PruneDiagnosticImages(keepCount)
 }
 
 CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
@@ -8271,7 +8267,7 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     ; 先在登入畫面做一次 OCR：若已是目標伺服器，直接略過切換，不做任何點擊
     preMatched := false
-    preTempFile := A_Temp "\\server_precheck_" A_TickCount ".png"
+    preTempFile := RuntimeFiles_NewImagePath("server_precheck")
     WriteLog("伺服器排程：開始預檢登入畫面是否已是目標伺服器 (" CURRENT_SERVER_TARGET ")")
     try {
         ImagePutFile(hwnd, preTempFile)
@@ -8314,7 +8310,7 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     WriteLog("伺服器排程：準備用 OCR 找伺服器名稱區塊並點擊開選單")
 
-    tempFile := A_Temp "\\server_menu_" A_TickCount ".png"
+    tempFile := RuntimeFiles_NewImagePath("server_menu")
     serverMenuOpened := false
     menuOpenBy := ""
     try {
@@ -8350,7 +8346,7 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
         WriteLog("伺服器排程：已開啟伺服器選單，方式=" menuOpenBy)
     }
 
-    tempFile := A_Temp "\\server_pick_" A_TickCount ".png"
+    tempFile := RuntimeFiles_NewImagePath("server_pick")
     try {
         ImagePutFile(hwnd, tempFile)
         ocr := RapidOcr()
@@ -8392,7 +8388,7 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     ; 點選伺服器後需再點擊「確認」
     confirmClicked := false
-    tempFile := A_Temp "\\server_confirm_" A_TickCount ".png"
+    tempFile := RuntimeFiles_NewImagePath("server_confirm")
     try {
         ImagePutFile(hwnd, tempFile)
         ocr := RapidOcr()

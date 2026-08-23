@@ -5,6 +5,7 @@ SetWorkingDir A_ScriptDir
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
+#Include RuntimeFilePaths.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("開啟LRMC")
@@ -727,7 +728,7 @@ WriteStep("OCR", "搜尋『副本』按鈕")
 ocr := RapidOcr()
 
 ; 使用臨時檔案名避免衝突，執行後清理
-tempFile := A_ScriptDir "\temp_lrmc_" A_TickCount ".png"
+tempFile := RuntimeFiles_NewImagePath("lrmc_ocr")
 debugCapturePath := ""
 try {
     WriteStep("OCR截圖", "開始擷取")
@@ -847,12 +848,13 @@ if (best is Array) {
     WriteStep("點擊副本", "找到文字但缺少可點擊座標", "WARN")
     Log("找到「副本」文字但無法獲取座標", "WARN")
 } else {
-    debugCapturePath := A_ScriptDir "\debug_lrmc_ocr_nomatch_" FormatTime(, "yyyyMMdd_HHmmss") ".png"
+    debugCapturePath := RuntimeFiles_EnsureDir() "\error_lrmc_ocr_nomatch_" FormatTime(, "yyyyMMdd_HHmmss") ".png"
     try {
         if FileExist(debugCapturePath)
             FileDelete(debugCapturePath)
         if FileExist(tempFile)
             FileCopy(tempFile, debugCapturePath, 1)
+        RuntimeFiles_PruneDiagnosticImages(30)
         Log("未找到「副本」文字，已保留除錯截圖: " debugCapturePath, "WARN")
     } catch as e {
         Log("保存 OCR 除錯截圖失敗: " e.Message, "WARN")

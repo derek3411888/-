@@ -28,14 +28,16 @@ heartbeat_interval_ms=90000
 poll_interval_ms=10000
 http_timeout_ms=2500
 
-; 結束時標記 OFFLINE（目前採 patch 狀態）
-delete_on_exit=0
+; 正常完整結束會保留 OFFLINE 裝置狀態，但刪除雲端最新快照。
+; 異常終止、系統關機與流程重啟交接會保留最後快照供診斷。
+clear_snapshot_on_clean_exit=1
 
 ; 命令去重（可留 0）
 last_nonce=0
 
 [runtime_diagnostics]
-; 低畫質最新畫面會覆寫本機 latest.jpg，並在遠端控制啟用時同步到獨立 media 文件
+; 圖片集中在「程式資料夾\診斷快照」；latest.jpg 會覆寫，錯誤圖依份數保留。
+; 遠端控制啟用時，最新畫面會同步到獨立 media 文件。
 enabled=1
 snapshot_interval_sec=60
 error_keep_count=30

@@ -3,7 +3,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.48"
+global PACK_LAUNCHER_BUILD_VERSION := "4.49"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -1373,7 +1373,7 @@ if needUnpack {
         }
 
         ; 驗證關鍵檔案是否存在
-        keyFiles := ["全自動.ahk", "開啟LRMC.ahk", "自動開啟OKWW.ahk", "聲骸合成.ahk", "LogManager.ahk", "RemoteControlFirestore.ahk"]
+        keyFiles := ["全自動.ahk", "開啟LRMC.ahk", "自動開啟OKWW.ahk", "聲骸合成.ahk", "LogManager.ahk", "RuntimeFilePaths.ahk", "RemoteControlFirestore.ahk"]
         for fileName in keyFiles {
             filePath := APP_DIR "\" fileName
             if FileExist(filePath) {

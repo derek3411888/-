@@ -21,11 +21,12 @@ global RC_ON_STATE_CHANGED := ""
 global RC_RECENT_EVENTS := []
 global RC_RECENT_EVENT_LIMIT := 50
 global RC_LAST_EVENT_AT := 0
+global RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT := true
 
 RC_Init(cfgPath, onStateChangedCallback := "") {
     global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME, RC_DEVICE_ALIAS
     global RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
-    global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE
+    global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE, RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT
 
     RC_EnsureRemoteControlDefaults(cfgPath)
     RC_CFG_PATH := cfgPath
@@ -48,6 +49,8 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
     RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "heartbeat_interval_ms", "90000"), 90000, 60000, 300000)
     RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "poll_interval_ms", "10000"), 10000, 10000, 30000)
     RC_TIMEOUT_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "http_timeout_ms", "2500"), 2500, 800, 10000)
+    RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT := RC_ParseBool01(
+        RC_IniReadSafe(cfgPath, "remote_control", "clear_snapshot_on_clean_exit", "1"), 1) ? true : false
     try IniWrite(RC_HEARTBEAT_INTERVAL_MS, cfgPath, "remote_control", "heartbeat_interval_ms")
     try IniWrite(RC_POLL_INTERVAL_MS, cfgPath, "remote_control", "poll_interval_ms")
 
@@ -106,14 +109,16 @@ RC_Start() {
     SetTimer(RC_PollCommandTick, RC_POLL_INTERVAL_MS)
 }
 
-RC_Shutdown() {
-    global RC_ENABLED
+RC_Shutdown(cleanFinalExit := false) {
+    global RC_ENABLED, RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT
     if !RC_ENABLED
         return
 
     try SetTimer(RC_HeartbeatTick, 0)
     try SetTimer(RC_PollCommandTick, 0)
     RC_PatchClientState("OFFLINE", true)
+    if (cleanFinalExit && RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT)
+        RC_DeleteRuntimeSnapshot()
 }
 
 RC_HeartbeatTick() {
@@ -201,6 +206,22 @@ RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height 
         return false
     }
     return true
+}
+
+RC_DeleteRuntimeSnapshot() {
+    global RC_ENABLED
+    if !RC_ENABLED
+        return false
+
+    r := RC_HttpRequest("DELETE", RC_ClientMediaDocUrl())
+    ; 文件原本就不存在也視為已清理，避免正常關閉出現假警告。
+    if (r.ok || r.status = 404) {
+        RC_Log("Clean shutdown: latest Firestore snapshot removed")
+        return true
+    }
+
+    RC_Log("Clean shutdown snapshot cleanup failed: " r.msg, "WARN")
+    return false
 }
 
 RC_PublishRuntimeVideoPreview(dataUri, capturedAt, durationSec := 6, width := 0, height := 0, sizeBytes := 0) {
@@ -596,7 +617,7 @@ RC_EnsureRemoteControlDefaults(cfgPath) {
         "heartbeat_interval_ms", "90000",
         "poll_interval_ms", "10000",
         "http_timeout_ms", "2500",
-        "delete_on_exit", "0",
+        "clear_snapshot_on_clean_exit", "1",
         "last_nonce", "0"
     )
 

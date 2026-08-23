@@ -14,7 +14,9 @@
 
 預設集合是 `ahk_clients`，每台電腦以 AHK UID 作為文件 ID。AHK 會自動寫入心跳、執行狀態與 ACK 欄位。
 
-新版 client 會寫入低畫質最新畫面、錄影收尾狀態／檔案位置與最近 50 筆流程事件。控制文件使用 UID，畫面改放在同集合的 `UID__media` companion 文件；控制台主查詢只監聽 `docKind=client`，選定裝置後才監聽該裝置的 media 文件，避免心跳、ACK 與命令輪詢反覆傳輸 JPEG。由於內容可能包含桌面畫面與本機／網路路徑，正式使用前請收緊 Firestore Rules，不要把集合公開給不受信任的使用者。
+新版 client 會寫入低畫質最新畫面、錄影收尾狀態／檔案位置與最近 50 筆流程事件。控制文件使用 UID，畫面改放在同集合的 `UID__media` companion 文件；控制台主查詢使用新舊 client 都具備的非空 `uid`，選定裝置後才監聽該裝置的 media 文件，避免心跳、ACK 與命令輪詢反覆傳輸 JPEG。由於內容可能包含桌面畫面與本機／網路路徑，正式使用前請收緊 Firestore Rules，不要把集合公開給不受信任的使用者。
+
+正常完整結束時，AHK 會將 client 標記為 `OFFLINE` 並刪除該裝置的 `UID__media`，因此網站不再保留最後畫面；錯誤、系統關機、強制終止與流程重啟交接則保留最後畫面供診斷。控制網站開啟期間會自動清理最後心跳超過 7 天的 client 與 media 文件；為避免誤刪時鐘錯誤但仍持續心跳的裝置，候選文件必須再連續 10 分鐘沒有任何 listener 更新才會刪除。
 
 網路短影片目前停用且不會上傳。完整影片仍由錄影背景工具存到設定的本機或 UNC 目的地；網站的錄影狀態卡會顯示成功成品、目的端分段、本機失敗保留位置及 `recording_worker.log`，並提供複製路徑按鈕。
 
@@ -67,6 +69,7 @@ display_name=客廳電腦
 heartbeat_interval_ms=90000
 poll_interval_ms=10000
 http_timeout_ms=2500
+clear_snapshot_on_clean_exit=1
 
 [runtime_diagnostics]
 enabled=1
@@ -76,3 +79,4 @@ video_preview_enabled=0
 ```
 
 `uid` 留空時會由 AHK 在第一次啟動時自動產生。
+本機圖片統一放在 `<程式資料夾>\診斷快照`；舊版 `%LOCALAPPDATA%\WutheringAuto\diagnostics` 圖片會在下次啟動時搬入。

@@ -126,9 +126,9 @@
 - 選擇器預設顯示「這台電腦」，並固定提供「瀏覽網路」及「直接輸入 UNC」，不再依賴 Windows 對話框左側欄。根目錄 launcher 的 `--pick-folder` 只作 helper 遺失時的後備，且固定從 CSIDL_DRIVES 開始。
 - Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
 - 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
-- 即時診斷預設每 60 秒以 ImagePut 擷取低畫質 JPEG，本機 `latest.jpg` 原子覆寫；WARN／ERROR 仍可即時另存固定份數，但 Firestore 上傳硬性限制最多每 60 秒一次，避免錯誤連發耗盡額度。
+- 即時診斷預設每 60 秒以 ImagePut 擷取低畫質 JPEG；所有主程式／子流程產生的圖片集中到 `<程式根目錄>\診斷快照`，OCR 暫存圖位於其下 `暫存` 且使用後刪除，啟動時會搬移舊 `%LOCALAPPDATA%\WutheringAuto\diagnostics` 圖片並清除超過 24 小時的殘留暫存。`latest.jpg` 原子覆寫；WARN／ERROR 仍依設定保留固定總份數，但 Firestore 上傳硬性限制最多每 60 秒一次。
 - 網路短影片功能目前暫停實作：`video_preview_enabled` 啟動時會強制遷移為 `0`，設定介面不可啟用，網站不顯示影片播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。完整長影片維持本機／UNC 分段錄影與背景收尾，不受影響。舊版 preview FFmpeg marker 判斷保留，只為避免更新交界誤把殘留預覽程序當主錄影。
-- Firestore 控制文件為 `ahk_clients/{UID}` 且含 `docKind=client`；JPEG 改放同集合的 `{UID}__media` 且含 `docKind=media`。網頁主查詢只監聽 client 文件，並只為目前選取裝置訂閱一份 media 文件。新版第一次心跳後會清除舊控制文件內所有 `latestScreenshot*`、`latestVideoPreview*` Base64 欄位。
+- Firestore 控制文件為 `ahk_clients/{UID}`；JPEG 放在同集合的 `{UID}__media`。為相容缺少 `docKind` 的舊 client，網頁主查詢使用 `uid != ""`（media 只有 `clientUid`），並只為目前選取裝置訂閱一份 media 文件。正常完整結束會 PATCH client 為 `OFFLINE` 後刪除 media 文件；錯誤、系統關機、強制終止與重啟交接保留最後快照。網頁開啟期間會交易式刪除最後心跳超過 7 天、且再連續觀察 10 分鐘沒有 listener 更新的 client 與 media，避免誤刪時鐘錯誤但仍持續心跳的裝置。
 - AHK 命令輪詢至少 10 秒且 GET 只取 `desiredState`／`nonce`；心跳至少 60 秒（預設 90 秒）。心跳、ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
 - 錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
 - `RecordingFinalizeWorker.ahk` 必須在主程式已退出後仍直接 PATCH 錄影欄位；網路回報失敗不可影響本機保全，下一次主程式心跳會再從 `recording_status.ini` 補報。

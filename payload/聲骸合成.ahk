@@ -29,6 +29,7 @@ catch
 
 ; 引入依賴
 #Include LogManager.ahk
+#Include RuntimeFilePaths.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include plugin\RapidOcr\RapidOcr.ahk
 
@@ -1145,7 +1146,7 @@ OCRWindow() {
     }
     
     ; 截圖並 OCR
-    tempFile := A_ScriptDir "\temp_synthesis_" A_TickCount ".png"
+    tempFile := RuntimeFiles_NewImagePath("synthesis_ocr")
     
     try {
         if !IsValidHwnd(gameWindow) {

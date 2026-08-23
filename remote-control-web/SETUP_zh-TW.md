@@ -43,7 +43,7 @@ display_name=客廳電腦
 heartbeat_interval_ms=90000
 poll_interval_ms=10000
 http_timeout_ms=2500
-delete_on_exit=0
+clear_snapshot_on_clean_exit=1
 last_nonce=0
 
 ### 4. Firestore 建議先用這個集合
@@ -58,6 +58,8 @@ last_nonce=0
 2. 去 Firestore 看 ahk_clients 是否出現文件
 3. 打開 remote-control-web/index.html
 4. 選電腦後送 RUN / PAUSE
+
+正常完整結束只會刪除雲端最新快照，電腦仍以 `OFFLINE` 顯示。控制網站開啟時，最後心跳超過 7 天且再觀察 10 分鐘沒有更新的裝置，會連同 `UID__media` 一起自動刪除。
 
 ## 現在已經幫你預填的檔案
 - remote-control-web/app.js

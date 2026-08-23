@@ -8,6 +8,7 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
+#Include RuntimeFilePaths.ahk
 
 ; ====================== 單一實例互斥鎖 ======================
 ; 建立全域互斥量，確保即使打包為EXE也只會有一個程序執行
@@ -739,8 +740,10 @@ GetOkwwWindowKind(hwnd) {
     }
 }
 
-CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
+CaptureAndOCR(minSize := 8192, imgPath := "") {
     global targetHwnd
+    if (imgPath = "")
+        imgPath := RuntimeFiles_NewImagePath("okww_update_ocr")
     if !EnsureOkwwWindow()
         return {ok: false, blocks: [], reason: "no_interactive_window"}
     if (GetOkwwWindowKind(targetHwnd) = "final") {
@@ -771,6 +774,7 @@ CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
         ImagePutFile(targetHwnd, imgPath)
     } catch as e {
         Log("ImagePutFile failed: " e.Message, "WARN")
+        try FileDelete(imgPath)
         return {ok: false, blocks: [], reason: "capture_failed"}
     }
     if !FileExist(imgPath) {
@@ -780,6 +784,7 @@ CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
     sz := FileGetSize(imgPath, "B")
     if (sz < minSize) {
         Log("capture too small size=" sz, "WARN")
+        try FileDelete(imgPath)
         return {ok: false, blocks: [], reason: "capture_too_small"}
     }
     try {
@@ -791,6 +796,8 @@ CaptureAndOCR(minSize := 8192, imgPath := "temp.png") {
     } catch as e {
         Log("OCR exception: " e.Message, "ERROR")
         return {ok: false, blocks: [], reason: "ocr_exception"}
+    } finally {
+        try FileDelete(imgPath)
     }
 }
 
@@ -805,7 +812,7 @@ DetectOCRText(keyword, maxMs := 15000) {
         elapsed := A_TickCount - start
         interval := (elapsed < 3000) ? 500 : 1200  ; 從250/600ms改為500/1200ms，減少系統負擔
         Sleep interval
-        capture := CaptureAndOCR(8192, "temp.png")
+        capture := CaptureAndOCR(8192)
         if !capture.ok {
             if (capture.reason = "final_ready") {
                 Log("DetectOCRText: 最終 pythonw 主視窗已就緒，停止升級偵測並交接")
@@ -855,7 +862,7 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
     ShowTip(stageText, 600)
 
     loop attempts {
-        capture := CaptureAndOCR(8192, "temp.png")
+        capture := CaptureAndOCR(8192)
         if !capture.ok {
             Log("DoOCRClick 截圖/OCR 失敗，reason=" capture.reason
                 " remain=" (attempts - A_Index), "WARN")

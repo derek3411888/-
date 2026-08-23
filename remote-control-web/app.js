@@ -20,13 +20,17 @@ const FIREBASE_CONFIG = {
 const COLLECTION = "ahk_clients";
 const MEDIA_DOC_SUFFIX = "__media";
 const OFFLINE_THRESHOLD_MS = 5 * 60_000;
+const STALE_CLIENT_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const STALE_CLIENT_STABILITY_MS = 10 * 60_000;
+const STALE_CLEANUP_RETRY_MS = 60 * 60_000;
 const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
-const WEB_BUILD = "20260822-4";
+const WEB_BUILD = "20260823-1";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
-const clientsQuery = query(collection(db, COLLECTION), where("docKind", "==", "client"));
+// uid 是新舊控制文件都有、media 文件沒有的欄位，可同時相容舊 client。
+const clientsQuery = query(collection(db, COLLECTION), where("uid", "!=", ""));
 
 const pcDropdown = document.getElementById("pcDropdown");
 const btnPause = document.getElementById("btnPause");
@@ -60,6 +64,10 @@ let renderedScreenshotKey = "";
 let selectedMediaClientId = "";
 let selectedMediaData = null;
 let stopSelectedMediaListener = null;
+let staleCleanupSweepRunning = false;
+let maintenanceNotice = "";
+const clientLastObservedChangeAt = new Map();
+const staleCleanupRetryAfter = new Map();
 
 function toInteger(value, fallback = 0) {
   const n = Number(value);
@@ -106,6 +114,66 @@ function normalizeStatus(v) {
   const s = String(v ?? "UNKNOWN").toUpperCase().replace(/[^A-Z]/g, "");
   if (s === "RUN" || s === "PAUSE" || s === "STOP" || s === "OFFLINE") return s;
   return "UNKNOWN";
+}
+
+function isPastStaleClientRetention(data, nowMs = Date.now()) {
+  const heartbeat = toMillis(readField(data, "lastHeartbeat", 0));
+  if (!heartbeat || heartbeat > nowMs) return false;
+  return nowMs - heartbeat >= STALE_CLIENT_RETENTION_MS;
+}
+
+async function cleanupStaleClients() {
+  if (staleCleanupSweepRunning) return;
+  staleCleanupSweepRunning = true;
+  let deletedCount = 0;
+
+  try {
+    const now = Date.now();
+    for (const [id, data] of cache.entries()) {
+      if (!isPastStaleClientRetention(data, now)) continue;
+
+      // 網頁剛開啟時先觀察 10 分鐘。若裝置只是系統時鐘錯誤但仍持續心跳，
+      // listener 會更新此時間，因而不會誤刪仍活著的裝置。
+      const observedAt = clientLastObservedChangeAt.get(id) || now;
+      if (now - observedAt < STALE_CLIENT_STABILITY_MS) continue;
+      if ((staleCleanupRetryAfter.get(id) || 0) > now) continue;
+
+      const clientRef = doc(db, COLLECTION, id);
+      const mediaRef = doc(db, COLLECTION, `${id}${MEDIA_DOC_SUFFIX}`);
+      try {
+        const deleted = await runTransaction(db, async (transaction) => {
+          const current = await transaction.get(clientRef);
+          if (!current.exists()) return false;
+
+          const currentData = current.data();
+          if (String(readField(currentData, "uid", "")) !== id) return false;
+          if (!isPastStaleClientRetention(currentData)) return false;
+
+          transaction.delete(mediaRef);
+          transaction.delete(clientRef);
+          return true;
+        });
+
+        if (deleted) {
+          deletedCount += 1;
+          cache.delete(id);
+          clientLastObservedChangeAt.delete(id);
+          staleCleanupRetryAfter.delete(id);
+        }
+      } catch (e) {
+        staleCleanupRetryAfter.set(id, Date.now() + STALE_CLEANUP_RETRY_MS);
+        maintenanceNotice = `7 天離線資料清理失敗：${e?.message || String(e)}`;
+        console.warn("stale client cleanup failed", id, e);
+      }
+    }
+
+    if (deletedCount > 0) {
+      maintenanceNotice = `已清除 ${deletedCount} 台離線超過 7 天的舊裝置資料`;
+      renderClients();
+    }
+  } finally {
+    staleCleanupSweepRunning = false;
+  }
 }
 
 function normalizeCommandState(value) {
@@ -337,7 +405,8 @@ function renderClients() {
     pcDropdown.value = keep;
   }
 
-  statusMsg.textContent = `可見 ${rows.length} 台，在線 ${onlineCount} 台`;
+  statusMsg.textContent = `可見 ${rows.length} 台，在線 ${onlineCount} 台`
+    + (maintenanceNotice ? `｜${maintenanceNotice}` : "");
   startSelectedMediaSubscription();
   renderSelectedClient();
 }
@@ -814,9 +883,19 @@ function startClientListener() {
   return onSnapshot(
     clientsQuery,
     (snap) => {
+      const observedNow = Date.now();
+      snap.docChanges().forEach((change) => {
+        if (change.type === "removed") {
+          clientLastObservedChangeAt.delete(change.doc.id);
+          staleCleanupRetryAfter.delete(change.doc.id);
+        } else {
+          clientLastObservedChangeAt.set(change.doc.id, observedNow);
+        }
+      });
       cache.clear();
       snap.forEach((s) => cache.set(s.id, s.data()));
       renderClients();
+      void cleanupStaleClients();
       const selectedId = pcDropdown.value;
       if (selectedId) void reconcileClientHistory(selectedId);
     },
@@ -930,3 +1009,4 @@ btnRefreshSnapshot.addEventListener("click", () => {
 statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
 startClientListener();
 window.setInterval(renderCommandStatus, 1000);
+window.setInterval(() => void cleanupStaleClients(), 60_000);
