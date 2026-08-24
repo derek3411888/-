@@ -102,7 +102,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.51"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.52"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -2375,8 +2375,7 @@ if (loginDetected) {
             "ERROR", CRASH_RESTART_MODE, okwwResult.code, okwwResult.stage)
         return
     }
-    WriteLog("檢測到登入畫面後不再由全自動點擊遊戲視窗，等待 OKWW 執行")
-    Sleep 3000
+    WriteLog("OKWW F11 已送出；先用背景模板等待主畫面，逾時才執行一次遊戲中心點擊")
 }
 
 ; 2) 登入後啟動 OKWW 並確認啟動成功
@@ -2384,19 +2383,43 @@ if !okwwStarted {
     WriteLog("遊戲可操作驗證通過前，不提前宣告登入完成")
 }
 
-; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）
+; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）。
+;    登入畫面已由 OKWW 送出 F11 時：先背景等待 20 秒，未就緒才點一次遊戲客戶區正中央，
+;    再背景等待 30 秒；第二階段仍失敗才觸發重啟。
 gameHwnd := GetWutheringGameHwnd()
-WriteLog("開始主畫面模板驗證（最多 90 秒）...")
-if !WaitEscMenuOCR(gameHwnd, 90) {
+gameReadyResult := { ok: false, centerClicked: false, phase: "not_started" }
+if okwwStarted {
+    WriteLog("開始 OKWW F11 後兩階段主畫面驗證：背景等待 20 秒 → 必要時中心左鍵 → 再等待 30 秒")
+    gameReadyResult := WaitGameReadyAfterOkwwF11(gameHwnd, 20, 30)
+} else {
+    WriteLog("開始主畫面模板驗證（最多 90 秒）...")
+    gameReadyResult.ok := WaitEscMenuOCR(gameHwnd, 90)
+    gameReadyResult.phase := gameReadyResult.ok ? "initial_ready" : "initial_timeout"
+}
+
+if !gameReadyResult.ok {
     WriteLog("鳴潮無法使用或超時，觸發重啟機制", "ERROR")
     ShowTip("⚠️ 鳴潮無法使用，重新啟動...", 3000)
     Sleep 3000
-    RequestRestart(
-        "鳴潮視窗存在，但主畫面／可操作模板在 90 秒內未通過驗證",
-        "ERROR", CRASH_RESTART_MODE, "GAME_READY_CHECK_TIMEOUT", "遊戲可操作驗證")
+    if okwwStarted {
+        clickDetail := gameReadyResult.centerClicked
+            ? "已成功對遊戲客戶區正中央送出一次滑鼠左鍵"
+            : "未能對遊戲客戶區正中央送出滑鼠左鍵"
+        RequestRestart(
+            "OKWW 已送出 F11；先等待 20 秒仍未檢測到主畫面，" clickDetail
+                "；其後再等待 30 秒仍未通過主畫面模板驗證",
+            "ERROR", CRASH_RESTART_MODE, "GAME_READY_AFTER_OKWW_F11_TIMEOUT", "OKWW F11 後遊戲就緒")
+    } else {
+        RequestRestart(
+            "鳴潮視窗存在，但主畫面／可操作模板在 90 秒內未通過驗證",
+            "ERROR", CRASH_RESTART_MODE, "GAME_READY_CHECK_TIMEOUT", "遊戲可操作驗證")
+    }
     return
 }
-WriteStep("遊戲可操作驗證", "模板比對通過")
+readyDetail := (okwwStarted && gameReadyResult.centerClicked)
+    ? "OKWW F11 後中心點擊恢復，模板比對通過"
+    : "模板比對通過"
+WriteStep("遊戲可操作驗證", readyDetail)
 
 ; 4) 只有在可操作驗證通過後，才啟動 OKWW（避免過早啟動）
 if !okwwStarted {
@@ -4029,8 +4052,9 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     if !hwnd {
         hwnd := GetWutheringGameHwnd()
         if !hwnd {
-            WriteStepResult("主畫面模板驗證", false, "無有效視窗")
-            return false
+            ; 遊戲在自動登入時可能短暫重建 HWND。必須在本階段期限內持續重抓，
+            ; 不可因入口瞬間沒有有效視窗就提早進入中心點擊或重啟。
+            WriteLog("主畫面模板驗證入口暫無有效遊戲視窗，將在期限內持續等待", "WARN")
         }
     }
 
@@ -4064,7 +4088,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     while (A_TickCount < deadline) {
         sampleCount += 1
 
-        if !WinExist("ahk_id " hwnd) {
+        if (!hwnd || !WinExist("ahk_id " hwnd)) {
             newHwnd := GetWutheringGameHwnd()
             if newHwnd {
                 hwnd := newHwnd
@@ -4154,6 +4178,107 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     WriteLog("模板驗證超時: 樣本=" sampleCount " 未達連續命中 " stableNeeded, "WARN")
     WriteStepResult("主畫面模板驗證", false, "超時樣本=" sampleCount)
     return false
+}
+
+; C) OKWW F11 自動登入後的兩階段遊戲就緒驗證
+WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
+    WriteStep("OKWW F11 後遊戲就緒", "第一階段背景等待 " firstWaitSec " 秒")
+    if WaitEscMenuOCR(hwnd, firstWaitSec) {
+        WriteStepResult("OKWW F11 後遊戲就緒", true, "第一階段已檢測到主畫面；未點擊遊戲")
+        return { ok: true, centerClicked: false, phase: "initial_ready" }
+    }
+
+    WriteLog("OKWW F11 後 " firstWaitSec " 秒仍未檢測到主畫面；準備短暫啟用鳴潮並點擊客戶區正中央", "WARN")
+    WriteStep("OKWW F11 後遊戲就緒", "第一階段逾時，執行一次中心左鍵", "WARN")
+
+    hwnd := GetWutheringGameHwnd()
+    centerClicked := ClickWutheringClientCenter(hwnd, "OKWW F11 後自動登入喚醒")
+    if centerClicked {
+        WriteLog("遊戲客戶區正中央左鍵已送出；開始第二階段背景等待 " afterClickWaitSec " 秒")
+    } else {
+        WriteLog("遊戲客戶區正中央左鍵未能送出；仍進入第二階段背景等待 " afterClickWaitSec " 秒", "WARN")
+    }
+
+    Sleep 800
+    hwnd := GetWutheringGameHwnd()
+    if WaitEscMenuOCR(hwnd, afterClickWaitSec) {
+        WriteStepResult("OKWW F11 後遊戲就緒", true,
+            "第二階段已檢測到主畫面；中心左鍵=" (centerClicked ? "成功" : "失敗"))
+        return { ok: true, centerClicked: centerClicked, phase: "after_click_ready" }
+    }
+
+    WriteStepResult("OKWW F11 後遊戲就緒", false,
+        "第二階段逾時；中心左鍵=" (centerClicked ? "成功" : "失敗"))
+    return { ok: false, centerClicked: centerClicked, phase: "after_click_timeout" }
+}
+
+; D) 短暫啟用鳴潮後，以實體滑鼠點擊遊戲客戶區正中央。
+;    僅在實際操作期間暫時置頂，finally 一律取消，不改變普通／最大化視窗尺寸。
+ClickWutheringClientCenter(hwnd, context := "") {
+    global WUTHERING_PROCESS_EXE
+
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        hwnd := GetWutheringGameHwnd()
+    if !hwnd || !WinExist("ahk_id " hwnd) {
+        WriteLog("遊戲中心點擊失敗：找不到有效鳴潮視窗 | context=" context, "WARN")
+        return false
+    }
+
+    target := "ahk_id " hwnd
+    oldMouseMode := A_CoordModeMouse
+    topmostPulse := false
+    try {
+        procName := StrLower(WinGetProcessName(target))
+        if (procName != StrLower(WUTHERING_PROCESS_EXE)) {
+            WriteLog("遊戲中心點擊安全檢查失敗：process=" procName " hwnd=" hwnd
+                " | context=" context, "ERROR")
+            return false
+        }
+
+        ; 只有最小化時才還原；普通與最大化視窗不做 WinRestore，避免改變遊戲尺寸。
+        if (WinGetMinMax(target) = -1) {
+            WinRestore(target)
+            Sleep 150
+        }
+
+        ; 實體滑鼠必須確保鳴潮位於最前方；置頂只維持到本次點擊結束。
+        try {
+            WinSetAlwaysOnTop(1, target)
+            topmostPulse := true
+        } catch as e {
+            WriteLog("遊戲中心點擊：暫時置頂失敗，仍嘗試啟用視窗 | " e.Message, "WARN")
+        }
+
+        WinActivate(target)
+        if !WinWaitActive(target, , 1.5) {
+            WriteLog("遊戲中心點擊失敗：1.5 秒內無法啟用鳴潮視窗 | context=" context, "WARN")
+            return false
+        }
+
+        WinGetClientPos(&clientX, &clientY, &clientW, &clientH, target)
+        if (clientW <= 0 || clientH <= 0) {
+            WriteLog("遊戲中心點擊失敗：客戶區尺寸無效 " clientW "x" clientH
+                " | context=" context, "WARN")
+            return false
+        }
+
+        clickX := clientX + Floor(clientW / 2)
+        clickY := clientY + Floor(clientH / 2)
+        CoordMode("Mouse", "Screen")
+        MouseMove(clickX, clickY, 0)
+        Sleep 80
+        MouseClick("left", clickX, clickY)
+        WriteLog("已用實體滑鼠點擊鳴潮客戶區正中央：screen=" clickX "," clickY
+            " client=" clientW "x" clientH " hwnd=" hwnd " | context=" context)
+        return true
+    } catch as e {
+        WriteLog("遊戲中心點擊失敗：" e.Message " | context=" context, "WARN")
+        return false
+    } finally {
+        if (topmostPulse && WinExist(target))
+            try WinSetAlwaysOnTop(0, target)
+        CoordMode("Mouse", oldMouseMode)
+    }
 }
 
 ; E) 點擊指定窗口中心

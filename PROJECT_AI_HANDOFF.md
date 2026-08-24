@@ -90,6 +90,7 @@
 - 自動戰鬥前置確認只在同一個 OKWW 視窗嘗試 2 次。兩次仍無法確認時，不關閉、不重啟、不再開第二輪 OKWW，直接沿用同一個已鎖定 HWND 送一次 F11。
 - 兩個呼叫端都統一走 `StartOKWWFlowWithLocalRecovery()` 並接收結果；此名稱只為相容既有呼叫，現在已不會重啟 OKWW，而是同視窗 F11 降級。未被降級策略成功處理的失敗仍依階段使用 `OKWW_MANAGER_LAUNCH_FAILED`、`OKWW_FINAL_WINDOW_TIMEOUT` 或 `OKWW_F11_SEND_FAILED` 進入原 `RequestRestart()`，不得繼續等待主畫面後誤報 `GAME_READY_CHECK_TIMEOUT`。
 - `OKWW_AUTOBATTLE_CHECK_FAILED` 不再觸發舊的局部復原函式；wrapper 只取回同一次流程已穩定鎖定的最終 `pythonw` HWND，做相同的程序名／標題安全檢查後直接送一次 `F11`。送出成功即排程最小化並回傳成功繼續流程；只有直接送鍵本身失敗，才改回 `OKWW_F11_SEND_FAILED` 並走原 `RequestRestart()`。
+- 登入畫面由 OKWW 送出 F11 後，先以 `WaitEscMenuOCR()` 背景等待主畫面 20 秒；未命中才短暫啟用／置頂鳴潮，對遊戲客戶區正中央送一次實體滑鼠左鍵，`finally` 立即取消置頂，再背景等待 30 秒。第二階段仍未命中才以 `GAME_READY_AFTER_OKWW_F11_TIMEOUT` 觸發重啟；遊戲本來已在主畫面的入口仍維持既有 90 秒驗證，不做中心點擊。
 
 ### 3.13 鳴潮前景與置頂原則
 - 一般 OCR 與模板輪詢均使用 ImagePut 的 `PrintWindow + PW_CLIENTONLY` 背景 client 截圖，不因輪詢而 `WinActivate` 或將鳴潮設為置頂。
