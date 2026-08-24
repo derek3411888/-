@@ -27,7 +27,7 @@ const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const MAX_REMOTE_SERVERS = 10;
-const WEB_BUILD = "20260824-4";
+const WEB_BUILD = "20260824-5";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -350,14 +350,21 @@ function readRemoteSettings(data, preferDesired = true) {
   };
 }
 
+function resolvedCurrentServerIndex(schedule) {
+  if (schedule.currentIndex >= 1 && schedule.currentIndex <= schedule.list.length) {
+    return schedule.currentIndex;
+  }
+  const nameIndex = schedule.currentName
+    ? schedule.list.findIndex((name) => name === schedule.currentName)
+    : -1;
+  return nameIndex >= 0 ? nameIndex + 1 : 0;
+}
+
 function nextServerIndex(schedule) {
   if (schedule.list.length === 0) return 0;
-  if (
-    schedule.currentIndex >= 1 &&
-    schedule.currentIndex <= schedule.list.length &&
-    schedule.list[schedule.currentIndex - 1] === schedule.currentName
-  ) {
-    return schedule.currentIndex >= schedule.list.length ? 1 : schedule.currentIndex + 1;
+  const currentIndex = resolvedCurrentServerIndex(schedule);
+  if (currentIndex > 0) {
+    return currentIndex >= schedule.list.length ? 1 : currentIndex + 1;
   }
   return 1;
 }
@@ -606,22 +613,25 @@ function renderServerSwitch() {
     return;
   }
 
+  const currentIndex = resolvedCurrentServerIndex(schedule);
   for (let index = 1; index <= schedule.list.length; index += 1) {
     const name = schedule.list[index - 1];
+    if (index === currentIndex) continue;
     const option = document.createElement("option");
     option.value = String(index);
-    const isCurrent = index === schedule.currentIndex && name === schedule.currentName;
-    option.textContent = `${index}. ${name}${isCurrent ? "（目前）" : ""}`;
-    option.disabled = isCurrent;
+    option.textContent = `${index}. ${name}`;
     serverTargetSelect.appendChild(option);
   }
 
-  const preferredIndex = schedule.list.some((_, index) => String(index + 1) === previousValue)
-    ? toInteger(previousValue, 0)
-    : nextServerIndex(schedule);
-  const preferred = serverTargetSelect.querySelector(`option[value="${preferredIndex}"]:not(:disabled)`);
-  const fallback = serverTargetSelect.querySelector("option:not(:disabled)");
-  serverTargetSelect.value = preferred?.value || fallback?.value || "";
+  // 不使用 option:not(:disabled)：當父層 select 尚處於 disabled 時，瀏覽器可能把
+  // 所有子 option 都視為 :disabled，造成找不到目標、value 變空，之後又永久鎖住選單。
+  const targets = Array.from(serverTargetSelect.options)
+    .filter((option) => option.value && !option.disabled);
+  const nextValue = String(nextServerIndex(schedule));
+  const selected = targets.find((option) => option.value === previousValue)
+    || targets.find((option) => option.value === nextValue)
+    || targets[0];
+  serverTargetSelect.selectedIndex = selected?.index ?? -1;
   const ordered = schedule.list.map((name, index) => `${index + 1}. ${name}`).join(" → ");
   serverSwitchHint.textContent = `設定順序：${ordered}。預設選取目前伺服器的下一個，也可指定其他目標。`;
 }
@@ -630,13 +640,19 @@ function setButtonsDisabled(disabled) {
   const noClient = !pcDropdown.value || !cache.has(pcDropdown.value);
   const value = Boolean(disabled || noClient);
   const schedule = readServerSchedule(selectedClientData() || {});
-  const noSwitchTarget = !schedule.enabled || schedule.list.length < 2 || !serverTargetSelect.value;
+  const targets = Array.from(serverTargetSelect.options)
+    .filter((option) => option.value && !option.disabled);
+  const selectedIsTarget = targets.some((option) => option.value === serverTargetSelect.value);
+  if (!selectedIsTarget && targets.length > 0) {
+    serverTargetSelect.selectedIndex = targets[0].index;
+  }
+  const noSwitchTarget = !schedule.enabled || schedule.list.length < 2 || targets.length === 0;
   pcDropdown.disabled = Boolean(disabled || cache.size === 0);
   btnPause.disabled = value;
   btnRun.disabled = value;
   btnStop.disabled = value;
   serverTargetSelect.disabled = Boolean(value || noSwitchTarget);
-  btnSwitchServer.disabled = Boolean(value || noSwitchTarget);
+  btnSwitchServer.disabled = Boolean(value || noSwitchTarget || !serverTargetSelect.value);
 }
 
 function renderClients() {
