@@ -102,7 +102,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.50"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.51"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -112,6 +112,7 @@ global CURRENT_SERVER_TARGET := ""
 global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
 global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
+global SERVER_SWITCH_NOTIFY_SECTION := "server_switch_notify"
 global REMOTE_CONTROL_ACTIVE := false
 global REMOTE_PAUSE_WAITING := false
 global EXITING_FROM_TRAY := false
@@ -1008,6 +1009,8 @@ OnRemoteControlStateChanged(state, command := "") {
     global REMOTE_STOP_IN_PROGRESS, __REMOTE_WAS_PAUSED
     if (state = "SWITCH_SERVER")
         return PrepareRemoteServerSwitch(command)
+    if (state = "COMPLETE_SERVER")
+        return CompleteServerForTodayFromRemote(command)
 
     if (state = "STOP") {
         if REMOTE_STOP_IN_PROGRESS
@@ -2007,6 +2010,9 @@ PrepareRemoteServerSwitch(command) {
     if (targetName = "" || targetName != expectedName)
         return { code: "CONFIG_CHANGED", detail: "伺服器設定已變更，請等待網頁更新後重新選擇" }
 
+    if IsServerCompletedInCurrentCycle(expectedName)
+        return { code: "ALREADY_COMPLETED_TODAY", detail: "第 " targetIndex " 個伺服器「" expectedName "」今天已完成，不會再次執行" }
+
     if (targetIndex = SERVER_SCHEDULE_INDEX && expectedName = CURRENT_SERVER_TARGET)
         return { code: "ALREADY_CURRENT", detail: "目前已在第 " targetIndex " 個伺服器「" expectedName "」" }
 
@@ -2021,6 +2027,49 @@ PrepareRemoteServerSwitch(command) {
         code: "SWITCH_SCHEDULED",
         detail: "已排定切換至第 " targetIndex " 個伺服器「" expectedName "」"
     }
+}
+
+CompleteServerForTodayFromRemote(command) {
+    global SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET
+    global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY, __RESTART_IN_PROGRESS
+
+    if (REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY || __RESTART_IN_PROGRESS)
+        return { code: "BUSY", detail: "程式正在停止或重啟，請稍後再試" }
+    if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length = 0)
+        return { code: "NO_SERVER_CONFIG", detail: "無設定：程式尚未啟用伺服器排程" }
+    if !IsObject(command)
+        return { code: "INVALID_TARGET", detail: "完成命令缺少伺服器資料，請重新整理網頁" }
+
+    targetIndex := 0
+    if command.HasOwnProp("serverIndex")
+        try targetIndex := Integer(command.serverIndex)
+    targetName := command.HasOwnProp("serverName") ? Trim(command.serverName, " `t`r`n") : ""
+    if (targetIndex < 1 || targetIndex > SERVER_SCHEDULE_LIST.Length)
+        return { code: "INVALID_TARGET", detail: "指定順序已超出目前伺服器清單，請重新整理網頁" }
+
+    expectedName := SERVER_SCHEDULE_LIST[targetIndex]
+    if (targetName = "" || targetName != expectedName)
+        return { code: "CONFIG_CHANGED", detail: "伺服器設定已變更，請等待網頁更新後重新選擇" }
+
+    if IsServerCompletedInCurrentCycle(expectedName) {
+        SyncRemoteControlRuntimeState()
+        return {
+            code: "ALREADY_COMPLETED_TODAY",
+            detail: "第 " targetIndex " 個伺服器「" expectedName "」今天原本就已完成"
+        }
+    }
+
+    if !MarkServerCompletedInCurrentCycle(expectedName)
+        return { code: "CONFIG_WRITE_FAILED", detail: "無法將「" expectedName "」寫入今日完成狀態" }
+
+    isCurrent := (targetIndex = SERVER_SCHEDULE_INDEX && expectedName = CURRENT_SERVER_TARGET)
+    detail := "已將第 " targetIndex " 個伺服器「" expectedName "」標記為今日完成；後續排程會略過"
+    if isCurrent
+        detail .= "，目前正在執行的流程不會強制中斷"
+    WriteLog("遠端控制：" detail, "WARN")
+    try RC_RecordRuntimeEvent("今日伺服器完成", detail, "WARN")
+    SyncRemoteControlRuntimeState()
+    return { code: "COMPLETED_TODAY", detail: detail }
 }
 
 RemoteServerSwitchCommitTick() {
@@ -2182,6 +2231,21 @@ StartCrashWatcher()
 
 LoadServerScheduleContext(isNextServerCycle, isRemoteServerSwitchCycle)
 REMOTE_SETTINGS_RUNTIME_READY := true
+if REMOTE_CONTROL_ACTIVE
+    RC_EnableCommandProcessing()
+RefreshServerScheduleAfterStartupCommands()
+if (isNextServerCycle && CURRENT_SERVER_TARGET != "")
+    QueueServerSwitchCompletionNotification(isRemoteServerSwitchCycle ? "WEB_SERVER_SWITCH" : "AUTO_SCHEDULE")
+
+; 今日所有排程目標都完成時不可繼續進入預設伺服器，否則會把已完成的服再跑一次。
+if (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_LIST.Length > 0 && CURRENT_SERVER_TARGET = "") {
+    global __CLEAN_FINAL_EXIT_REQUESTED
+    __CLEAN_FINAL_EXIT_REQUESTED := true
+    WriteStep("伺服器排程", "今日所有伺服器已完成，停止本次啟動", "WARN")
+    try RC_ReportRuntimeState()
+    WriteLog("今日循環無待執行伺服器，程式將保持停止", "WARN")
+    ExitApp
+}
 
 if MAIL_NOTIFY_ENABLED {
     startMailResult := SendStartNotifyMail(isRestart)
@@ -2444,6 +2508,7 @@ ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
 WriteLog("流程成功完成，已重置重啟計數器")
 WriteStep("主流程完成", "重啟計數已歸零")
+StartPendingServerSwitchCompletionMonitor()
 
 WriteLog("全自動流程完成，進入收尾監測（等待電台一鍵領取達標）")
 WriteStep("收尾監測", "等待電台一鍵領取條件")
@@ -5502,6 +5567,186 @@ ResolveShutdownStopType(stopTypeCode) {
     }
 }
 
+; 供 Firestore 心跳與網頁顯示使用。只讀取既有 Map／config.ini，
+; 不新增輪詢，也不在每次心跳重複輸出完成判斷日誌。
+GetCompletedServerNamesInCurrentCycle(currentTime := "") {
+    global SERVER_COMPLETED_CYCLE_MAP, SERVER_SCHEDULE_LIST, CFG_FILE
+
+    if (currentTime = "")
+        currentTime := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    completed := []
+    for _, server in SERVER_SCHEDULE_LIST {
+        completedTime := ""
+        if SERVER_COMPLETED_CYCLE_MAP.Has(server)
+            completedTime := SERVER_COMPLETED_CYCLE_MAP[server]
+        if (completedTime = "")
+            completedTime := Trim(IniReadSafe(CFG_FILE, "server_completed", server, ""), " `t`r`n")
+        if (completedTime != "" && IsSameDayCircle(completedTime, currentTime)) {
+            SERVER_COMPLETED_CYCLE_MAP[server] := completedTime
+            completed.Push(server)
+        }
+    }
+    return completed
+}
+
+GetCurrentServerCycleKey() {
+    return GetDayCircleKey(FormatTime(, "yyyy-MM-dd HH:mm:ss"))
+}
+
+QueueServerSwitchCompletionNotification(sourceCode := "AUTO_SCHEDULE") {
+    global CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION
+    global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
+
+    if (CURRENT_SERVER_TARGET = "")
+        return false
+    cycleKey := GetCurrentServerCycleKey()
+    requestedAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    try {
+        IniWrite "1", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending"
+        IniWrite CURRENT_SERVER_TARGET, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_target"
+        IniWrite SERVER_SCHEDULE_INDEX, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_index"
+        IniWrite SERVER_SCHEDULE_LIST.Length, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_total"
+        IniWrite sourceCode, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_source"
+        IniWrite cycleKey, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_cycle_key"
+        IniWrite requestedAt, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_requested_at"
+        WriteLog("已排定伺服器切換完成提醒：" SERVER_SCHEDULE_INDEX "/" SERVER_SCHEDULE_LIST.Length
+            " | " CURRENT_SERVER_TARGET " | source=" sourceCode)
+        SyncRemoteControlRuntimeState()
+        return true
+    } catch as e {
+        WriteLog("寫入伺服器切換完成提醒狀態失敗: " e.Message, "WARN")
+        return false
+    }
+}
+
+StartPendingServerSwitchCompletionMonitor() {
+    global CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION
+    if (IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending", "0") != "1")
+        return
+    SetTimer(PendingServerSwitchCompletionTick, 5000)
+    PendingServerSwitchCompletionTick()
+}
+
+PendingServerSwitchCompletionTick() {
+    global CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION
+    if (IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending", "0") != "1") {
+        SetTimer(PendingServerSwitchCompletionTick, 0)
+        return
+    }
+    if !IsLrmcRunResumeReady()
+        return
+    SetTimer(PendingServerSwitchCompletionTick, 0)
+    CompletePendingServerSwitchNotification()
+}
+
+CompletePendingServerSwitchNotification() {
+    global CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, MAIL_NOTIFY_ENABLED
+    global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
+
+    if (IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending", "0") != "1")
+        return false
+
+    target := Trim(IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_target", ""), " `t`r`n")
+    targetIndex := ToIntRange(
+        IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_index", "0"), 0, 0, 100)
+    targetTotal := ToIntRange(
+        IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_total", "0"), 0, 0, 100)
+    sourceCode := Trim(IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_source", ""), " `t`r`n")
+    pendingCycleKey := Trim(IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_cycle_key", ""), " `t`r`n")
+    currentCycleKey := GetCurrentServerCycleKey()
+
+    validTarget := (
+        target != ""
+        && target = CURRENT_SERVER_TARGET
+        && targetIndex = SERVER_SCHEDULE_INDEX
+        && pendingCycleKey != ""
+        && pendingCycleKey = currentCycleKey
+    )
+    if !validTarget {
+        detail := "待寄提醒已失效：pending=" targetIndex "/" targetTotal " " target
+            . " cycle=" pendingCycleKey "；current=" SERVER_SCHEDULE_INDEX "/" SERVER_SCHEDULE_LIST.Length
+            . " " CURRENT_SERVER_TARGET " cycle=" currentCycleKey
+        WriteLog(detail, "WARN")
+        IniWrite "0", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending"
+        SyncRemoteControlRuntimeState()
+        return false
+    }
+
+    completedAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    completedAtMs := RC_UnixMs()
+    mailResultCode := "DISABLED"
+    mailDetail := "郵件通知未啟用"
+    if MAIL_NOTIFY_ENABLED {
+        mailResult := SendServerSwitchCompletedNotifyMail(target, targetIndex, targetTotal, sourceCode)
+        if mailResult.ok {
+            mailResultCode := "SENT"
+            mailDetail := "切換完成提醒已寄出"
+            WriteLog("伺服器切換完成提醒已寄出：" target)
+        } else {
+            mailResultCode := "FAILED"
+            mailDetail := mailResult.message
+            WriteLog("伺服器切換完成提醒寄送失敗: " mailResult.message, "WARN")
+        }
+    }
+
+    IniWrite "0", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending"
+    IniWrite target, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_completed_target"
+    IniWrite targetIndex, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_completed_index"
+    IniWrite targetTotal, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_completed_total"
+    IniWrite sourceCode, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_completed_source"
+    IniWrite completedAt, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_completed_at"
+    IniWrite completedAtMs, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_completed_at_unix_ms"
+    IniWrite mailResultCode, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_mail_result"
+    IniWrite mailDetail, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "last_mail_detail"
+    eventDetail := targetIndex "/" targetTotal " | " target " | " ServerSwitchSourceLabel(sourceCode)
+        . " | 郵件=" mailResultCode
+    try RC_RecordRuntimeEvent("伺服器切換完成", eventDetail, mailResultCode = "FAILED" ? "WARN" : "INFO")
+    SyncRemoteControlRuntimeState()
+    return true
+}
+
+ServerSwitchSourceLabel(sourceCode) {
+    code := StrUpper(Trim(sourceCode, " `t`r`n"))
+    if (code = "WEB_SERVER_SWITCH")
+        return "網頁手動切換"
+    if (code = "AUTO_SCHEDULE")
+        return "自動排程切換"
+    return "伺服器切換"
+}
+
+SendServerSwitchCompletedNotifyMail(target, targetIndex, targetTotal, sourceCode := "") {
+    global CFG_FILE, MAIL_SECTION
+
+    state := ReadCombinedConfigState()
+    if state.needSetup
+        return { ok: false, message: "郵件設定不完整: " state.errorText }
+
+    cfgPath := Trim(CFG_FILE, " `t`r`n")
+    section := Trim(MAIL_SECTION, " `t`r`n")
+    smtpHost := Trim(IniRead(cfgPath, section, "smtp_host", ""), " `t`r`n")
+    smtpPort := Trim(IniRead(cfgPath, section, "smtp_port", "587"), " `t`r`n")
+    smtpUser := Trim(IniRead(cfgPath, section, "smtp_user", ""), " `t`r`n")
+    smtpPass := Trim(IniRead(cfgPath, section, "smtp_pass", ""), " `t`r`n")
+    if (smtpPass = "")
+        smtpPass := Trim(IniRead(cfgPath, section, "smtp_password", ""), " `t`r`n")
+    mailFrom := Trim(IniRead(cfgPath, section, "from", ""), " `t`r`n")
+    mailTo := Trim(IniRead(cfgPath, section, "to", ""), " `t`r`n")
+    subjectPrefix := Trim(IniRead(cfgPath, section, "subject_prefix", "LRMCAI"), " `t`r`n")
+    useSsl := Trim(IniRead(cfgPath, section, "use_ssl", "1"), " `t`r`n")
+
+    if (smtpHost = "" || smtpUser = "" || smtpPass = "" || mailFrom = "" || mailTo = "")
+        return { ok: false, message: "mail_config.ini 欄位不完整" }
+    if !(smtpPort ~= "^\d+$")
+        return { ok: false, message: "smtp_port 不是數字: " smtpPort }
+
+    nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    subject := subjectPrefix " 伺服器切換完成 [" targetIndex "/" targetTotal " " target "] " nowText
+    body := BuildNotifyMailBody("伺服器切換完成，LRMCAI 鋤地流程已確認開始。", nowText)
+    body .= "`r`n切換來源：" ServerSwitchSourceLabel(sourceCode)
+    body .= "`r`n流程伺服器：" targetIndex "/" targetTotal " | " target
+    return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
+}
+
 SendShutdownNotifyMail(stopType := "未指定") {
     global CFG_FILE, MAIL_SECTION
 
@@ -8404,7 +8649,15 @@ LoadServerScheduleContext(isContinueCycle := false, useExactConfiguredIndex := f
             WriteLog("伺服器排程：已自動略過今日已完成伺服器，改用第 " resolvedIdx " 個目標")
         idx := resolvedIdx
     } else {
-        WriteLog("伺服器排程：遠端指定切服，保留第 " idx " 個目標，不套用今日完成略過規則", "WARN")
+        exactTarget := SERVER_SCHEDULE_LIST[idx]
+        if IsServerCompletedInCurrentCycle(exactTarget) {
+            SERVER_SCHEDULE_INDEX := idx
+            CURRENT_SERVER_TARGET := ""
+            WriteLog("伺服器排程：遠端指定的第 " idx " 個目標「" exactTarget "」今天已完成，拒絕再次執行", "WARN")
+            SyncRemoteControlRuntimeState()
+            return
+        }
+        WriteLog("伺服器排程：遠端指定切服，保留第 " idx " 個待執行目標", "WARN")
     }
 
     SERVER_SCHEDULE_INDEX := idx
@@ -8438,16 +8691,54 @@ ResolveNextPendingServerIndexInCurrentCycle(startIdx := 1) {
     return 0
 }
 
+; 啟動空窗的 COMPLETE_SERVER 會在排程首次載入後才套用。此時主流程尚未開始，
+; 若剛好標記目前目標，就立即改選下一個待執行伺服器（或全部完成後停止），
+; 避免嘴上 ACK 已完成，實際卻仍把同一個伺服器跑起來。執行中的完成命令不走此函式，
+; 仍維持「不中斷目前流程，只影響後續排程」。
+RefreshServerScheduleAfterStartupCommands() {
+    global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST
+    global SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET
+
+    if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length = 0 || CURRENT_SERVER_TARGET = "")
+        return false
+    if !IsServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET)
+        return false
+
+    previousIndex := SERVER_SCHEDULE_INDEX
+    previousTarget := CURRENT_SERVER_TARGET
+    startIndex := previousIndex + 1
+    if (startIndex > SERVER_SCHEDULE_LIST.Length)
+        startIndex := 1
+    nextIndex := ResolveNextPendingServerIndexInCurrentCycle(startIndex)
+    if (nextIndex = 0) {
+        SERVER_SCHEDULE_INDEX := 1
+        CURRENT_SERVER_TARGET := ""
+        IniWrite "1", CFG_FILE, "server_schedule", "current_index"
+        WriteLog("啟動命令已將目前目標「" previousTarget "」標記完成；今日所有伺服器均完成", "WARN")
+    } else {
+        SERVER_SCHEDULE_INDEX := nextIndex
+        CURRENT_SERVER_TARGET := SERVER_SCHEDULE_LIST[nextIndex]
+        IniWrite nextIndex, CFG_FILE, "server_schedule", "current_index"
+        WriteLog("啟動命令已將原目標「" previousTarget "」標記完成；改執行第 " nextIndex
+            "/" SERVER_SCHEDULE_LIST.Length " 個「" CURRENT_SERVER_TARGET "」", "WARN")
+    }
+    SyncRemoteControlRuntimeState()
+    return true
+}
+
 AdvanceServerScheduleForNextCycle() {
     global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET
 
     if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length <= 1)
         return false
 
-    nextIndex := SERVER_SCHEDULE_INDEX + 1
-    if (nextIndex > SERVER_SCHEDULE_LIST.Length) {
+    startIndex := SERVER_SCHEDULE_INDEX + 1
+    if (startIndex > SERVER_SCHEDULE_LIST.Length)
+        startIndex := 1
+    nextIndex := ResolveNextPendingServerIndexInCurrentCycle(startIndex)
+    if (nextIndex = 0) {
         IniWrite "1", CFG_FILE, "server_schedule", "current_index"
-        WriteLog("伺服器排程已完成全部清單，本輪後不再續跑")
+        WriteLog("伺服器排程今日已完成全部清單，本輪後不再續跑")
         return false
     }
 

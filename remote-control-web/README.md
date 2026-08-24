@@ -12,7 +12,7 @@
 
 ## 頁面配置
 
-- 「總覽」：執行控制、指定切換伺服器、命令 ACK 與最新畫面。
+- 「總覽」：醒目顯示目前流程伺服器、今日完成進度、執行控制、指定切換伺服器、命令 ACK 與最新畫面。
 - 「診斷記錄」：完整錄影狀態／路徑、最近流程事件與命令歷史。
 - 「設定」：可安全遠端同步的執行端設定。
 
@@ -34,7 +34,7 @@
 
 1. 讀取目前頂層 `nonce`。
 2. 原子遞增 `nonce`。
-3. 更新頂層 `desiredState`；切換伺服器時，同時寫入頂層 `requestedServerIndex` 與 `requestedServerName`。
+3. 更新頂層 `desiredState`；切換伺服器或標記今日完成時，同時寫入頂層 `requestedServerIndex` 與 `requestedServerName`。
 4. 將命令加入父文件的 `commandHistory` 陣列。
 
 `commandHistory` 最多保留最近 30 筆，避免文件無限增長。歷史項目使用以下欄位：
@@ -58,7 +58,7 @@
 
 控制台不會在交易完成後直接顯示成功：
 
-- `lastAckNonce` 與命令的 `commandNonce` 相同，而且 `lastAckState` 與 `requestedState` 相同：再依 `lastAckResult` 顯示「已 ACK」或「未執行」。切服命令還要求 ACK 的目標序號與名稱完全相符。
+- `lastAckNonce` 與命令的 `commandNonce` 相同，而且 `lastAckState` 與 `requestedState` 相同：再依 `lastAckResult` 顯示「已 ACK」或「未執行」。切服與標記完成命令還要求 ACK 的目標序號與名稱完全相符。
 - `lastAckNonce` 已大於命令的 `commandNonce`：顯示「被後續命令跨過」，代表這筆沒有被逐筆 ACK。
 - 30 秒後 `lastAckNonce` 仍小於命令的 `commandNonce`：顯示「未回應」。
 - 其餘狀況：顯示「等待 ACK」。
@@ -72,6 +72,16 @@
 - 有多個伺服器時，選單依設定順序顯示，預設選擇目前伺服器的下一個，也可指定其他目標。
 - `SWITCH_SERVER` 命令同時帶序號與名稱；網頁交易與 client 都會重新驗證，避免設定變動時跳錯伺服器。
 - Client 會先 ACK，再延後關閉現有流程並依選定目標重啟；「無設定」、「設定已變更」、「已是目前伺服器」或忙碌中都會保留在命令歷史。
+- 重啟空窗收到的新命令不會在啟動初始化時被當成已讀。舊程序一進入重啟／切服關閉階段就停止抓取命令，不會回 `BUSY` 後消耗 nonce；新程序只保留真正已處理的 nonce，將最新未處理命令暫存到伺服器排程載入完成後執行，再回覆精確 ACK。
+- 切換後會先顯示「啟動確認中」；只有新伺服器的 LRMCAI 已成功送出啟動快捷鍵、`run_started=1` 後，才記錄「切換完成」並寄送提醒信。郵件未啟用或寄送失敗也會在網頁顯示。
+
+## 今日伺服器完成進度
+
+- 新版 client 以 `serverProgressSchemaVersion=1` 發佈目前循環、完成清單與切換提醒狀態；沿用既有心跳，不新增 timer、listener 或 Firestore 文件。
+- 循環日固定為每日 04:00 到隔日 03:59，04:00 後自動視為新一天。
+- `COMPLETE_SERVER` 命令可把任一設定伺服器寫入本機 `config.ini` 的 `[server_completed]`。當天後續自動排程與網頁切換都會略過已完成目標。
+- 若標記的是目前流程，現有流程不會被強制中斷；它結束後當天不會再次執行。若全部伺服器都完成，程式不會回頭重跑預設伺服器。
+- 網頁會顯示每個伺服器的「目前流程／待執行／今日已完成」，並在總覽頂端醒目顯示目前實際流程伺服器。
 
 ## 網頁遠端設定
 

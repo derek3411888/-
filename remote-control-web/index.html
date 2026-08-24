@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260824-5" />
+  <link rel="stylesheet" href="styles.css?v=20260824-6" />
 </head>
 <body>
   <main class="wrap">
@@ -41,6 +41,16 @@
             <p class="sub">會顯示目前執行步驟、伺服器與最後命令結果。</p>
           </div>
 
+          <div id="flowServerCard" class="flow-server-card" data-state="idle" aria-live="polite">
+            <div class="flow-server-heading">
+              <span>目前流程伺服器</span>
+              <span id="currentFlowBadge" class="flow-server-badge">等待裝置</span>
+            </div>
+            <strong id="currentFlowServer">尚未取得流程資料</strong>
+            <p id="currentFlowStep">選擇裝置後會顯示目前步驟。</p>
+            <p id="serverSwitchNotifyStatus" class="flow-server-notify"></p>
+          </div>
+
           <div class="row buttons">
             <button id="btnPause" class="warn" type="button">暫停</button>
             <button id="btnRun" class="ok" type="button">啟動</button>
@@ -56,6 +66,15 @@
               <button id="btnSwitchServer" class="info" type="button" disabled>跳到所選伺服器</button>
             </div>
             <p id="serverSwitchHint" class="sub">會依程式設定的伺服器順序列出可切換目標。</p>
+          </div>
+
+          <div class="server-progress-panel">
+            <div class="server-progress-heading">
+              <strong>今日伺服器進度</strong>
+              <span id="serverProgressCycle">每日 04:00 重置</span>
+            </div>
+            <div id="serverProgressList" class="server-progress-list"></div>
+            <p id="serverProgressNote" class="sub">更新執行端後，可將指定伺服器標記為今天已完成。</p>
           </div>
 
           <div id="commandStatus" class="command-status" data-status="idle" role="status" aria-live="polite">
@@ -223,6 +242,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260824-5"></script>
+  <script type="module" src="app.js?v=20260824-6"></script>
 </body>
 </html>

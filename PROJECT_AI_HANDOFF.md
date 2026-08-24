@@ -110,11 +110,12 @@
 ### 3.15 遠端命令 nonce、ACK 與歷史
 - `remote-control-web/app.js` 以 Firestore `runTransaction` 在同一交易原子遞增頂層 `nonce`、更新頂層 `desiredState` 並追加命令歷史，禁止再使用 `getDoc → nonce+1 → updateDoc`。
 - 每台 client 父文件的 `commandHistory` 最多保留最近 30 筆；歷史欄位使用 `commandNonce`、`requestedState`，不可使用精確欄名 `nonce` 或 `desiredState`，避免 AHK REST regex 誤抓巢狀欄位。
-- 只有 `lastAckNonce == commandNonce` 且 `lastAckState == requestedState` 才能顯示「已 ACK」。`SWITCH_SERVER` 還必須同時比對 ACK 的目標序號與名稱。30 秒沒有精確 ACK 顯示「未回應」；ACK nonce 已前進則顯示「被後續命令跨過」。
-- `SWITCH_SERVER` 以同一筆交易寫入頂層 `requestedServerIndex` 與 `requestedServerName`，歷史對應使用 `targetServerIndex` 與 `targetServerName`。Client 必須同時比對序號及名稱，不可只信其中一個。
+- 只有 `lastAckNonce == commandNonce` 且 `lastAckState == requestedState` 才能顯示「已 ACK」。`SWITCH_SERVER` 與 `COMPLETE_SERVER` 還必須同時比對 ACK 的目標序號與名稱。30 秒沒有精確 ACK 顯示「未回應」；ACK nonce 已前進則顯示「被後續命令跨過」。
+- `SWITCH_SERVER` 與 `COMPLETE_SERVER` 都以同一筆交易寫入頂層 `requestedServerIndex` 與 `requestedServerName`，歷史對應使用 `targetServerIndex` 與 `targetServerName`。Client 必須同時比對序號及名稱，不可只信其中一個。
 - Client 心跳以 `serverScheduleEnabled` 與 JSON 字串 `serverScheduleJson` 發佈完整設定順序，不增加心跳頻率。未啟用或少於 2 個時網頁必須顯示「無設定」。
 - 切服 callback 必須在 `Critical` 區段先回覆含 `lastAckResult`、`lastAckDetail` 及目標的 ACK，再由延後 timer 停止錄影／關閉流程。失敗回覆顯示「未執行」；`NO_SERVER_CONFIG` 必須顯示「無設定」。
-- 網頁指定的伺服器可以是當日曾完成的目標；重啟參數 `nextserver remote` 只在這條受驗證路徑略過「已完成自動跳過」，一般排程切服行為不得改變。
+- 網頁不可切入當日已完成的目標。`COMPLETE_SERVER` 會沿用 `[server_completed]` 與 04:00 循環日規則；標記目前伺服器只影響後續排程，不可強制中斷正在執行的流程。所有正常續跑與遠端指定切服都必須略過當日已完成目標；全部完成時不可回頭執行預設伺服器。
+- 啟動時不可用雲端頂層 nonce 覆寫本機 `last_nonce`。舊程序的 `__RESTART_IN_PROGRESS`／`__NEXTSERVER_RESTART` 成立後，`RC_PollCommandTick()` 必須停止抓取新命令，避免回 `BUSY` 卻消耗 nonce；`RC_StartupDefaultRun()` 只把比本機游標新的命令排入記憶體，待 `LoadServerScheduleContext()` 完成後由 `RC_EnableCommandProcessing()` 套用並 ACK。這是重啟空窗命令不遺失的核心保證，STOP／PAUSE／RUN／SWITCH_SERVER／COMPLETE_SERVER 都適用。
 - 命令歷史只從部署新版網頁後開始建立，無法回補舊版已送出的命令。
 - 關閉通知信必須顯示「停止類型」：網頁 `STOP` 為「網頁手動停止」、系統匣「離開腳本（立即）」為「程式手動停止」、收尾監測命中 LRMCAI 日誌為「程式偵測到 Log 後自動停止」。三個入口應明確傳入來源代碼，不可只靠共用旗標事後猜測。
 
@@ -152,6 +153,13 @@
 - `plugin\RapidOcr\models_zh_hq` 現在使用官方 PP-OCRv4 mobile 中文 det／rec 與 `ppocr_keys_v1.txt`，舊 PP-OCRv3 保留在 `models` 當回退。
 - 現有 RapidOcrOnnx 1.2.2 DLL 實測無法初始化 PP-OCRv5 mobile；PP-OCRv4 server 雖可載入但全螢幕單次約 38 秒，不可用於輪詢。v4 mobile 在實際 2560×1440 錄影畫面約 0.65 秒，且能正確讀出舊 v3 誤辨的「設定任務」。
 - wrapper 會略過檔名標示 v5／v6 的 ONNX，避免不相容模型使 OCR 初始化崩潰。升級到 v5／v6 必須先一併替換支援新 graph 的 OCR runtime，不可只換模型檔。
+
+### 3.20 伺服器進度、切換完成提醒與重啟空窗命令
+- Client schema 為 5，`serverProgressSchemaVersion=1`。心跳沿用既有 PATCH 發佈循環 key、今日完成清單、目前流程伺服器、切換確認中與上次切換／寄信結果；不得新增固定 Firestore 讀寫頻率。
+- 網頁總覽頂端必須醒目顯示目前流程伺服器，並列出每個排程目標的「目前流程／待執行／今日已完成」。`COMPLETE_SERVER` 是 target-aware nonce 命令，需原子寫入歷史並精確比對 ACK 目標。
+- 網頁標記完成使用既有 `[server_completed]` 與每日 04:00 循環。標記目前流程不立即停止，後續才略過；全部完成時新程序必須乾淨退出，不可執行已完成目標。
+- `nextserver` 新程序會先把切換提醒寫入 `[server_switch_notify]`。只有 `開啟LRMC.ahk` 成功送出 Ctrl+F1 並寫入 `[lrmc_runtime] run_started=1` 後才算切換完成、寄信並清除 pending；失敗／停用也要保存並在網頁顯示結果。
+- 程式啟動期間收到的新 nonce 必須排隊到伺服器排程 runtime ready，不可把它當成啟動基準吞掉。已處理的 `last_nonce` 仍先於 callback 持久化，避免動作命令重啟後重複套用。若排隊的 `COMPLETE_SERVER` 標記了剛載入的目前目標，`RefreshServerScheduleAfterStartupCommands()` 必須在主流程開始前重選下一個待執行目標或全部完成後退出；執行中收到完成命令才維持不中斷。
 
 ## 4) 伺服器排程與完成判定（高風險區）
 ### 4.1 切日規則（非常重要）

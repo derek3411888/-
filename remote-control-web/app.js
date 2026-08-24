@@ -27,7 +27,7 @@ const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const MAX_REMOTE_SERVERS = 10;
-const WEB_BUILD = "20260824-5";
+const WEB_BUILD = "20260824-6";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -41,6 +41,14 @@ const btnStop = document.getElementById("btnStop");
 const serverTargetSelect = document.getElementById("serverTargetSelect");
 const btnSwitchServer = document.getElementById("btnSwitchServer");
 const serverSwitchHint = document.getElementById("serverSwitchHint");
+const flowServerCard = document.getElementById("flowServerCard");
+const currentFlowBadge = document.getElementById("currentFlowBadge");
+const currentFlowServer = document.getElementById("currentFlowServer");
+const currentFlowStep = document.getElementById("currentFlowStep");
+const serverSwitchNotifyStatus = document.getElementById("serverSwitchNotifyStatus");
+const serverProgressCycle = document.getElementById("serverProgressCycle");
+const serverProgressList = document.getElementById("serverProgressList");
+const serverProgressNote = document.getElementById("serverProgressNote");
 const statusMsg = document.getElementById("statusMsg");
 const selectedDeviceSummary = document.getElementById("selectedDeviceSummary");
 const commandStatus = document.getElementById("commandStatus");
@@ -222,8 +230,18 @@ async function cleanupStaleClients() {
 
 function normalizeCommandState(value) {
   const state = String(value ?? "").toUpperCase().replace(/[^A-Z_]/g, "");
-  if (state === "RUN" || state === "PAUSE" || state === "STOP" || state === "SWITCH_SERVER") return state;
+  if (
+    state === "RUN" ||
+    state === "PAUSE" ||
+    state === "STOP" ||
+    state === "SWITCH_SERVER" ||
+    state === "COMPLETE_SERVER"
+  ) return state;
   return "UNKNOWN";
+}
+
+function isServerTargetCommand(state) {
+  return state === "SWITCH_SERVER" || state === "COMPLETE_SERVER";
 }
 
 function readServerSchedule(data) {
@@ -247,6 +265,50 @@ function readServerSchedule(data) {
   const currentIndex = toInteger(readField(data || {}, "currentServerIndex", 0), 0);
   const currentName = String(readField(data || {}, "currentServer", "") || "").trim();
   return { enabled, list, currentIndex, currentName };
+}
+
+function readServerProgress(data, schedule = readServerSchedule(data || {})) {
+  const supported = (
+    toInteger(readField(data || {}, "schemaVersion", 0), 0) >= 5 &&
+    toInteger(readField(data || {}, "serverProgressSchemaVersion", 0), 0) >= 1
+  );
+  const raw = supported
+    ? String(readField(data || {}, "serverCompletedCycleJson", "") || "")
+    : "";
+  let completedList = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const configured = new Set(schedule.list);
+        completedList = [...new Set(parsed
+          .map((value) => String(value ?? "").trim())
+          .filter((name) => name && configured.has(name)))];
+      }
+    } catch {
+      completedList = [];
+    }
+  }
+  const completed = new Set(completedList);
+  const cycleKey = String(readField(data || {}, "serverCycleKey", "") || "").trim();
+  const allCompleted = supported && schedule.enabled && schedule.list.length > 0 && (
+    toBoolean(readField(data || {}, "serverAllCompletedToday", false)) ||
+    completed.size >= schedule.list.length
+  );
+  return { supported, completed, completedList, cycleKey, allCompleted };
+}
+
+function formatServerCycleLabel(cycleKey) {
+  const match = String(cycleKey || "").match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!match) return "每日 04:00 重置";
+  return `${match[1]}/${match[2]}/${match[3]} 04:00 起`;
+}
+
+function serverSwitchSourceLabel(value) {
+  const source = String(value || "").toUpperCase();
+  if (source === "WEB_SERVER_SWITCH") return "網頁手動切換";
+  if (source === "AUTO_SCHEDULE") return "自動排程切換";
+  return "伺服器切換";
 }
 
 function parseServerScheduleText(value) {
@@ -428,7 +490,7 @@ function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
   const reportedAckServerName = String(readField(clientData, "lastAckServerName", "") || "").trim();
   const previousStatus = current.status;
   const ackStateMatches = ackNonce === current.commandNonce && ackState === current.requestedState;
-  const ackTargetMatches = current.requestedState !== "SWITCH_SERVER" || (
+  const ackTargetMatches = !isServerTargetCommand(current.requestedState) || (
     reportedAckServerIndex === current.targetServerIndex &&
     reportedAckServerName === current.targetServerName
   );
@@ -445,6 +507,8 @@ function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
     "CONFIG_CHANGED",
     "ALREADY_CURRENT",
     "BUSY",
+    "CONFIG_WRITE_FAILED",
+    "UNSUPPORTED_CLIENT",
     "HANDLER_ERROR",
     "NO_HANDLER",
   ]);
@@ -596,10 +660,177 @@ function startSelectedMediaSubscription(force = false) {
   );
 }
 
+function renderFlowServerStatus() {
+  const data = selectedClientData();
+  if (!data) {
+    flowServerCard.dataset.state = "idle";
+    currentFlowBadge.className = "flow-server-badge";
+    currentFlowBadge.textContent = "等待裝置";
+    currentFlowServer.textContent = "尚未取得流程資料";
+    currentFlowStep.textContent = "選擇裝置後會顯示目前步驟。";
+    serverSwitchNotifyStatus.textContent = "";
+    return;
+  }
+
+  const schedule = readServerSchedule(data);
+  const progress = readServerProgress(data, schedule);
+  const online = isClientOnline(data);
+  const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
+  const stepName = String(readField(data, "currentStep", "") || "").trim();
+  const stepDetail = String(readField(data, "currentStepDetail", "") || "").trim();
+  const currentIndex = resolvedCurrentServerIndex(schedule);
+  const currentMarkedComplete = Boolean(
+    schedule.currentName && progress.completed.has(schedule.currentName),
+  );
+
+  currentFlowBadge.className = "flow-server-badge";
+  if (!online) {
+    flowServerCard.dataset.state = "offline";
+    currentFlowBadge.classList.add("offline");
+    currentFlowBadge.textContent = "離線";
+  } else if (progress.allCompleted && schedule.currentName) {
+    flowServerCard.dataset.state = "complete";
+    currentFlowBadge.classList.add("complete");
+    currentFlowBadge.textContent = status === "PAUSE"
+      ? "已暫停／今日已完成"
+      : "執行中／今日已完成";
+  } else if (progress.allCompleted) {
+    flowServerCard.dataset.state = "complete";
+    currentFlowBadge.classList.add("complete");
+    currentFlowBadge.textContent = "今日全部完成";
+  } else {
+    flowServerCard.dataset.state = "active";
+    currentFlowBadge.classList.add("active");
+    currentFlowBadge.textContent = status === "PAUSE" ? "已暫停" : "執行中";
+  }
+
+  if (schedule.enabled && schedule.currentName) {
+    const prefix = currentIndex > 0 ? `第 ${currentIndex} / ${schedule.list.length} 個` : "目前目標";
+    currentFlowServer.textContent = `${prefix} · ${schedule.currentName}${currentMarkedComplete ? "（已標記今日完成）" : ""}`;
+  } else if (progress.allCompleted) {
+    currentFlowServer.textContent = "今日所有伺服器均已完成";
+  } else if (schedule.enabled) {
+    currentFlowServer.textContent = "正在載入伺服器目標";
+  } else {
+    currentFlowServer.textContent = "單伺服器模式";
+  }
+  currentFlowStep.textContent = stepName
+    ? `目前步驟：${stepName}${stepDetail ? `｜${stepDetail}` : ""}`
+    : "目前步驟尚未回報。";
+
+  const notifyPending = progress.supported && toBoolean(readField(data, "serverSwitchNotifyPending", false));
+  const pendingName = progress.supported
+    ? String(readField(data, "pendingServerSwitchName", "") || "").trim()
+    : "";
+  const pendingIndex = progress.supported
+    ? toInteger(readField(data, "pendingServerSwitchIndex", 0), 0)
+    : 0;
+  const lastName = progress.supported
+    ? String(readField(data, "lastServerSwitchCompletedName", "") || "").trim()
+    : "";
+  const lastIndex = progress.supported
+    ? toInteger(readField(data, "lastServerSwitchCompletedIndex", 0), 0)
+    : 0;
+  const lastTotal = progress.supported
+    ? toInteger(readField(data, "lastServerSwitchCompletedTotal", 0), 0)
+    : 0;
+  const lastAt = progress.supported
+    ? toMillis(readField(data, "lastServerSwitchCompletedAt", 0))
+    : 0;
+  const lastSource = serverSwitchSourceLabel(readField(data, "lastServerSwitchCompletedSource", ""));
+  const mailResult = String(readField(data, "lastServerSwitchMailResult", "") || "").toUpperCase();
+  const mailDetail = String(readField(data, "lastServerSwitchMailDetail", "") || "").trim();
+  if (notifyPending) {
+    serverSwitchNotifyStatus.textContent = `切換啟動確認中：${pendingIndex > 0 ? `${pendingIndex}. ` : ""}${pendingName || "目標伺服器"}；LRMCAI 開始後才寄信。`;
+  } else if (lastAt > 0 && lastName) {
+    const mailText = mailResult === "SENT"
+      ? "提醒已寄出"
+      : mailResult === "FAILED"
+        ? `提醒寄送失敗${mailDetail ? `：${mailDetail}` : ""}`
+        : mailResult === "DISABLED"
+          ? "郵件通知未啟用"
+          : (mailDetail || "提醒狀態未回報");
+    serverSwitchNotifyStatus.textContent = `上次切換完成：${lastIndex}/${lastTotal} · ${lastName}｜${lastSource}｜${fmtTs(lastAt)}｜${mailText}`;
+  } else {
+    serverSwitchNotifyStatus.textContent = "";
+  }
+}
+
+function renderServerProgress() {
+  serverProgressList.replaceChildren();
+  const data = selectedClientData();
+  if (!data) {
+    serverProgressCycle.textContent = "每日 04:00 重置";
+    serverProgressNote.textContent = "請先選擇一台電腦。";
+    return;
+  }
+
+  const schedule = readServerSchedule(data);
+  const progress = readServerProgress(data, schedule);
+  serverProgressCycle.textContent = formatServerCycleLabel(progress.cycleKey);
+  if (!schedule.enabled || schedule.list.length === 0) {
+    serverProgressNote.textContent = "無設定：請先啟用伺服器排程。";
+    return;
+  }
+
+  const currentIndex = resolvedCurrentServerIndex(schedule);
+  const online = isClientOnline(data);
+  for (let index = 1; index <= schedule.list.length; index += 1) {
+    const name = schedule.list[index - 1];
+    const completed = progress.completed.has(name);
+    const current = index === currentIndex;
+    const row = document.createElement("div");
+    row.className = "server-progress-row";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "server-progress-name";
+    nameEl.textContent = `${index}. ${name}`;
+
+    const statusEl = document.createElement("span");
+    statusEl.className = "server-progress-status";
+    if (completed) {
+      statusEl.classList.add("completed");
+      statusEl.textContent = current ? "執行中／已標記完成" : "今日已完成";
+    } else if (current) {
+      statusEl.classList.add("current");
+      statusEl.textContent = "目前流程";
+    } else {
+      statusEl.classList.add("pending");
+      statusEl.textContent = "待執行";
+    }
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "server-progress-action";
+    button.textContent = completed ? "已完成" : "標記今日完成";
+    button.disabled = completed || !progress.supported || !online || sending;
+    button.addEventListener("click", () => {
+      const currentNote = current
+        ? "\n目前正在執行的流程不會立刻被強制中斷；結束後今天不會再跑此伺服器。"
+        : "\n今天後續排程將直接略過此伺服器。";
+      if (!confirm(`確定將 ${index}. ${name} 標記為今天已完成？${currentNote}`)) return;
+      void sendCommand("COMPLETE_SERVER", { serverIndex: index, serverName: name });
+    });
+    row.append(nameEl, statusEl, button);
+    serverProgressList.appendChild(row);
+  }
+
+  if (!progress.supported) {
+    serverProgressNote.textContent = "目前執行端版本尚未支援網頁標記完成；更新 Payload 後才會開放。";
+  } else if (!online) {
+    serverProgressNote.textContent = "裝置目前離線；『今天完成』屬於即時日期命令，需等裝置在線後操作。";
+  } else if (progress.allCompleted) {
+    serverProgressNote.textContent = "今日所有伺服器均已完成，程式不會再次啟動鋤地流程；每日 04:00 自動恢復。";
+  } else {
+    serverProgressNote.textContent = "標記後會寫入執行端 config.ini，今天後續排程直接略過；每日 04:00 自動恢復。";
+  }
+}
+
 function renderServerSwitch() {
   const data = selectedClientData();
   const previousValue = serverTargetSelect.value;
   const schedule = readServerSchedule(data || {});
+  const progress = readServerProgress(data || {}, schedule);
   serverTargetSelect.replaceChildren();
 
   if (!data || !schedule.enabled || schedule.list.length < 2) {
@@ -617,6 +848,7 @@ function renderServerSwitch() {
   for (let index = 1; index <= schedule.list.length; index += 1) {
     const name = schedule.list[index - 1];
     if (index === currentIndex) continue;
+    if (progress.completed.has(name)) continue;
     const option = document.createElement("option");
     option.value = String(index);
     option.textContent = `${index}. ${name}`;
@@ -627,6 +859,17 @@ function renderServerSwitch() {
   // 所有子 option 都視為 :disabled，造成找不到目標、value 變空，之後又永久鎖住選單。
   const targets = Array.from(serverTargetSelect.options)
     .filter((option) => option.value && !option.disabled);
+  if (targets.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = progress.allCompleted ? "今日全部完成" : "沒有其他待執行伺服器";
+    serverTargetSelect.appendChild(option);
+    serverTargetSelect.selectedIndex = option.index;
+    serverSwitchHint.textContent = progress.allCompleted
+      ? "今日所有伺服器均已完成；每日 04:00 自動恢復。"
+      : "其他伺服器皆已標記今日完成，無可切換目標。";
+    return;
+  }
   const nextValue = String(nextServerIndex(schedule));
   const selected = targets.find((option) => option.value === previousValue)
     || targets.find((option) => option.value === nextValue)
@@ -739,6 +982,7 @@ function refreshMeta() {
   const d = cache.get(id);
   const media = currentMediaData() || {};
   const schedule = readServerSchedule(d);
+  const progress = readServerProgress(d, schedule);
   const scheduleText = schedule.enabled && schedule.list.length > 0
     ? schedule.list.map((name, index) => `${index + 1}. ${name}`).join(" → ")
     : "無設定";
@@ -751,6 +995,8 @@ function refreshMeta() {
     `目前步驟等級: ${readField(d, "currentStepLevel", "-")}`,
     `目前伺服器: ${readField(d, "currentServerLabel", readField(d, "currentServer", "-"))}`,
     `伺服器順序: ${scheduleText}`,
+    `今日循環: ${formatServerCycleLabel(progress.cycleKey)}`,
+    `今日已完成: ${progress.completedList.length > 0 ? progress.completedList.join("、") : "尚無"}`,
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
     `距今: ${fmtAge(readField(d, "lastHeartbeat", 0))}`,
     `最後畫面: ${fmtTs(readField(media, "latestScreenshotAt", 0))}（${fmtAge(readField(media, "latestScreenshotAt", 0))}）`,
@@ -1044,10 +1290,11 @@ function historyStatusDetail(entry, clientData) {
 }
 
 function commandHistoryLabel(entry) {
-  if (entry.requestedState !== "SWITCH_SERVER") return entry.requestedState;
   const target = entry.targetServerName || "未知伺服器";
   const prefix = entry.targetServerIndex > 0 ? `${entry.targetServerIndex}. ` : "";
-  return `切換伺服器 → ${prefix}${target}`;
+  if (entry.requestedState === "SWITCH_SERVER") return `切換伺服器 → ${prefix}${target}`;
+  if (entry.requestedState === "COMPLETE_SERVER") return `標記今日完成 → ${prefix}${target}`;
+  return entry.requestedState;
 }
 
 function renderHistory() {
@@ -1110,7 +1357,12 @@ function renderCommandStatus() {
 
   if (commandError && commandError.clientId === pcDropdown.value) {
     if (commandError.result === "NO_SERVER_CONFIG") {
-      setCommandStatus("rejected", "無設定：無法切換伺服器", commandError.message);
+      const isCompletion = commandError.state.startsWith("標記今日完成");
+      setCommandStatus(
+        "rejected",
+        isCompletion ? "無設定：無法標記完成" : "無設定：無法切換伺服器",
+        commandError.message,
+      );
       return;
     }
     if (commandError.result) {
@@ -1144,10 +1396,13 @@ function renderCommandStatus() {
 
   if (latest.status === "REJECTED") {
     const noSetting = latest.ackResult === "NO_SERVER_CONFIG";
+    const noSettingTitle = latest.requestedState === "COMPLETE_SERVER"
+      ? "無設定：無法標記完成"
+      : "無設定：無法切換伺服器";
     setCommandStatus(
       "rejected",
       noSetting
-        ? "無設定：無法切換伺服器"
+        ? noSettingTitle
         : `未執行：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
       historyStatusDetail(latest, data),
     );
@@ -1531,12 +1786,14 @@ async function saveRemoteSettings(event) {
 
 function renderSelectedClient() {
   renderDeviceSummary();
+  renderFlowServerStatus();
   refreshMeta();
   renderRecordingStatus();
   renderSnapshot();
   renderRuntimeEvents();
   renderHistory();
   renderCommandStatus();
+  renderServerProgress();
   renderServerSwitch();
   renderSettingsPage();
   setButtonsDisabled(sending);
@@ -1651,16 +1908,29 @@ async function sendCommand(state, payload = {}) {
 
   let requestedServerIndex = 0;
   let requestedServerName = "";
-  if (commandState === "SWITCH_SERVER") {
+  if (isServerTargetCommand(commandState)) {
     const schedule = readServerSchedule(selectedClientData() || {});
+    const progress = readServerProgress(selectedClientData() || {}, schedule);
     requestedServerIndex = toInteger(payload.serverIndex, 0);
     requestedServerName = String(payload.serverName || "").trim();
 
-    if (!schedule.enabled || schedule.list.length < 2) {
+    if (commandState === "COMPLETE_SERVER" && !progress.supported) {
       setCommandStatus(
         "rejected",
-        "無設定：無法切換伺服器",
-        "程式必須啟用伺服器排程並至少設定 2 個伺服器。",
+        "執行端版本尚未支援",
+        "請先更新 Payload，等裝置重新回報後再標記今日完成。",
+      );
+      return;
+    }
+
+    const minimumServers = commandState === "SWITCH_SERVER" ? 2 : 1;
+    if (!schedule.enabled || schedule.list.length < minimumServers) {
+      setCommandStatus(
+        "rejected",
+        commandState === "SWITCH_SERVER" ? "無設定：無法切換伺服器" : "無設定：無法標記完成",
+        commandState === "SWITCH_SERVER"
+          ? "程式必須啟用伺服器排程並至少設定 2 個伺服器。"
+          : "程式必須先啟用伺服器排程。",
       );
       return;
     }
@@ -1673,8 +1943,20 @@ async function sendCommand(state, payload = {}) {
       setCommandStatus("rejected", "伺服器設定已變更", "已重新載入順序，請再選擇一次。");
       return;
     }
-    if (requestedServerIndex === schedule.currentIndex && requestedServerName === schedule.currentName) {
+    if (
+      commandState === "SWITCH_SERVER" &&
+      requestedServerIndex === schedule.currentIndex &&
+      requestedServerName === schedule.currentName
+    ) {
       setCommandStatus("rejected", "不需要切換", `${requestedServerIndex}. ${requestedServerName} 就是目前伺服器。`);
+      return;
+    }
+    if (progress.completed.has(requestedServerName)) {
+      if (commandState === "COMPLETE_SERVER") {
+        setCommandStatus("acked", "今天原本就已完成", `${requestedServerIndex}. ${requestedServerName} 不會再次執行。`);
+      } else {
+        setCommandStatus("rejected", "今天已完成，禁止再次切入", `${requestedServerIndex}. ${requestedServerName} 已列入今日完成清單。`);
+      }
       return;
     }
   }
@@ -1682,7 +1964,9 @@ async function sendCommand(state, payload = {}) {
   sending = true;
   sendingState = commandState === "SWITCH_SERVER"
     ? `切換伺服器 → ${requestedServerIndex}. ${requestedServerName}`
-    : commandState;
+    : commandState === "COMPLETE_SERVER"
+      ? `標記今日完成 → ${requestedServerIndex}. ${requestedServerName}`
+      : commandState;
   commandError = null;
   renderSelectedClient();
 
@@ -1694,12 +1978,22 @@ async function sendCommand(state, payload = {}) {
       if (!current.exists()) throw new Error("選取的電腦文件不存在");
 
       const data = current.data();
-      if (commandState === "SWITCH_SERVER") {
+      if (isServerTargetCommand(commandState)) {
         const currentSchedule = readServerSchedule(data);
-        if (!currentSchedule.enabled || currentSchedule.list.length < 2) {
+        const currentProgress = readServerProgress(data, currentSchedule);
+        if (commandState === "COMPLETE_SERVER" && !currentProgress.supported) {
+          throw commandValidationError(
+            "UNSUPPORTED_CLIENT",
+            "執行端尚未回報伺服器完成協定，請先更新 Payload。",
+          );
+        }
+        const minimumServers = commandState === "SWITCH_SERVER" ? 2 : 1;
+        if (!currentSchedule.enabled || currentSchedule.list.length < minimumServers) {
           throw commandValidationError(
             "NO_SERVER_CONFIG",
-            "程式尚未啟用至少 2 個伺服器的排程。",
+            commandState === "SWITCH_SERVER"
+              ? "程式尚未啟用至少 2 個伺服器的排程。"
+              : "程式尚未啟用伺服器排程。",
           );
         }
         if (
@@ -1712,7 +2006,14 @@ async function sendCommand(state, payload = {}) {
             "裝置的伺服器順序已變更，請重新選擇。",
           );
         }
+        if (commandState === "SWITCH_SERVER" && currentProgress.completed.has(requestedServerName)) {
+          throw commandValidationError(
+            "ALREADY_COMPLETED_TODAY",
+            `${requestedServerIndex}. ${requestedServerName} 今天已完成，不會再次執行。`,
+          );
+        }
         if (
+          commandState === "SWITCH_SERVER" &&
           requestedServerIndex === currentSchedule.currentIndex &&
           requestedServerName === currentSchedule.currentName
         ) {
@@ -1785,7 +2086,9 @@ async function sendCommand(state, payload = {}) {
       clientId: id,
       state: commandState === "SWITCH_SERVER"
         ? `切換伺服器 → ${requestedServerIndex}. ${requestedServerName}`
-        : commandState,
+        : commandState === "COMPLETE_SERVER"
+          ? `標記今日完成 → ${requestedServerIndex}. ${requestedServerName}`
+          : commandState,
       result: e?.commandResult || "",
       message: e?.message || String(e),
     };

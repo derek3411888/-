@@ -1,9 +1,9 @@
 {
-    "version":  "4.39",
+    "version":  "4.40",
     "payload_url":  "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip",
-    "payload_sha256":  "D657DAF89F5EBA8A86F6378A8A62C92A1E8B8377A1C50BFDEB8BBB94398893F7",
+    "payload_sha256":  "67ADE46B232995FC22851943A306ABE369FB97003FB8A391A7AB5F8F8A3BBC8D",
     
-    "launcher_version":  "4.50",
+    "launcher_version":  "4.51",
     "launcher_url":  "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe",
-    "launcher_sha256":  "1B265E03BB4FD863920BD5B0E46A3417736314B23B6FFAD28CBA924612265505"
+    "launcher_sha256":  "21831B0CC61E9401D2D2B76176CF40631E29FFE1AE5538B11B1217D139586773"
 }

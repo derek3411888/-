@@ -25,12 +25,15 @@ global RC_RECENT_EVENTS := []
 global RC_RECENT_EVENT_LIMIT := 50
 global RC_LAST_EVENT_AT := 0
 global RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT := true
+global RC_COMMAND_PROCESSING_READY := false
+global RC_STARTUP_PENDING_COMMAND := ""
 
 RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") {
     global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME, RC_DEVICE_ALIAS
     global RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
     global RC_ON_STATE_CHANGED, RC_ON_SETTINGS_CHANGED, RC_REMOTE_DESIRED_STATE, RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT
     global RC_LAST_SETTINGS_SEEN_REVISION, RC_LAST_SETTINGS_APPLIED_REVISION
+    global RC_COMMAND_PROCESSING_READY, RC_STARTUP_PENDING_COMMAND
 
     RC_EnsureRemoteControlDefaults(cfgPath)
     RC_CFG_PATH := cfgPath
@@ -74,6 +77,8 @@ RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") 
     }
 
     RC_REMOTE_DESIRED_STATE := "RUN"
+    RC_COMMAND_PROCESSING_READY := false
+    RC_STARTUP_PENDING_COMMAND := ""
     RC_LAST_NONCE := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "last_nonce", "0"), 0, 0, 2147483647)
     RC_LAST_SETTINGS_SEEN_REVISION := RC_ToIntRange(
         RC_IniReadSafe(cfgPath, "remote_control", "last_settings_seen_revision", "0"), 0, 0, 2147483647)
@@ -89,22 +94,25 @@ RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") 
 }
 
 RC_StartupDefaultRun() {
-    global RC_LAST_NONCE, RC_REMOTE_DESIRED_STATE, RC_CFG_PATH
+    global RC_LAST_NONCE, RC_REMOTE_DESIRED_STATE, RC_CFG_PATH, RC_STARTUP_PENDING_COMMAND
 
-    ; 每次啟動都先回到 RUN，且把現有文件 nonce 視為已讀，避免重放舊命令。
+    ; 每次啟動先回到 RUN。雲端若有比本機游標新的命令，必須保留到主程式
+    ; 載入伺服器排程後再處理；不可直接把 nonce 視為已讀，否則重啟空窗下發的
+    ; SWITCH_SERVER 會被吞掉且沒有 ACK。
     RC_REMOTE_DESIRED_STATE := "RUN"
     RC_SetPausedFlag(false)
 
     resp := RC_FirestoreGetClientDoc()
     if (resp != "") {
         RC_ProcessRemoteSettings(resp)
-        docNonce := RC_JsonGetInteger(resp, "nonce", 0)
-        if (docNonce > RC_LAST_NONCE)
-            RC_LAST_NONCE := docNonce
+        RC_QueuePendingCommandFromResponse(resp, "startup")
     }
 
     try IniWrite(RC_LAST_NONCE, RC_CFG_PATH, "remote_control", "last_nonce")
-    RC_Log("Startup default RUN. command cursor=" RC_LAST_NONCE)
+    pendingText := IsObject(RC_STARTUP_PENDING_COMMAND)
+        ? " pending=" RC_STARTUP_PENDING_COMMAND.state "#" RC_STARTUP_PENDING_COMMAND.nonce
+        : ""
+    RC_Log("Startup default RUN. processed command cursor=" RC_LAST_NONCE pendingText)
 }
 
 RC_Start() {
@@ -277,8 +285,14 @@ RC_CleanupLegacyMediaFields() {
 }
 
 RC_PollCommandTick() {
-    global RC_ENABLED, RC_LAST_NONCE, RC_LAST_ERROR_MSG
+    global RC_ENABLED, RC_LAST_NONCE, RC_LAST_ERROR_MSG, RC_COMMAND_PROCESSING_READY
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
     if !RC_ENABLED
+        return
+
+    ; 舊程序已進入重啟／切服關閉階段時，不可再把新命令抓下來回 BUSY 並推進 nonce。
+    ; 保留雲端命令給接手的新程序，由啟動排隊機制在排程載入後執行。
+    if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
         return
 
     resp := RC_FirestoreGetClientDoc()
@@ -288,6 +302,11 @@ RC_PollCommandTick() {
     ; 遠端設定是持久 desired revision，不依賴一次性 command nonce。
     ; 因此裝置離線時儲存的設定，下一次啟動仍會套用。
     RC_ProcessRemoteSettings(resp)
+
+    if !RC_COMMAND_PROCESSING_READY {
+        RC_QueuePendingCommandFromResponse(resp, "startup-wait")
+        return
+    }
 
     desired := RC_JsonGetString(resp, "desiredState")
     if (desired = "")
@@ -299,11 +318,51 @@ RC_PollCommandTick() {
 
     requestedServerIndex := RC_JsonGetInteger(resp, "requestedServerIndex", 0)
     requestedServerName := RC_JsonGetString(resp, "requestedServerName")
-    RC_LAST_NONCE := nonce
     RC_ApplyRemoteState(desired, nonce, {
         serverIndex: requestedServerIndex,
         serverName: requestedServerName
     })
+}
+
+RC_QueuePendingCommandFromResponse(resp, source := "startup") {
+    global RC_LAST_NONCE, RC_STARTUP_PENDING_COMMAND
+
+    nonce := RC_JsonGetInteger(resp, "nonce", 0)
+    if (nonce <= RC_LAST_NONCE)
+        return false
+    if (IsObject(RC_STARTUP_PENDING_COMMAND) && RC_STARTUP_PENDING_COMMAND.nonce >= nonce)
+        return true
+
+    desired := RC_JsonGetString(resp, "desiredState")
+    if (desired = "")
+        desired := "RUN"
+    RC_STARTUP_PENDING_COMMAND := {
+        state: desired,
+        nonce: nonce,
+        serverIndex: RC_JsonGetInteger(resp, "requestedServerIndex", 0),
+        serverName: RC_JsonGetString(resp, "requestedServerName")
+    }
+    RC_Log("Queued command until runtime ready: source=" source " state=" desired " nonce=" nonce)
+    return true
+}
+
+RC_EnableCommandProcessing() {
+    global RC_COMMAND_PROCESSING_READY, RC_STARTUP_PENDING_COMMAND
+
+    RC_COMMAND_PROCESSING_READY := true
+    if IsObject(RC_STARTUP_PENDING_COMMAND) {
+        pending := RC_STARTUP_PENDING_COMMAND
+        RC_STARTUP_PENDING_COMMAND := ""
+        RC_Log("Applying queued startup command: state=" pending.state " nonce=" pending.nonce)
+        RC_ApplyRemoteState(pending.state, pending.nonce, {
+            serverIndex: pending.serverIndex,
+            serverName: pending.serverName
+        })
+        return
+    }
+
+    ; 啟用瞬間再讀一次，補上排程載入期間剛送到雲端的命令。
+    RC_PollCommandTick()
 }
 
 RC_ProcessRemoteSettings(resp) {
@@ -373,26 +432,25 @@ RC_ProcessRemoteSettings(resp) {
 }
 
 RC_ApplyRemoteState(desired, nonce, command := "") {
-    global RC_REMOTE_DESIRED_STATE, RC_ON_STATE_CHANGED, RC_CFG_PATH
+    global RC_REMOTE_DESIRED_STATE, RC_ON_STATE_CHANGED, RC_CFG_PATH, RC_LAST_NONCE
     d := StrUpper(Trim(desired, " `t`r`n"))
-    if (d != "RUN" && d != "PAUSE" && d != "STOP" && d != "SWITCH_SERVER")
+    if (d != "RUN" && d != "PAUSE" && d != "STOP" && d != "SWITCH_SERVER" && d != "COMPLETE_SERVER")
         d := "RUN"
 
-    RC_REMOTE_DESIRED_STATE := d
-
     ; 命令游標先持久化，避免切服重啟後重新套用同一筆動作命令。
+    RC_LAST_NONCE := nonce
     try IniWrite(nonce, RC_CFG_PATH, "remote_control", "last_nonce")
 
-    if (d = "SWITCH_SERVER") {
-        ; 切服是一次性動作，不把 client 執行狀態改成 SWITCH_SERVER。
-        ; callback 只負責驗證、落盤並排程延後切服；ACK 必須在真正關閉前送出。
+    if (d = "SWITCH_SERVER" || d = "COMPLETE_SERVER") {
+        ; 切服與標記今日完成都是一次性動作，不把 client 執行狀態改成動作名稱。
+        ; callback 負責驗證與持久化；切服 ACK 必須在真正關閉前送出。
         resultCode := "HANDLER_ERROR"
-        resultDetail := "裝置未完成切服命令處理"
+        resultDetail := "裝置未完成伺服器命令處理"
         Critical "On"
         try {
             if (RC_ON_STATE_CHANGED = "") {
                 resultCode := "NO_HANDLER"
-                resultDetail := "裝置未註冊切服處理器"
+                resultDetail := "裝置未註冊伺服器命令處理器"
             } else {
                 try result := %RC_ON_STATE_CHANGED%(d, command)
                 catch as e
@@ -412,10 +470,11 @@ RC_ApplyRemoteState(desired, nonce, command := "") {
         } finally {
             Critical "Off"
         }
-        RC_Log("Remote switch command handled: nonce=" nonce " result=" resultCode " detail=" resultDetail)
+        RC_Log("Remote server action handled: state=" d " nonce=" nonce " result=" resultCode " detail=" resultDetail)
         return
     }
 
+    RC_REMOTE_DESIRED_STATE := d
     RC_SetPausedFlag(d = "PAUSE")
 
     ; 命令套用後立即同步狀態，避免要等下一次心跳才反映在網頁。
@@ -556,6 +615,42 @@ RC_ReadEffectiveRemoteSettings() {
     }
 }
 
+RC_ReadServerProgress() {
+    global SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST
+
+    completed := []
+    cycleKey := ""
+    try completed := GetCompletedServerNamesInCurrentCycle()
+    try cycleKey := GetCurrentServerCycleKey()
+    total := SERVER_SCHEDULE_ENABLED ? SERVER_SCHEDULE_LIST.Length : 0
+    return {
+        cycleKey: cycleKey,
+        completed: completed,
+        completedJson: RC_BuildStringArrayJson(completed),
+        completedCount: completed.Length,
+        allCompleted: (total > 0 && completed.Length >= total) ? true : false
+    }
+}
+
+RC_ReadServerSwitchNotifyStatus() {
+    global RC_CFG_PATH
+    section := "server_switch_notify"
+    return {
+        pending: RC_IniReadSafe(RC_CFG_PATH, section, "pending", "0") = "1",
+        pendingTarget: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "pending_target", ""), " `t`r`n"),
+        pendingIndex: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section, "pending_index", "0"), 0, 0, 100),
+        pendingSource: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "pending_source", ""), " `t`r`n"),
+        lastTarget: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "last_completed_target", ""), " `t`r`n"),
+        lastIndex: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section, "last_completed_index", "0"), 0, 0, 100),
+        lastTotal: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section, "last_completed_total", "0"), 0, 0, 100),
+        lastSource: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "last_completed_source", ""), " `t`r`n"),
+        lastCompletedAt: RC_ToIntRange(
+            RC_IniReadSafe(RC_CFG_PATH, section, "last_completed_at_unix_ms", "0"), 0, 0, 9999999999999),
+        lastMailResult: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "last_mail_result", ""), " `t`r`n"),
+        lastMailDetail: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "last_mail_detail", ""), " `t`r`n")
+    }
+}
+
 RC_PatchClientState(state, isShutdown) {
     global RC_LAST_HEARTBEAT_OK, RC_LAST_ERROR_MSG
     global RC_LAST_EVENT_AT, RC_RECENT_EVENTS
@@ -578,13 +673,15 @@ RC_PatchClientState(state, isShutdown) {
     recentEventsJson := RC_BuildRecentEventsJson()
     recording := RC_ReadRecordingStatus()
     effectiveSettings := RC_ReadEffectiveRemoteSettings()
+    serverProgress := RC_ReadServerProgress()
+    switchNotify := RC_ReadServerSwitchNotifyStatus()
     recordingActive := __SCREEN_RECORDING_ACTIVE ? true : false
     recordingDetail := SubStr(recording.detail, 1, 1000)
 
     body := "{"
     body .= '"fields":{'
     body .= '"docKind":{"stringValue":"client"},'
-    body .= '"schemaVersion":{"integerValue":"4"},'
+    body .= '"schemaVersion":{"integerValue":"5"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
@@ -598,6 +695,22 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"currentServerTotal":{"integerValue":"' serverTotal '"},'
     body .= '"serverScheduleEnabled":{"booleanValue":' (SERVER_SCHEDULE_ENABLED ? "true" : "false") '},'
     body .= '"serverScheduleJson":{"stringValue":"' RC_JsonEsc(serverScheduleJson) '"},'
+    body .= '"serverProgressSchemaVersion":{"integerValue":"1"},'
+    body .= '"serverCycleKey":{"stringValue":"' RC_JsonEsc(serverProgress.cycleKey) '"},'
+    body .= '"serverCompletedCycleJson":{"stringValue":"' RC_JsonEsc(serverProgress.completedJson) '"},'
+    body .= '"serverCompletedCount":{"integerValue":"' serverProgress.completedCount '"},'
+    body .= '"serverAllCompletedToday":{"booleanValue":' (serverProgress.allCompleted ? "true" : "false") '},'
+    body .= '"serverSwitchNotifyPending":{"booleanValue":' (switchNotify.pending ? "true" : "false") '},'
+    body .= '"pendingServerSwitchName":{"stringValue":"' RC_JsonEsc(switchNotify.pendingTarget) '"},'
+    body .= '"pendingServerSwitchIndex":{"integerValue":"' switchNotify.pendingIndex '"},'
+    body .= '"pendingServerSwitchSource":{"stringValue":"' RC_JsonEsc(switchNotify.pendingSource) '"},'
+    body .= '"lastServerSwitchCompletedName":{"stringValue":"' RC_JsonEsc(switchNotify.lastTarget) '"},'
+    body .= '"lastServerSwitchCompletedIndex":{"integerValue":"' switchNotify.lastIndex '"},'
+    body .= '"lastServerSwitchCompletedTotal":{"integerValue":"' switchNotify.lastTotal '"},'
+    body .= '"lastServerSwitchCompletedSource":{"stringValue":"' RC_JsonEsc(switchNotify.lastSource) '"},'
+    body .= '"lastServerSwitchCompletedAt":{"integerValue":"' switchNotify.lastCompletedAt '"},'
+    body .= '"lastServerSwitchMailResult":{"stringValue":"' RC_JsonEsc(switchNotify.lastMailResult) '"},'
+    body .= '"lastServerSwitchMailDetail":{"stringValue":"' RC_JsonEsc(switchNotify.lastMailDetail) '"},'
     body .= '"remoteSettingsSchemaVersion":{"integerValue":"1"},'
     body .= '"effectiveSettingsRevision":{"integerValue":"' effectiveSettings.revision '"},'
     body .= '"effectiveServerScheduleEnabled":{"booleanValue":' (effectiveSettings.serverScheduleEnabled ? "true" : "false") '},'
@@ -652,6 +765,22 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=currentServerTotal"
     url .= "&updateMask.fieldPaths=serverScheduleEnabled"
     url .= "&updateMask.fieldPaths=serverScheduleJson"
+    url .= "&updateMask.fieldPaths=serverProgressSchemaVersion"
+    url .= "&updateMask.fieldPaths=serverCycleKey"
+    url .= "&updateMask.fieldPaths=serverCompletedCycleJson"
+    url .= "&updateMask.fieldPaths=serverCompletedCount"
+    url .= "&updateMask.fieldPaths=serverAllCompletedToday"
+    url .= "&updateMask.fieldPaths=serverSwitchNotifyPending"
+    url .= "&updateMask.fieldPaths=pendingServerSwitchName"
+    url .= "&updateMask.fieldPaths=pendingServerSwitchIndex"
+    url .= "&updateMask.fieldPaths=pendingServerSwitchSource"
+    url .= "&updateMask.fieldPaths=lastServerSwitchCompletedName"
+    url .= "&updateMask.fieldPaths=lastServerSwitchCompletedIndex"
+    url .= "&updateMask.fieldPaths=lastServerSwitchCompletedTotal"
+    url .= "&updateMask.fieldPaths=lastServerSwitchCompletedSource"
+    url .= "&updateMask.fieldPaths=lastServerSwitchCompletedAt"
+    url .= "&updateMask.fieldPaths=lastServerSwitchMailResult"
+    url .= "&updateMask.fieldPaths=lastServerSwitchMailDetail"
     url .= "&updateMask.fieldPaths=remoteSettingsSchemaVersion"
     url .= "&updateMask.fieldPaths=effectiveSettingsRevision"
     url .= "&updateMask.fieldPaths=effectiveServerScheduleEnabled"
