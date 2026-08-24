@@ -95,13 +95,14 @@ global LAST_RESTART_STAGE := ""
 global LAST_RESTART_RECOVERY := ""
 global LAST_RESTART_PROCESS_SNAPSHOT := ""
 global LAST_RESTART_LRMC_STATE := ""
+global MAX_RESTART_COUNT := 10
 global PROCESS_DETECT_RETRY_COUNT := 6
 global PROCESS_DETECT_RETRY_DELAY_MS := 800
 global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.49"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.50"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -115,6 +116,10 @@ global REMOTE_CONTROL_ACTIVE := false
 global REMOTE_PAUSE_WAITING := false
 global EXITING_FROM_TRAY := false
 global REMOTE_STOP_IN_PROGRESS := false
+global REMOTE_SERVER_SWITCH_PENDING := false
+global REMOTE_SERVER_SWITCH_TARGET_INDEX := 0
+global REMOTE_SERVER_SWITCH_TARGET_NAME := ""
+global REMOTE_SETTINGS_RUNTIME_READY := false
 global __REMOTE_WAS_PAUSED := false
 global __REMOTE_PAUSE_HOTKEY_BUSY := false
 global __REMOTE_RESUME_SYNC_BUSY := false
@@ -999,8 +1004,11 @@ IsCleanFinalScriptExit(exitReason) {
     return (reason = "exit" || reason = "menu" || reason = "close")
 }
 
-OnRemoteControlStateChanged(state) {
+OnRemoteControlStateChanged(state, command := "") {
     global REMOTE_STOP_IN_PROGRESS, __REMOTE_WAS_PAUSED
+    if (state = "SWITCH_SERVER")
+        return PrepareRemoteServerSwitch(command)
+
     if (state = "STOP") {
         if REMOTE_STOP_IN_PROGRESS
             return
@@ -1009,7 +1017,7 @@ OnRemoteControlStateChanged(state) {
         WriteLog("遠端控制：收到 STOP，開始完整關閉流程", "WARN")
         ShowTip("⏹ 遠端關閉中：腳本/遊戲/OKWW/LRMCAI", 1800)
         ; 直接執行關閉流程，避免在收尾等待中先 ExitApp 導致計時器回呼來不及執行。
-        ShutdownGameLrmcOkww(false)
+        ShutdownGameLrmcOkww(false, "WEB_MANUAL")
         return
     }
 
@@ -1771,6 +1779,268 @@ WriteLog(msg, level := "INFO") {
     }
 }
 
+OnRemoteControlSettingsChanged(settings) {
+    global CFG_FILE, CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX
+    global MAIL_NOTIFY_ENABLED, MAX_RESTART_COUNT, REMOTE_SETTINGS_RUNTIME_READY
+    global RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC
+    global RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT
+
+    if !IsObject(settings)
+        return { code: "INVALID_SETTINGS", detail: "遠端設定資料格式錯誤", applied: false }
+
+    try revision := Integer(settings.revision)
+    catch
+        return { code: "INVALID_SETTINGS", detail: "遠端設定版本不是有效整數", applied: false }
+    if (revision <= 0)
+        return { code: "INVALID_SETTINGS", detail: "遠端設定版本必須大於 0", applied: false }
+
+    serverEnabled := settings.serverScheduleEnabled ? 1 : 0
+    rawServerList := Trim(settings.serverScheduleList, " `t`r`n")
+    if (StrLen(rawServerList) > 1200)
+        return { code: "INVALID_SERVER_LIST", detail: "伺服器清單過長", applied: false }
+    serverItems := ParseServerScheduleList(rawServerList)
+    if (serverEnabled && serverItems.Length = 0)
+        return { code: "INVALID_SERVER_LIST", detail: "啟用排程時至少要設定 1 個伺服器", applied: false }
+    if (serverItems.Length > 10)
+        return { code: "INVALID_SERVER_LIST", detail: "伺服器清單最多 10 個項目", applied: false }
+    for _, serverName in serverItems {
+        if (StrLen(serverName) > 80)
+            return { code: "INVALID_SERVER_LIST", detail: "單一伺服器名稱不可超過 80 個字元", applied: false }
+    }
+    canonicalServerList := RemoteSettingsJoinServerList(serverItems)
+
+    mailEnabled := settings.mailNotifyEnabled ? 1 : 0
+    if mailEnabled {
+        mailReady := RemoteSettingsMailConfigReady()
+        if !mailReady.ok
+            return { code: "MAIL_NOT_CONFIGURED", detail: mailReady.detail, applied: false }
+    }
+
+    diagnosticsEnabled := settings.runtimeDiagnosticsEnabled ? 1 : 0
+    try diagnosticsInterval := Integer(settings.runtimeDiagnosticsIntervalSec)
+    catch
+        return { code: "INVALID_DIAGNOSTICS", detail: "快照間隔不是有效整數", applied: false }
+    try diagnosticsKeep := Integer(settings.runtimeDiagnosticsErrorKeepCount)
+    catch
+        return { code: "INVALID_DIAGNOSTICS", detail: "錯誤圖保留數量不是有效整數", applied: false }
+    if (diagnosticsInterval < 60 || diagnosticsInterval > 600)
+        return { code: "INVALID_DIAGNOSTICS", detail: "快照間隔必須介於 60～600 秒", applied: false }
+    if (diagnosticsKeep < 5 || diagnosticsKeep > 200)
+        return { code: "INVALID_DIAGNOSTICS", detail: "錯誤圖保留數量必須介於 5～200", applied: false }
+
+    try maxRestartCount := Integer(settings.maxRestartCount)
+    catch
+        return { code: "INVALID_RESTART_LIMIT", detail: "最大重啟次數不是有效整數", applied: false }
+    if (maxRestartCount < 1 || maxRestartCount > 50)
+        return { code: "INVALID_RESTART_LIMIT", detail: "最大重啟次數必須介於 1～50", applied: false }
+
+    oldServerEnabled := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0)
+    oldServerList := RemoteSettingsJoinServerList(ParseServerScheduleList(
+        IniReadSafe(CFG_FILE, "server_schedule", "list", "")))
+    serverChanged := (oldServerEnabled != serverEnabled || oldServerList != canonicalServerList)
+
+    nextIndex := 1
+    if (serverItems.Length > 0) {
+        matchedCurrent := false
+        if (CURRENT_SERVER_TARGET != "") {
+            for idx, item in serverItems {
+                if (item = CURRENT_SERVER_TARGET) {
+                    nextIndex := idx
+                    matchedCurrent := true
+                    break
+                }
+            }
+        }
+        if !matchedCurrent && SERVER_SCHEDULE_INDEX >= 1 && SERVER_SCHEDULE_INDEX <= serverItems.Length
+            nextIndex := SERVER_SCHEDULE_INDEX
+    }
+
+    values := {
+        revision: revision,
+        serverScheduleEnabled: serverEnabled,
+        serverScheduleList: canonicalServerList,
+        serverScheduleIndex: nextIndex,
+        mailNotifyEnabled: mailEnabled,
+        runtimeDiagnosticsEnabled: diagnosticsEnabled,
+        runtimeDiagnosticsIntervalSec: diagnosticsInterval,
+        runtimeDiagnosticsErrorKeepCount: diagnosticsKeep,
+        maxRestartCount: maxRestartCount
+    }
+    commit := RemoteSettingsCommitConfig(values)
+    if !commit.ok
+        return { code: "CONFIG_WRITE_FAILED", detail: commit.detail, applied: false }
+
+    MAIL_NOTIFY_ENABLED := mailEnabled
+    MAX_RESTART_COUNT := maxRestartCount
+    RUNTIME_DIAGNOSTICS_ENABLED := diagnosticsEnabled
+    RUNTIME_DIAGNOSTICS_INTERVAL_SEC := diagnosticsInterval
+    RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT := diagnosticsKeep
+    if REMOTE_SETTINGS_RUNTIME_READY {
+        LoadRuntimeDiagnosticsSettings()
+        StartRuntimeDiagnostics()
+    }
+
+    if (serverChanged && REMOTE_SETTINGS_RUNTIME_READY) {
+        runtimeIndex := 0
+        if (CURRENT_SERVER_TARGET != "") {
+            for idx, item in serverItems {
+                if (item = CURRENT_SERVER_TARGET) {
+                    runtimeIndex := idx
+                    break
+                }
+            }
+        }
+        SERVER_SCHEDULE_ENABLED := serverEnabled ? true : false
+        SERVER_SCHEDULE_LIST := serverItems
+        SERVER_SCHEDULE_INDEX := runtimeIndex
+        return {
+            code: "SAVED_NEXT_RUN",
+            detail: "設定已儲存；目前伺服器不變，下一個伺服器決策開始採用新清單與順序",
+            applied: true
+        }
+    }
+    return { code: "APPLIED", detail: "遠端設定已驗證並套用", applied: true }
+}
+
+RemoteSettingsJoinServerList(items) {
+    result := ""
+    if !IsObject(items)
+        return result
+    for idx, item in items
+        result .= (idx > 1 ? " | " : "") Trim(item, " `t`r`n")
+    return result
+}
+
+RemoteSettingsMailConfigReady() {
+    global CFG_FILE, MAIL_SECTION
+    pass := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_pass", ""), " `t`r`n")
+    if (pass = "")
+        pass := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_password", ""), " `t`r`n")
+    required := [
+        ["smtp_host", IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_host", "")],
+        ["smtp_user", IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_user", "")],
+        ["smtp_pass", pass],
+        ["from", IniReadSafe(CFG_FILE, MAIL_SECTION, "from", "")],
+        ["to", IniReadSafe(CFG_FILE, MAIL_SECTION, "to", "")]
+    ]
+    for item in required {
+        if (Trim(item[2], " `t`r`n") = "")
+            return { ok: false, detail: "本機尚未完成郵件欄位 " item[1] "，無法從網頁啟用寄信" }
+    }
+    port := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_port", ""), " `t`r`n")
+    if !(port ~= "^\d+$")
+        return { ok: false, detail: "本機 smtp_port 尚未正確設定，無法從網頁啟用寄信" }
+    return { ok: true, detail: "" }
+}
+
+RemoteSettingsCommitConfig(values) {
+    global CFG_FILE
+    if !FileExist(CFG_FILE)
+        return { ok: false, detail: "找不到本機 config.ini" }
+
+    tempPath := CFG_FILE ".remote_settings_" DllCall("GetCurrentProcessId") "_" A_TickCount ".tmp"
+    backupPath := CFG_FILE ".remote_settings.bak"
+    replacementAttempted := false
+    try {
+        FileCopy(CFG_FILE, tempPath, 1)
+        IniWrite(values.serverScheduleEnabled, tempPath, "server_schedule", "enabled")
+        IniWrite(values.serverScheduleList, tempPath, "server_schedule", "list")
+        IniWrite(values.serverScheduleIndex, tempPath, "server_schedule", "current_index")
+        IniWrite(values.mailNotifyEnabled, tempPath, "mail_notify", "send_enabled")
+        IniWrite(values.runtimeDiagnosticsEnabled, tempPath, "runtime_diagnostics", "enabled")
+        IniWrite(values.runtimeDiagnosticsIntervalSec, tempPath, "runtime_diagnostics", "snapshot_interval_sec")
+        IniWrite(values.runtimeDiagnosticsErrorKeepCount, tempPath, "runtime_diagnostics", "error_keep_count")
+        IniWrite(values.maxRestartCount, tempPath, "restart_tracking", "max_restart_count")
+        IniWrite(values.revision, tempPath, "remote_control", "applied_settings_revision")
+
+        verifyList := RemoteSettingsJoinServerList(ParseServerScheduleList(
+            IniReadSafe(tempPath, "server_schedule", "list", "")))
+        if (verifyList != values.serverScheduleList)
+            throw Error("暫存設定的伺服器清單驗證失敗")
+        if (ToIntRange(IniReadSafe(tempPath, "restart_tracking", "max_restart_count", "0"), 0, 0, 50)
+            != values.maxRestartCount)
+            throw Error("暫存設定的最大重啟次數驗證失敗")
+
+        FileCopy(CFG_FILE, backupPath, 1)
+        replacementAttempted := true
+        FileMove(tempPath, CFG_FILE, 1)
+
+        finalRevision := ToIntRange(
+            IniReadSafe(CFG_FILE, "remote_control", "applied_settings_revision", "0"), 0, 0, 2147483647)
+        if (finalRevision != values.revision)
+            throw Error("設定檔替換後版本驗證失敗")
+        try FileDelete(backupPath)
+        return { ok: true, detail: "" }
+    } catch as e {
+        if replacementAttempted && FileExist(backupPath) {
+            try FileCopy(backupPath, CFG_FILE, 1)
+        }
+        try FileDelete(tempPath)
+        try FileDelete(backupPath)
+        return { ok: false, detail: "寫入本機設定失敗：" e.Message }
+    }
+}
+
+PrepareRemoteServerSwitch(command) {
+    global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET
+    global REMOTE_SERVER_SWITCH_PENDING, REMOTE_SERVER_SWITCH_TARGET_INDEX, REMOTE_SERVER_SWITCH_TARGET_NAME
+    global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY, __RESTART_IN_PROGRESS
+
+    if (REMOTE_SERVER_SWITCH_PENDING || REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY || __RESTART_IN_PROGRESS)
+        return { code: "BUSY", detail: "程式正在停止、重啟或已有切服命令，請稍後再試" }
+
+    if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length <= 1)
+        return { code: "NO_SERVER_CONFIG", detail: "無設定：程式至少要啟用並設定 2 個伺服器" }
+
+    if !IsObject(command)
+        return { code: "INVALID_TARGET", detail: "切服命令缺少目標資料，請重新整理網頁" }
+
+    targetIndex := 0
+    if command.HasOwnProp("serverIndex")
+        try targetIndex := Integer(command.serverIndex)
+    targetName := command.HasOwnProp("serverName") ? Trim(command.serverName, " `t`r`n") : ""
+
+    if (targetIndex < 1 || targetIndex > SERVER_SCHEDULE_LIST.Length)
+        return { code: "INVALID_TARGET", detail: "指定順序已超出目前伺服器清單，請重新整理網頁" }
+
+    expectedName := SERVER_SCHEDULE_LIST[targetIndex]
+    if (targetName = "" || targetName != expectedName)
+        return { code: "CONFIG_CHANGED", detail: "伺服器設定已變更，請等待網頁更新後重新選擇" }
+
+    if (targetIndex = SERVER_SCHEDULE_INDEX && expectedName = CURRENT_SERVER_TARGET)
+        return { code: "ALREADY_CURRENT", detail: "目前已在第 " targetIndex " 個伺服器「" expectedName "」" }
+
+    REMOTE_SERVER_SWITCH_PENDING := true
+    REMOTE_SERVER_SWITCH_TARGET_INDEX := targetIndex
+    REMOTE_SERVER_SWITCH_TARGET_NAME := expectedName
+    IniWrite targetIndex, CFG_FILE, "server_schedule", "current_index"
+    WriteLog("遠端控制：已接受指定切服，第 " targetIndex "/" SERVER_SCHEDULE_LIST.Length " 個 -> " expectedName, "WARN")
+    WriteStep("遠端切服", "已排定第 " targetIndex " 個 -> " expectedName, "WARN")
+    SetTimer(RemoteServerSwitchCommitTick, -300)
+    return {
+        code: "SWITCH_SCHEDULED",
+        detail: "已排定切換至第 " targetIndex " 個伺服器「" expectedName "」"
+    }
+}
+
+RemoteServerSwitchCommitTick() {
+    global REMOTE_SERVER_SWITCH_PENDING, REMOTE_SERVER_SWITCH_TARGET_INDEX, REMOTE_SERVER_SWITCH_TARGET_NAME
+    global REMOTE_STOP_IN_PROGRESS, REMOTE_PAUSE_WAITING, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+
+    if !REMOTE_SERVER_SWITCH_PENDING
+        return
+
+    REMOTE_SERVER_SWITCH_PENDING := false
+    REMOTE_STOP_IN_PROGRESS := true
+    REMOTE_PAUSE_WAITING := false
+    __RESTART_IN_PROGRESS := true
+    __NEXTSERVER_RESTART := true
+    try RC_SetPausedFlag(false)
+    WriteLog("遠端控制：開始切換至第 " REMOTE_SERVER_SWITCH_TARGET_INDEX " 個伺服器「" REMOTE_SERVER_SWITCH_TARGET_NAME "」", "WARN")
+    ShowTip("⏭️ 遠端切換伺服器：" REMOTE_SERVER_SWITCH_TARGET_NAME, 2200)
+    ShutdownGameLrmcOkww(true, "WEB_SERVER_SWITCH", "remote")
+}
+
 WriteStep(stepName, detail := "", level := "INFO") {
     global STEP_SEQ, CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL, REMOTE_CONTROL_ACTIVE
     STEP_SEQ += 1
@@ -1840,7 +2110,7 @@ LoadMailNotifyEnabled()
 LoadScreenRecordingEnabled()
 LoadRuntimeDiagnosticsSettings()
 WriteLog("OCR 模型設定=" RapidOcr.DescribeDefaultModels())
-REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged")
+REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged", "OnRemoteControlSettingsChanged")
 if REMOTE_CONTROL_ACTIVE
     WriteLog("遠端控制：已啟用")
 else
@@ -1860,13 +2130,15 @@ WriteStep("清場", "關閉既有目標進程")
 CheckAndCloseExistingProcesses()
 
 ; 讀取重啟計數器（避免無限循環）
-global MAX_RESTART_COUNT := 10
+MAX_RESTART_COUNT := ToIntRange(
+    IniReadSafe(CFG_FILE, "restart_tracking", "max_restart_count", "10"), 10, 1, 50)
 global restartCount := Integer(IniReadSafe(CFG_FILE, "restart_tracking", "auto_restart_count", "0"))
 WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; 檢查是否為重啟模式（遊戲更新後需要重新啟動OKWW）
 isRestart := false
 isNextServerCycle := false
+isRemoteServerSwitchCycle := false
 global CRASH_RESTART_MODE := false
 if A_Args.Length > 0 && A_Args[1] = "restart" {
     isRestart := true
@@ -1891,10 +2163,14 @@ if A_Args.Length > 1 && A_Args[1] = "restart" && (A_Args[2] = "resume" || A_Args
     WriteLog("檢測到 LRMCAI 接續模式，LRMCAI 將略過 OCR『副本』並使用快捷鍵啟動；參數=" A_Args[2])
 }
 
-isNextServerCycle := false
 if A_Args.Length > 0 && A_Args[1] = "nextserver" {
     isNextServerCycle := true
-    WriteLog("檢測到伺服器排程續跑模式，將沿用下一個伺服器索引")
+    if (A_Args.Length > 1 && A_Args[2] = "remote") {
+        isRemoteServerSwitchCycle := true
+        WriteLog("檢測到遠端指定切服模式，將精確沿用網頁選取的伺服器索引")
+    } else {
+        WriteLog("檢測到伺服器排程續跑模式，將沿用下一個伺服器索引")
+    }
 }
 
 if (!isRestart && !isNextServerCycle)
@@ -1904,7 +2180,8 @@ if (!isRestart && !isNextServerCycle)
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
 StartCrashWatcher()
 
-LoadServerScheduleContext(isNextServerCycle)
+LoadServerScheduleContext(isNextServerCycle, isRemoteServerSwitchCycle)
+REMOTE_SETTINGS_RUNTIME_READY := true
 
 if MAIL_NOTIFY_ENABLED {
     startMailResult := SendStartNotifyMail(isRestart)
@@ -5125,18 +5402,20 @@ HandleCycleFinishAndShutdown(completedTime := "") {
         __NEXTSERVER_RESTART := true
         WriteLog("伺服器排程：重啟模式保留錄影，不停止目前錄影", "WARN")
         WriteLog("伺服器排程：本輪完成，關閉程式後自動啟動下一個伺服器流程", "WARN")
-        ShutdownGameLrmcOkww(true)
+        ShutdownGameLrmcOkww(true, "LOG_DETECTED")
         return
     }
 
     TryStopScreenRecording("收尾監測達標（保底停止）")
-    ShutdownGameLrmcOkww(false)
+    ShutdownGameLrmcOkww(false, "LOG_DETECTED")
 }
 
-ShutdownGameLrmcOkww(relaunchForNextServer := false) {
+ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", nextServerMode := "") {
     global __RESTART_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+    stopType := ResolveShutdownStopType(stopTypeCode)
     if (!relaunchForNextServer && !__RESTART_IN_PROGRESS)
         __CLEAN_FINAL_EXIT_REQUESTED := true
+    WriteLog("停止類型：" stopType "（code=" stopTypeCode "）")
     SetLrmcRunResumeReady(false, relaunchForNextServer ? "切換下一伺服器" : "正常／手動收尾")
     if (__RESTART_IN_PROGRESS || relaunchForNextServer)
         WriteLog("重啟模式：保留錄影不中斷，略過收尾保底停止", "WARN")
@@ -5184,7 +5463,7 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false) {
     }
 
     if MAIL_NOTIFY_ENABLED {
-        mailResult := SendShutdownNotifyMail()
+        mailResult := SendShutdownNotifyMail(stopType)
         if mailResult.ok
             WriteLog("收尾通知信已寄出")
         else
@@ -5195,7 +5474,8 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false) {
         WriteLog("伺服器排程：準備啟動下一輪流程", "WARN")
         ShowTip("🔁 切換下一個伺服器，準備重啟流程", 2000)
         Sleep 1200
-        try Run('"' AhkExe '" "' A_ScriptFullPath '" nextserver')
+        nextServerArg := (nextServerMode = "remote") ? "nextserver remote" : "nextserver"
+        try Run('"' AhkExe '" "' A_ScriptFullPath '" ' nextServerArg)
         catch as e
             WriteLog("啟動下一輪伺服器流程失敗: " e.Message, "ERROR")
     }
@@ -5206,7 +5486,23 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false) {
     ExitApp
 }
 
-SendShutdownNotifyMail() {
+ResolveShutdownStopType(stopTypeCode) {
+    code := StrUpper(Trim(stopTypeCode, " `t`r`n"))
+    switch code {
+        case "WEB_MANUAL":
+            return "網頁手動停止"
+        case "WEB_SERVER_SWITCH":
+            return "網頁手動切換伺服器"
+        case "PROGRAM_MANUAL":
+            return "程式手動停止"
+        case "LOG_DETECTED":
+            return "程式偵測到 Log 後自動停止"
+        default:
+            return "未指定"
+    }
+}
+
+SendShutdownNotifyMail(stopType := "未指定") {
     global CFG_FILE, MAIL_SECTION
 
     state := ReadCombinedConfigState()
@@ -5247,6 +5543,7 @@ SendShutdownNotifyMail() {
     nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     subject := subjectPrefix " 關閉完成通知 " nowText
     body := BuildNotifyMailBody("全自動收尾已完成。", nowText)
+    body .= "`r`n停止類型：" (Trim(stopType, " `t`r`n") != "" ? stopType : "未指定")
 
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl)
 }
@@ -6861,7 +7158,9 @@ CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
             base64 := ImagePutBase64(latestPath)
             dataUri := "data:image/jpeg;base64," base64
             ; 截圖寫入獨立 media 文件，不會再膨脹命令／心跳控制文件。
-            if (StrLen(dataUri) > 280000) {
+            ; 免費流量護欄：較大的 640px 圖先縮成 400px；若結果仍超過
+            ; RemoteControl 的 140,000 字元硬上限，該張會直接略過不上傳。
+            if (StrLen(dataUri) > 125000) {
                 retryPath := diagDir "\latest_retry_" A_TickCount ".tmp.jpg"
                 retryWidth := Min(A_ScreenWidth, 400)
                 retryHeight := Max(1, Round(A_ScreenHeight * retryWidth / Max(1, A_ScreenWidth)))
@@ -8058,7 +8357,7 @@ IsServerConfirmText(ocrText) {
     return (InStr(t, "確認") || InStr(t, "确认") || InStr(t, "確定") || InStr(t, "确定"))
 }
 
-LoadServerScheduleContext(isContinueCycle := false) {
+LoadServerScheduleContext(isContinueCycle := false, useExactConfiguredIndex := false) {
     global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
 
     SERVER_SCHEDULE_ENABLED := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0) ? true : false
@@ -8076,6 +8375,7 @@ LoadServerScheduleContext(isContinueCycle := false) {
         CURRENT_SERVER_TARGET := ""
         SERVER_SCHEDULE_INDEX := 1
         WriteLog("伺服器排程未啟用或清單為空，不執行切服")
+        SyncRemoteControlRuntimeState()
         return
     }
 
@@ -8089,18 +8389,23 @@ LoadServerScheduleContext(isContinueCycle := false) {
     if (idx > SERVER_SCHEDULE_LIST.Length)
         idx := 1
 
-    resolvedIdx := ResolveNextPendingServerIndexInCurrentCycle(idx)
-    if (resolvedIdx = 0) {
-        SERVER_SCHEDULE_INDEX := 1
-        CURRENT_SERVER_TARGET := ""
-        IniWrite "1", CFG_FILE, "server_schedule", "current_index"
-        WriteLog("伺服器排程：今日循環所有伺服器都已完成，啟動時不指定切服目標", "WARN")
-        return
-    }
+    if !useExactConfiguredIndex {
+        resolvedIdx := ResolveNextPendingServerIndexInCurrentCycle(idx)
+        if (resolvedIdx = 0) {
+            SERVER_SCHEDULE_INDEX := 1
+            CURRENT_SERVER_TARGET := ""
+            IniWrite "1", CFG_FILE, "server_schedule", "current_index"
+            WriteLog("伺服器排程：今日循環所有伺服器都已完成，啟動時不指定切服目標", "WARN")
+            SyncRemoteControlRuntimeState()
+            return
+        }
 
-    if (resolvedIdx != idx)
-        WriteLog("伺服器排程：已自動略過今日已完成伺服器，改用第 " resolvedIdx " 個目標")
-    idx := resolvedIdx
+        if (resolvedIdx != idx)
+            WriteLog("伺服器排程：已自動略過今日已完成伺服器，改用第 " resolvedIdx " 個目標")
+        idx := resolvedIdx
+    } else {
+        WriteLog("伺服器排程：遠端指定切服，保留第 " idx " 個目標，不套用今日完成略過規則", "WARN")
+    }
 
     SERVER_SCHEDULE_INDEX := idx
     CURRENT_SERVER_TARGET := SERVER_SCHEDULE_LIST[idx]
@@ -8134,7 +8439,7 @@ ResolveNextPendingServerIndexInCurrentCycle(startIdx := 1) {
 }
 
 AdvanceServerScheduleForNextCycle() {
-    global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX
+    global CFG_FILE, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, CURRENT_SERVER_TARGET
 
     if (!SERVER_SCHEDULE_ENABLED || SERVER_SCHEDULE_LIST.Length <= 1)
         return false
@@ -8147,6 +8452,8 @@ AdvanceServerScheduleForNextCycle() {
     }
 
     IniWrite nextIndex, CFG_FILE, "server_schedule", "current_index"
+    SERVER_SCHEDULE_INDEX := nextIndex
+    CURRENT_SERVER_TARGET := SERVER_SCHEDULE_LIST[nextIndex]
     WriteLog("伺服器排程切換到下一個：第 " nextIndex "/" SERVER_SCHEDULE_LIST.Length " 個")
     SyncRemoteControlRuntimeState()
     return true
@@ -8460,7 +8767,7 @@ ExitFromTrayNow(*) {
     __RESTART_IN_PROGRESS := false
     try RC_SetPausedFlag(false)
     try WriteLog("系統匣：使用者請求立即離開，改走完整關閉流程")
-    ShutdownGameLrmcOkww(false)
+    ShutdownGameLrmcOkww(false, "PROGRAM_MANUAL")
 }
 
 OpenSettingsFromTray(*) {

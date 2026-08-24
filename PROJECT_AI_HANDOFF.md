@@ -110,10 +110,24 @@
 ### 3.15 遠端命令 nonce、ACK 與歷史
 - `remote-control-web/app.js` 以 Firestore `runTransaction` 在同一交易原子遞增頂層 `nonce`、更新頂層 `desiredState` 並追加命令歷史，禁止再使用 `getDoc → nonce+1 → updateDoc`。
 - 每台 client 父文件的 `commandHistory` 最多保留最近 30 筆；歷史欄位使用 `commandNonce`、`requestedState`，不可使用精確欄名 `nonce` 或 `desiredState`，避免 AHK REST regex 誤抓巢狀欄位。
-- 只有 `lastAckNonce == commandNonce` 且 `lastAckState == requestedState` 才能顯示「已 ACK」。30 秒沒有精確 ACK 顯示「未回應」；ACK nonce 已前進則顯示「被後續命令跨過」。
+- 只有 `lastAckNonce == commandNonce` 且 `lastAckState == requestedState` 才能顯示「已 ACK」。`SWITCH_SERVER` 還必須同時比對 ACK 的目標序號與名稱。30 秒沒有精確 ACK 顯示「未回應」；ACK nonce 已前進則顯示「被後續命令跨過」。
+- `SWITCH_SERVER` 以同一筆交易寫入頂層 `requestedServerIndex` 與 `requestedServerName`，歷史對應使用 `targetServerIndex` 與 `targetServerName`。Client 必須同時比對序號及名稱，不可只信其中一個。
+- Client 心跳以 `serverScheduleEnabled` 與 JSON 字串 `serverScheduleJson` 發佈完整設定順序，不增加心跳頻率。未啟用或少於 2 個時網頁必須顯示「無設定」。
+- 切服 callback 必須在 `Critical` 區段先回覆含 `lastAckResult`、`lastAckDetail` 及目標的 ACK，再由延後 timer 停止錄影／關閉流程。失敗回覆顯示「未執行」；`NO_SERVER_CONFIG` 必須顯示「無設定」。
+- 網頁指定的伺服器可以是當日曾完成的目標；重啟參數 `nextserver remote` 只在這條受驗證路徑略過「已完成自動跳過」，一般排程切服行為不得改變。
 - 命令歷史只從部署新版網頁後開始建立，無法回補舊版已送出的命令。
+- 關閉通知信必須顯示「停止類型」：網頁 `STOP` 為「網頁手動停止」、系統匣「離開腳本（立即）」為「程式手動停止」、收尾監測命中 LRMCAI 日誌為「程式偵測到 Log 後自動停止」。三個入口應明確傳入來源代碼，不可只靠共用旗標事後猜測。
 
-### 3.16 Launcher 自我更新與舊版救援
+### 3.16 網頁遠端設定與免費額度護欄
+- 控制網站分為 `#overview`、`#diagnostics`、`#settings` 三頁，共用 sticky 裝置列；桌面總覽／診斷為雙欄，1180px 以下堆疊，700px 以下事件與命令表格改卡片。所有 grid/card 子項必須保留 `min-width: 0` 與長文字斷行，避免 UNC、log 或 OCR 內容撐出手機寬度。
+- 遠端設定 schema 目前為 1。Web transaction 在既有 `ahk_clients/{UID}` 頂層寫入 `desiredSettingsRevision`、`desiredSettingsSchemaVersion` 及 `desiredServerSchedule*`／`desiredMailNotifyEnabled`／`desiredRuntimeDiagnostics*`／`desiredMaxRestartCount`，不可建立設定 collection、subcollection 或另一個 listener。
+- Client 必須把遠端設定掛在現有 `RC_FirestoreGetClientDoc()` 的啟動 GET 與 10 秒命令輪詢上，禁止為設定新增 GET timer。`last_settings_seen_revision`、`applied_settings_revision` 與最後 ACK 必須落到本機 `[remote_control]`，讓離線儲存、重啟及 ACK 網路失敗仍可收斂，且同一 rejected revision 不可每 10 秒重寫一次。
+- Client 先驗證完整 desired revision，再以 `config.ini.remote_settings_*.tmp` 複製完整本機設定（包含但不外傳 secrets），保存精確 `.remote_settings.bak` 後原子替換；失敗必須回復舊檔並回 ACK。只允許遠端設定伺服器排程／順序、最大重啟數、診斷開關／60～600 秒間隔／5～200 份錯誤圖，以及郵件開關。
+- SMTP、收寄件人、程式路徑、錄影位置、UNC 與座標只留本機。雲端只能收到 `mailNotifyConfigured` readiness；本機 SMTP 不完整時只能遠端停用，不能啟用。伺服器最多 10 個、單名最多 80 字；執行中變更只影響下一次伺服器決策，不可半途切服。
+- ACK 使用 `lastSettingsAck*`，有效值使用 `effectiveSettings*` 並由同一次 ACK PATCH 帶回；正常心跳再重播本機最後 ACK，不能為 ACK 另加定時器。`APPLIED`、`SAVED_NEXT_RUN`、拒絕原因與離線等待必須在網頁分開呈現。
+- Firestore Standard 免費額度（2026-08-24 官方值）為 50,000 reads/day、20,000 writes/day、20,000 deletes/day、1 GiB stored、10 GiB/month outbound。以 2 台全天裝置估算：10 秒 poll 固定 17,280 reads/day；90 秒 heartbeat 1,920 writes/day；60 秒快照上限 2,880 writes/day，固定寫入合計 4,800/day。一次設定儲存通常只增加 transaction 1 read + 1 write 與 client ACK 1 write；交易可能因同文件心跳衝突重試。Media 只能在 `#overview` 且 `document.hidden=false` 時訂閱；單張 data URI 硬上限 140,000 字元，125,000 以上先降成 400px，仍超限則不上傳。新增裝置、縮短間隔、增加 listener 或長期多開總覽前必須重新估算。
+
+### 3.17 Launcher 自我更新與舊版救援
 - Launcher 更新檢查與 payload 版本判斷彼此獨立；即使 payload 已是最新版，每次啟動仍須讀取 manifest 檢查 `launcher_version` 與 `launcher_sha256`。
 - pending 狀態檔必須以覆寫方式寫入，並依 `version → sha256 → launcher_pending_update.tmp` 的順序提交；禁止再用 `FileAppend`，避免多次下載路徑或版本字串黏在一起。
 - 新 launcher 下載後由外部 PowerShell helper 等目前 launcher PID 真正退出，再以 candidate／backup 方式替換。成功後才寫 `launcher_current_version.txt` 並清 pending；任一步失敗都要還原舊 EXE、保留 pending 供下次重試，結果寫入 `launcher_update_outcome.log`。
@@ -121,7 +135,7 @@
 - Launcher v4.42 的替換器本身有固定等待 2 秒、狀態檔追加寫入及成功分支未寫版本等缺陷，因此 payload 內保留一次性 bootstrap：只有啟動環境沒有 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1` 且存在 pending 時，才等待舊 launcher 退出並替換根目錄 EXE。它只接受 Temp／config 下、名稱為 `launcher_update_*.exe`、具有 MZ 標頭且大小合理的檔案；v4.42 黏接 marker 只能採用最後一個語法候選，最後候選遺失／越界即失敗，不可退回較舊 EXE 卻標成新版本。來源、candidate 與安裝後 target 必須 SHA256 相同；若有 pending SHA 也必須吻合。上次中斷留下的 `.pre_update.bak` 必須先驗證並還原，失敗 rollback 要明確記錄 `restored／FAILED`；不可操作任意路徑。
 - v4.43+ launcher 啟動 payload 前會設定 `PACK_LAUNCHER_HANDLES_SELF_UPDATE=1`，避免 launcher helper 與 payload bootstrap 同時競爭同一個 EXE。
 
-### 3.17 網路資料夾瀏覽與即時診斷
+### 3.18 網路資料夾瀏覽與即時診斷
 - 主流程以管理員權限執行，通常看不到一般使用者的映射磁碟。主要選擇器為 `payload/FolderPickerHelper.ahk`，由桌面 Explorer 以一般權限啟動；它主動彙整目前權杖映射、WScript.Network、`HKCU\Network` 持久映射及檔案總管 Network Shortcuts，再把結果轉成 UNC 回傳。
 - 選擇器預設顯示「這台電腦」，並固定提供「瀏覽網路」及「直接輸入 UNC」，不再依賴 Windows 對話框左側欄。根目錄 launcher 的 `--pick-folder` 只作 helper 遺失時的後備，且固定從 CSIDL_DRIVES 開始。
 - Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
@@ -129,12 +143,12 @@
 - 即時診斷預設每 60 秒以 ImagePut 擷取低畫質 JPEG；所有主程式／子流程產生的圖片集中到 `<程式根目錄>\診斷快照`，OCR 暫存圖位於其下 `暫存` 且使用後刪除，啟動時會搬移舊 `%LOCALAPPDATA%\WutheringAuto\diagnostics` 圖片並清除超過 24 小時的殘留暫存。`latest.jpg` 原子覆寫；WARN／ERROR 仍依設定保留固定總份數，但 Firestore 上傳硬性限制最多每 60 秒一次。
 - 網路短影片功能目前暫停實作：`video_preview_enabled` 啟動時會強制遷移為 `0`，設定介面不可啟用，網站不顯示影片播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。完整長影片維持本機／UNC 分段錄影與背景收尾，不受影響。舊版 preview FFmpeg marker 判斷保留，只為避免更新交界誤把殘留預覽程序當主錄影。
 - Firestore 控制文件為 `ahk_clients/{UID}`；JPEG 放在同集合的 `{UID}__media`。為相容缺少 `docKind` 的舊 client，網頁主查詢使用 `uid != ""`（media 只有 `clientUid`），並只為目前選取裝置訂閱一份 media 文件。正常完整結束會 PATCH client 為 `OFFLINE` 後刪除 media 文件；錯誤、系統關機、強制終止與重啟交接保留最後快照。網頁開啟期間會交易式刪除最後心跳超過 7 天、且再連續觀察 10 分鐘沒有 listener 更新的 client 與 media，避免誤刪時鐘錯誤但仍持續心跳的裝置。
-- AHK 命令輪詢至少 10 秒且 GET 只取 `desiredState`／`nonce`；心跳至少 60 秒（預設 90 秒）。心跳、ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
+- AHK 命令輪詢至少 10 秒且 GET 只取命令欄位與 `desiredSettings*` 欄位；心跳至少 60 秒（預設 90 秒）。心跳、命令 ACK、設定 ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
 - 錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
 - `RecordingFinalizeWorker.ahk` 必須在主程式已退出後仍直接 PATCH 錄影欄位；網路回報失敗不可影響本機保全，下一次主程式心跳會再從 `recording_status.ini` 補報。
 - `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
 
-### 3.18 OCR 模型相容性
+### 3.19 OCR 模型相容性
 - `plugin\RapidOcr\models_zh_hq` 現在使用官方 PP-OCRv4 mobile 中文 det／rec 與 `ppocr_keys_v1.txt`，舊 PP-OCRv3 保留在 `models` 當回退。
 - 現有 RapidOcrOnnx 1.2.2 DLL 實測無法初始化 PP-OCRv5 mobile；PP-OCRv4 server 雖可載入但全螢幕單次約 38 秒，不可用於輪詢。v4 mobile 在實際 2560×1440 錄影畫面約 0.65 秒，且能正確讀出舊 v3 誤辨的「設定任務」。
 - wrapper 會略過檔名標示 v5／v6 的 ONNX，避免不相容模型使 OCR 初始化崩潰。升級到 v5／v6 必須先一併替換支援新 graph 的 OCR runtime，不可只換模型檔。
@@ -184,7 +198,7 @@
 
 > 維運約定：以後每次「打包更新」都必須同時重新編譯、升版並發布 Payload 與 Launcher，不可只更新其中一個。
 
-> 品質門檻：每次交付前都要檢查 VS Code「問題」面板並以 0 個問題為目標，同時執行可用的 AHK 編譯／語法與 Web 靜態檢查。若仍有工具誤報或確認不影響執行的診斷，交付時必須列出檔案、診斷內容與不影響理由，不可默默忽略或把非 0 說成 0。
+> 品質門檻：每次交付前以 AHK 編譯／語法、Web 靜態檢查、協定欄位對應與 `git diff --check` 為主。依使用者最新要求，不再為了查看 VS Code「問題」面板而操作使用者桌面或 VS Code UI；除非使用者當次明確要求。若仍有工具誤報或確認不影響執行的診斷，交付時必須列出檔案、診斷內容與不影響理由，不可默默忽略或把非 0 說成 0。
 
 ## 9) 本檔用途
 - 這份文件提供給接手 AI/開發者快速理解專案脈絡。

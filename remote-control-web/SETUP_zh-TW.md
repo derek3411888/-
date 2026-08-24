@@ -45,21 +45,33 @@ poll_interval_ms=10000
 http_timeout_ms=2500
 clear_snapshot_on_clean_exit=1
 last_nonce=0
+last_settings_seen_revision=0
+applied_settings_revision=0
 
 ### 4. Firestore 建議先用這個集合
 - ahk_clients
 
 每台 client 啟動後，會自動寫一筆 document：
 - 文件 ID：A_ComputerName + MAC
-- 欄位包含：displayName、computerName、status、lastHeartbeat、desiredState、nonce、lastAckNonce
+- 欄位包含：displayName、computerName、status、lastHeartbeat、desiredState、nonce、lastAckNonce、serverScheduleEnabled、serverScheduleJson
 
 ### 5. 先測試
 1. 開 AHK 主程式
 2. 去 Firestore 看 ahk_clients 是否出現文件
 3. 打開 remote-control-web/index.html
 4. 選電腦後送 RUN / PAUSE
+5. 若程式已啟用至少 2 個伺服器的排程，確認網頁的「跳下一個伺服器」選單會依設定順序顯示；否則應顯示「無設定」。
+6. 更新到支援 `remoteSettingsSchemaVersion=1` 的 Payload 後，進入「設定」頁調整一個非敏感欄位並儲存；確認畫面依序顯示「已送出／等待 ACK／已套用」或「已儲存，下次流程採用」。
 
 正常完整結束只會刪除雲端最新快照，電腦仍以 `OFFLINE` 顯示。控制網站開啟時，最後心跳超過 7 天且再觀察 10 分鐘沒有更新的裝置，會連同 `UID__media` 一起自動刪除。
+
+## 免費額度注意事項
+
+- 遠端設定不新增 collection、listener 或輪詢 timer，設定資料直接放在既有 client 文件。
+- 每次儲存通常使用 transaction 1 read + 1 write，client 再回 1 次 ACK write；若碰到心跳同時更新，transaction 可能自動重試。
+- 目前兩台全天裝置的固定 10 秒輪詢約 17,280 reads/day；90 秒心跳加 60 秒快照上限約 4,800 writes/day，低於 Firestore Standard 免費層的 50,000 reads/day 與 20,000 writes/day。
+- 網頁只在「總覽」且分頁可見時訂閱一台裝置的 media 文件，背景分頁會取消訂閱；快照單張硬上限 140,000 字元。不要長時間同時開多個可見總覽分頁。新增裝置或縮短間隔前必須重新估算。
+- 最新限制請看 [Firebase 官方 Firestore 免費額度](https://firebase.google.com/docs/firestore/pricing#free-quota)。
 
 ## 現在已經幫你預填的檔案
 - remote-control-web/app.js

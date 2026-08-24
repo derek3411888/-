@@ -25,7 +25,9 @@ const STALE_CLIENT_STABILITY_MS = 10 * 60_000;
 const STALE_CLEANUP_RETRY_MS = 60 * 60_000;
 const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
-const WEB_BUILD = "20260823-1";
+const SETTINGS_SCHEMA_VERSION = 1;
+const MAX_REMOTE_SERVERS = 10;
+const WEB_BUILD = "20260824-4";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -36,7 +38,11 @@ const pcDropdown = document.getElementById("pcDropdown");
 const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
 const btnStop = document.getElementById("btnStop");
+const serverTargetSelect = document.getElementById("serverTargetSelect");
+const btnSwitchServer = document.getElementById("btnSwitchServer");
+const serverSwitchHint = document.getElementById("serverSwitchHint");
 const statusMsg = document.getElementById("statusMsg");
+const selectedDeviceSummary = document.getElementById("selectedDeviceSummary");
 const commandStatus = document.getElementById("commandStatus");
 const commandStatusTitle = document.getElementById("commandStatusTitle");
 const commandStatusDetail = document.getElementById("commandStatusDetail");
@@ -53,6 +59,27 @@ const recordingStatusBadge = document.getElementById("recordingStatusBadge");
 const recordingStatusUpdated = document.getElementById("recordingStatusUpdated");
 const recordingStatusNote = document.getElementById("recordingStatusNote");
 const recordingPaths = document.getElementById("recordingPaths");
+const viewTabs = [...document.querySelectorAll("[data-view]")];
+const viewOverview = document.getElementById("viewOverview");
+const viewDiagnostics = document.getElementById("viewDiagnostics");
+const viewSettings = document.getElementById("viewSettings");
+const settingsSupportBadge = document.getElementById("settingsSupportBadge");
+const settingsStatus = document.getElementById("settingsStatus");
+const settingsStatusTitle = document.getElementById("settingsStatusTitle");
+const settingsStatusDetail = document.getElementById("settingsStatusDetail");
+const settingsForm = document.getElementById("settingsForm");
+const settingsServerEnabled = document.getElementById("settingsServerEnabled");
+const settingsServerList = document.getElementById("settingsServerList");
+const btnAddServer = document.getElementById("btnAddServer");
+const settingsMaxRestartCount = document.getElementById("settingsMaxRestartCount");
+const settingsDiagnosticsEnabled = document.getElementById("settingsDiagnosticsEnabled");
+const settingsDiagnosticsInterval = document.getElementById("settingsDiagnosticsInterval");
+const settingsDiagnosticsKeepCount = document.getElementById("settingsDiagnosticsKeepCount");
+const settingsMailEnabled = document.getElementById("settingsMailEnabled");
+const settingsMailHint = document.getElementById("settingsMailHint");
+const settingsDirtyHint = document.getElementById("settingsDirtyHint");
+const btnReloadSettings = document.getElementById("btnReloadSettings");
+const btnSaveSettings = document.getElementById("btnSaveSettings");
 
 let cache = new Map();
 let loadInFlight = false;
@@ -66,6 +93,15 @@ let selectedMediaData = null;
 let stopSelectedMediaListener = null;
 let staleCleanupSweepRunning = false;
 let maintenanceNotice = "";
+let activeView = ["overview", "diagnostics", "settings"].includes(location.hash.slice(1))
+  ? location.hash.slice(1)
+  : "overview";
+let settingsDirty = false;
+let settingsSaving = false;
+let settingsFormClientId = "";
+let settingsFormSourceKey = "";
+let settingsPreferEffective = false;
+let settingsError = "";
 const clientLastObservedChangeAt = new Map();
 const staleCleanupRetryAfter = new Map();
 
@@ -108,6 +144,14 @@ function fmtAge(value) {
 function readField(docData, key, def = "") {
   if (!(key in docData)) return def;
   return docData[key];
+}
+
+function toBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
 function normalizeStatus(v) {
@@ -177,9 +221,145 @@ async function cleanupStaleClients() {
 }
 
 function normalizeCommandState(value) {
-  const state = String(value ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-  if (state === "RUN" || state === "PAUSE" || state === "STOP") return state;
+  const state = String(value ?? "").toUpperCase().replace(/[^A-Z_]/g, "");
+  if (state === "RUN" || state === "PAUSE" || state === "STOP" || state === "SWITCH_SERVER") return state;
   return "UNKNOWN";
+}
+
+function readServerSchedule(data) {
+  const enabled = Boolean(readField(data || {}, "serverScheduleEnabled", false));
+  const raw = String(readField(data || {}, "serverScheduleJson", "") || "");
+  let list = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        list = parsed
+          .map((value) => String(value ?? "").trim())
+          .filter(Boolean)
+          .slice(0, 20);
+      }
+    } catch {
+      list = [];
+    }
+  }
+
+  const currentIndex = toInteger(readField(data || {}, "currentServerIndex", 0), 0);
+  const currentName = String(readField(data || {}, "currentServer", "") || "").trim();
+  return { enabled, list, currentIndex, currentName };
+}
+
+function parseServerScheduleText(value) {
+  const text = String(value || "").replaceAll("\r", "\n");
+  const result = [];
+  const seen = new Set();
+  let token = "";
+  let depth = 0;
+
+  const pushToken = () => {
+    const name = token.trim();
+    token = "";
+    if (!name) return;
+    const key = name.toLocaleLowerCase("zh-TW");
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(name);
+  };
+
+  for (const char of text) {
+    if (char === "(" || char === "（") {
+      depth += 1;
+      token += char;
+      continue;
+    }
+    if (char === ")" || char === "）") {
+      depth = Math.max(0, depth - 1);
+      token += char;
+      continue;
+    }
+    if (depth === 0 && [",", "，", ";", "；", "|", "\n"].includes(char)) {
+      pushToken();
+      continue;
+    }
+    token += char;
+  }
+  pushToken();
+  return result;
+}
+
+function isClientOnline(data, nowMs = Date.now()) {
+  if (!data) return false;
+  const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
+  const heartbeat = toMillis(readField(data, "lastHeartbeat", 0));
+  return status !== "OFFLINE" && status !== "STOP" && heartbeat > 0 && nowMs - heartbeat <= OFFLINE_THRESHOLD_MS;
+}
+
+function readRemoteSettings(data, preferDesired = true) {
+  const source = data || {};
+  const supported = toInteger(readField(source, "remoteSettingsSchemaVersion", 0), 0) >= SETTINGS_SCHEMA_VERSION;
+  const desiredRevision = Math.max(0, toInteger(readField(source, "desiredSettingsRevision", 0), 0));
+  const effectiveRevision = Math.max(0, toInteger(readField(source, "effectiveSettingsRevision", 0), 0));
+  const useDesired = Boolean(preferDesired && desiredRevision > effectiveRevision);
+
+  const serverListText = useDesired
+    ? readField(source, "desiredServerScheduleList", "")
+    : readField(source, "effectiveServerScheduleList", "");
+
+  return {
+    supported,
+    desiredRevision,
+    effectiveRevision,
+    sourceRevision: useDesired ? desiredRevision : effectiveRevision,
+    sourceKind: useDesired ? "desired" : "effective",
+    serverScheduleEnabled: toBoolean(readField(
+      source,
+      useDesired ? "desiredServerScheduleEnabled" : "effectiveServerScheduleEnabled",
+      false,
+    )),
+    serverScheduleList: parseServerScheduleText(serverListText).slice(0, MAX_REMOTE_SERVERS),
+    mailNotifyEnabled: toBoolean(readField(
+      source,
+      useDesired ? "desiredMailNotifyEnabled" : "effectiveMailNotifyEnabled",
+      false,
+    )),
+    mailNotifyConfigured: toBoolean(readField(source, "mailNotifyConfigured", false)),
+    runtimeDiagnosticsEnabled: toBoolean(readField(
+      source,
+      useDesired ? "desiredRuntimeDiagnosticsEnabled" : "effectiveRuntimeDiagnosticsEnabled",
+      true,
+    ), true),
+    runtimeDiagnosticsIntervalSec: toInteger(readField(
+      source,
+      useDesired ? "desiredRuntimeDiagnosticsIntervalSec" : "effectiveRuntimeDiagnosticsIntervalSec",
+      60,
+    ), 60),
+    runtimeDiagnosticsErrorKeepCount: toInteger(readField(
+      source,
+      useDesired ? "desiredRuntimeDiagnosticsErrorKeepCount" : "effectiveRuntimeDiagnosticsErrorKeepCount",
+      30,
+    ), 30),
+    maxRestartCount: toInteger(readField(
+      source,
+      useDesired ? "desiredMaxRestartCount" : "effectiveMaxRestartCount",
+      10,
+    ), 10),
+    lastAckRevision: Math.max(0, toInteger(readField(source, "lastSettingsAckRevision", 0), 0)),
+    lastAckResult: String(readField(source, "lastSettingsAckResult", "") || "").toUpperCase(),
+    lastAckDetail: String(readField(source, "lastSettingsAckDetail", "") || ""),
+    lastAckAt: toMillis(readField(source, "lastSettingsAckAt", 0)),
+  };
+}
+
+function nextServerIndex(schedule) {
+  if (schedule.list.length === 0) return 0;
+  if (
+    schedule.currentIndex >= 1 &&
+    schedule.currentIndex <= schedule.list.length &&
+    schedule.list[schedule.currentIndex - 1] === schedule.currentName
+  ) {
+    return schedule.currentIndex >= schedule.list.length ? 1 : schedule.currentIndex + 1;
+  }
+  return 1;
 }
 
 function normalizeHistoryEntry(raw) {
@@ -188,9 +368,13 @@ function normalizeHistoryEntry(raw) {
     commandId: String(entry.commandId ?? ""),
     commandNonce: Math.max(0, toInteger(entry.commandNonce, 0)),
     requestedState: normalizeCommandState(entry.requestedState),
+    targetServerIndex: Math.max(0, toInteger(entry.targetServerIndex, 0)),
+    targetServerName: String(entry.targetServerName ?? "").trim(),
     sentAt: toMillis(entry.sentAt),
     status: String(entry.status ?? "WAITING_ACK").toUpperCase(),
     ackAt: toMillis(entry.ackAt),
+    ackResult: String(entry.ackResult ?? "").toUpperCase(),
+    ackDetail: String(entry.ackDetail ?? ""),
     statusUpdatedAt: toMillis(entry.statusUpdatedAt),
     statusReason: String(entry.statusReason ?? ""),
   };
@@ -231,40 +415,70 @@ function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
   const ackNonce = Math.max(0, toInteger(readField(clientData, "lastAckNonce", 0), 0));
   const ackState = normalizeCommandState(readField(clientData, "lastAckState", ""));
   const reportedAckAt = toMillis(readField(clientData, "lastAckAt", 0));
+  const reportedAckResult = String(readField(clientData, "lastAckResult", "") || "").toUpperCase();
+  const reportedAckDetail = String(readField(clientData, "lastAckDetail", "") || "");
+  const reportedAckServerIndex = Math.max(0, toInteger(readField(clientData, "lastAckServerIndex", 0), 0));
+  const reportedAckServerName = String(readField(clientData, "lastAckServerName", "") || "").trim();
   const previousStatus = current.status;
+  const ackStateMatches = ackNonce === current.commandNonce && ackState === current.requestedState;
+  const ackTargetMatches = current.requestedState !== "SWITCH_SERVER" || (
+    reportedAckServerIndex === current.targetServerIndex &&
+    reportedAckServerName === current.targetServerName
+  );
 
   let nextStatus = "WAITING_ACK";
   let nextAckAt = current.ackAt;
+  let nextAckResult = current.ackResult;
+  let nextAckDetail = current.ackDetail;
   let nextReason = "";
 
-  // 一旦看過這筆精確 ACK，就永久保留；後續 ACK 前進不應把成功紀錄改成「被跨過」。
-  if (previousStatus === "ACKED") {
-    nextStatus = "ACKED";
+  const rejectedResults = new Set([
+    "NO_SERVER_CONFIG",
+    "INVALID_TARGET",
+    "CONFIG_CHANGED",
+    "ALREADY_CURRENT",
+    "BUSY",
+    "HANDLER_ERROR",
+    "NO_HANDLER",
+  ]);
+
+  // 一旦看過這筆精確回覆，就永久保留；後續 ACK 前進不應改寫既有結果。
+  if (previousStatus === "ACKED" || previousStatus === "REJECTED") {
+    nextStatus = previousStatus;
     nextReason = current.statusReason || "EXACT_ACK";
-  } else if (ackNonce === current.commandNonce && ackState === current.requestedState) {
-    nextStatus = "ACKED";
+  } else if (ackStateMatches && ackTargetMatches) {
+    nextStatus = rejectedResults.has(reportedAckResult) ? "REJECTED" : "ACKED";
     nextAckAt = reportedAckAt || current.ackAt;
-    nextReason = "EXACT_ACK";
+    nextAckResult = reportedAckResult || "APPLIED";
+    nextAckDetail = reportedAckDetail;
+    nextReason = nextStatus === "REJECTED" ? nextAckResult : "EXACT_ACK";
   } else if (ackNonce > current.commandNonce) {
     nextStatus = "SUPERSEDED";
     nextReason = "ACK_NONCE_ADVANCED";
   } else if (current.sentAt > 0 && nowMs - current.sentAt >= ACK_TIMEOUT_MS) {
     nextStatus = "UNRESPONSIVE";
-    nextReason =
-      ackNonce === current.commandNonce && ackState !== current.requestedState
-        ? "ACK_STATE_MISMATCH"
-        : "ACK_TIMEOUT";
+    if (ackNonce === current.commandNonce && ackState !== current.requestedState) {
+      nextReason = "ACK_STATE_MISMATCH";
+    } else if (ackStateMatches && !ackTargetMatches) {
+      nextReason = "ACK_TARGET_MISMATCH";
+    } else {
+      nextReason = "ACK_TIMEOUT";
+    }
   }
 
   const changed =
     nextStatus !== current.status ||
     nextAckAt !== current.ackAt ||
+    nextAckResult !== current.ackResult ||
+    nextAckDetail !== current.ackDetail ||
     nextReason !== current.statusReason;
 
   return {
     ...current,
     status: nextStatus,
     ackAt: nextAckAt,
+    ackResult: nextAckResult,
+    ackDetail: nextAckDetail,
     statusReason: nextReason,
     statusUpdatedAt: changed ? nowMs : current.statusUpdatedAt,
   };
@@ -284,6 +498,8 @@ function historyStatusChanged(before, after) {
       a.commandNonce !== b.commandNonce ||
       a.status !== b.status ||
       a.ackAt !== b.ackAt ||
+      a.ackResult !== b.ackResult ||
+      a.ackDetail !== b.ackDetail ||
       a.statusReason !== b.statusReason ||
       a.statusUpdatedAt !== b.statusUpdatedAt
     ) {
@@ -305,8 +521,42 @@ function currentMediaData() {
   return selectedMediaData;
 }
 
+function setActiveView(view, updateHash = true) {
+  const nextView = ["overview", "diagnostics", "settings"].includes(view) ? view : "overview";
+  activeView = nextView;
+  const views = {
+    overview: viewOverview,
+    diagnostics: viewDiagnostics,
+    settings: viewSettings,
+  };
+
+  for (const tab of viewTabs) {
+    const selected = tab.dataset.view === nextView;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-selected", selected ? "true" : "false");
+    views[tab.dataset.view].hidden = !selected;
+  }
+
+  if (updateHash && location.hash !== `#${nextView}`) {
+    history.replaceState(null, "", `#${nextView}`);
+  }
+  startSelectedMediaSubscription(true);
+  renderSelectedClient();
+}
+
 function startSelectedMediaSubscription(force = false) {
   const id = pcDropdown.value;
+  // 只有使用者真的正在看總覽時才維持 media listener；背景分頁不消耗
+  // 每分鐘快照的 Firestore reads / outbound data transfer。
+  if (activeView !== "overview" || document.hidden) {
+    if (stopSelectedMediaListener) stopSelectedMediaListener();
+    stopSelectedMediaListener = null;
+    selectedMediaClientId = "";
+    selectedMediaData = null;
+    renderedScreenshotKey = "";
+    renderSnapshot();
+    return;
+  }
   if (!force && id && selectedMediaClientId === id && stopSelectedMediaListener) return;
 
   if (stopSelectedMediaListener) stopSelectedMediaListener();
@@ -339,13 +589,54 @@ function startSelectedMediaSubscription(force = false) {
   );
 }
 
+function renderServerSwitch() {
+  const data = selectedClientData();
+  const previousValue = serverTargetSelect.value;
+  const schedule = readServerSchedule(data || {});
+  serverTargetSelect.replaceChildren();
+
+  if (!data || !schedule.enabled || schedule.list.length < 2) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "無設定";
+    serverTargetSelect.appendChild(option);
+    serverSwitchHint.textContent = !data
+      ? "請先選擇一台電腦。"
+      : "無設定：程式必須啟用伺服器排程並至少設定 2 個伺服器。";
+    return;
+  }
+
+  for (let index = 1; index <= schedule.list.length; index += 1) {
+    const name = schedule.list[index - 1];
+    const option = document.createElement("option");
+    option.value = String(index);
+    const isCurrent = index === schedule.currentIndex && name === schedule.currentName;
+    option.textContent = `${index}. ${name}${isCurrent ? "（目前）" : ""}`;
+    option.disabled = isCurrent;
+    serverTargetSelect.appendChild(option);
+  }
+
+  const preferredIndex = schedule.list.some((_, index) => String(index + 1) === previousValue)
+    ? toInteger(previousValue, 0)
+    : nextServerIndex(schedule);
+  const preferred = serverTargetSelect.querySelector(`option[value="${preferredIndex}"]:not(:disabled)`);
+  const fallback = serverTargetSelect.querySelector("option:not(:disabled)");
+  serverTargetSelect.value = preferred?.value || fallback?.value || "";
+  const ordered = schedule.list.map((name, index) => `${index + 1}. ${name}`).join(" → ");
+  serverSwitchHint.textContent = `設定順序：${ordered}。預設選取目前伺服器的下一個，也可指定其他目標。`;
+}
+
 function setButtonsDisabled(disabled) {
   const noClient = !pcDropdown.value || !cache.has(pcDropdown.value);
   const value = Boolean(disabled || noClient);
+  const schedule = readServerSchedule(selectedClientData() || {});
+  const noSwitchTarget = !schedule.enabled || schedule.list.length < 2 || !serverTargetSelect.value;
   pcDropdown.disabled = Boolean(disabled || cache.size === 0);
   btnPause.disabled = value;
   btnRun.disabled = value;
   btnStop.disabled = value;
+  serverTargetSelect.disabled = Boolean(value || noSwitchTarget);
+  btnSwitchServer.disabled = Boolean(value || noSwitchTarget);
 }
 
 function renderClients() {
@@ -411,12 +702,30 @@ function renderClients() {
   renderSelectedClient();
 }
 
+function renderDeviceSummary() {
+  const data = selectedClientData();
+  if (!data) {
+    selectedDeviceSummary.textContent = "尚未選擇裝置";
+    return;
+  }
+  const displayName = String(readField(data, "displayName", readField(data, "computerName", pcDropdown.value)) || pcDropdown.value);
+  const online = isClientOnline(data) ? "在線" : "離線";
+  const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
+  const server = String(readField(data, "currentServerLabel", readField(data, "currentServer", "")) || "");
+  const step = String(readField(data, "currentStep", "") || "");
+  selectedDeviceSummary.textContent = `${displayName}｜${status}／${online}${server ? `｜${server}` : ""}${step ? `｜${step}` : ""}`;
+}
+
 function refreshMeta() {
   const id = pcDropdown.value;
   clientMeta.innerHTML = "";
   if (!id || !cache.has(id)) return;
   const d = cache.get(id);
   const media = currentMediaData() || {};
+  const schedule = readServerSchedule(d);
+  const scheduleText = schedule.enabled && schedule.list.length > 0
+    ? schedule.list.map((name, index) => `${index + 1}. ${name}`).join(" → ")
+    : "無設定";
   const lines = [
     `UID: ${id}`,
     `顯示名稱: ${readField(d, "displayName", "-")}`,
@@ -425,12 +734,15 @@ function refreshMeta() {
     `目前步驟: ${readField(d, "currentStep", "-")}${readField(d, "currentStepDetail", "") ? ` | ${readField(d, "currentStepDetail", "")}` : ""}`,
     `目前步驟等級: ${readField(d, "currentStepLevel", "-")}`,
     `目前伺服器: ${readField(d, "currentServerLabel", readField(d, "currentServer", "-"))}`,
+    `伺服器順序: ${scheduleText}`,
     `最後心跳: ${fmtTs(readField(d, "lastHeartbeat", 0))}`,
     `距今: ${fmtAge(readField(d, "lastHeartbeat", 0))}`,
     `最後畫面: ${fmtTs(readField(media, "latestScreenshotAt", 0))}（${fmtAge(readField(media, "latestScreenshotAt", 0))}）`,
     `錄影狀態: ${recordingStateLabel(String(readField(d, "recordingState", "") || ""))}`,
-    `最後 ACK: nonce=${readField(d, "lastAckNonce", 0)} state=${readField(d, "lastAckState", "-")} at=${fmtTs(readField(d, "lastAckAt", 0))}`,
+    `最後 ACK: nonce=${readField(d, "lastAckNonce", 0)} state=${readField(d, "lastAckState", "-")} result=${readField(d, "lastAckResult", "-")} at=${fmtTs(readField(d, "lastAckAt", 0))}`,
   ];
+  const ackDetail = String(readField(d, "lastAckDetail", "") || "").trim();
+  if (ackDetail) lines.push(`最後 ACK 說明: ${ackDetail}`);
   for (const t of lines) {
     const li = document.createElement("li");
     li.textContent = t;
@@ -656,15 +968,19 @@ function renderRuntimeEvents() {
   for (const entry of events) {
     const row = document.createElement("tr");
     const timeCell = document.createElement("td");
+    timeCell.dataset.label = "時間";
     timeCell.textContent = fmtTs(entry.at);
     const levelCell = document.createElement("td");
+    levelCell.dataset.label = "等級";
     const badge = document.createElement("span");
     badge.className = `event-level ${runtimeLevelClass(entry.level)}`;
     badge.textContent = entry.level;
     levelCell.appendChild(badge);
     const nameCell = document.createElement("td");
+    nameCell.dataset.label = "步驟／事件";
     nameCell.textContent = entry.name;
     const detailCell = document.createElement("td");
+    detailCell.dataset.label = "詳細內容";
     detailCell.textContent = entry.detail || "-";
     row.append(timeCell, levelCell, nameCell, detailCell);
     runtimeEventsBody.appendChild(row);
@@ -673,6 +989,7 @@ function renderRuntimeEvents() {
 
 function historyStatusLabel(entry) {
   if (entry.status === "ACKED") return "已 ACK";
+  if (entry.status === "REJECTED") return "未執行";
   if (entry.status === "SUPERSEDED") return "被後續命令跨過";
   if (entry.status === "UNRESPONSIVE") return "未回應";
   return "等待 ACK";
@@ -680,6 +997,7 @@ function historyStatusLabel(entry) {
 
 function historyStatusClass(entry) {
   if (entry.status === "ACKED") return "acked";
+  if (entry.status === "REJECTED") return "rejected";
   if (entry.status === "SUPERSEDED") return "superseded";
   if (entry.status === "UNRESPONSIVE") return "unresponsive";
   return "waiting";
@@ -687,7 +1005,12 @@ function historyStatusClass(entry) {
 
 function historyStatusDetail(entry, clientData) {
   if (entry.status === "ACKED") {
+    if (entry.ackDetail) return entry.ackDetail;
     return entry.ackAt ? `ACK：${fmtTs(entry.ackAt)}` : "已收到 nonce 與狀態完全相符的 ACK";
+  }
+  if (entry.status === "REJECTED") {
+    const result = entry.ackResult || "REJECTED";
+    return entry.ackDetail ? `${result}：${entry.ackDetail}` : result;
   }
   if (entry.status === "SUPERSEDED") {
     return `ACK 已前進至 nonce=${toInteger(readField(clientData, "lastAckNonce", 0), 0)}，本筆沒有逐筆 ACK`;
@@ -696,9 +1019,19 @@ function historyStatusDetail(entry, clientData) {
     if (entry.statusReason === "ACK_STATE_MISMATCH") {
       return `收到相同 nonce，但 ACK 狀態不是 ${entry.requestedState}`;
     }
+    if (entry.statusReason === "ACK_TARGET_MISMATCH") {
+      return `收到相同 nonce 與狀態，但 ACK 的伺服器目標不相符`;
+    }
     return `送出超過 ${ACK_TIMEOUT_MS / 1000} 秒仍沒有對應 ACK`;
   }
   return `等待 nonce=${entry.commandNonce}、state=${entry.requestedState} 的精確 ACK`;
+}
+
+function commandHistoryLabel(entry) {
+  if (entry.requestedState !== "SWITCH_SERVER") return entry.requestedState;
+  const target = entry.targetServerName || "未知伺服器";
+  const prefix = entry.targetServerIndex > 0 ? `${entry.targetServerIndex}. ` : "";
+  return `切換伺服器 → ${prefix}${target}`;
 }
 
 function renderHistory() {
@@ -720,21 +1053,26 @@ function renderHistory() {
     const row = document.createElement("tr");
 
     const sentCell = document.createElement("td");
+    sentCell.dataset.label = "送出時間";
     sentCell.textContent = fmtTs(entry.sentAt);
 
     const stateCell = document.createElement("td");
-    stateCell.textContent = entry.requestedState;
+    stateCell.dataset.label = "指令";
+    stateCell.textContent = commandHistoryLabel(entry);
 
     const nonceCell = document.createElement("td");
+    nonceCell.dataset.label = "Nonce";
     nonceCell.textContent = String(entry.commandNonce);
 
     const statusCell = document.createElement("td");
+    statusCell.dataset.label = "狀態";
     const badge = document.createElement("span");
     badge.className = `status-badge ${historyStatusClass(entry)}`;
     badge.textContent = historyStatusLabel(entry);
     statusCell.appendChild(badge);
 
     const detailCell = document.createElement("td");
+    detailCell.dataset.label = "說明";
     detailCell.textContent = historyStatusDetail(entry, data);
 
     row.append(sentCell, stateCell, nonceCell, statusCell, detailCell);
@@ -755,6 +1093,14 @@ function renderCommandStatus() {
   }
 
   if (commandError && commandError.clientId === pcDropdown.value) {
+    if (commandError.result === "NO_SERVER_CONFIG") {
+      setCommandStatus("rejected", "無設定：無法切換伺服器", commandError.message);
+      return;
+    }
+    if (commandError.result) {
+      setCommandStatus("rejected", `未執行：${commandError.state}`, `${commandError.result}：${commandError.message}`);
+      return;
+    }
     setCommandStatus("error", `下發 ${commandError.state} 失敗`, commandError.message);
     return;
   }
@@ -774,8 +1120,20 @@ function renderCommandStatus() {
   if (latest.status === "ACKED") {
     setCommandStatus(
       "acked",
-      `已 ACK：${latest.requestedState}（nonce=${latest.commandNonce}）`,
-      latest.ackAt ? `裝置回覆時間：${fmtTs(latest.ackAt)}` : "nonce 與狀態均已確認相符。",
+      `已 ACK：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
+      latest.ackDetail || (latest.ackAt ? `裝置回覆時間：${fmtTs(latest.ackAt)}` : "nonce 與狀態均已確認相符。"),
+    );
+    return;
+  }
+
+  if (latest.status === "REJECTED") {
+    const noSetting = latest.ackResult === "NO_SERVER_CONFIG";
+    setCommandStatus(
+      "rejected",
+      noSetting
+        ? "無設定：無法切換伺服器"
+        : `未執行：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
+      historyStatusDetail(latest, data),
     );
     return;
   }
@@ -783,7 +1141,7 @@ function renderCommandStatus() {
   if (latest.status === "SUPERSEDED") {
     setCommandStatus(
       "superseded",
-      `未逐筆 ACK：${latest.requestedState}（nonce=${latest.commandNonce}）`,
+      `未逐筆 ACK：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
       historyStatusDetail(latest, data),
     );
     return;
@@ -792,7 +1150,7 @@ function renderCommandStatus() {
   if (latest.status === "UNRESPONSIVE") {
     setCommandStatus(
       "unresponsive",
-      `未回應：${latest.requestedState}（nonce=${latest.commandNonce}）`,
+      `未回應：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
       historyStatusDetail(latest, data),
     );
     return;
@@ -802,18 +1160,369 @@ function renderCommandStatus() {
   const secondsLeft = Math.max(0, Math.ceil((ACK_TIMEOUT_MS - elapsed) / 1000));
   setCommandStatus(
     "waiting",
-    `已送出 ${latest.requestedState}（nonce=${latest.commandNonce}），等待 ACK`,
+    `已送出 ${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}），等待 ACK`,
     `尚未確認成功；${secondsLeft} 秒後若仍沒有精確 ACK，會標示未回應。`,
   );
 }
 
+function settingsSourceKey(clientId, settings) {
+  return `${clientId}:${settings.sourceKind}:${settings.sourceRevision}:${JSON.stringify({
+    serverScheduleEnabled: settings.serverScheduleEnabled,
+    serverScheduleList: settings.serverScheduleList,
+    mailNotifyEnabled: settings.mailNotifyEnabled,
+    runtimeDiagnosticsEnabled: settings.runtimeDiagnosticsEnabled,
+    runtimeDiagnosticsIntervalSec: settings.runtimeDiagnosticsIntervalSec,
+    runtimeDiagnosticsErrorKeepCount: settings.runtimeDiagnosticsErrorKeepCount,
+    maxRestartCount: settings.maxRestartCount,
+  })}`;
+}
+
+function currentServerOrderValues() {
+  return [...settingsServerList.querySelectorAll("input[data-server-name]")]
+    .map((input) => input.value.trim());
+}
+
+function renderSettingsServerRows(values) {
+  const list = Array.isArray(values) ? values.slice(0, MAX_REMOTE_SERVERS) : [];
+  settingsServerList.replaceChildren();
+  if (list.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "server-order-empty";
+    empty.textContent = "尚未設定伺服器；請按「新增伺服器」。";
+    settingsServerList.appendChild(empty);
+    return;
+  }
+
+  list.forEach((name, index) => {
+    const row = document.createElement("div");
+    row.className = "server-order-row";
+
+    const order = document.createElement("span");
+    order.className = "server-order-index";
+    order.textContent = String(index + 1);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = name;
+    input.maxLength = 80;
+    input.dataset.serverName = "true";
+    input.setAttribute("aria-label", `第 ${index + 1} 個伺服器名稱`);
+    input.addEventListener("input", markSettingsDirty);
+
+    const up = document.createElement("button");
+    up.type = "button";
+    up.textContent = "上移";
+    up.disabled = index === 0 || settingsSaving;
+    up.setAttribute("aria-label", `將 ${name || `第 ${index + 1} 項`} 上移`);
+    up.addEventListener("click", () => {
+      const next = currentServerOrderValues();
+      [next[index - 1], next[index]] = [next[index], next[index - 1]];
+      renderSettingsServerRows(next);
+      markSettingsDirty();
+    });
+
+    const down = document.createElement("button");
+    down.type = "button";
+    down.textContent = "下移";
+    down.disabled = index === list.length - 1 || settingsSaving;
+    down.setAttribute("aria-label", `將 ${name || `第 ${index + 1} 項`} 下移`);
+    down.addEventListener("click", () => {
+      const next = currentServerOrderValues();
+      [next[index], next[index + 1]] = [next[index + 1], next[index]];
+      renderSettingsServerRows(next);
+      markSettingsDirty();
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove-server";
+    remove.textContent = "移除";
+    remove.disabled = settingsSaving;
+    remove.setAttribute("aria-label", `移除 ${name || `第 ${index + 1} 項`}`);
+    remove.addEventListener("click", () => {
+      const next = currentServerOrderValues();
+      next.splice(index, 1);
+      renderSettingsServerRows(next);
+      markSettingsDirty();
+    });
+
+    row.append(order, input, up, down, remove);
+    settingsServerList.appendChild(row);
+  });
+}
+
+function setSettingsFormDisabled(disabled) {
+  const value = Boolean(disabled);
+  settingsForm.dataset.disabled = value ? "true" : "false";
+  for (const control of settingsForm.querySelectorAll("input, button")) {
+    control.disabled = value;
+  }
+  if (!value) {
+    btnSaveSettings.disabled = !settingsDirty || settingsSaving;
+    btnAddServer.disabled = currentServerOrderValues().length >= MAX_REMOTE_SERVERS || settingsSaving;
+    btnReloadSettings.disabled = settingsSaving;
+    for (const [index, row] of [...settingsServerList.querySelectorAll(".server-order-row")].entries()) {
+      const buttons = row.querySelectorAll("button");
+      if (buttons[0]) buttons[0].disabled = index === 0 || settingsSaving;
+      if (buttons[1]) buttons[1].disabled = index === settingsServerList.querySelectorAll(".server-order-row").length - 1 || settingsSaving;
+      if (buttons[2]) buttons[2].disabled = settingsSaving;
+    }
+  }
+}
+
+function setSettingsStatus(kind, title, detail) {
+  settingsStatus.dataset.status = kind;
+  settingsStatusTitle.textContent = title;
+  settingsStatusDetail.textContent = detail;
+}
+
+function populateSettingsForm(settings, clientId) {
+  settingsServerEnabled.checked = settings.serverScheduleEnabled;
+  renderSettingsServerRows(settings.serverScheduleList);
+  settingsMailEnabled.checked = settings.mailNotifyEnabled;
+  settingsDiagnosticsEnabled.checked = settings.runtimeDiagnosticsEnabled;
+  settingsDiagnosticsInterval.value = String(settings.runtimeDiagnosticsIntervalSec || 60);
+  settingsDiagnosticsKeepCount.value = String(settings.runtimeDiagnosticsErrorKeepCount || 30);
+  settingsMaxRestartCount.value = String(settings.maxRestartCount || 10);
+  settingsFormClientId = clientId;
+  settingsFormSourceKey = settingsSourceKey(clientId, settings);
+  settingsDirty = false;
+  settingsError = "";
+}
+
+function markSettingsDirty() {
+  if (!selectedClientData()) return;
+  settingsDirty = true;
+  settingsError = "";
+  settingsDirtyHint.textContent = "有尚未儲存的變更";
+  renderSettingsStatus();
+  setSettingsFormDisabled(settingsSaving);
+}
+
+function renderSettingsStatus() {
+  const data = selectedClientData();
+  if (!data) {
+    setSettingsStatus("idle", "尚未選擇裝置", "請先選擇一台電腦。");
+    return;
+  }
+
+  const settings = readRemoteSettings(data, !settingsPreferEffective);
+  if (!settings.supported) {
+    setSettingsStatus("rejected", "此裝置尚不支援網頁設定", "需更新執行端 Payload；舊版裝置仍可使用總覽控制功能。");
+    return;
+  }
+  if (settingsSaving) {
+    setSettingsStatus("pending", "正在儲存設定…", "Firestore 原子交易提交中，尚未宣告成功。");
+    return;
+  }
+  if (settingsError) {
+    setSettingsStatus("error", "設定尚未儲存", settingsError);
+    return;
+  }
+  if (settingsDirty) {
+    setSettingsStatus("dirty", "有尚未儲存的變更", "按下「儲存到所選裝置」後，才會建立新的設定 revision。");
+    return;
+  }
+
+  if (settings.desiredRevision <= 0) {
+    setSettingsStatus("idle", "目前顯示本機設定", "尚未從網頁送出設定；第一次儲存後會顯示套用 ACK。");
+    return;
+  }
+
+  if (settings.lastAckRevision === settings.desiredRevision) {
+    if (settings.lastAckResult === "APPLIED") {
+      setSettingsStatus("applied", `已套用 revision ${settings.desiredRevision}`, settings.lastAckDetail || `裝置回覆時間：${fmtTs(settings.lastAckAt)}`);
+      return;
+    }
+    if (settings.lastAckResult === "SAVED_NEXT_RUN") {
+      setSettingsStatus("next-run", `已儲存 revision ${settings.desiredRevision}`, settings.lastAckDetail || "伺服器設定會在下一次流程啟動時生效。");
+      return;
+    }
+    setSettingsStatus(
+      "rejected",
+      `裝置未套用 revision ${settings.desiredRevision}`,
+      `${settings.lastAckResult || "REJECTED"}：${settings.lastAckDetail || "裝置拒絕設定"}`,
+    );
+    return;
+  }
+
+  if (settings.effectiveRevision >= settings.desiredRevision) {
+    setSettingsStatus("applied", `已寫入本機 revision ${settings.desiredRevision}`, "設定已持久保存；最後 ACK 顯示可能因網路中斷而延遲。");
+    return;
+  }
+
+  if (isClientOnline(data)) {
+    setSettingsStatus("pending", `已送出 revision ${settings.desiredRevision}，等待 ACK`, "沿用現有 10 秒輪詢；不會另外增加資料庫讀取頻率。");
+  } else {
+    setSettingsStatus("pending", `已儲存 revision ${settings.desiredRevision}`, "裝置目前離線；下次上線仍會套用，不會遺失。");
+  }
+}
+
+function renderSettingsPage(force = false) {
+  const id = pcDropdown.value;
+  const data = selectedClientData();
+  if (!id || !data) {
+    settingsSupportBadge.className = "settings-support-badge idle";
+    settingsSupportBadge.textContent = "等待裝置";
+    settingsFormClientId = "";
+    settingsFormSourceKey = "";
+    settingsDirty = false;
+    setSettingsFormDisabled(true);
+    renderSettingsStatus();
+    return;
+  }
+
+  const settings = readRemoteSettings(data, !settingsPreferEffective);
+  if (!settings.supported) {
+    settingsSupportBadge.className = "settings-support-badge unsupported";
+    settingsSupportBadge.textContent = "需更新 Payload";
+    setSettingsFormDisabled(true);
+    renderSettingsStatus();
+    return;
+  }
+
+  settingsSupportBadge.className = "settings-support-badge supported";
+  settingsSupportBadge.textContent = "支援遠端設定";
+  const nextSourceKey = settingsSourceKey(id, settings);
+  if (force || settingsFormClientId !== id || (!settingsDirty && settingsFormSourceKey !== nextSourceKey)) {
+    populateSettingsForm(settings, id);
+  }
+
+  settingsMailHint.textContent = settings.mailNotifyConfigured
+    ? "本機 SMTP 欄位已完成；郵件帳密不會上傳到 Firestore。"
+    : "本機尚未完成 SMTP 欄位；可從網頁停用，但裝置會拒絕從網頁啟用。";
+  settingsMailHint.classList.toggle("danger-text", !settings.mailNotifyConfigured);
+  settingsDirtyHint.textContent = settingsDirty ? "有尚未儲存的變更" : "沒有未儲存的變更";
+  setSettingsFormDisabled(settingsSaving);
+  renderSettingsStatus();
+}
+
+function validateSettingsForm(data) {
+  const serverScheduleList = currentServerOrderValues();
+  if (serverScheduleList.length > MAX_REMOTE_SERVERS) {
+    throw new Error(`伺服器最多 ${MAX_REMOTE_SERVERS} 個`);
+  }
+  if (settingsServerEnabled.checked && serverScheduleList.length === 0) {
+    throw new Error("啟用伺服器排程時，至少要設定 1 個伺服器");
+  }
+  if (serverScheduleList.some((name) => !name)) {
+    throw new Error("伺服器名稱不可空白；請填寫或移除該項目");
+  }
+
+  const seen = new Set();
+  for (const name of serverScheduleList) {
+    if (name.length > 80) throw new Error(`伺服器名稱過長：${name.slice(0, 20)}…`);
+    const parsed = parseServerScheduleText(name);
+    if (parsed.length !== 1 || parsed[0] !== name) {
+      throw new Error(`伺服器名稱不可含清單分隔符號：${name}`);
+    }
+    const key = name.toLocaleLowerCase("zh-TW");
+    if (seen.has(key)) throw new Error(`伺服器名稱重複：${name}`);
+    seen.add(key);
+  }
+
+  const maxRestartCount = toInteger(settingsMaxRestartCount.value, 0);
+  const runtimeDiagnosticsIntervalSec = toInteger(settingsDiagnosticsInterval.value, 0);
+  const runtimeDiagnosticsErrorKeepCount = toInteger(settingsDiagnosticsKeepCount.value, 0);
+  if (maxRestartCount < 1 || maxRestartCount > 50) throw new Error("最大重啟次數必須介於 1～50");
+  if (runtimeDiagnosticsIntervalSec < 60 || runtimeDiagnosticsIntervalSec > 600) {
+    throw new Error("快照間隔必須介於 60～600 秒；最低 60 秒用來保護免費額度");
+  }
+  if (runtimeDiagnosticsErrorKeepCount < 5 || runtimeDiagnosticsErrorKeepCount > 200) {
+    throw new Error("錯誤圖片保留份數必須介於 5～200");
+  }
+
+  const currentSettings = readRemoteSettings(data, false);
+  if (settingsMailEnabled.checked && !currentSettings.mailNotifyConfigured) {
+    throw new Error("本機尚未完成 SMTP 設定，無法從網頁啟用郵件通知");
+  }
+
+  return {
+    serverScheduleEnabled: settingsServerEnabled.checked,
+    serverScheduleList,
+    mailNotifyEnabled: settingsMailEnabled.checked,
+    runtimeDiagnosticsEnabled: settingsDiagnosticsEnabled.checked,
+    runtimeDiagnosticsIntervalSec,
+    runtimeDiagnosticsErrorKeepCount,
+    maxRestartCount,
+  };
+}
+
+async function saveRemoteSettings(event) {
+  event.preventDefault();
+  const id = pcDropdown.value;
+  const data = selectedClientData();
+  if (!id || !data) return;
+
+  let values;
+  try {
+    values = validateSettingsForm(data);
+  } catch (error) {
+    settingsError = error?.message || String(error);
+    renderSettingsPage();
+    return;
+  }
+
+  settingsSaving = true;
+  settingsError = "";
+  renderSettingsPage();
+  try {
+    const ref = doc(db, COLLECTION, id);
+    const updatedAt = Date.now();
+    const result = await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) throw new Error("選取的電腦文件不存在");
+      const current = snap.data();
+      if (toInteger(readField(current, "remoteSettingsSchemaVersion", 0), 0) < SETTINGS_SCHEMA_VERSION) {
+        throw new Error("裝置版本尚不支援遠端設定");
+      }
+
+      const currentRevision = Math.max(
+        0,
+        toInteger(readField(current, "desiredSettingsRevision", 0), 0),
+        toInteger(readField(current, "lastSettingsAckRevision", 0), 0),
+        toInteger(readField(current, "effectiveSettingsRevision", 0), 0),
+      );
+      const nextRevision = currentRevision + 1;
+      const update = {
+        desiredSettingsSchemaVersion: SETTINGS_SCHEMA_VERSION,
+        desiredSettingsRevision: nextRevision,
+        desiredServerScheduleEnabled: values.serverScheduleEnabled,
+        desiredServerScheduleList: values.serverScheduleList.join(" | "),
+        desiredMailNotifyEnabled: values.mailNotifyEnabled,
+        desiredRuntimeDiagnosticsEnabled: values.runtimeDiagnosticsEnabled,
+        desiredRuntimeDiagnosticsIntervalSec: values.runtimeDiagnosticsIntervalSec,
+        desiredRuntimeDiagnosticsErrorKeepCount: values.runtimeDiagnosticsErrorKeepCount,
+        desiredMaxRestartCount: values.maxRestartCount,
+        desiredSettingsUpdatedAt: updatedAt,
+      };
+      transaction.update(ref, update);
+      return { nextRevision, data: { ...current, ...update } };
+    });
+
+    cache.set(id, result.data);
+    settingsSaving = false;
+    settingsDirty = false;
+    settingsPreferEffective = false;
+    settingsFormSourceKey = "";
+    renderSelectedClient();
+  } catch (error) {
+    settingsSaving = false;
+    settingsError = error?.message || String(error);
+    renderSettingsPage();
+  }
+}
+
 function renderSelectedClient() {
+  renderDeviceSummary();
   refreshMeta();
   renderRecordingStatus();
   renderSnapshot();
   renderRuntimeEvents();
   renderHistory();
   renderCommandStatus();
+  renderServerSwitch();
+  renderSettingsPage();
   setButtonsDisabled(sending);
 }
 
@@ -905,7 +1614,13 @@ function startClientListener() {
   );
 }
 
-async function sendCommand(state) {
+function commandValidationError(result, message) {
+  const error = new Error(message);
+  error.commandResult = result;
+  return error;
+}
+
+async function sendCommand(state, payload = {}) {
   const id = pcDropdown.value;
   if (!id) {
     statusMsg.textContent = "請先選擇一台在線電腦";
@@ -918,8 +1633,40 @@ async function sendCommand(state) {
     return;
   }
 
+  let requestedServerIndex = 0;
+  let requestedServerName = "";
+  if (commandState === "SWITCH_SERVER") {
+    const schedule = readServerSchedule(selectedClientData() || {});
+    requestedServerIndex = toInteger(payload.serverIndex, 0);
+    requestedServerName = String(payload.serverName || "").trim();
+
+    if (!schedule.enabled || schedule.list.length < 2) {
+      setCommandStatus(
+        "rejected",
+        "無設定：無法切換伺服器",
+        "程式必須啟用伺服器排程並至少設定 2 個伺服器。",
+      );
+      return;
+    }
+    if (
+      requestedServerIndex < 1 ||
+      requestedServerIndex > schedule.list.length ||
+      schedule.list[requestedServerIndex - 1] !== requestedServerName
+    ) {
+      renderServerSwitch();
+      setCommandStatus("rejected", "伺服器設定已變更", "已重新載入順序，請再選擇一次。");
+      return;
+    }
+    if (requestedServerIndex === schedule.currentIndex && requestedServerName === schedule.currentName) {
+      setCommandStatus("rejected", "不需要切換", `${requestedServerIndex}. ${requestedServerName} 就是目前伺服器。`);
+      return;
+    }
+  }
+
   sending = true;
-  sendingState = commandState;
+  sendingState = commandState === "SWITCH_SERVER"
+    ? `切換伺服器 → ${requestedServerIndex}. ${requestedServerName}`
+    : commandState;
   commandError = null;
   renderSelectedClient();
 
@@ -931,6 +1678,35 @@ async function sendCommand(state) {
       if (!current.exists()) throw new Error("選取的電腦文件不存在");
 
       const data = current.data();
+      if (commandState === "SWITCH_SERVER") {
+        const currentSchedule = readServerSchedule(data);
+        if (!currentSchedule.enabled || currentSchedule.list.length < 2) {
+          throw commandValidationError(
+            "NO_SERVER_CONFIG",
+            "程式尚未啟用至少 2 個伺服器的排程。",
+          );
+        }
+        if (
+          requestedServerIndex < 1 ||
+          requestedServerIndex > currentSchedule.list.length ||
+          currentSchedule.list[requestedServerIndex - 1] !== requestedServerName
+        ) {
+          throw commandValidationError(
+            "CONFIG_CHANGED",
+            "裝置的伺服器順序已變更，請重新選擇。",
+          );
+        }
+        if (
+          requestedServerIndex === currentSchedule.currentIndex &&
+          requestedServerName === currentSchedule.currentName
+        ) {
+          throw commandValidationError(
+            "ALREADY_CURRENT",
+            `${requestedServerIndex}. ${requestedServerName} 就是目前伺服器。`,
+          );
+        }
+      }
+
       const currentNonce = Math.max(0, toInteger(readField(data, "nonce", 0), 0));
       const nextNonce = currentNonce + 1;
       const reconciled = deriveCommandHistory(data, sentAt);
@@ -938,9 +1714,13 @@ async function sendCommand(state) {
         commandId: String(nextNonce),
         commandNonce: nextNonce,
         requestedState: commandState,
+        targetServerIndex: requestedServerIndex,
+        targetServerName: requestedServerName,
         sentAt,
         status: "WAITING_ACK",
         ackAt: 0,
+        ackResult: "",
+        ackDetail: "",
         statusUpdatedAt: sentAt,
         statusReason: "",
       };
@@ -956,6 +1736,8 @@ async function sendCommand(state) {
       transaction.update(ref, {
         desiredState: commandState,
         nonce: nextNonce,
+        requestedServerIndex,
+        requestedServerName,
         commandUpdatedAt: sentAt,
         commandHistory,
       });
@@ -966,6 +1748,8 @@ async function sendCommand(state) {
           ...data,
           desiredState: commandState,
           nonce: nextNonce,
+          requestedServerIndex,
+          requestedServerName,
           commandUpdatedAt: sentAt,
           commandHistory,
         },
@@ -983,7 +1767,10 @@ async function sendCommand(state) {
     sendingState = "";
     commandError = {
       clientId: id,
-      state: commandState,
+      state: commandState === "SWITCH_SERVER"
+        ? `切換伺服器 → ${requestedServerIndex}. ${requestedServerName}`
+        : commandState,
+      result: e?.commandResult || "",
       message: e?.message || String(e),
     };
     renderSelectedClient();
@@ -996,8 +1783,33 @@ btnStop.addEventListener("click", () => {
   if (!confirm("確定要遠端關閉腳本並完整關閉遊戲/OKWW/LRMCAI？")) return;
   void sendCommand("STOP");
 });
+btnSwitchServer.addEventListener("click", () => {
+  const schedule = readServerSchedule(selectedClientData() || {});
+  if (!schedule.enabled || schedule.list.length < 2) {
+    setCommandStatus(
+      "rejected",
+      "無設定：無法切換伺服器",
+      "程式必須啟用伺服器排程並至少設定 2 個伺服器。",
+    );
+    return;
+  }
+
+  const serverIndex = toInteger(serverTargetSelect.value, 0);
+  const serverName = schedule.list[serverIndex - 1] || "";
+  if (!serverIndex || !serverName) {
+    setCommandStatus("rejected", "尚未選擇伺服器", "請先選擇要跳轉的伺服器。");
+    return;
+  }
+  if (!confirm(`確定要結束目前流程，並跳到 ${serverIndex}. ${serverName}？`)) return;
+  void sendCommand("SWITCH_SERVER", { serverIndex, serverName });
+});
 pcDropdown.addEventListener("change", () => {
   renderedScreenshotKey = "";
+  settingsDirty = false;
+  settingsError = "";
+  settingsPreferEffective = false;
+  settingsFormClientId = "";
+  settingsFormSourceKey = "";
   startSelectedMediaSubscription(true);
   renderSelectedClient();
   void reconcileClientHistory(pcDropdown.value);
@@ -1005,8 +1817,47 @@ pcDropdown.addEventListener("change", () => {
 btnRefreshSnapshot.addEventListener("click", () => {
   startSelectedMediaSubscription(true);
 });
+for (const tab of viewTabs) {
+  tab.addEventListener("click", () => setActiveView(tab.dataset.view));
+}
+window.addEventListener("hashchange", () => setActiveView(location.hash.slice(1), false));
+document.addEventListener("visibilitychange", () => startSelectedMediaSubscription(true));
+
+settingsForm.addEventListener("submit", (event) => void saveRemoteSettings(event));
+for (const control of [
+  settingsServerEnabled,
+  settingsMaxRestartCount,
+  settingsDiagnosticsEnabled,
+  settingsDiagnosticsInterval,
+  settingsDiagnosticsKeepCount,
+  settingsMailEnabled,
+]) {
+  control.addEventListener("input", markSettingsDirty);
+  control.addEventListener("change", markSettingsDirty);
+}
+btnAddServer.addEventListener("click", () => {
+  const values = currentServerOrderValues();
+  if (values.length >= MAX_REMOTE_SERVERS) {
+    settingsError = `伺服器最多 ${MAX_REMOTE_SERVERS} 個`;
+    renderSettingsPage();
+    return;
+  }
+  values.push("");
+  renderSettingsServerRows(values);
+  markSettingsDirty();
+  settingsServerList.querySelector(".server-order-row:last-child input")?.focus();
+});
+btnReloadSettings.addEventListener("click", () => {
+  settingsPreferEffective = true;
+  settingsDirty = false;
+  settingsError = "";
+  settingsFormSourceKey = "";
+  renderSettingsPage(true);
+});
 
 statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
+setActiveView(activeView, false);
 startClientListener();
 window.setInterval(renderCommandStatus, 1000);
+window.setInterval(renderSettingsStatus, 1000);
 window.setInterval(() => void cleanupStaleClients(), 60_000);

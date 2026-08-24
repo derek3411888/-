@@ -18,15 +18,19 @@ global RC_REMOTE_PAUSED := false
 global RC_LAST_HEARTBEAT_OK := 0
 global RC_LAST_ERROR_MSG := ""
 global RC_ON_STATE_CHANGED := ""
+global RC_ON_SETTINGS_CHANGED := ""
+global RC_LAST_SETTINGS_SEEN_REVISION := 0
+global RC_LAST_SETTINGS_APPLIED_REVISION := 0
 global RC_RECENT_EVENTS := []
 global RC_RECENT_EVENT_LIMIT := 50
 global RC_LAST_EVENT_AT := 0
 global RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT := true
 
-RC_Init(cfgPath, onStateChangedCallback := "") {
+RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") {
     global RC_ENABLED, RC_PROJECT_ID, RC_API_KEY, RC_COLLECTION, RC_CFG_PATH, RC_UID, RC_DISPLAY_NAME, RC_DEVICE_ALIAS
     global RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS, RC_TIMEOUT_MS
-    global RC_ON_STATE_CHANGED, RC_REMOTE_DESIRED_STATE, RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT
+    global RC_ON_STATE_CHANGED, RC_ON_SETTINGS_CHANGED, RC_REMOTE_DESIRED_STATE, RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT
+    global RC_LAST_SETTINGS_SEEN_REVISION, RC_LAST_SETTINGS_APPLIED_REVISION
 
     RC_EnsureRemoteControlDefaults(cfgPath)
     RC_CFG_PATH := cfgPath
@@ -34,6 +38,7 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
     enabled := RC_ParseBool01(RC_IniReadSafe(cfgPath, "remote_control", "enabled", "0"), 0)
     RC_ENABLED := enabled ? true : false
     RC_ON_STATE_CHANGED := onStateChangedCallback
+    RC_ON_SETTINGS_CHANGED := onSettingsChangedCallback
 
     if !RC_ENABLED
         return false
@@ -70,6 +75,10 @@ RC_Init(cfgPath, onStateChangedCallback := "") {
 
     RC_REMOTE_DESIRED_STATE := "RUN"
     RC_LAST_NONCE := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "last_nonce", "0"), 0, 0, 2147483647)
+    RC_LAST_SETTINGS_SEEN_REVISION := RC_ToIntRange(
+        RC_IniReadSafe(cfgPath, "remote_control", "last_settings_seen_revision", "0"), 0, 0, 2147483647)
+    RC_LAST_SETTINGS_APPLIED_REVISION := RC_ToIntRange(
+        RC_IniReadSafe(cfgPath, "remote_control", "applied_settings_revision", "0"), 0, 0, 2147483647)
 
     RC_StartupDefaultRun()
 
@@ -88,6 +97,7 @@ RC_StartupDefaultRun() {
 
     resp := RC_FirestoreGetClientDoc()
     if (resp != "") {
+        RC_ProcessRemoteSettings(resp)
         docNonce := RC_JsonGetInteger(resp, "nonce", 0)
         if (docNonce > RC_LAST_NONCE)
             RC_LAST_NONCE := docNonce
@@ -169,11 +179,25 @@ RC_BuildRecentEventsJson() {
     return json "]"
 }
 
+RC_BuildStringArrayJson(values) {
+    json := "["
+    if IsObject(values) {
+        for idx, value in values {
+            if (idx > 1)
+                json .= ","
+            json .= '"' RC_JsonEsc(Trim(value, " `t`r`n")) '"'
+        }
+    }
+    return json "]"
+}
+
 RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height := 0) {
     global RC_ENABLED, RC_UID
     if !RC_ENABLED
         return false
-    if (dataUri = "" || StrLen(dataUri) > 300000) {
+    ; 單張硬上限配合每 60 秒節流，讓單一可見總覽頁即使全天開啟，
+    ; 仍對 Firestore 免費層每月 10 GiB outbound 留有餘裕。
+    if (dataUri = "" || StrLen(dataUri) > 140000) {
         RC_Log("Runtime snapshot skipped: empty or too large (chars=" StrLen(dataUri) ")", "WARN")
         return false
     }
@@ -261,6 +285,10 @@ RC_PollCommandTick() {
     if (resp = "")
         return
 
+    ; 遠端設定是持久 desired revision，不依賴一次性 command nonce。
+    ; 因此裝置離線時儲存的設定，下一次啟動仍會套用。
+    RC_ProcessRemoteSettings(resp)
+
     desired := RC_JsonGetString(resp, "desiredState")
     if (desired = "")
         desired := "RUN"
@@ -269,30 +297,135 @@ RC_PollCommandTick() {
     if (nonce <= RC_LAST_NONCE)
         return
 
+    requestedServerIndex := RC_JsonGetInteger(resp, "requestedServerIndex", 0)
+    requestedServerName := RC_JsonGetString(resp, "requestedServerName")
     RC_LAST_NONCE := nonce
-    RC_ApplyRemoteState(desired, nonce)
+    RC_ApplyRemoteState(desired, nonce, {
+        serverIndex: requestedServerIndex,
+        serverName: requestedServerName
+    })
 }
 
-RC_ApplyRemoteState(desired, nonce) {
+RC_ProcessRemoteSettings(resp) {
+    global RC_ON_SETTINGS_CHANGED, RC_CFG_PATH
+    global RC_LAST_SETTINGS_SEEN_REVISION, RC_LAST_SETTINGS_APPLIED_REVISION
+
+    revision := RC_JsonGetInteger(resp, "desiredSettingsRevision", 0)
+    if (revision <= 0 || revision <= RC_LAST_SETTINGS_SEEN_REVISION)
+        return
+
+    settings := {
+        revision: revision,
+        schemaVersion: RC_JsonGetInteger(resp, "desiredSettingsSchemaVersion", 1),
+        serverScheduleEnabled: RC_JsonGetBoolean(resp, "desiredServerScheduleEnabled", false),
+        serverScheduleList: RC_JsonGetString(resp, "desiredServerScheduleList"),
+        mailNotifyEnabled: RC_JsonGetBoolean(resp, "desiredMailNotifyEnabled", false),
+        runtimeDiagnosticsEnabled: RC_JsonGetBoolean(resp, "desiredRuntimeDiagnosticsEnabled", true),
+        runtimeDiagnosticsIntervalSec: RC_JsonGetInteger(resp, "desiredRuntimeDiagnosticsIntervalSec", 60),
+        runtimeDiagnosticsErrorKeepCount: RC_JsonGetInteger(resp, "desiredRuntimeDiagnosticsErrorKeepCount", 30),
+        maxRestartCount: RC_JsonGetInteger(resp, "desiredMaxRestartCount", 10)
+    }
+
+    resultCode := "REJECTED"
+    resultDetail := "裝置未完成遠端設定處理"
+    applied := false
+    Critical "On"
+    try {
+        if (settings.schemaVersion != 1) {
+            resultCode := "UNSUPPORTED_SCHEMA"
+            resultDetail := "不支援的遠端設定格式版本：" settings.schemaVersion
+        } else if (RC_ON_SETTINGS_CHANGED = "") {
+            resultCode := "NO_HANDLER"
+            resultDetail := "裝置未註冊遠端設定處理器"
+        } else {
+            try callbackResult := %RC_ON_SETTINGS_CHANGED%(settings)
+            catch as e
+                callbackResult := { code: "HANDLER_ERROR", detail: e.Message, applied: false }
+
+            if IsObject(callbackResult) {
+                if callbackResult.HasOwnProp("code") && Trim(callbackResult.code, " `t`r`n") != ""
+                    resultCode := StrUpper(Trim(callbackResult.code, " `t`r`n"))
+                if callbackResult.HasOwnProp("detail") && Trim(callbackResult.detail, " `t`r`n") != ""
+                    resultDetail := Trim(callbackResult.detail, " `t`r`n")
+                if callbackResult.HasOwnProp("applied")
+                    applied := callbackResult.applied ? true : false
+            }
+        }
+
+        RC_LAST_SETTINGS_SEEN_REVISION := revision
+        try IniWrite(revision, RC_CFG_PATH, "remote_control", "last_settings_seen_revision")
+        if applied {
+            RC_LAST_SETTINGS_APPLIED_REVISION := revision
+            try IniWrite(revision, RC_CFG_PATH, "remote_control", "applied_settings_revision")
+        }
+        ackAt := RC_UnixMs()
+        safeDetail := SubStr(StrReplace(StrReplace(resultDetail, "`r", " "), "`n", " "), 1, 800)
+        try IniWrite(revision, RC_CFG_PATH, "remote_control", "last_settings_ack_revision")
+        try IniWrite(resultCode, RC_CFG_PATH, "remote_control", "last_settings_ack_result")
+        try IniWrite(safeDetail, RC_CFG_PATH, "remote_control", "last_settings_ack_detail")
+        try IniWrite(applied ? 1 : 0, RC_CFG_PATH, "remote_control", "last_settings_ack_applied")
+        try IniWrite(ackAt, RC_CFG_PATH, "remote_control", "last_settings_ack_at")
+        RC_PatchSettingsAck(revision, resultCode, safeDetail, applied, ackAt)
+    } finally {
+        Critical "Off"
+    }
+    RC_Log("Remote settings handled: revision=" revision " result=" resultCode " applied=" (applied ? "1" : "0") " detail=" resultDetail)
+}
+
+RC_ApplyRemoteState(desired, nonce, command := "") {
     global RC_REMOTE_DESIRED_STATE, RC_ON_STATE_CHANGED, RC_CFG_PATH
     d := StrUpper(Trim(desired, " `t`r`n"))
-    if (d != "RUN" && d != "PAUSE" && d != "STOP")
+    if (d != "RUN" && d != "PAUSE" && d != "STOP" && d != "SWITCH_SERVER")
         d := "RUN"
 
     RC_REMOTE_DESIRED_STATE := d
+
+    ; 命令游標先持久化，避免切服重啟後重新套用同一筆動作命令。
+    try IniWrite(nonce, RC_CFG_PATH, "remote_control", "last_nonce")
+
+    if (d = "SWITCH_SERVER") {
+        ; 切服是一次性動作，不把 client 執行狀態改成 SWITCH_SERVER。
+        ; callback 只負責驗證、落盤並排程延後切服；ACK 必須在真正關閉前送出。
+        resultCode := "HANDLER_ERROR"
+        resultDetail := "裝置未完成切服命令處理"
+        Critical "On"
+        try {
+            if (RC_ON_STATE_CHANGED = "") {
+                resultCode := "NO_HANDLER"
+                resultDetail := "裝置未註冊切服處理器"
+            } else {
+                try result := %RC_ON_STATE_CHANGED%(d, command)
+                catch as e
+                    result := { code: "HANDLER_ERROR", detail: e.Message }
+
+                if IsObject(result) {
+                    if result.HasOwnProp("code") && Trim(result.code, " `t`r`n") != ""
+                        resultCode := StrUpper(Trim(result.code, " `t`r`n"))
+                    if result.HasOwnProp("detail") && Trim(result.detail, " `t`r`n") != ""
+                        resultDetail := Trim(result.detail, " `t`r`n")
+                }
+            }
+
+            serverIndex := IsObject(command) && command.HasOwnProp("serverIndex") ? command.serverIndex : 0
+            serverName := IsObject(command) && command.HasOwnProp("serverName") ? command.serverName : ""
+            RC_PatchCommandAck(nonce, d, resultCode, resultDetail, serverIndex, serverName)
+        } finally {
+            Critical "Off"
+        }
+        RC_Log("Remote switch command handled: nonce=" nonce " result=" resultCode " detail=" resultDetail)
+        return
+    }
+
     RC_SetPausedFlag(d = "PAUSE")
 
     ; 命令套用後立即同步狀態，避免要等下一次心跳才反映在網頁。
     RC_PatchClientState(d, false)
 
-    ; 命令游標持久化，避免重啟後重新套用舊命令。
-    try IniWrite(nonce, RC_CFG_PATH, "remote_control", "last_nonce")
-
     ; 先回 ACK，避免 STOP 直接觸發退出時遺失回覆。
-    RC_PatchCommandAck(nonce, d)
+    RC_PatchCommandAck(nonce, d, "APPLIED", "命令已套用")
 
     if (RC_ON_STATE_CHANGED != "") {
-        try %RC_ON_STATE_CHANGED%(d)
+        try %RC_ON_STATE_CHANGED%(d, command)
     }
 
     RC_Log("Remote command applied: state=" d " nonce=" nonce)
@@ -378,6 +511,51 @@ RC_ReadRecordingStatus() {
     }
 }
 
+RC_ReadEffectiveRemoteSettings() {
+    global RC_CFG_PATH, RC_LAST_SETTINGS_APPLIED_REVISION
+
+    mailPass := Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "smtp_pass", ""), " `t`r`n")
+    if (mailPass = "")
+        mailPass := Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "smtp_password", ""), " `t`r`n")
+    mailConfigured := (
+        Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "smtp_host", ""), " `t`r`n") != ""
+        && Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "smtp_port", ""), " `t`r`n") ~= "^\d+$"
+        && Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "smtp_user", ""), " `t`r`n") != ""
+        && mailPass != ""
+        && Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "from", ""), " `t`r`n") != ""
+        && Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "to", ""), " `t`r`n") != ""
+    )
+
+    return {
+        revision: RC_LAST_SETTINGS_APPLIED_REVISION,
+        serverScheduleEnabled: RC_ParseBool01(
+            RC_IniReadSafe(RC_CFG_PATH, "server_schedule", "enabled", "0"), 0) ? true : false,
+        serverScheduleList: Trim(
+            RC_IniReadSafe(RC_CFG_PATH, "server_schedule", "list", ""), " `t`r`n"),
+        mailNotifyEnabled: RC_ParseBool01(
+            RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "send_enabled", "1"), 1) ? true : false,
+        mailNotifyConfigured: mailConfigured ? true : false,
+        runtimeDiagnosticsEnabled: RC_ParseBool01(
+            RC_IniReadSafe(RC_CFG_PATH, "runtime_diagnostics", "enabled", "1"), 1) ? true : false,
+        runtimeDiagnosticsIntervalSec: RC_ToIntRange(
+            RC_IniReadSafe(RC_CFG_PATH, "runtime_diagnostics", "snapshot_interval_sec", "60"), 60, 60, 600),
+        runtimeDiagnosticsErrorKeepCount: RC_ToIntRange(
+            RC_IniReadSafe(RC_CFG_PATH, "runtime_diagnostics", "error_keep_count", "30"), 30, 5, 200),
+        maxRestartCount: RC_ToIntRange(
+            RC_IniReadSafe(RC_CFG_PATH, "restart_tracking", "max_restart_count", "10"), 10, 1, 50),
+        lastAckRevision: RC_ToIntRange(
+            RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_revision", "0"), 0, 0, 2147483647),
+        lastAckResult: Trim(
+            RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_result", ""), " `t`r`n"),
+        lastAckDetail: Trim(
+            RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_detail", ""), " `t`r`n"),
+        lastAckApplied: RC_ParseBool01(
+            RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_applied", "0"), 0) ? true : false,
+        lastAckAt: RC_ToIntRange(
+            RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_at", "0"), 0, 0, 9999999999999)
+    }
+}
+
 RC_PatchClientState(state, isShutdown) {
     global RC_LAST_HEARTBEAT_OK, RC_LAST_ERROR_MSG
     global RC_LAST_EVENT_AT, RC_RECENT_EVENTS
@@ -393,18 +571,20 @@ RC_PatchClientState(state, isShutdown) {
     currentServer := Trim(CURRENT_SERVER_TARGET, " `t`r`n")
     serverIndex := (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_INDEX > 0 ? SERVER_SCHEDULE_INDEX : 0)
     serverTotal := (SERVER_SCHEDULE_ENABLED ? SERVER_SCHEDULE_LIST.Length : 0)
+    serverScheduleJson := RC_BuildStringArrayJson(SERVER_SCHEDULE_LIST)
     currentServerLabel := currentServer
     if (serverTotal > 1 && currentServer != "")
         currentServerLabel := serverIndex "/" serverTotal " | " currentServer
     recentEventsJson := RC_BuildRecentEventsJson()
     recording := RC_ReadRecordingStatus()
+    effectiveSettings := RC_ReadEffectiveRemoteSettings()
     recordingActive := __SCREEN_RECORDING_ACTIVE ? true : false
     recordingDetail := SubStr(recording.detail, 1, 1000)
 
     body := "{"
     body .= '"fields":{'
     body .= '"docKind":{"stringValue":"client"},'
-    body .= '"schemaVersion":{"integerValue":"2"},'
+    body .= '"schemaVersion":{"integerValue":"4"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
@@ -416,6 +596,23 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"currentServerLabel":{"stringValue":"' RC_JsonEsc(currentServerLabel) '"},'
     body .= '"currentServerIndex":{"integerValue":"' serverIndex '"},'
     body .= '"currentServerTotal":{"integerValue":"' serverTotal '"},'
+    body .= '"serverScheduleEnabled":{"booleanValue":' (SERVER_SCHEDULE_ENABLED ? "true" : "false") '},'
+    body .= '"serverScheduleJson":{"stringValue":"' RC_JsonEsc(serverScheduleJson) '"},'
+    body .= '"remoteSettingsSchemaVersion":{"integerValue":"1"},'
+    body .= '"effectiveSettingsRevision":{"integerValue":"' effectiveSettings.revision '"},'
+    body .= '"effectiveServerScheduleEnabled":{"booleanValue":' (effectiveSettings.serverScheduleEnabled ? "true" : "false") '},'
+    body .= '"effectiveServerScheduleList":{"stringValue":"' RC_JsonEsc(effectiveSettings.serverScheduleList) '"},'
+    body .= '"effectiveMailNotifyEnabled":{"booleanValue":' (effectiveSettings.mailNotifyEnabled ? "true" : "false") '},'
+    body .= '"mailNotifyConfigured":{"booleanValue":' (effectiveSettings.mailNotifyConfigured ? "true" : "false") '},'
+    body .= '"effectiveRuntimeDiagnosticsEnabled":{"booleanValue":' (effectiveSettings.runtimeDiagnosticsEnabled ? "true" : "false") '},'
+    body .= '"effectiveRuntimeDiagnosticsIntervalSec":{"integerValue":"' effectiveSettings.runtimeDiagnosticsIntervalSec '"},'
+    body .= '"effectiveRuntimeDiagnosticsErrorKeepCount":{"integerValue":"' effectiveSettings.runtimeDiagnosticsErrorKeepCount '"},'
+    body .= '"effectiveMaxRestartCount":{"integerValue":"' effectiveSettings.maxRestartCount '"},'
+    body .= '"lastSettingsAckRevision":{"integerValue":"' effectiveSettings.lastAckRevision '"},'
+    body .= '"lastSettingsAckResult":{"stringValue":"' RC_JsonEsc(effectiveSettings.lastAckResult) '"},'
+    body .= '"lastSettingsAckDetail":{"stringValue":"' RC_JsonEsc(effectiveSettings.lastAckDetail) '"},'
+    body .= '"lastSettingsAckApplied":{"booleanValue":' (effectiveSettings.lastAckApplied ? "true" : "false") '},'
+    body .= '"lastSettingsAckAt":{"integerValue":"' effectiveSettings.lastAckAt '"},'
     body .= '"lastHeartbeat":{"integerValue":"' nowMs '"},'
     body .= '"updatedAt":{"integerValue":"' nowMs '"},'
     body .= '"recentEventsJson":{"stringValue":"' RC_JsonEsc(recentEventsJson) '"},'
@@ -453,6 +650,23 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=currentServerLabel"
     url .= "&updateMask.fieldPaths=currentServerIndex"
     url .= "&updateMask.fieldPaths=currentServerTotal"
+    url .= "&updateMask.fieldPaths=serverScheduleEnabled"
+    url .= "&updateMask.fieldPaths=serverScheduleJson"
+    url .= "&updateMask.fieldPaths=remoteSettingsSchemaVersion"
+    url .= "&updateMask.fieldPaths=effectiveSettingsRevision"
+    url .= "&updateMask.fieldPaths=effectiveServerScheduleEnabled"
+    url .= "&updateMask.fieldPaths=effectiveServerScheduleList"
+    url .= "&updateMask.fieldPaths=effectiveMailNotifyEnabled"
+    url .= "&updateMask.fieldPaths=mailNotifyConfigured"
+    url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsEnabled"
+    url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsIntervalSec"
+    url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsErrorKeepCount"
+    url .= "&updateMask.fieldPaths=effectiveMaxRestartCount"
+    url .= "&updateMask.fieldPaths=lastSettingsAckRevision"
+    url .= "&updateMask.fieldPaths=lastSettingsAckResult"
+    url .= "&updateMask.fieldPaths=lastSettingsAckDetail"
+    url .= "&updateMask.fieldPaths=lastSettingsAckApplied"
+    url .= "&updateMask.fieldPaths=lastSettingsAckAt"
     url .= "&updateMask.fieldPaths=lastHeartbeat"
     url .= "&updateMask.fieldPaths=updatedAt"
     url .= "&updateMask.fieldPaths=recentEventsJson"
@@ -490,12 +704,18 @@ RC_PatchClientState(state, isShutdown) {
     return false
 }
 
-RC_PatchCommandAck(nonce, stateApplied) {
+RC_PatchCommandAck(nonce, stateApplied, resultCode := "APPLIED", resultDetail := "", serverIndex := 0, serverName := "") {
     nowMs := RC_UnixMs()
+    safeServerIndex := 0
+    try safeServerIndex := Max(0, Integer(serverIndex))
     body := "{"
     body .= '"fields":{'
     body .= '"lastAckNonce":{"integerValue":"' nonce '"},'
     body .= '"lastAckState":{"stringValue":"' RC_JsonEsc(stateApplied) '"},'
+    body .= '"lastAckResult":{"stringValue":"' RC_JsonEsc(resultCode) '"},'
+    body .= '"lastAckDetail":{"stringValue":"' RC_JsonEsc(SubStr(resultDetail, 1, 600)) '"},'
+    body .= '"lastAckServerIndex":{"integerValue":"' safeServerIndex '"},'
+    body .= '"lastAckServerName":{"stringValue":"' RC_JsonEsc(serverName) '"},'
     body .= '"lastAckAt":{"integerValue":"' nowMs '"}'
     body .= "}"
     body .= "}"
@@ -503,6 +723,10 @@ RC_PatchCommandAck(nonce, stateApplied) {
     url := RC_ClientDocUrl()
     url .= "&updateMask.fieldPaths=lastAckNonce"
     url .= "&updateMask.fieldPaths=lastAckState"
+    url .= "&updateMask.fieldPaths=lastAckResult"
+    url .= "&updateMask.fieldPaths=lastAckDetail"
+    url .= "&updateMask.fieldPaths=lastAckServerIndex"
+    url .= "&updateMask.fieldPaths=lastAckServerName"
     url .= "&updateMask.fieldPaths=lastAckAt"
     url .= "&mask.fieldPaths=lastAckAt"
 
@@ -511,11 +735,85 @@ RC_PatchCommandAck(nonce, stateApplied) {
         RC_Log("RemoteControl ack patch failed: " r.msg, "WARN")
 }
 
+RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
+    global RC_LAST_SETTINGS_APPLIED_REVISION
+    global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
+    nowMs := (ackAt > 0 ? ackAt : RC_UnixMs())
+    effectiveSettings := RC_ReadEffectiveRemoteSettings()
+    currentServer := Trim(CURRENT_SERVER_TARGET, " `t`r`n")
+    serverIndex := (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_INDEX > 0 ? SERVER_SCHEDULE_INDEX : 0)
+    serverTotal := (SERVER_SCHEDULE_ENABLED ? SERVER_SCHEDULE_LIST.Length : 0)
+    currentServerLabel := currentServer
+    if (serverTotal > 1 && serverIndex > 0 && currentServer != "")
+        currentServerLabel := serverIndex "/" serverTotal " | " currentServer
+    serverScheduleJson := RC_BuildStringArrayJson(SERVER_SCHEDULE_LIST)
+    body := "{"
+    body .= '"fields":{'
+    body .= '"lastSettingsAckRevision":{"integerValue":"' revision '"},'
+    body .= '"lastSettingsAckResult":{"stringValue":"' RC_JsonEsc(resultCode) '"},'
+    body .= '"lastSettingsAckDetail":{"stringValue":"' RC_JsonEsc(SubStr(resultDetail, 1, 800)) '"},'
+    body .= '"lastSettingsAckApplied":{"booleanValue":' (applied ? "true" : "false") '},'
+    body .= '"lastSettingsAckAt":{"integerValue":"' nowMs '"},'
+    body .= '"effectiveSettingsRevision":{"integerValue":"' RC_LAST_SETTINGS_APPLIED_REVISION '"},'
+    body .= '"effectiveServerScheduleEnabled":{"booleanValue":' (effectiveSettings.serverScheduleEnabled ? "true" : "false") '},'
+    body .= '"effectiveServerScheduleList":{"stringValue":"' RC_JsonEsc(effectiveSettings.serverScheduleList) '"},'
+    body .= '"effectiveMailNotifyEnabled":{"booleanValue":' (effectiveSettings.mailNotifyEnabled ? "true" : "false") '},'
+    body .= '"mailNotifyConfigured":{"booleanValue":' (effectiveSettings.mailNotifyConfigured ? "true" : "false") '},'
+    body .= '"effectiveRuntimeDiagnosticsEnabled":{"booleanValue":' (effectiveSettings.runtimeDiagnosticsEnabled ? "true" : "false") '},'
+    body .= '"effectiveRuntimeDiagnosticsIntervalSec":{"integerValue":"' effectiveSettings.runtimeDiagnosticsIntervalSec '"},'
+    body .= '"effectiveRuntimeDiagnosticsErrorKeepCount":{"integerValue":"' effectiveSettings.runtimeDiagnosticsErrorKeepCount '"},'
+    body .= '"effectiveMaxRestartCount":{"integerValue":"' effectiveSettings.maxRestartCount '"},'
+    body .= '"serverScheduleEnabled":{"booleanValue":' (SERVER_SCHEDULE_ENABLED ? "true" : "false") '},'
+    body .= '"serverScheduleJson":{"stringValue":"' RC_JsonEsc(serverScheduleJson) '"},'
+    body .= '"currentServerIndex":{"integerValue":"' serverIndex '"},'
+    body .= '"currentServerTotal":{"integerValue":"' serverTotal '"},'
+    body .= '"currentServerLabel":{"stringValue":"' RC_JsonEsc(currentServerLabel) '"}'
+    body .= "}"
+    body .= "}"
+
+    url := RC_ClientDocUrl()
+    url .= "&updateMask.fieldPaths=lastSettingsAckRevision"
+    url .= "&updateMask.fieldPaths=lastSettingsAckResult"
+    url .= "&updateMask.fieldPaths=lastSettingsAckDetail"
+    url .= "&updateMask.fieldPaths=lastSettingsAckApplied"
+    url .= "&updateMask.fieldPaths=lastSettingsAckAt"
+    url .= "&updateMask.fieldPaths=effectiveSettingsRevision"
+    url .= "&updateMask.fieldPaths=effectiveServerScheduleEnabled"
+    url .= "&updateMask.fieldPaths=effectiveServerScheduleList"
+    url .= "&updateMask.fieldPaths=effectiveMailNotifyEnabled"
+    url .= "&updateMask.fieldPaths=mailNotifyConfigured"
+    url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsEnabled"
+    url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsIntervalSec"
+    url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsErrorKeepCount"
+    url .= "&updateMask.fieldPaths=effectiveMaxRestartCount"
+    url .= "&updateMask.fieldPaths=serverScheduleEnabled"
+    url .= "&updateMask.fieldPaths=serverScheduleJson"
+    url .= "&updateMask.fieldPaths=currentServerIndex"
+    url .= "&updateMask.fieldPaths=currentServerTotal"
+    url .= "&updateMask.fieldPaths=currentServerLabel"
+    url .= "&mask.fieldPaths=lastSettingsAckAt"
+
+    r := RC_HttpRequest("PATCH", url, body)
+    if !r.ok
+        RC_Log("RemoteControl settings ack patch failed: " r.msg, "WARN")
+}
+
 RC_FirestoreGetClientDoc() {
-    ; 輪詢命令只需要兩個欄位，使用 field mask 保持每次回應極小。
+    ; 命令與遠端設定共用原有這一次 GET，不增加 Firestore 讀取次數。
     url := RC_ClientDocUrl()
     url .= "&mask.fieldPaths=desiredState"
     url .= "&mask.fieldPaths=nonce"
+    url .= "&mask.fieldPaths=requestedServerIndex"
+    url .= "&mask.fieldPaths=requestedServerName"
+    url .= "&mask.fieldPaths=desiredSettingsRevision"
+    url .= "&mask.fieldPaths=desiredSettingsSchemaVersion"
+    url .= "&mask.fieldPaths=desiredServerScheduleEnabled"
+    url .= "&mask.fieldPaths=desiredServerScheduleList"
+    url .= "&mask.fieldPaths=desiredMailNotifyEnabled"
+    url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsEnabled"
+    url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsIntervalSec"
+    url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsErrorKeepCount"
+    url .= "&mask.fieldPaths=desiredMaxRestartCount"
     r := RC_HttpRequest("GET", url, "")
     if !r.ok {
         RC_Log("RemoteControl poll failed: " r.msg, "WARN")
@@ -580,6 +878,13 @@ RC_JsonGetInteger(jsonText, fieldName, defaultVal := 0) {
     return defaultVal
 }
 
+RC_JsonGetBoolean(jsonText, fieldName, defaultVal := false) {
+    p := '"' fieldName '"\s*:\s*\{[^\}]*"booleanValue"\s*:\s*(true|false)'
+    if RegExMatch(jsonText, p, &m)
+        return StrLower(m[1]) = "true"
+    return defaultVal ? true : false
+}
+
 RC_JsonEsc(txt) {
     s := txt
     s := StrReplace(s, "\", "\\")
@@ -618,7 +923,14 @@ RC_EnsureRemoteControlDefaults(cfgPath) {
         "poll_interval_ms", "10000",
         "http_timeout_ms", "2500",
         "clear_snapshot_on_clean_exit", "1",
-        "last_nonce", "0"
+        "last_nonce", "0",
+        "last_settings_seen_revision", "0",
+        "applied_settings_revision", "0",
+        "last_settings_ack_revision", "0",
+        "last_settings_ack_result", "",
+        "last_settings_ack_detail", "",
+        "last_settings_ack_applied", "0",
+        "last_settings_ack_at", "0"
     )
 
     wrote := 0

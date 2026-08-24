@@ -4,99 +4,225 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20260824-4" />
 </head>
 <body>
   <main class="wrap">
-    <h1>AHK 遠端控制台</h1>
-    <p class="sub">Firestore 多機控制</p>
-
-    <section class="card" id="controlCard">
-      <label for="pcDropdown">在線電腦</label>
-      <select id="pcDropdown"></select>
-      <p class="sub">會顯示目前執行步驟與伺服器狀態</p>
-
-      <div class="row buttons">
-        <button id="btnPause" class="warn">暫停</button>
-        <button id="btnRun" class="ok">啟動</button>
-        <button id="btnStop" class="danger">關閉腳本</button>
+    <header class="app-header">
+      <div>
+        <h1>AHK 遠端控制台</h1>
+        <p class="sub">Firestore 多機控制</p>
       </div>
+      <span class="quota-badge">免費額度保護</span>
+    </header>
 
-      <div id="commandStatus" class="command-status" data-status="idle" role="status" aria-live="polite">
-        <strong id="commandStatusTitle">尚未送出命令</strong>
-        <span id="commandStatusDetail">只有收到精確 ACK 才會顯示成功。</span>
+    <section class="device-bar" aria-label="目前控制裝置">
+      <div class="device-picker">
+        <label for="pcDropdown">控制電腦</label>
+        <select id="pcDropdown"></select>
       </div>
-
-      <p id="statusMsg" class="msg"></p>
-      <ul id="clientMeta"></ul>
+      <div class="device-summary">
+        <strong id="selectedDeviceSummary">尚未選擇裝置</strong>
+        <span id="statusMsg" class="msg">正在讀取裝置…</span>
+      </div>
     </section>
 
-    <section class="card" aria-labelledby="recordingStatusTitle">
-      <div class="section-heading heading-row">
-        <div>
-          <h2 id="recordingStatusTitle">完整錄影狀態與存放位置</h2>
-          <p id="recordingStatusUpdated" class="sub">尚未收到錄影狀態。</p>
+    <nav class="view-tabs" aria-label="控制台頁面" role="tablist">
+      <button id="tabOverview" class="view-tab active" type="button" role="tab" aria-selected="true" aria-controls="viewOverview" data-view="overview">總覽</button>
+      <button id="tabDiagnostics" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="viewDiagnostics" data-view="diagnostics">診斷記錄</button>
+      <button id="tabSettings" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="viewSettings" data-view="settings">設定</button>
+    </nav>
+
+    <section id="viewOverview" class="app-view" role="tabpanel" aria-labelledby="tabOverview">
+      <div class="overview-grid">
+        <section class="card control-card" id="controlCard">
+          <div class="section-heading">
+            <h2>流程控制</h2>
+            <p class="sub">會顯示目前執行步驟、伺服器與最後命令結果。</p>
+          </div>
+
+          <div class="row buttons">
+            <button id="btnPause" class="warn" type="button">暫停</button>
+            <button id="btnRun" class="ok" type="button">啟動</button>
+            <button id="btnStop" class="danger" type="button">關閉腳本</button>
+          </div>
+
+          <div class="server-switch-panel">
+            <label for="serverTargetSelect">跳下一個伺服器</label>
+            <div class="row server-switch-row">
+              <select id="serverTargetSelect" aria-describedby="serverSwitchHint">
+                <option value="">無設定</option>
+              </select>
+              <button id="btnSwitchServer" class="info" type="button" disabled>跳到所選伺服器</button>
+            </div>
+            <p id="serverSwitchHint" class="sub">會依程式設定的伺服器順序列出可切換目標。</p>
+          </div>
+
+          <div id="commandStatus" class="command-status" data-status="idle" role="status" aria-live="polite">
+            <strong id="commandStatusTitle">尚未送出命令</strong>
+            <span id="commandStatusDetail">只有收到精確 ACK 才會顯示成功。</span>
+          </div>
+
+          <details class="device-details">
+            <summary>裝置詳細狀態</summary>
+            <ul id="clientMeta"></ul>
+          </details>
+        </section>
+
+        <section class="card snapshot-card" aria-labelledby="snapshotTitle">
+          <div class="section-heading heading-row">
+            <div>
+              <h2 id="snapshotTitle">最新執行畫面</h2>
+              <p id="snapshotMeta" class="sub">尚未收到快照。</p>
+            </div>
+            <button id="btnRefreshSnapshot" type="button">立即重讀</button>
+          </div>
+          <div id="snapshotPlaceholder" class="snapshot-placeholder">裝置啟用即時診斷後，每 60 秒更新一次。</div>
+          <img id="latestScreenshot" class="latest-screenshot" alt="裝置最新執行畫面" hidden />
+        </section>
+      </div>
+    </section>
+
+    <section id="viewDiagnostics" class="app-view" role="tabpanel" aria-labelledby="tabDiagnostics" hidden>
+      <div class="diagnostics-grid">
+        <section class="card recording-card" aria-labelledby="recordingStatusTitle">
+          <div class="section-heading heading-row">
+            <div>
+              <h2 id="recordingStatusTitle">完整錄影狀態與存放位置</h2>
+              <p id="recordingStatusUpdated" class="sub">尚未收到錄影狀態。</p>
+            </div>
+            <span id="recordingStatusBadge" class="recording-status-badge idle">尚無資料</span>
+          </div>
+          <p id="recordingStatusNote" class="recording-status-note">選擇電腦後會顯示成功、失敗原因與實際保留位置。</p>
+          <div id="recordingPaths" class="recording-paths"></div>
+        </section>
+
+        <section class="card events-card" aria-labelledby="runtimeEventsTitle">
+          <div class="section-heading">
+            <h2 id="runtimeEventsTitle">最近流程事件</h2>
+            <p id="runtimeEventsNote" class="sub">請先選擇一台電腦。</p>
+          </div>
+          <div class="table-scroll responsive-table">
+            <table class="runtime-events-table">
+              <thead>
+                <tr>
+                  <th scope="col">時間</th>
+                  <th scope="col">等級</th>
+                  <th scope="col">步驟／事件</th>
+                  <th scope="col">詳細內容</th>
+                </tr>
+              </thead>
+              <tbody id="runtimeEventsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section class="card history-card" aria-labelledby="historyTitle">
+        <div class="section-heading">
+          <h2 id="historyTitle">命令歷史</h2>
+          <p id="historyNote" class="sub">請先選擇一台電腦。</p>
         </div>
-        <span id="recordingStatusBadge" class="recording-status-badge idle">尚無資料</span>
-      </div>
-      <p id="recordingStatusNote" class="recording-status-note">選擇電腦後會顯示成功、失敗原因與實際保留位置。</p>
-      <div id="recordingPaths" class="recording-paths"></div>
-    </section>
-
-    <section class="card" aria-labelledby="snapshotTitle">
-      <div class="section-heading heading-row">
-        <div>
-          <h2 id="snapshotTitle">最新執行畫面</h2>
-          <p id="snapshotMeta" class="sub">尚未收到快照。</p>
+        <div class="table-scroll responsive-table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">送出時間</th>
+                <th scope="col">指令</th>
+                <th scope="col">Nonce</th>
+                <th scope="col">狀態</th>
+                <th scope="col">說明</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody"></tbody>
+          </table>
         </div>
-        <button id="btnRefreshSnapshot" type="button">立即重讀</button>
-      </div>
-      <div id="snapshotPlaceholder" class="snapshot-placeholder">裝置啟用即時診斷後，每 60 秒更新一次。</div>
-      <img id="latestScreenshot" class="latest-screenshot" alt="裝置最新執行畫面" hidden />
+      </section>
     </section>
 
-    <section class="card" aria-labelledby="runtimeEventsTitle">
-      <div class="section-heading">
-        <h2 id="runtimeEventsTitle">最近流程事件</h2>
-        <p id="runtimeEventsNote" class="sub">請先選擇一台電腦。</p>
-      </div>
-      <div class="table-scroll">
-        <table class="runtime-events-table">
-          <thead>
-            <tr>
-              <th scope="col">時間</th>
-              <th scope="col">等級</th>
-              <th scope="col">步驟／事件</th>
-              <th scope="col">詳細內容</th>
-            </tr>
-          </thead>
-          <tbody id="runtimeEventsBody"></tbody>
-        </table>
-      </div>
-    </section>
+    <section id="viewSettings" class="app-view" role="tabpanel" aria-labelledby="tabSettings" hidden>
+      <section class="card settings-intro-card">
+        <div class="heading-row">
+          <div>
+            <h2>遠端設定</h2>
+            <p class="sub">只同步不含密碼、程式路徑或本機檔案位置的安全設定。</p>
+          </div>
+          <span id="settingsSupportBadge" class="settings-support-badge idle">等待裝置</span>
+        </div>
+        <div class="quota-note">
+          <strong>免費額度保護已啟用</strong>
+          <span>沿用既有 client 文件、即時監聽與 10 秒輪詢；不新增集合、listener 或 poll timer。一次儲存通常只增加 transaction 1 read + 1 write，以及裝置 ACK 1 write。</span>
+        </div>
+        <div id="settingsStatus" class="settings-status" data-status="idle" role="status" aria-live="polite">
+          <strong id="settingsStatusTitle">尚未讀取設定</strong>
+          <span id="settingsStatusDetail">請先選擇支援遠端設定的裝置。</span>
+        </div>
+      </section>
 
-    <section class="card" aria-labelledby="historyTitle">
-      <div class="section-heading">
-        <h2 id="historyTitle">命令歷史</h2>
-        <p id="historyNote" class="sub">請先選擇一台電腦。</p>
-      </div>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">送出時間</th>
-              <th scope="col">指令</th>
-              <th scope="col">Nonce</th>
-              <th scope="col">狀態</th>
-              <th scope="col">說明</th>
-            </tr>
-          </thead>
-          <tbody id="historyBody"></tbody>
-        </table>
-      </div>
+      <form id="settingsForm" novalidate>
+        <section class="card settings-card">
+          <div class="section-heading">
+            <h2>伺服器排程</h2>
+            <p class="sub">變更會安全寫入本機設定；目前流程不會在半途被改動，下一次啟動才採用新清單。</p>
+          </div>
+          <label class="toggle-row" for="settingsServerEnabled">
+            <input id="settingsServerEnabled" type="checkbox" />
+            <span>啟用伺服器排程</span>
+          </label>
+          <div class="settings-list-heading">
+            <strong>伺服器清單與順序</strong>
+            <button id="btnAddServer" type="button">新增伺服器</button>
+          </div>
+          <div id="settingsServerList" class="server-order-list" aria-live="polite"></div>
+          <p class="sub">手機也可用上移／下移調整，不依賴拖曳。最多 10 個伺服器。</p>
+        </section>
+
+        <section class="card settings-card">
+          <div class="section-heading">
+            <h2>執行與診斷</h2>
+            <p class="sub">這些設定會由裝置驗證範圍後再套用。</p>
+          </div>
+          <div class="settings-field-grid">
+            <label class="field-block" for="settingsMaxRestartCount">
+              <span>最大重啟次數</span>
+              <input id="settingsMaxRestartCount" type="number" min="1" max="50" step="1" inputmode="numeric" />
+              <small>1～50，預設 10</small>
+            </label>
+            <label class="field-block" for="settingsDiagnosticsInterval">
+              <span>快照間隔（秒）</span>
+              <input id="settingsDiagnosticsInterval" type="number" min="60" max="600" step="1" inputmode="numeric" />
+              <small>60～600；最低 60 秒以保護免費額度</small>
+            </label>
+            <label class="field-block" for="settingsDiagnosticsKeepCount">
+              <span>錯誤圖片保留份數</span>
+              <input id="settingsDiagnosticsKeepCount" type="number" min="5" max="200" step="1" inputmode="numeric" />
+              <small>5～200，只影響本機檔案</small>
+            </label>
+          </div>
+          <div class="settings-toggle-list">
+            <label class="toggle-row" for="settingsDiagnosticsEnabled">
+              <input id="settingsDiagnosticsEnabled" type="checkbox" />
+              <span>啟用即時診斷快照</span>
+            </label>
+            <label class="toggle-row" for="settingsMailEnabled">
+              <input id="settingsMailEnabled" type="checkbox" />
+              <span>啟用郵件通知</span>
+            </label>
+            <p id="settingsMailHint" class="sub">郵件帳密不會上傳；本機未完成 SMTP 設定時，裝置會拒絕從網頁啟用。</p>
+          </div>
+        </section>
+
+        <div class="settings-save-bar">
+          <span id="settingsDirtyHint">沒有未儲存的變更</span>
+          <div class="row settings-actions">
+            <button id="btnReloadSettings" type="button">重新載入本機值</button>
+            <button id="btnSaveSettings" class="ok" type="submit">儲存到所選裝置</button>
+          </div>
+        </div>
+      </form>
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260823-1"></script>
+  <script type="module" src="app.js?v=20260824-4"></script>
 </body>
 </html>
