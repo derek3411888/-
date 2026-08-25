@@ -538,11 +538,11 @@ RCSH_UrlEncode(text) {
     byteCount := StrPut(text, "UTF-8") - 1
     if (byteCount <= 0)
         return ""
-    buffer := Buffer(byteCount + 1, 0)
-    StrPut(text, buffer, "UTF-8")
+    utf8Buffer := Buffer(byteCount + 1, 0)
+    StrPut(text, utf8Buffer, "UTF-8")
     out := ""
     Loop byteCount {
-        value := NumGet(buffer, A_Index - 1, "UChar")
+        value := NumGet(utf8Buffer, A_Index - 1, "UChar")
         if ((value >= 0x30 && value <= 0x39) || (value >= 0x41 && value <= 0x5A)
             || (value >= 0x61 && value <= 0x7A) || value = 0x2D || value = 0x2E
             || value = 0x5F || value = 0x7E)
@@ -562,12 +562,12 @@ RCSH_Base64ToVariant(base64Text) {
 }
 
 RCSH_RandomToken(byteCount := 48) {
-    buffer := Buffer(byteCount, 0)
-    status := DllCall("bcrypt\BCryptGenRandom", "ptr", 0, "ptr", buffer.Ptr,
+    randomBuffer := Buffer(byteCount, 0)
+    status := DllCall("bcrypt\BCryptGenRandom", "ptr", 0, "ptr", randomBuffer.Ptr,
         "uint", byteCount, "uint", 0x00000002, "uint")
     if (status != 0)
         throw Error("BCryptGenRandom failed: " status)
-    return StrReplace(StrReplace(RTrim(RCSH_Base64Encode(buffer), "=`r`n"), "+", "-"), "/", "_")
+    return StrReplace(StrReplace(RTrim(RCSH_Base64Encode(randomBuffer), "=`r`n"), "+", "-"), "/", "_")
 }
 
 RCSH_DpapiProtect(text) {
@@ -615,14 +615,14 @@ RCSH_DpapiTransform(input, inputSize, protect) {
     return output
 }
 
-RCSH_Base64Encode(buffer) {
+RCSH_Base64Encode(inputBuffer) {
     chars := 0
     flags := 0x40000001 ; CRYPT_STRING_BASE64 | NOCRLF
-    if !DllCall("crypt32\CryptBinaryToStringW", "ptr", buffer.Ptr, "uint", buffer.Size,
+    if !DllCall("crypt32\CryptBinaryToStringW", "ptr", inputBuffer.Ptr, "uint", inputBuffer.Size,
         "uint", flags, "ptr", 0, "uint*", &chars)
         throw OSError(A_LastError, "CryptBinaryToStringW(size)")
     output := Buffer(chars * 2, 0)
-    if !DllCall("crypt32\CryptBinaryToStringW", "ptr", buffer.Ptr, "uint", buffer.Size,
+    if !DllCall("crypt32\CryptBinaryToStringW", "ptr", inputBuffer.Ptr, "uint", inputBuffer.Size,
         "uint", flags, "ptr", output.Ptr, "uint*", &chars)
         throw OSError(A_LastError, "CryptBinaryToStringW")
     return StrGet(output, "UTF-16")
