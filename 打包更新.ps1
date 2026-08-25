@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.50',
-    [string]$LauncherVersion = '4.61',
-    [string]$ServerVersion = '1.0.6'
+    [string]$PayloadVersion = '4.51',
+    [string]$LauncherVersion = '4.62',
+    [string]$ServerVersion = '1.0.7'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +30,13 @@ function Invoke-AhkCompile([string]$CompilerPath, [string]$SourcePath,
     if ($process.ExitCode -ne 0) { throw "$Task 失敗，exit=$($process.ExitCode)" }
     if (-not (Test-Path -LiteralPath $OutputPath)) { throw "$Task 未產生輸出檔：$OutputPath" }
     if ((Get-Item -LiteralPath $OutputPath).Length -le 0) { throw "$Task 產生空白輸出檔：$OutputPath" }
+}
+
+function Invoke-AhkTest([string]$RuntimePath, [string]$ScriptPath, [string]$Task) {
+    $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
+        '/ErrorStdOut', $ScriptPath
+    ) -NoNewWindow -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "$Task 失敗，exit=$($process.ExitCode)" }
 }
 
 function Find-AhkCompiler {
@@ -87,6 +94,8 @@ if ([string]$package.version -ne $ServerVersion) { throw "server package 版本�
 
 Write-Host '執行語法與單元測試…'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
+Invoke-AhkValidate $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\RecordingFinalizeWorker.ahk' '錄影 worker AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveLoopbackTest.ahk' '直播 loopback 測試語法 validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveAutomaticFallbackTest.ahk' '直播自動回退測試語法 validate'

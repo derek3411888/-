@@ -30,6 +30,7 @@ catch
 #Include RuntimeFilePaths.ahk
 #Include RemoteControlFirestore.ahk
 #Include RemoteControlSelfHost.ahk
+#Include OkwwOcrTextMatchers.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -107,7 +108,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.61"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.62"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -3535,15 +3536,8 @@ FindOkwwAutoBattleLabelBlock(result, scale := 1.0) {
             continue
 
         clean := NormalizeOkwwOcrText(block.text)
-        labelPos := InStr(clean, expectedLabel)
-        ; RapidOCR 在 v3.5.28 偶爾會在第一列前面混入極短雜訊（實測為「x,」）。
-        ; 只容許標題位於第 1～3 字元，且仍受主內容第一列與同列狀態的雙重限制。
-        hasBoundedLeadingNoise := (labelPos > 1 && labelPos <= 3)
-        if (clean = expectedLabel
-            || SubStr(clean, 1, StrLen(expectedLabel)) = expectedLabel
-            || hasBoundedLeadingNoise) {
-            matchType := clean = expectedLabel ? "exact"
-                : (labelPos = 1 ? "merged_prefix" : "leading_noise")
+        matchType := OKWW_ClassifyAutoBattleLabelText(clean)
+        if (matchType != "") {
             return {
                 text: expectedLabel,
                 rawText: block.text,
@@ -3626,7 +3620,7 @@ ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
         firstRowCandidates := SummarizeOkwwOcrRegion(
             result, Round(180 * scale), 0, Round(40 * scale), Round(135 * scale), 30)
         WriteLog("OKWW OCR 在主內容第一列找不到「自動戰鬥」標題"
-            "（接受 exact、merged-prefix 或最多 2 字元前綴雜訊） | 區域候選=" firstRowCandidates, "WARN")
+            "（接受 exact、merged-prefix 或最多 6 字元前綴雜訊） | 區域候選=" firstRowCandidates, "WARN")
         return {
             state: "unknown", rowY: 0, labelText: "", statusText: "",
             reason: "missing_auto_battle_label"
