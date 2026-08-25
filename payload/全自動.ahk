@@ -1,5 +1,6 @@
 ﻿#Requires AutoHotkey v2.0+
 #SingleInstance Force
+#WinActivateForce
 SetWorkingDir A_ScriptDir
 global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 
@@ -84,6 +85,9 @@ global __SCREEN_RECORDING_LRMC_ARRIVAL_PENDING := false
 global __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := 0
 global __RESTART_IN_PROGRESS := false
 global __NEXTSERVER_RESTART := false
+global __RESTART_HANDOFF_LAUNCHED := false
+global __WAITING_FOR_INTERACTIVE_DESKTOP := false
+global __UI_INPUT_BLOCKED_MAIL_SENT := false
 global __MAIL_SETUP := ""
 global __SERVER_PREVIEW := ""
 global __WUTHERING_AUDIO_MUTED := false
@@ -102,9 +106,13 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.52"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.53"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
+global LAST_OKWW_F11_FAILURE_CODE := ""
+global LAST_OKWW_F11_FAILURE_DETAIL := ""
+global LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
+global LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
 global SERVER_SCHEDULE_ENABLED := false
 global SERVER_SCHEDULE_LIST := []
 global SERVER_SCHEDULE_INDEX := 1
@@ -115,6 +123,8 @@ global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環�
 global SERVER_SWITCH_NOTIFY_SECTION := "server_switch_notify"
 global REMOTE_CONTROL_ACTIVE := false
 global REMOTE_PAUSE_WAITING := false
+global __SOFT_PAUSE_STARTED_TICK := 0
+global __SOFT_PAUSE_TOTAL_MS := 0
 global EXITING_FROM_TRAY := false
 global REMOTE_STOP_IN_PROGRESS := false
 global REMOTE_SERVER_SWITCH_PENDING := false
@@ -124,6 +134,8 @@ global REMOTE_SETTINGS_RUNTIME_READY := false
 global __REMOTE_WAS_PAUSED := false
 global __REMOTE_PAUSE_HOTKEY_BUSY := false
 global __REMOTE_RESUME_SYNC_BUSY := false
+global __REMOTE_PAUSE_HOOK_NONCE := -1
+global __REMOTE_RESUME_HOOK_NONCE := -1
 global __REMOTE_PAUSED_AUX_PIDS := []
 global CURRENT_STEP_NAME := ""
 global CURRENT_STEP_DETAIL := ""
@@ -150,13 +162,14 @@ OnExit(RestoreWutheringAudioOnExit)
 ; 提示工具（開頭加5個空白避免被滑鼠遮擋）
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT, TOOLTIP_UNTIL_TICK, TOOLTIP_CONTENT
+    nowTick := MonotonicTickMs()
     if (duration < 3000)
         duration := 3000
     else if (duration > 30000)
         duration := 30000
     msg := StrReplace(msg, "`r", "")
 
-    if (A_TickCount < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "") {
+    if (nowTick < TOOLTIP_UNTIL_TICK && TOOLTIP_CONTENT != "") {
         lineCount := StrSplit(TOOLTIP_CONTENT, "`n").Length
         if (lineCount >= 5)
             TOOLTIP_CONTENT := msg
@@ -167,7 +180,7 @@ ShowTip(msg, duration := 5000) {
     }
 
     display := "          " StrReplace(TOOLTIP_CONTENT, "`n", "`n          ")
-    TOOLTIP_UNTIL_TICK := A_TickCount + duration
+    TOOLTIP_UNTIL_TICK := nowTick + duration
     expireTick := TOOLTIP_UNTIL_TICK
 
     ToolTip display, , , TOOLTIP_SLOT
@@ -681,7 +694,7 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
 
     WriteLog("FFmpeg 下載模式: IWR")
     spin := 0
-    startTick := A_TickCount
+    startTick := MonotonicTickMs()
     lastTick := startTick
     lastSize := 0
     speedBps := 0.0
@@ -689,7 +702,7 @@ DownloadFileWithProgress(url, outPath, title := "下載中") {
         size := 0
         try size := FileGetSize(outPath)
 
-        nowTick := A_TickCount
+        nowTick := MonotonicTickMs()
         dt := nowTick - lastTick
         if (dt >= 400) {
             ds := size - lastSize
@@ -794,8 +807,8 @@ TryBootstrapBundledFfmpeg() {
     }
 
     found := ""
-    deadline := A_TickCount + 120000
-    while (A_TickCount < deadline) {
+    deadline := MonotonicTickMs() + 120000
+    while (MonotonicTickMs() < deadline) {
         Loop Files, extractDir "\\ffmpeg.exe", "R" {
             found := A_LoopFileFullPath
             break
@@ -979,16 +992,19 @@ UnmuteWutheringAudio(reason := "") {
 }
 
 RestoreWutheringAudioOnExit(exitReason, exitCode) {
-    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, TOOLTIP_SLOT
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_HANDOFF_LAUNCHED, TOOLTIP_SLOT
     try ToolTip(, , , TOOLTIP_SLOT)
     try StopRuntimeDiagnostics()
     try SetTimer(ScreenRecordingMaintenanceTick, 0)
     cleanFinalExit := IsCleanFinalScriptExit(exitReason)
     try RC_Shutdown(cleanFinalExit)
-    if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+    if ((__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART) && __RESTART_HANDOFF_LAUNCHED)
         WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
-    else
+    else {
+        if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+            WriteLog("重啟旗標存在但接手程序未確認啟動；改走錄影正常封口", "ERROR")
         ForceStopManagedScreenRecording("腳本結束保底")
+    }
     UnmuteWutheringAudio("腳本結束保底")
 }
 
@@ -1006,9 +1022,20 @@ IsCleanFinalScriptExit(exitReason) {
 }
 
 OnRemoteControlStateChanged(state, command := "") {
-    global REMOTE_STOP_IN_PROGRESS, __REMOTE_WAS_PAUSED
-    if (state = "SWITCH_SERVER")
+    global REMOTE_STOP_IN_PROGRESS, __REMOTE_WAS_PAUSED, __WAITING_FOR_INTERACTIVE_DESKTOP
+    generationNonce := (IsObject(command) && command.HasOwnProp("remoteNonce"))
+        ? command.remoteNonce : 0
+    if (state = "PAUSE")
+        SetSoftPauseClockState(true)
+    else if (state = "RUN" || state = "STOP")
+        SetSoftPauseClockState(false)
+    if (state = "SWITCH_SERVER") {
+        if __WAITING_FOR_INTERACTIVE_DESKTOP {
+            WriteLog("遠端切服：目前正等待可互動桌面，保留命令結果為 BUSY", "WARN")
+            return { code: "BUSY", detail: "裝置正等待解鎖／恢復互動桌面，暫不執行切服" }
+        }
         return PrepareRemoteServerSwitch(command)
+    }
     if (state = "COMPLETE_SERVER")
         return CompleteServerForTodayFromRemote(command)
 
@@ -1028,31 +1055,88 @@ OnRemoteControlStateChanged(state, command := "") {
         __REMOTE_WAS_PAUSED := true
         WriteLog("遠端控制：收到 PAUSE（軟停模式）", "WARN")
         ShowTip("⏸ 已切換為遠端暫停", 1500)
-        SetTimer(RemotePauseHookTick, -50)
+        if __WAITING_FOR_INTERACTIVE_DESKTOP {
+            WriteLog("遠端PAUSE：目前等待可互動桌面；已保存暫停狀態，不執行任何 UI 熱鍵", "INFO")
+            return
+        }
+        SetTimer(RemotePauseHookTick.Bind(generationNonce), -50)
     } else {
         WriteLog("遠端控制：收到 RUN（恢復執行）")
         ShowTip("▶ 已切換為遠端執行", 1500)
         if (state = "RUN" && __REMOTE_WAS_PAUSED) {
             __REMOTE_WAS_PAUSED := false
-            SetTimer(RemoteRunResumeHookTick, -80)
+            if __WAITING_FOR_INTERACTIVE_DESKTOP {
+                WriteLog("遠端RUN：已解除等待期間的暫停；恢復探測仍不執行額外 UI 熱鍵", "INFO")
+                return
+            }
+            SetTimer(RemoteRunResumeHookTick.Bind(generationNonce), -80)
         }
     }
 }
 
-RemotePauseHookTick() {
-    global __REMOTE_PAUSE_HOTKEY_BUSY, __REWARD_MONITOR_ACTIVE
+IsRemoteHookGenerationCurrent(state, generationNonce, context := "") {
+    current := false
+    try current := RC_IsDesiredStateGenerationCurrent(state, generationNonce)
+    if (!current && context != "")
+        WriteLog(context "：desired generation 已被較新命令取代，取消舊背景操作"
+            " | state=" state " nonce=" generationNonce, "INFO")
+    return current
+}
 
-    if __REMOTE_PAUSE_HOTKEY_BUSY
+AcquireRemoteHookGenerationGuard(state, generationNonce, &hMutex, context := "") {
+    hMutex := 0
+    try hMutex := RC_AcquirePersistedDesiredStateMutex()
+    if !hMutex {
+        if (context != "")
+            WriteLog(context "：無法取得 desired generation 鎖，取消 UI／程序操作", "WARN")
+        return false
+    }
+    if !IsRemoteHookGenerationCurrent(state, generationNonce, context) {
+        RC_ReleasePersistedDesiredStateMutex(hMutex)
+        hMutex := 0
+        return false
+    }
+    return true
+}
+
+ReleaseRemoteHookGenerationGuard(&hMutex) {
+    if hMutex
+        try RC_ReleasePersistedDesiredStateMutex(hMutex)
+    hMutex := 0
+}
+
+RemotePauseHookTick(generationNonce := 0) {
+    global __REMOTE_PAUSE_HOTKEY_BUSY, __REMOTE_PAUSE_HOOK_NONCE, __REWARD_MONITOR_ACTIVE
+    global __WAITING_FOR_INTERACTIVE_DESKTOP
+
+    if (__WAITING_FOR_INTERACTIVE_DESKTOP
+        || !IsRemoteHookGenerationCurrent("PAUSE", generationNonce, "遠端PAUSE"))
+        return
+    ; 同一 nonce 不重入；較新 nonce 可取代仍在背景等待的舊 hook。
+    if (__REMOTE_PAUSE_HOTKEY_BUSY && __REMOTE_PAUSE_HOOK_NONCE = generationNonce)
         return
 
     __REMOTE_PAUSE_HOTKEY_BUSY := true
+    __REMOTE_PAUSE_HOOK_NONCE := generationNonce
     try {
-        PauseAuxManagedScriptsOnRemotePause()
+        auxGenerationMutex := 0
+        previousAuxCritical := Critical("On")
+        try {
+            if !AcquireRemoteHookGenerationGuard("PAUSE", generationNonce,
+                &auxGenerationMutex, "遠端PAUSE子腳本暫停前")
+                return
+            PauseAuxManagedScriptsOnRemotePause()
+        } finally {
+            ReleaseRemoteHookGenerationGuard(&auxGenerationMutex)
+            Critical(previousAuxCritical)
+        }
+        if !IsRemoteHookGenerationCurrent("PAUSE", generationNonce, "遠端PAUSE熱鍵前")
+            return
 
         if !ProcessExist("LRMCAI.exe") {
             WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9", "INFO")
         } else {
-            if SendHotkeyToLrmc("{F9}", "遠端PAUSE")
+            if SendHotkeyToLrmc("{F9}", "遠端PAUSE", "PAUSE", generationNonce)
                 WriteLog("遠端PAUSE：已送出 F9 到 LRMCAI")
             else
                 WriteLog("遠端PAUSE：送出 F9 到 LRMCAI 失敗", "WARN")
@@ -1065,12 +1149,21 @@ RemotePauseHookTick() {
         } else {
             confirmTemplate := A_ScriptDir "\確認.png"
             if FileExist(confirmTemplate) {
-                if WaitForTemplateVisible(confirmTemplate, 60) {
-                    if ClickTemplateIfFound(confirmTemplate)
+                if WaitForTemplateVisible(confirmTemplate, 60, "PAUSE", generationNonce) {
+                    if !IsRemoteHookGenerationCurrent("PAUSE", generationNonce,
+                        "遠端PAUSE確認點擊前")
+                        return
+                    clickGenerationMutex := 0
+                    if !AcquireRemoteHookGenerationGuard("PAUSE", generationNonce,
+                        &clickGenerationMutex, "遠端PAUSE確認點擊")
+                        return
+                    try clickedConfirm := ClickTemplateIfFound(confirmTemplate)
+                    finally ReleaseRemoteHookGenerationGuard(&clickGenerationMutex)
+                    if clickedConfirm
                         WriteLog("遠端PAUSE：60 秒內命中確認.png，已先執行點擊")
                     else
                         WriteLog("遠端PAUSE：已偵測到確認.png，但點擊失敗，繼續原暫停流程", "WARN")
-                } else {
+                } else if IsRemoteHookGenerationCurrent("PAUSE", generationNonce) {
                     WriteLog("遠端PAUSE：60 秒內未檢測到確認.png，繼續原暫停流程", "INFO")
                 }
             } else {
@@ -1078,19 +1171,40 @@ RemotePauseHookTick() {
             }
         }
     } finally {
-        __REMOTE_PAUSE_HOTKEY_BUSY := false
+        if (__REMOTE_PAUSE_HOOK_NONCE = generationNonce) {
+            __REMOTE_PAUSE_HOTKEY_BUSY := false
+            __REMOTE_PAUSE_HOOK_NONCE := -1
+        }
     }
 }
 
-RemoteRunResumeHookTick() {
-    global __REMOTE_RESUME_SYNC_BUSY, __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
+RemoteRunResumeHookTick(generationNonce := 0) {
+    global __REMOTE_RESUME_SYNC_BUSY, __REMOTE_RESUME_HOOK_NONCE
+    global __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
+    global __WAITING_FOR_INTERACTIVE_DESKTOP
 
-    if __REMOTE_RESUME_SYNC_BUSY
+    if (__WAITING_FOR_INTERACTIVE_DESKTOP
+        || !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN"))
+        return
+    if (__REMOTE_RESUME_SYNC_BUSY && __REMOTE_RESUME_HOOK_NONCE = generationNonce)
         return
 
     __REMOTE_RESUME_SYNC_BUSY := true
+    __REMOTE_RESUME_HOOK_NONCE := generationNonce
     try {
-        ResumeAuxManagedScriptsAfterRemoteRun()
+        auxGenerationMutex := 0
+        previousAuxCritical := Critical("On")
+        try {
+            if !AcquireRemoteHookGenerationGuard("RUN", generationNonce,
+                &auxGenerationMutex, "遠端RUN子腳本恢復前")
+                return
+            ResumeAuxManagedScriptsAfterRemoteRun()
+        } finally {
+            ReleaseRemoteHookGenerationGuard(&auxGenerationMutex)
+            Critical(previousAuxCritical)
+        }
+        if !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN恢復子腳本後")
+            return
 
         ; 收尾條件已在 PAUSE 期間保存時，RUN 的唯一工作是解除暫停。
         ; 不再進入登入模板/OCR等待或送 Ctrl+F1，以免把安全收尾平白延後一分鐘以上。
@@ -1102,21 +1216,40 @@ RemoteRunResumeHookTick() {
         hwnd := GetWutheringGameHwnd()
         if !hwnd
             hwnd := WaitForWutheringGameWindow(20)
+        if !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN取得遊戲視窗後")
+            return
 
         loginTemplate := A_ScriptDir "\登入.png"
         loginDetected := false
         if FileExist(loginTemplate) {
-            loginDetected := WaitForTemplateVisible(loginTemplate, 60)
-            if !loginDetected {
-                WriteLog("遠端RUN：1 分鐘未判定到登入.png，直接送出 Ctrl+F1 到 LRMCAI", "WARN")
-                TrySendRunCtrlF1ToLrmc("遠端RUN（1分鐘未判定登入模板）")
-                return
+            ; 登入.png 只是「帳號在其他地方登入」後的重新登入備援。
+            ; RUN 只做一次背景 client 檢查；一般畫面沒有此模板時立即繼續
+            ; 主畫面驗證，不再白等 60 秒或提前送 Ctrl+F1。
+            loginDetected := IsTemplateVisible(loginTemplate)
+            if loginDetected {
+                if !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN備援登入點擊前")
+                    return
+                clickGenerationMutex := 0
+                if !AcquireRemoteHookGenerationGuard("RUN", generationNonce,
+                    &clickGenerationMutex, "遠端RUN備援登入點擊")
+                    return
+                clickedLoginBackup := false
+                try clickedLoginBackup := ClickTemplateIfFound(loginTemplate)
+                finally ReleaseRemoteHookGenerationGuard(&clickGenerationMutex)
+                if clickedLoginBackup {
+                    WriteLog("遠端RUN：命中異地登入備援畫面，已完成登入.png 點擊")
+                    WaitLoginScreenClearedByOcrAndCenterClick(hwnd, 40, "RUN", generationNonce)
+                    if !IsRemoteHookGenerationCurrent("RUN", generationNonce,
+                        "遠端RUN備援登入處理後")
+                        return
+                } else {
+                    WriteLog("遠端RUN：異地登入備援模板已命中，但安全點擊未通過；繼續主畫面驗證", "WARN")
+                }
+            } else {
+                WriteLog("遠端RUN：未命中異地登入備援畫面，直接繼續主畫面驗證", "INFO")
             }
-
-            ClickTemplateIfFound(loginTemplate)
-            WaitLoginScreenClearedByOcrAndCenterClick(hwnd, 40)
         } else {
-            WriteLog("遠端RUN：找不到登入模板，略過點擊", "WARN")
+            WriteLog("遠端RUN：找不到異地登入備援模板，直接繼續主畫面驗證", "WARN")
         }
 
         if !hwnd {
@@ -1128,25 +1261,33 @@ RemoteRunResumeHookTick() {
             WriteLog("遠端RUN：未檢測到 icon_main.png，略過送出 Ctrl+F1", "WARN")
             return
         }
+        if !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN Ctrl+F1前")
+            return
 
         if !ProcessExist("LRMCAI.exe") {
             WriteLog("遠端RUN：LRMCAI 未執行，略過送出 Ctrl+F1", "WARN")
             return
         }
 
-        TrySendRunCtrlF1ToLrmc("遠端RUN恢復")
+        TrySendRunCtrlF1ToLrmc("遠端RUN恢復", generationNonce)
     } finally {
-        __REMOTE_RESUME_SYNC_BUSY := false
+        if (__REMOTE_RESUME_HOOK_NONCE = generationNonce) {
+            __REMOTE_RESUME_SYNC_BUSY := false
+            __REMOTE_RESUME_HOOK_NONCE := -1
+        }
     }
 }
 
-TrySendRunCtrlF1ToLrmc(reason := "") {
+TrySendRunCtrlF1ToLrmc(reason := "", generationNonce := 0) {
+    if !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN送鍵")
+        return false
     if !ProcessExist("LRMCAI.exe") {
         WriteLog("遠端RUN：LRMCAI 未執行，略過送出 Ctrl+F1", "WARN")
         return false
     }
 
-    if SendHotkeyToLrmc("^{F1}", reason != "" ? reason : "遠端RUN恢復") {
+    if SendHotkeyToLrmc("^{F1}", reason != "" ? reason : "遠端RUN恢復",
+        "RUN", generationNonce) {
         WriteLog("遠端RUN：已送出 Ctrl+F1 到 LRMCAI")
         return true
     }
@@ -1155,9 +1296,12 @@ TrySendRunCtrlF1ToLrmc(reason := "") {
     return false
 }
 
-WaitForTemplateVisible(templatePath, timeoutSec := 60) {
-    deadline := A_TickCount + timeoutSec * 1000
-    while (A_TickCount < deadline) {
+WaitForTemplateVisible(templatePath, timeoutSec := 60, expectedState := "", generationNonce := 0) {
+    deadline := MonotonicTickMs() + timeoutSec * 1000
+    while (MonotonicTickMs() < deadline) {
+        if (expectedState != ""
+            && !IsRemoteHookGenerationCurrent(expectedState, generationNonce))
+            return false
         if IsTemplateVisible(templatePath)
             return true
         RawSleep(400)
@@ -1169,9 +1313,9 @@ IsTemplateVisible(templatePath) {
     x := 0
     y := 0
     try {
-        if FindTemplateInWutheringWindow(templatePath, &x, &y)
-            return true
-        return FindTemplateOnScreenWithTolerance(templatePath, &x, &y, 0, 0, A_ScreenWidth - 1, A_ScreenHeight - 1)
+        ; 登入／確認模板只能由鳴潮 client 的背景截圖命中；不可退回全螢幕，
+        ; 否則桌面、瀏覽器或遠端控制頁的相似圖片會誤觸重新登入備援。
+        return FindTemplateInWutheringWindow(templatePath, &x, &y)
     } catch {
         return false
     }
@@ -1204,21 +1348,25 @@ IsLoginScreenByOcr(hwnd) {
     return false
 }
 
-WaitLoginScreenClearedByOcrAndCenterClick(hwnd, timeoutSec := 40) {
+WaitLoginScreenClearedByOcrAndCenterClick(hwnd, timeoutSec := 40,
+    expectedState := "", generationNonce := 0) {
     if !hwnd {
         WriteLog("遠端RUN：無遊戲視窗，略過登入畫面 OCR 檢測", "WARN")
         return false
     }
 
     ; 先等登入畫面出現（點擊按鈕後畫面需要短暫切換，最多 30 秒）
-    deadline30 := A_TickCount + 30000
+    deadline30 := MonotonicTickMs() + 30000
     loginScreenFound := false
-    while (A_TickCount < deadline30) {
+    while (MonotonicTickMs() < deadline30) {
+        if (expectedState != ""
+            && !IsRemoteHookGenerationCurrent(expectedState, generationNonce))
+            return false
         if IsLoginScreenByOcr(hwnd) {
             loginScreenFound := true
             break
         }
-        Sleep 400
+        RawSleep(400)
     }
 
     if !loginScreenFound {
@@ -1227,23 +1375,37 @@ WaitLoginScreenClearedByOcrAndCenterClick(hwnd, timeoutSec := 40) {
     }
     WriteLog("遠端RUN：OCR 偵測到登入畫面，開始以中心點擊直到消失")
 
-    deadline := A_TickCount + timeoutSec * 1000
+    deadline := MonotonicTickMs() + timeoutSec * 1000
     attempts := 0
-    while (A_TickCount < deadline) {
-        Sleep 2000
+    while (MonotonicTickMs() < deadline) {
+        if (expectedState != ""
+            && !IsRemoteHookGenerationCurrent(expectedState, generationNonce))
+            return false
+        RawSleep(2000)
         if !IsLoginScreenByOcr(hwnd) {
             WriteLog("遠端RUN：登入畫面已消失（OCR 確認），共點擊 " attempts " 次")
             return true
         }
 
+        if (expectedState != ""
+            && !IsRemoteHookGenerationCurrent(expectedState, generationNonce))
+            return false
         attempts += 1
-        if ClickWutheringCenterPoint(hwnd) {
+        clickGenerationMutex := 0
+        if (expectedState != ""
+            && !AcquireRemoteHookGenerationGuard(expectedState, generationNonce,
+                &clickGenerationMutex, "遠端RUN中心點擊"))
+            return false
+        try clickedCenter := ClickWutheringCenterPoint(hwnd)
+        finally ReleaseRemoteHookGenerationGuard(&clickGenerationMutex)
+        if clickedCenter {
             WriteLog("遠端RUN：登入畫面仍存在（OCR），已執行第 " attempts " 次中心點擊")
         } else {
-            WriteLog("遠端RUN：中心點擊失敗，改用遊戲視窗中心 fallback", "WARN")
-            ClickWutheringCenterPoint(hwnd)
+            ; 下層已完成一次完整的桌面、PID、前景與命中視窗驗證。
+            ; 同一輪立即重點一次無法解除 foreground lock，反而可能在視窗切換時誤點。
+            WriteLog("遠端RUN：中心點擊安全驗證未通過，本輪不重複送出滑鼠輸入", "WARN")
         }
-        Sleep 300
+        RawSleep(300)
     }
 
     WriteLog("遠端RUN：登入畫面在 " timeoutSec " 秒內未消失（OCR），後續仍嘗試主畫面檢測", "WARN")
@@ -1366,47 +1528,68 @@ ResumeProcessByPid(pid) {
     return (ntStatus = 0)
 }
 
-SendHotkeyToLrmc(hotkey, reason := "") {
+SendHotkeyToLrmc(hotkey, reason := "", expectedState := "", generationNonce := 0) {
     target := ResolveLrmcTargetWindow()
     if !target.hwnd {
         WriteLog("送出快捷鍵到 LRMCAI 失敗：找不到可用視窗，hotkey=" hotkey, "WARN")
         return false
     }
 
-    ; 需求：先置頂並激活 LRMCAI 主視窗，再送出快捷鍵。
+    targetSpec := "ahk_id " target.hwnd
+    wasTopmost := false
     try {
-        WinRestore("ahk_id " target.hwnd)
-        WinSetAlwaysOnTop(1, "ahk_id " target.hwnd)
-        WinActivate("ahk_id " target.hwnd)
-        WinWaitActive("ahk_id " target.hwnd, , 1)
-        RawSleep(80)
-    } catch as e {
-        WriteLog("LRMCAI 視窗置頂/激活失敗，仍嘗試送鍵: hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
-    }
+        try wasTopmost := (WinGetExStyle(targetSpec) & 0x8) != 0 ; WS_EX_TOPMOST
+        if !wasTopmost
+            try WinSetAlwaysOnTop(1, targetSpec)
 
-    try {
-        SendEvent hotkey
-        if (reason != "")
-            WriteLog("已以前景方式送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
-        else
-            WriteLog("已以前景方式送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
-        return true
-    } catch as e {
-        WriteLog("前景送出快捷鍵到 LRMCAI 失敗，改用 ControlSend: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
-    }
+        prepareReason := ""
+        if !PrepareVerifiedWindowForInput(target.hwnd, target.pid,
+            "LRMCAI 快捷鍵｜" reason, &prepareReason) {
+            WriteLog("LRMCAI 快捷鍵未送出：無法確認目標安全前景 | hotkey=" hotkey
+                " hwnd=" target.hwnd " pid=" target.pid " reason=" prepareReason, "WARN")
+            return false
+        }
 
-    try {
-        ControlSend(hotkey, , "ahk_id " target.hwnd)
+        desiredGenerationMutex := 0
+        if (expectedState != ""
+            && !AcquireRemoteHookGenerationGuard(expectedState, generationNonce,
+                &desiredGenerationMutex, "LRMCAI 快捷鍵"))
+            return false
+        previousCritical := Critical("On")
+        try {
+            ; generation check 與 SendEvent 放在同一個不可中斷區段，避免較新
+            ; RUN／PAUSE 已 durable 後，舊 hook 又在最後一刻送出反向熱鍵。
+            if (expectedState != ""
+                && !RC_IsDesiredStateGenerationCurrent(expectedState, generationNonce)) {
+                WriteLog("LRMCAI 快捷鍵已取消：desired generation 已更新 | hotkey=" hotkey
+                    " state=" expectedState " nonce=" generationNonce, "INFO")
+                return false
+            }
+            if (WinGetPID(targetSpec) != target.pid)
+                return false
+            relation := GetForegroundRelationToTarget(target.hwnd, &foregroundHwnd)
+            if !IsSafeInputWindowRelation(relation, "root") {
+                WriteLog("LRMCAI 快捷鍵已取消：送鍵前失去前景 | target=" target.hwnd
+                    " foreground=" foregroundHwnd " relation=" relation, "WARN")
+                return false
+            }
+            SendEvent(hotkey)
+        } finally {
+            Critical(previousCritical)
+            ReleaseRemoteHookGenerationGuard(&desiredGenerationMutex)
+        }
         if (reason != "")
-            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
+            WriteLog("已在驗證過的 LRMCAI 前景嘗試送出快捷鍵: " hotkey "（" reason "） | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
         else
-            WriteLog("已透過 ControlSend 送出快捷鍵到 LRMCAI: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
+            WriteLog("已在驗證過的 LRMCAI 前景嘗試送出快捷鍵: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title)
         return true
     } catch as e {
         WriteLog("送出快捷鍵到 LRMCAI 失敗: " hotkey " | hwnd=" target.hwnd " pid=" target.pid " title=" target.title " | " e.Message, "WARN")
+        return false
+    } finally {
+        if (!wasTopmost && WinExist(targetSpec))
+            try WinSetAlwaysOnTop(0, targetSpec)
     }
-
-    return false
 }
 
 RawSleep(delayMs) {
@@ -1463,7 +1646,42 @@ ResolveLrmcTargetWindow() {
     return best
 }
 
-; 軟暫停：主流程在 Sleep 檢查點停住，但遠端監控計時器仍可繼續心跳與收命令。
+SetSoftPauseClockState(isPaused, nowTick := 0) {
+    global __SOFT_PAUSE_STARTED_TICK, __SOFT_PAUSE_TOTAL_MS
+
+    if (nowTick <= 0)
+        nowTick := MonotonicTickMs()
+    previousCritical := Critical("On")
+    try {
+        if isPaused {
+            if (__SOFT_PAUSE_STARTED_TICK = 0)
+                __SOFT_PAUSE_STARTED_TICK := nowTick
+        } else if (__SOFT_PAUSE_STARTED_TICK > 0) {
+            __SOFT_PAUSE_TOTAL_MS += Max(0, nowTick - __SOFT_PAUSE_STARTED_TICK)
+            __SOFT_PAUSE_STARTED_TICK := 0
+        }
+    } finally {
+        Critical(previousCritical)
+    }
+}
+
+PauseAwareTickMs() {
+    global __SOFT_PAUSE_STARTED_TICK, __SOFT_PAUSE_TOTAL_MS
+
+    nowTick := MonotonicTickMs()
+    previousCritical := Critical("On")
+    try {
+        activePauseMs := (__SOFT_PAUSE_STARTED_TICK > 0)
+            ? Max(0, nowTick - __SOFT_PAUSE_STARTED_TICK) : 0
+        return nowTick - __SOFT_PAUSE_TOTAL_MS - activePauseMs
+    } finally {
+        Critical(previousCritical)
+    }
+}
+
+; 軟暫停：主流程在 Sleep 檢查點停住，且暫停時間不消耗原本等待時間。
+; 一般等待切成最多 100ms 小段，讓 Firestore 輪詢／心跳／STOP 計時器可以插入；
+; 需要不可中斷的短暫鍵鼠時序才使用 RawSleep。
 Sleep(delayMs) {
     global REMOTE_CONTROL_ACTIVE, REMOTE_PAUSE_WAITING
 
@@ -1472,22 +1690,32 @@ Sleep(delayMs) {
     if (ms < 0)
         ms := 0
 
-    if (REMOTE_CONTROL_ACTIVE) {
-        while RC_IsPaused() {
+    deadline := PauseAwareTickMs() + ms
+    loop {
+        paused := false
+        if REMOTE_CONTROL_ACTIVE
+            try paused := RC_IsPaused()
+        SetSoftPauseClockState(paused)
+
+        if paused {
             if !REMOTE_PAUSE_WAITING {
                 REMOTE_PAUSE_WAITING := true
                 WriteLog("遠端控制：主流程已進入軟暫停，等待 RUN 指令")
             }
-            DllCall("Sleep", "UInt", 250)
+            DllCall("Sleep", "UInt", 100)
+            continue
         }
 
         if REMOTE_PAUSE_WAITING {
             REMOTE_PAUSE_WAITING := false
             WriteLog("遠端控制：收到 RUN，主流程恢復")
         }
-    }
 
-    DllCall("Sleep", "UInt", ms)
+        remainingMs := deadline - PauseAwareTickMs()
+        if (remainingMs <= 0)
+            break
+        DllCall("Sleep", "UInt", Min(100, Max(1, Ceil(remainingMs))))
+    }
 }
 
 GetWutheringAudioTargets() {
@@ -1941,9 +2169,17 @@ RemoteSettingsCommitConfig(values) {
     if !FileExist(CFG_FILE)
         return { ok: false, detail: "找不到本機 config.ini" }
 
-    tempPath := CFG_FILE ".remote_settings_" DllCall("GetCurrentProcessId") "_" A_TickCount ".tmp"
-    backupPath := CFG_FILE ".remote_settings.bak"
-    replacementAttempted := false
+    ; 這裡會用 FileMove 替換整份 config.ini。restart handoff 舊與新程序
+    ; 若同時寫 last_nonce，沒有共用鎖就會把較新命令游標整份倒回。
+    ; 與 desired/claim/pending ACK 共用同一 UID named mutex，使整檔替換
+    ; 與 RemoteControlFirestore 的單鍵寫入彼此互斥。
+    hRemoteJournalMutex := RC_AcquirePersistedDesiredStateMutex(5000)
+    if !hRemoteJournalMutex
+        return { ok: false, detail: "遠端狀態正在交接，無法取得設定檔寫入鎖" }
+    try {
+        tempPath := CFG_FILE ".remote_settings_" DllCall("GetCurrentProcessId") "_" A_TickCount ".tmp"
+        backupPath := CFG_FILE ".remote_settings.bak"
+        replacementAttempted := false
     try {
         FileCopy(CFG_FILE, tempPath, 1)
         IniWrite(values.serverScheduleEnabled, tempPath, "server_schedule", "enabled")
@@ -1981,6 +2217,9 @@ RemoteSettingsCommitConfig(values) {
         try FileDelete(tempPath)
         try FileDelete(backupPath)
         return { ok: false, detail: "寫入本機設定失敗：" e.Message }
+    }
+    } finally {
+        RC_ReleasePersistedDesiredStateMutex(hRemoteJournalMutex)
     }
 }
 
@@ -2160,6 +2399,16 @@ LoadScreenRecordingEnabled()
 LoadRuntimeDiagnosticsSettings()
 WriteLog("OCR 模型設定=" RapidOcr.DescribeDefaultModels())
 REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged", "OnRemoteControlSettingsChanged")
+; 沒有 restart／nextserver handoff 參數代表使用者明確開始新的日循環；這是解除
+; 前次 durable PAUSE 的安全入口。接手程序則保留 PAUSE，直到網頁送出較新 RUN nonce。
+remoteContinuationLaunch := (A_Args.Length > 0
+    && (A_Args[1] = "restart" || A_Args[1] = "nextserver"))
+if (REMOTE_CONTROL_ACTIVE && !remoteContinuationLaunch) {
+    if RC_BeginFreshRunCycle("normal-fresh-launch")
+        WriteLog("遠端控制：正常全新日循環已明確重設為 RUN")
+    else
+        WriteLog("遠端控制：無法持久保存全新日循環 RUN；保留既有 desired state", "ERROR")
+}
 if REMOTE_CONTROL_ACTIVE
     WriteLog("遠端控制：已啟用")
 else
@@ -2268,8 +2517,10 @@ noWindowSinceTick := 0
 if !isRestart
     TryStartScreenRecording("主流程開始")
 else {
-    AttachManagedScreenRecordingOnRestart("重啟模式接管")
-    WriteLog("重啟模式：保留既有錄影，不重新觸發錄影啟動")
+    if AttachManagedScreenRecordingOnRestart("重啟模式接管")
+        WriteLog("重啟模式：已接管既有錄影，不重新觸發錄影啟動")
+    else
+        TryStartScreenRecording("重啟模式未找到既有錄影，改啟動新錄影")
 }
 EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
@@ -2284,7 +2535,7 @@ loop {
 
         ; 啟用更新後恢復追蹤：若後續長時間 no_window，就主動重跑啟動流程。
         updateRecoveryActive := true
-        updateRecoveryStartTick := A_TickCount
+        updateRecoveryStartTick := MonotonicTickMs()
         Sleep 8000
 
         if (updateLoops >= maxUpdateLoops) {
@@ -2297,10 +2548,10 @@ loop {
     if (detectState = "no_window") {
         noWindowLoopCount += 1
         if (noWindowSinceTick = 0)
-            noWindowSinceTick := A_TickCount
+            noWindowSinceTick := MonotonicTickMs()
 
         if (updateRecoveryActive) {
-            elapsedSec := Floor((A_TickCount - updateRecoveryStartTick) / 1000)
+            elapsedSec := Floor((MonotonicTickMs() - updateRecoveryStartTick) / 1000)
             if (elapsedSec >= WUTHERING_UPDATE_RECOVERY_WAIT_SEC) {
                 WriteLog("更新後等待 " WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒仍抓不到鳴潮視窗，執行完整重啟流程", "ERROR")
                 ShowTip("⚠️ 更新後超時未啟動，完整重啟流程", 2200)
@@ -2312,7 +2563,7 @@ loop {
             WriteLog("更新後恢復等待中（" elapsedSec "/" WUTHERING_UPDATE_RECOVERY_WAIT_SEC " 秒），暫不重啟", "WARN")
         }
 
-        elapsedNoWindowSec := Floor((A_TickCount - noWindowSinceTick) / 1000)
+        elapsedNoWindowSec := Floor((MonotonicTickMs() - noWindowSinceTick) / 1000)
         ; 更新恢復有獨立的 300 秒門檻；不能再被一般 no_window 的 180 秒門檻提前截斷。
         if (!updateRecoveryActive && elapsedNoWindowSec >= WUTHERING_NO_WINDOW_RESTART_SEC) {
             WriteLog("鳴潮長時間 no_window（" elapsedNoWindowSec " 秒），判定當機/閃退，執行完整重啟", "ERROR")
@@ -2362,7 +2613,7 @@ if (loginDetected) {
         ShowTip("⚠️ 切服失敗，交由 OKWW 繼續", 1200)
     }
 
-    WriteLog("登入畫面階段啟動 OKWW，後續點擊改由 OKWW 接手")
+    WriteLog("登入畫面階段啟動 OKWW；一般「点击连接」交由 OKWW F11 接手，登入.png 僅保留作帳號異地登入後的重新登入備援")
     ClickTemplateIfFound(A_ScriptDir "\0510.png")
     ClickTemplateIfFound(A_ScriptDir "\登入.png")
     okwwResult := StartOKWWFlowWithLocalRecovery(isRestart, "登入畫面階段")
@@ -2375,7 +2626,7 @@ if (loginDetected) {
             "ERROR", CRASH_RESTART_MODE, okwwResult.code, okwwResult.stage)
         return
     }
-    WriteLog("OKWW F11 已送出；先用背景模板等待主畫面，逾時才執行一次遊戲中心點擊")
+    WriteLog("已在驗證過的 OKWW 前景嘗試注入 F11；這裡不宣告 OKWW 已處理，後續以遊戲主畫面驗證實際效果")
 }
 
 ; 2) 登入後啟動 OKWW 並確認啟動成功
@@ -2384,10 +2635,16 @@ if !okwwStarted {
 }
 
 ; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）。
-;    登入畫面已由 OKWW 送出 F11 時：先背景等待 20 秒，未就緒才點一次遊戲客戶區正中央，
+;    登入畫面已在 OKWW 正確前景嘗試注入 F11 時：先背景等待 20 秒，未就緒才點一次遊戲客戶區正中央，
 ;    再背景等待 30 秒；第二階段仍失敗才觸發重啟。
 gameHwnd := GetWutheringGameHwnd()
-gameReadyResult := { ok: false, centerClicked: false, phase: "not_started" }
+gameReadyResult := {
+    ok: false,
+    centerClicked: false,
+    phase: "not_started",
+    clickFailureCode: "",
+    clickFailureDetail: ""
+}
 if okwwStarted {
     WriteLog("開始 OKWW F11 後兩階段主畫面驗證：背景等待 20 秒 → 必要時中心左鍵 → 再等待 30 秒")
     gameReadyResult := WaitGameReadyAfterOkwwF11(gameHwnd, 20, 30)
@@ -2405,16 +2662,34 @@ if !gameReadyResult.ok {
         clickDetail := gameReadyResult.centerClicked
             ? "已成功對遊戲客戶區正中央送出一次滑鼠左鍵"
             : "未能對遊戲客戶區正中央送出滑鼠左鍵"
+        gameReadyCode := "GAME_READY_AFTER_OKWW_F11_TIMEOUT"
+        activationDetail := ""
+        if !gameReadyResult.centerClicked {
+            gameReadyCode := (gameReadyResult.HasOwnProp("clickFailureCode")
+                && gameReadyResult.clickFailureCode != "")
+                ? gameReadyResult.clickFailureCode : "GAME_CENTER_INPUT_NOT_READY"
+            if (gameReadyResult.HasOwnProp("clickFailureDetail")
+                && gameReadyResult.clickFailureDetail != "")
+                activationDetail := "；輸入失敗細節=" gameReadyResult.clickFailureDetail
+        }
+        gameReadyStage := !gameReadyResult.centerClicked
+            ? "鳴潮中心點擊（OKWW F11 後）" : "OKWW F11 後遊戲就緒"
         RequestRestart(
-            "OKWW 已送出 F11；先等待 20 秒仍未檢測到主畫面，" clickDetail
-                "；其後再等待 30 秒仍未通過主畫面模板驗證",
-            "ERROR", CRASH_RESTART_MODE, "GAME_READY_AFTER_OKWW_F11_TIMEOUT", "OKWW F11 後遊戲就緒")
+            "已在驗證過的 OKWW 前景嘗試注入 F11；先等待 20 秒仍未檢測到主畫面，" clickDetail
+                "；其後再等待 30 秒仍未通過主畫面模板驗證" activationDetail,
+            "ERROR", CRASH_RESTART_MODE, gameReadyCode, gameReadyStage)
     } else {
         RequestRestart(
             "鳴潮視窗存在，但主畫面／可操作模板在 90 秒內未通過驗證",
             "ERROR", CRASH_RESTART_MODE, "GAME_READY_CHECK_TIMEOUT", "遊戲可操作驗證")
     }
     return
+}
+if (okwwStarted && IsObject(okwwResult)) {
+    okwwResult.f11EffectConfirmed := true
+    WriteStepResult("OKWW F11效果", true,
+        "F11 鍵盤注入後，鳴潮主畫面已通過同一 HWND/PID 的穩定模板驗證")
+    WriteLog("OKWW F11 效果後置條件已通過：鳴潮主畫面穩定可操作")
 }
 readyDetail := (okwwStarted && gameReadyResult.centerClicked)
     ? "OKWW F11 後中心點擊恢復，模板比對通過"
@@ -2437,7 +2712,12 @@ if !okwwStarted {
             "ERROR", CRASH_RESTART_MODE, okwwResult.code, okwwResult.stage)
         return
     }
+    WriteLog("遊戲原本已在主畫面：OKWW F11 僅能確認在正確前景完成鍵盤注入，無可觀察畫面變化可證明 OKWW 已處理；繼續流程但不誤報為登入成功", "WARN")
 }
+
+; streak 只追蹤「是否能安全取得前景並注入輸入」，不是 OKWW 是否實際處理 F11。
+; 登入入口另由上面的遊戲主畫面後置條件確認效果；遊戲原已就緒時只確認前景輸入能力恢復。
+ResetForegroundInputFailureStreak("遊戲可操作驗證與 OKWW 前景輸入條件均已通過")
 
 ; 5) 執行聲骸合成流程
 WriteLog("啟動聲骸合成腳本...")
@@ -2452,12 +2732,12 @@ try {
     
     ; 等待聲骸合成完成（檢查進程是否還在運行）
     maxWaitTime := 1800000  ; 最多等待30分鐘
-    startTime := A_TickCount
+    startTime := MonotonicTickMs()
     
     Sleep 5000  ; 先等5秒讓腳本啟動
     
     ; 持續檢查聲骸合成進程是否還在運行
-    while (A_TickCount - startTime < maxWaitTime) {
+    while (MonotonicTickMs() - startTime < maxWaitTime) {
         found := false
         try {
             for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process") {
@@ -2501,7 +2781,7 @@ try {
         Sleep 2000  ; 每2秒檢查一次
     }
     
-    if (A_TickCount - startTime >= maxWaitTime) {
+    if (MonotonicTickMs() - startTime >= maxWaitTime) {
         WriteLog("聲骸合成超時，觸發重啟機制", "ERROR")
         ShowTip("⚠️ 聲骸合成超時，重新啟動...", 3000)
         Sleep 3000
@@ -2542,17 +2822,19 @@ ExitApp
 ; ======================== 函式區 ========================
 
 ; OKWW 自動戰鬥 OCR 在同一個最終視窗內檢查兩次。
-; 兩次仍無法確認時直接對該視窗送 F11，不再局部重啟 OKWW，避免重複開出多個視窗。
+; 兩次仍無法確認時直接對該視窗嘗試注入 F11，不再局部重啟 OKWW，避免重複開出多個視窗。
 StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
+    global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
+
     firstResult := StartOKWWFlow(isRestart)
     if !IsOkwwAutoBattleCheckFailure(firstResult)
         return firstResult
 
     stageText := entryStage != "" ? entryStage : "未指定入口"
     fallbackHwnd := firstResult.HasOwnProp("okwwHwnd") ? firstResult.okwwHwnd : 0
-    WriteLog("OKWW 自動戰鬥同一視窗連續兩次 OCR 未能確認；不重啟 OKWW，直接送 F11"
+    WriteLog("OKWW 自動戰鬥同一視窗連續兩次 OCR 未能確認；不重啟 OKWW，直接嘗試注入 F11"
         " | hwnd=" fallbackHwnd " | entry=" stageText, "WARN")
-    WriteStep("OKWW OCR降級", "兩次未確認，沿用同一最終視窗送 F11 | entry=" stageText, "WARN")
+    WriteStep("OKWW OCR降級", "兩次未確認，沿用同一最終視窗嘗試注入 F11 | entry=" stageText, "WARN")
 
     fallbackSent := false
     if fallbackHwnd {
@@ -2562,14 +2844,16 @@ StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
     }
 
     if fallbackSent {
-        WriteLog("OCR 降級 F11 已送出，等待 2 秒後開始 OKWW 最小化掃描", "WARN")
+        WriteLog("OCR 降級已在 OKWW 正確前景完成 F11 鍵盤注入嘗試，等待 2 秒後開始最小化掃描；不宣告 OKWW 已處理，登入入口另由遊戲主畫面驗證", "WARN")
         Sleep 2000
         ScheduleOkwwMinimizeSweeps("OCR降級F11")
-        WriteStepResult("OKWW流程", true, "同一視窗兩次 OCR 未確認；已直接送 F11 並排程最小化")
+        WriteStepResult("OKWW輸入前置", true, "同一視窗兩次 OCR 未確認；已在驗證前景嘗試注入 F11 並排程最小化（效果未在此宣告）")
         return {
             ok: true,
+            f11InputAttempted: true,
+            f11EffectConfirmed: false,
             code: "",
-            stage: "OKWW完成（OCR降級）",
+            stage: "OKWW輸入前置完成（OCR降級）",
             reason: ""
         }
     }
@@ -2577,9 +2861,12 @@ StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
     WriteLog("同一 OKWW 視窗兩次 OCR 未確認後，直接 F11 亦發送失敗；交由原 RequestRestart", "ERROR")
     return {
         ok: false,
-        code: "OKWW_F11_SEND_FAILED",
+        code: (LAST_OKWW_F11_FAILURE_CODE != ""
+            ? LAST_OKWW_F11_FAILURE_CODE : "OKWW_F11_SEND_FAILED"),
         stage: "OKWW快捷鍵發送（OCR降級）",
-        reason: Format("OKWW 同一最終視窗連續兩次無法由 OCR 確認自動戰鬥；直接發送 F11 亦失敗；hwnd={1}；entry={2}", fallbackHwnd, stageText)
+        reason: Format("OKWW 同一最終視窗連續兩次無法由 OCR 確認自動戰鬥；直接注入 F11 的安全條件亦失敗；hwnd={1}；entry={2}", fallbackHwnd, stageText)
+            . (LAST_OKWW_F11_FAILURE_DETAIL != ""
+                ? "；F11失敗細節=" LAST_OKWW_F11_FAILURE_DETAIL : "")
     }
 }
 
@@ -2590,6 +2877,8 @@ IsOkwwAutoBattleCheckFailure(result) {
 
 ; ★ OKWW 啟動＋前置流程（啟動 → 等待最終主視窗 → F11 → 最小化）
 StartOKWWFlow(isRestart) {
+    global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
+
     WriteStep("OKWW流程", "入口 isRestart=" (isRestart ? "1" : "0"))
     WriteLog("啟動 OKWW 管理腳本...")
     managerLaunchError := ""
@@ -2597,11 +2886,21 @@ StartOKWWFlow(isRestart) {
         ShowTip("🔄 重啟模式：重新啟動 OKWW", 1500)
         Sleep 1500
     }
+    ; 啟動前先記錄所有既有最終視窗。既有視窗只能由本次 manager 以 nonce
+    ; handoff 明確回報；無 handoff 時仍允許唯一的 snapshot 外新 final 視窗。
+    okwwBaseline := CaptureOkwwFinalWindowSignatures()
+    maxAttempts := 90
+    handoffRequest := CreateOkwwManagerHandoffRequest(maxAttempts + 2)
     ahkCommand := '"' AhkExe '" "' A_ScriptDir '\自動開啟OKWW.ahk"'
+        . ' --handoff-nonce "' handoffRequest.nonce '"'
+        . ' --handoff-path "' handoffRequest.path '"'
+        . ' --handoff-deadline "' handoffRequest.deadlineTick '"'
     WriteLog("執行命令: " ahkCommand)
+    managerPid := 0
     try {
-        Run(ahkCommand)
-        WriteLog("OKWW 管理腳本啟動成功" . (isRestart ? "（重啟模式）" : ""))
+        Run(ahkCommand, , , &managerPid)
+        WriteLog("OKWW 管理腳本啟動成功" . (isRestart ? "（重啟模式）" : "")
+            . " | managerPid=" managerPid " baselineFinalWindows=" okwwBaseline.Count)
     } catch as e {
         managerLaunchError := e.Message
         WriteLog("OKWW 管理腳本啟動失敗: " e.Message, "ERROR")
@@ -2609,70 +2908,159 @@ StartOKWWFlow(isRestart) {
     ShowTip("🟢 已啟動 OKWW 管理腳本" . (isRestart ? "（重新啟動）" : ""), 3000)
 
     ; 等待最終 pythonw 主視窗穩定出現，避免誤把 ok-ww.exe 的啟動／升級視窗當成目標。
-    WriteLog("等待 OKWW 最終主視窗開啟，完成後直接發送 F11...")
+    WriteLog("等待本次啟動的 OKWW 最終主視窗開啟，完成前景安全驗證後再嘗試注入 F11...")
     okwwHwnd := 0
-    stableHwnd := 0
+    stableSignature := ""
     stableHits := 0
-    maxAttempts := 90
+    ambiguousCandidateSeen := false
+    ambiguousCandidateCount := 0
     attempt := 0
     currentPID := DllCall("GetCurrentProcessId")
-    
-    while (attempt < maxAttempts && !okwwHwnd) {
-        attempt++
-        candidateHwnd := 0
-        candidateTitle := ""
-        try {
-            ; 最終主視窗格式相容：
-            ;   OK-WW v版本數字 Global
-            ;   OK-WW v版本數字 Global ... - OK-WW
-            for hwnd in WinGetList() {
-                pid := 0
-                procName := ""
-                wclass := ""
-                title := WinGetTitle(hwnd)
-                try pid := WinGetPID(hwnd)
-                try procName := StrLower(WinGetProcessName(hwnd))
-                try wclass := StrLower(WinGetClass(hwnd))
+    trustedHandoff := 0
+    handoffStatus := "pending"
+    managerExitObserved := false
 
-                ; 排除當前腳本自身視窗與 Tooltip，避免誤判。
-                if (pid = currentPID || wclass = "tooltips_class32")
-                    continue
+    try {
+        while (MonotonicTickMs() <= handoffRequest.deadlineTick && !okwwHwnd) {
+            attempt++
+            candidateHwnd := 0
+            candidateTitle := ""
+            candidateCount := 0
+            candidateSource := ""
 
-                ; v3.x 最終操作視窗由 pythonw.exe 承載；拒絕前置 ok-ww.exe 視窗。
-                if (procName != "pythonw.exe")
-                    continue
-
-                if RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$") {
-                    candidateHwnd := hwnd
-                    candidateTitle := title
-                    break
+            if (!IsObject(trustedHandoff) && handoffStatus = "pending"
+                && FileExist(handoffRequest.path)) {
+                report := ReadAndValidateOkwwManagerHandoff(handoffRequest.path,
+                    handoffRequest.nonce)
+                if report.ok {
+                    trustedHandoff := report
+                    handoffStatus := "accepted:" report.result
+                    WriteLog("已驗證本次 OKWW manager handoff | result=" report.result
+                        " pid=" report.pid " hwnd=" report.hwnd " title=" report.title)
+                } else {
+                    if (report.HasOwnProp("ambiguousCount") && report.ambiguousCount > 1) {
+                        ambiguousCandidateSeen := true
+                        ambiguousCandidateCount := Max(ambiguousCandidateCount,
+                            report.ambiguousCount)
+                        handoffStatus := "ambiguous:" report.ambiguousCount
+                        WriteLog("OKWW manager handoff 證明同時存在多個 healthy final；拒絕選擇與 F11"
+                            " | candidates=" report.ambiguousCount, "ERROR")
+                        break
+                    }
+                    handoffStatus := "rejected:" report.reason
+                    WriteLog("拒絕 OKWW manager handoff；仍只允許 snapshot 外唯一新 final"
+                        " | reason=" report.reason, "ERROR")
+                    try FileDelete(handoffRequest.path)
                 }
             }
-        }
 
-        if candidateHwnd {
-            if (candidateHwnd = stableHwnd) {
-                stableHits += 1
-            } else {
-                stableHwnd := candidateHwnd
-                stableHits := 1
+            if IsObject(trustedHandoff) {
+                liveReason := ""
+                liveCandidateCount := 0
+                if ValidateOkwwManagerHandoffTarget(trustedHandoff, &candidateTitle,
+                    &liveReason, &liveCandidateCount) {
+                    if (liveCandidateCount > 1) {
+                        ambiguousCandidateSeen := true
+                        ambiguousCandidateCount := Max(ambiguousCandidateCount,
+                            liveCandidateCount)
+                        handoffStatus := "ambiguous_live:" liveCandidateCount
+                        WriteLog("OKWW handoff 穩定確認期間出現多個 healthy final；拒絕選擇與 F11"
+                            " | candidates=" liveCandidateCount, "ERROR")
+                        break
+                    }
+                    candidateHwnd := trustedHandoff.hwnd
+                    candidateCount := 1
+                    candidateSource := "handoff:" trustedHandoff.result
+                } else {
+                    handoffStatus := "target_lost:" liveReason
+                    WriteLog("OKWW manager handoff 目標在穩定確認前失效；改回只等待 snapshot 外新 final"
+                        " | pid=" trustedHandoff.pid " hwnd=" trustedHandoff.hwnd
+                        " reason=" liveReason, "ERROR")
+                    trustedHandoff := 0
+                }
             }
 
-            WriteLog("找到 OKWW 最終主視窗，穩定確認 " stableHits "/2: hwnd="
-                candidateHwnd " title=" candidateTitle)
-            if (stableHits >= 2) {
-                okwwHwnd := candidateHwnd
+            ; manager 無回報、回報失敗或 no-upgrade 提早退出時，仍可接受本次啟動後
+            ; 唯一新出現的 final；baseline 內既有視窗絕不靠掃描接納。
+            if !candidateHwnd {
+                try candidateHwnd := FindBestOkwwFinalWindow(&candidateTitle, currentPID,
+                    okwwBaseline, true, &candidateCount)
+                candidateSource := candidateHwnd ? "snapshot_outside" : ""
+                if candidateHwnd {
+                    totalHealthyCount := CountUsableOkwwFinalWindows(&selectedIncluded,
+                        candidateHwnd)
+                    if (selectedIncluded && totalHealthyCount > candidateCount)
+                        candidateCount := totalHealthyCount
+                }
+            }
+
+            if (candidateCount > 1) {
+                ambiguousCandidateSeen := true
+                ambiguousCandidateCount := Max(ambiguousCandidateCount, candidateCount)
+                if (attempt = 1 || Mod(attempt, 5) = 0)
+                    WriteLog("本次 OKWW 啟動出現多個新最終主視窗，暫停選擇避免誤送 F11"
+                        " | candidates=" candidateCount " attempt=" attempt "/" maxAttempts, "ERROR")
+                candidateHwnd := 0
+                candidateTitle := ""
+            }
+
+            ; 列舉／驗證本身可能跨過 absolute deadline；逾時後不得再接受新候選。
+            if (MonotonicTickMs() > handoffRequest.deadlineTick) {
+                candidateHwnd := 0
                 break
             }
-        } else {
-            stableHwnd := 0
-            stableHits := 0
-        }
 
-        if (!okwwHwnd) {
-            if Mod(attempt, 5) = 0
-                WriteLog("等待 OKWW 最終主視窗中：attempt=" attempt "/" maxAttempts)
-            Sleep 1000
+            if candidateHwnd {
+                candidatePid := 0
+                try candidatePid := WinGetPID("ahk_id " candidateHwnd)
+                candidateSignature := candidatePid "|" candidateHwnd
+                if (candidateSignature = stableSignature) {
+                    stableHits += 1
+                } else {
+                    stableSignature := candidateSignature
+                    stableHits := 1
+                }
+
+                WriteLog("找到 OKWW 最終主視窗，穩定確認 " stableHits "/2: hwnd="
+                    candidateHwnd " pid=" candidatePid " source=" candidateSource
+                    " title=" candidateTitle)
+                if (stableHits >= 2) {
+                    okwwHwnd := candidateHwnd
+                    break
+                }
+            } else {
+                stableSignature := ""
+                stableHits := 0
+            }
+
+            if (!managerExitObserved && managerPid > 0 && !ProcessExist(managerPid)) {
+                managerExitObserved := true
+                WriteLog("OKWW manager 已退出但尚無可接受 final；繼續等待 snapshot 外唯一新視窗"
+                    " | handoff=" handoffStatus " attempt=" attempt "/" maxAttempts, "WARN")
+            }
+
+            if (!okwwHwnd) {
+                if Mod(attempt, 5) = 0
+                    WriteLog("等待 OKWW 最終主視窗中：attempt=" attempt "/" maxAttempts
+                        " handoff=" handoffStatus)
+                remainingMs := handoffRequest.deadlineTick - MonotonicTickMs()
+                if (remainingMs > 0)
+                    Sleep Min(1000, remainingMs)
+            }
+        }
+    } finally {
+        CleanupOkwwManagerHandoffRequest(handoffRequest, managerPid)
+    }
+
+    if okwwHwnd {
+        finalHealthyCount := CountUsableOkwwFinalWindows(&finalSelectedIncluded, okwwHwnd)
+        if (!finalSelectedIncluded || finalHealthyCount > 1) {
+            ambiguousCandidateSeen := finalHealthyCount > 1
+            ambiguousCandidateCount := Max(ambiguousCandidateCount, finalHealthyCount)
+            WriteLog("OKWW 最終操作前候選集合已改變；拒絕發送 F11"
+                " | selected=" okwwHwnd " included=" (finalSelectedIncluded ? 1 : 0)
+                " candidates=" finalHealthyCount, "ERROR")
+            okwwHwnd := 0
         }
     }
     
@@ -2702,41 +3090,74 @@ StartOKWWFlow(isRestart) {
             RestoreTopmostAfterOkwwOperation(topmostCtx)
         }
     } else {
-        WriteLog("等待 " maxAttempts " 秒仍找不到 OKWW 最終主視窗，未發送 F11", "ERROR")
+        WriteLog("等待 " maxAttempts " 秒仍找不到可驗證的 OKWW 最終主視窗，未發送 F11"
+            " | managerPid=" managerPid " managerExited=" (managerExitObserved ? 1 : 0)
+            " baselineFinalWindows=" okwwBaseline.Count " handoff=" handoffStatus, "ERROR")
     }
     
     if f11Sent {
-        WriteLog("F11 已送出，等待 2 秒後最小化 OKWW")
+        WriteLog("已在 OKWW 正確前景完成 F11 鍵盤注入嘗試，等待 2 秒後最小化；不宣告 OKWW 已處理，登入入口另由遊戲主畫面驗證")
         Sleep 2000
         ScheduleOkwwMinimizeSweeps("自動戰鬥確認後F11")
     } else {
         WriteLog("F11 未成功送出，保留 OKWW 視窗供診斷，不執行最小化", "WARN")
     }
-    WriteStepResult("OKWW流程", f11Sent,
-        f11Sent ? "自動戰鬥已啟用、F11 已送出並完成最小化" : "前置確認或 F11 失敗")
+    WriteStepResult("OKWW輸入前置", f11Sent,
+        f11Sent ? "自動戰鬥已啟用、已在驗證前景嘗試注入 F11 並排程最小化（效果未在此宣告）" : "前置確認或 F11 輸入失敗")
     if f11Sent {
         return {
             ok: true,
+            f11InputAttempted: true,
+            f11EffectConfirmed: false,
             code: "",
-            stage: "OKWW完成",
+            stage: "OKWW輸入前置完成",
             reason: ""
         }
     }
 
     if !okwwHwnd {
+        if ambiguousCandidateSeen {
+            return {
+                ok: false,
+                code: "OKWW_FINAL_WINDOW_AMBIGUOUS",
+                stage: "等待OKWW最終主視窗",
+                reason: "目前全系統同時存在多個健康 OKWW pythonw final（最多 "
+                    ambiguousCandidateCount " 個，包含啟動前既有與本次新視窗）；為避免把 F11 送到錯誤實例而停止"
+            }
+        }
         if (managerLaunchError != "") {
             return {
                 ok: false,
                 code: "OKWW_MANAGER_LAUNCH_FAILED",
                 stage: "OKWW管理腳本啟動",
-                reason: "OKWW 管理腳本啟動失敗，且 " maxAttempts " 秒內未找到最終主視窗：" . managerLaunchError
+                reason: "OKWW 管理腳本啟動失敗，且 " maxAttempts
+                    " 秒內未找到 snapshot 外唯一新 final：" . managerLaunchError
+            }
+        }
+        if InStr(handoffStatus, "rejected:") = 1 || InStr(handoffStatus, "target_lost:") = 1 {
+            return {
+                ok: false,
+                code: "OKWW_MANAGER_HANDOFF_INVALID",
+                stage: "驗證OKWW管理腳本交接",
+                reason: "manager handoff 未通過 nonce/PID/HWND/identity/健康重驗，且 "
+                    maxAttempts " 秒內沒有 snapshot 外唯一新 final；status=" handoffStatus
+            }
+        }
+        if managerExitObserved {
+            return {
+                ok: false,
+                code: "OKWW_MANAGER_EXITED_WITHOUT_HANDOFF",
+                stage: "等待OKWW最終主視窗",
+                reason: "OKWW manager 已退出且未留下有效 handoff；" maxAttempts
+                    " 秒內也沒有 snapshot 外唯一新 final；status=" handoffStatus
             }
         }
         return {
             ok: false,
             code: "OKWW_FINAL_WINDOW_TIMEOUT",
             stage: "等待OKWW最終主視窗",
-            reason: "OKWW 管理腳本已送出，但 " maxAttempts " 秒內未找到穩定的 pythonw 最終主視窗"
+            reason: "OKWW manager 仍在執行或狀態未知，但 " maxAttempts
+                " 秒內既無有效 handoff，也未找到 snapshot 外唯一新 final；status=" handoffStatus
         }
     }
 
@@ -2752,9 +3173,12 @@ StartOKWWFlow(isRestart) {
 
     return {
         ok: false,
-        code: "OKWW_F11_SEND_FAILED",
+        code: (LAST_OKWW_F11_FAILURE_CODE != ""
+            ? LAST_OKWW_F11_FAILURE_CODE : "OKWW_F11_SEND_FAILED"),
         stage: "OKWW快捷鍵發送",
         reason: "OKWW 自動戰鬥已確認啟用，但 F11 未能成功發送到最終主視窗"
+            . (LAST_OKWW_F11_FAILURE_DETAIL != ""
+                ? "；" LAST_OKWW_F11_FAILURE_DETAIL : "")
     }
 }
 
@@ -2765,10 +3189,14 @@ EnsureOkwwAutoBattleEnabled(okwwHwnd) {
     }
 
     try {
-        WinRestore("ahk_id " okwwHwnd)
-        WinActivate("ahk_id " okwwHwnd)
-        if !WinWaitActive("ahk_id " okwwHwnd, , 3) {
-            WriteLog("OKWW 自動戰鬥檢查失敗：無法切到前景 | hwnd=" okwwHwnd, "ERROR")
+        unusableReason := ""
+        if !PrepareOkwwWindowForInput(okwwHwnd, &unusableReason) {
+            WriteLog("OKWW 自動戰鬥檢查失敗：最終視窗不可操作 | hwnd=" okwwHwnd
+                " reason=" unusableReason, "ERROR")
+            return false
+        }
+        if !ForceActivateWindowForInput(okwwHwnd, 3000, "OKWW 自動戰鬥檢查") {
+            WriteLog("OKWW 自動戰鬥檢查失敗：強化前景切換仍失敗 | hwnd=" okwwHwnd, "ERROR")
             return false
         }
 
@@ -3243,11 +3671,721 @@ ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale := 1.0) {
     }
 }
 
+GetWindowRelationToTarget(candidateHwnd, targetHwnd) {
+    if !candidateHwnd || !targetHwnd
+        return ""
+    if (candidateHwnd = targetHwnd)
+        return "exact"
+
+    targetRoot := DllCall("user32\GetAncestor", "ptr", targetHwnd, "uint", 2, "ptr")
+    candidateRoot := DllCall("user32\GetAncestor", "ptr", candidateHwnd, "uint", 2, "ptr")
+    if (targetRoot && candidateRoot && targetRoot = candidateRoot)
+        return "same_root"
+
+    targetPid := 0
+    candidatePid := 0
+    try targetPid := WinGetPID("ahk_id " targetHwnd)
+    try candidatePid := WinGetPID("ahk_id " candidateHwnd)
+
+    targetRootOwner := DllCall("user32\GetAncestor", "ptr", targetHwnd, "uint", 3, "ptr")
+    candidateRootOwner := DllCall("user32\GetAncestor", "ptr", candidateHwnd, "uint", 3, "ptr")
+    if (targetRootOwner && candidateRootOwner && targetRootOwner = candidateRootOwner) {
+        ; Owner chain 可以跨程序建立；只有同 PID 才可視為同一安全輸入族群。
+        return (targetPid > 0 && targetPid = candidatePid)
+            ? "same_root_owner" : "same_root_owner_cross_process"
+    }
+
+    if (targetPid > 0 && targetPid = candidatePid)
+        return "same_process"
+    return ""
+}
+
+GetForegroundRelationToTarget(hwnd, &foregroundHwnd := 0) {
+    foregroundHwnd := DllCall("user32\GetForegroundWindow", "ptr")
+    return GetWindowRelationToTarget(foregroundHwnd, hwnd)
+}
+
+IsSafeInputWindowRelation(relation, policy := "family") {
+    if (relation = "exact" || relation = "same_root")
+        return true
+    ; 鍵盤可接受同一 owner 視窗群組（例如 Qt/Unreal 的 owned popup）；
+    ; 實體座標點擊只接受同一 root，避免點到同 PID 的設定窗或 modal。
+    return (policy = "family" && relation = "same_root_owner")
+}
+
+IsSafeOkwwKeyboardForeground(targetHwnd, &relation := "", &foregroundHwnd := 0, &reason := "") {
+    reason := ""
+    relation := GetForegroundRelationToTarget(targetHwnd, &foregroundHwnd)
+    if (relation = "exact" || relation = "same_root")
+        return true
+
+    ; SendEvent 會送給「實際 foreground」，不是指定 HWND。即使 owned window
+    ; 與主窗同 PID 且尺寸很大，也可能是設定頁或 modal；因此 F11 僅接受
+    ; exact／same-root，不能再用同 PID+尺寸推測它是安全的 Qt wrapper。
+    reason := (relation = "same_root_owner")
+        ? "owned_window_active_not_allowed"
+        : "unsafe_relation:" relation
+    return false
+}
+
+MonotonicTickMs() {
+    ; A_TickCount 約 49.7 天會回繞；自動化主機可能長時間不關機，
+    ; 新增的前景／桌面等待一律改用 64 位單調時鐘。
+    return DllCall("kernel32\GetTickCount64", "uint64")
+}
+
+WaitForTargetForegroundWindow(hwnd, timeoutMs := 1000, relationPolicy := "family") {
+    waitMs := 0
+    try waitMs := Max(0, Integer(timeoutMs))
+    deadline := MonotonicTickMs() + waitMs
+    loop {
+        if IsSafeInputWindowRelation(GetForegroundRelationToTarget(hwnd), relationPolicy)
+            return true
+        if (MonotonicTickMs() >= deadline)
+            break
+        RawSleep(25)
+    }
+    return IsSafeInputWindowRelation(GetForegroundRelationToTarget(hwnd), relationPolicy)
+}
+
+GetProcessSessionIdForInputLog(pid) {
+    if (pid <= 0)
+        return -1
+    sessionBuf := Buffer(4, 0)
+    if !DllCall("kernel32\ProcessIdToSessionId", "uint", pid, "ptr", sessionBuf.Ptr, "int")
+        return -1
+    return NumGet(sessionBuf, 0, "uint")
+}
+
+GetProcessElevationForInputLog(pid) {
+    if (pid <= 0)
+        return "unknown"
+    processHandle := DllCall("kernel32\OpenProcess", "uint", 0x1000, "int", false,
+        "uint", pid, "ptr")
+    if !processHandle
+        return "open_process_failed:" A_LastError
+
+    tokenHandle := 0
+    try {
+        if !DllCall("advapi32\OpenProcessToken", "ptr", processHandle, "uint", 0x0008,
+            "ptr*", &tokenHandle, "int")
+            return "open_token_failed:" A_LastError
+        elevationBuf := Buffer(4, 0)
+        returnedSize := 0
+        if !DllCall("advapi32\GetTokenInformation", "ptr", tokenHandle, "int", 20,
+            "ptr", elevationBuf.Ptr, "uint", elevationBuf.Size, "uint*", &returnedSize, "int")
+            return "query_failed:" A_LastError
+        return NumGet(elevationBuf, 0, "uint") ? "elevated" : "normal"
+    } finally {
+        if tokenHandle
+            DllCall("kernel32\CloseHandle", "ptr", tokenHandle)
+        DllCall("kernel32\CloseHandle", "ptr", processHandle)
+    }
+}
+
+GetDesktopObjectNameForInputLog(desktopHandle) {
+    if !desktopHandle
+        return ""
+    requiredBytes := 0
+    DllCall("user32\GetUserObjectInformationW", "ptr", desktopHandle, "int", 2,
+        "ptr", 0, "uint", 0, "uint*", &requiredBytes, "int") ; UOI_NAME
+    if (requiredBytes <= 2)
+        return ""
+    nameBuf := Buffer(requiredBytes, 0)
+    if !DllCall("user32\GetUserObjectInformationW", "ptr", desktopHandle, "int", 2,
+        "ptr", nameBuf.Ptr, "uint", nameBuf.Size, "uint*", &requiredBytes, "int")
+        return ""
+    return StrGet(nameBuf.Ptr, "UTF-16")
+}
+
+GetCurrentWtsConnectStateForInputLog() {
+    valuePtr := 0
+    valueBytes := 0
+    ; WTS_CURRENT_SERVER_HANDLE=0、WTS_CURRENT_SESSION=-1、WTSConnectState=8。
+    if !DllCall("wtsapi32\WTSQuerySessionInformationW", "ptr", 0, "uint", 0xFFFFFFFF,
+        "int", 8, "ptr*", &valuePtr, "uint*", &valueBytes, "int")
+        return -1
+    try return (valuePtr && valueBytes >= 4) ? NumGet(valuePtr, 0, "int") : -1
+    finally {
+        if valuePtr
+            DllCall("wtsapi32\WTSFreeMemory", "ptr", valuePtr)
+    }
+}
+
+GetDesktopInputFlagForInputLog(desktopHandle) {
+    if !desktopHandle
+        return { known: false, value: false, error: "invalid_handle" }
+
+    flagBuf := Buffer(4, 0)
+    requiredBytes := 0
+    DllCall("kernel32\SetLastError", "uint", 0)
+    ok := DllCall("user32\GetUserObjectInformationW", "ptr", desktopHandle, "int", 6,
+        "ptr", flagBuf.Ptr, "uint", flagBuf.Size, "uint*", &requiredBytes, "int") ; UOI_IO
+    if !ok
+        return { known: false, value: false, error: A_LastError }
+    return { known: true, value: NumGet(flagBuf, 0, "int") != 0, error: 0 }
+}
+
+GetInteractiveDesktopState() {
+    currentDesktopHandle := 0
+    inputDesktopHandle := 0
+    currentDesktopName := ""
+    inputDesktopName := ""
+    inputOpenError := 0
+    currentIo := { known: false, value: false, error: "not_queried" }
+    inputIo := { known: false, value: false, error: "not_queried" }
+    wtsState := -1
+    inspectError := ""
+
+    try {
+        currentThreadId := DllCall("kernel32\GetCurrentThreadId", "uint")
+        currentDesktopHandle := DllCall("user32\GetThreadDesktop", "uint", currentThreadId, "ptr")
+        currentDesktopName := GetDesktopObjectNameForInputLog(currentDesktopHandle)
+        currentIo := GetDesktopInputFlagForInputLog(currentDesktopHandle)
+
+        DllCall("kernel32\SetLastError", "uint", 0)
+        inputDesktopHandle := DllCall("user32\OpenInputDesktop", "uint", 0, "int", false,
+            "uint", 0x0001, "ptr") ; DESKTOP_READOBJECTS
+        inputOpenError := inputDesktopHandle ? 0 : A_LastError
+        if inputDesktopHandle {
+            inputDesktopName := GetDesktopObjectNameForInputLog(inputDesktopHandle)
+            inputIo := GetDesktopInputFlagForInputLog(inputDesktopHandle)
+        }
+        wtsState := GetCurrentWtsConnectStateForInputLog()
+    } catch as e {
+        inspectError := e.Message
+    } finally {
+        if inputDesktopHandle
+            try DllCall("user32\CloseDesktop", "ptr", inputDesktopHandle, "int")
+    }
+
+    ; 實體滑鼠／鍵盤輸入採 fail-closed：任一查詢不明都不能假設可操作。
+    ok := false
+    if (inspectError != "")
+        reason := "desktop_inspect_exception:" inspectError
+    else if !currentDesktopHandle
+        reason := "current_desktop_unavailable"
+    else if !inputDesktopHandle
+        reason := "input_desktop_open_failed:" inputOpenError
+    else if (currentDesktopName = "" || inputDesktopName = "")
+        reason := "desktop_name_query_failed"
+    else if (currentDesktopName != inputDesktopName)
+        reason := "desktop_mismatch"
+    else if !currentIo.known
+        reason := "current_desktop_uoi_io_failed:" currentIo.error
+    else if !inputIo.known
+        reason := "input_desktop_uoi_io_failed:" inputIo.error
+    else if (!currentIo.value || !inputIo.value)
+        reason := "desktop_not_receiving_input"
+    else if (wtsState < 0)
+        reason := "wts_query_failed"
+    else if (wtsState != 0)
+        reason := "wts_not_active:" wtsState
+    else {
+        ok := true
+        reason := ""
+    }
+
+    return {
+        ok: ok,
+        reason: reason,
+        currentDesktop: currentDesktopName,
+        inputDesktop: inputDesktopName,
+        wtsState: wtsState,
+        inputOpenError: inputOpenError,
+        currentIoKnown: currentIo.known,
+        currentIo: currentIo.value,
+        inputIoKnown: inputIo.known,
+        inputIo: inputIo.value
+    }
+}
+
+DescribeGuiThreadForInputLog(hwnd) {
+    if !hwnd
+        return "hwnd=0"
+    tid := DllCall("user32\GetWindowThreadProcessId", "ptr", hwnd, "ptr", 0, "uint")
+    if !tid
+        return "tid=0"
+    infoSize := 8 + (A_PtrSize * 6) + 16
+    info := Buffer(infoSize, 0)
+    NumPut("uint", infoSize, info, 0)
+    if !DllCall("user32\GetGUIThreadInfo", "uint", tid, "ptr", info.Ptr, "int")
+        return "tid=" tid " query_failed=" A_LastError
+    return "tid=" tid
+        . " flags=" Format("0x{:X}", NumGet(info, 4, "uint"))
+        . " active=" NumGet(info, 8, "ptr")
+        . " focus=" NumGet(info, 8 + A_PtrSize, "ptr")
+        . " capture=" NumGet(info, 8 + (A_PtrSize * 2), "ptr")
+        . " menuOwner=" NumGet(info, 8 + (A_PtrSize * 3), "ptr")
+}
+
+DescribeAutomationProcessForInputLog() {
+    selfPid := DllCall("kernel32\GetCurrentProcessId", "uint")
+    return "pid=" selfPid
+        . " session=" GetProcessSessionIdForInputLog(selfPid)
+        . " elevation=" GetProcessElevationForInputLog(selfPid)
+        . " admin=" (A_IsAdmin ? 1 : 0)
+}
+
+CanUseForegroundAltPulse(hwnd, &reason := "") {
+    reason := ""
+    targetPid := 0
+    try targetPid := WinGetPID("ahk_id " hwnd)
+    currentPid := DllCall("kernel32\GetCurrentProcessId", "uint")
+    targetSession := GetProcessSessionIdForInputLog(targetPid)
+    currentSession := GetProcessSessionIdForInputLog(currentPid)
+    if (targetSession < 0 || currentSession < 0 || targetSession != currentSession) {
+        reason := "session_mismatch current=" currentSession " target=" targetSession
+        return false
+    }
+    if GetKeyState("Alt", "P") {
+        reason := "physical_alt_is_down"
+        return false
+    }
+
+    desktopState := GetInteractiveDesktopState()
+    if !desktopState.ok {
+        reason := desktopState.reason
+            . " currentDesktop=" desktopState.currentDesktop
+            . " inputDesktop=" desktopState.inputDesktop
+            . " wts=" desktopState.wtsState
+        return false
+    }
+    return true
+}
+
+DescribeWindowForInputLog(hwnd) {
+    if !hwnd
+        return "hwnd=0"
+    if !WinExist("ahk_id " hwnd)
+        return "hwnd=" hwnd " missing=1"
+
+    try {
+        pid := WinGetPID("ahk_id " hwnd)
+        tid := DllCall("user32\GetWindowThreadProcessId", "ptr", hwnd, "ptr", 0, "uint")
+        procName := WinGetProcessName("ahk_id " hwnd)
+        className := WinGetClass("ahk_id " hwnd)
+        title := WinGetTitle("ahk_id " hwnd)
+        style := WinGetStyle("ahk_id " hwnd)
+        exStyle := WinGetExStyle("ahk_id " hwnd)
+        owner := DllCall("user32\GetWindow", "ptr", hwnd, "uint", 4, "ptr")
+        root := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+        rootOwner := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 3, "ptr")
+        visible := DllCall("user32\IsWindowVisible", "ptr", hwnd, "int")
+        enabled := DllCall("user32\IsWindowEnabled", "ptr", hwnd, "int")
+        hung := DllCall("user32\IsHungAppWindow", "ptr", hwnd, "int")
+        minMax := WinGetMinMax("ahk_id " hwnd)
+        cloakedValue := -1
+        cloakedBuf := Buffer(4, 0)
+        try {
+            hr := DllCall("dwmapi\DwmGetWindowAttribute", "ptr", hwnd, "uint", 14,
+                "ptr", cloakedBuf.Ptr, "uint", 4, "int")
+            if (hr = 0)
+                cloakedValue := NumGet(cloakedBuf, 0, "uint")
+        }
+        sessionId := GetProcessSessionIdForInputLog(pid)
+        elevation := GetProcessElevationForInputLog(pid)
+        noActivate := (exStyle & 0x08000000) ? 1 : 0 ; WS_EX_NOACTIVATE
+        return "hwnd=" hwnd " pid=" pid " tid=" tid " process=" procName
+            . " class=" className " visible=" visible " enabled=" enabled " minmax=" minMax
+            . " style=" Format("0x{:X}", style) " exstyle=" Format("0x{:X}", exStyle)
+            . " noactivate=" noActivate " cloaked=" cloakedValue " hung=" hung
+            . " session=" sessionId " elevation=" elevation
+            . " owner=" owner " root=" root " rootOwner=" rootOwner " title=" title
+    } catch as e {
+        return "hwnd=" hwnd " inspect_error=" e.Message
+    }
+}
+
+RestoreMinimizedWindowPreservingPlacement(hwnd, context := "", &reason := "") {
+    reason := ""
+    target := "ahk_id " hwnd
+    try {
+        if (WinGetMinMax(target) != -1)
+            return true
+
+        ; WINDOWPLACEMENT.flags 的 WPF_RESTORETOMAXIMIZED 可區分「普通視窗最小化」
+        ; 與「最大化後最小化」。不可一律用未知 restore state 改變遊戲大小。
+        placement := Buffer(44, 0)
+        NumPut("uint", placement.Size, placement, 0)
+        if !DllCall("user32\GetWindowPlacement", "ptr", hwnd, "ptr", placement.Ptr, "int") {
+            reason := "get_window_placement_failed:" A_LastError
+            return false
+        }
+
+        flags := NumGet(placement, 4, "uint")
+        restoreToMaximized := (flags & 0x2) != 0 ; WPF_RESTORETOMAXIMIZED
+        showCommand := restoreToMaximized ? 3 : 9 ; SW_SHOWMAXIMIZED / SW_RESTORE
+        DllCall("user32\ShowWindow", "ptr", hwnd, "int", showCommand, "int")
+        RawSleep(180)
+
+        if (restoreToMaximized && WinGetMinMax(target) != 1) {
+            WinMaximize(target)
+            RawSleep(120)
+        }
+        if (WinGetMinMax(target) = -1) {
+            reason := "window_still_minimized"
+            return false
+        }
+
+        WriteLog("最小化視窗已依原 WINDOWPLACEMENT 還原"
+            " | hwnd=" hwnd " restoreToMaximized=" (restoreToMaximized ? 1 : 0)
+            " | context=" context)
+        return true
+    } catch as e {
+        reason := "restore_exception:" e.Message
+        return false
+    }
+}
+
+ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPolicy := "family") {
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+
+    LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
+    LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        return false
+
+    desktopState := GetInteractiveDesktopState()
+    if !desktopState.ok {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := desktopState.reason
+            . "；currentDesktop=" desktopState.currentDesktop
+            . "；inputDesktop=" desktopState.inputDesktop
+            . "；wtsState=" desktopState.wtsState
+        WriteLog("視窗前景切換已中止：目前不是可互動桌面 | "
+            . LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+            . " | self={" DescribeAutomationProcessForInputLog() "} | context=" context, "ERROR")
+        return false
+    }
+
+    target := "ahk_id " hwnd
+    totalMs := 3000
+    try totalMs := Max(500, Integer(timeoutMs))
+    deadline := MonotonicTickMs() + totalMs
+
+    ; 只在最小化時依原 WINDOWPLACEMENT 還原；一般／最大化視窗完全不動。
+    restoreReason := ""
+    if !RestoreMinimizedWindowPreservingPlacement(hwnd, context, &restoreReason) {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "WINDOW_RESTORE_FAILED"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := restoreReason "；hwnd=" hwnd
+        WriteLog("視窗前景切換已中止：無法安全還原最小化視窗 | "
+            LAST_INPUT_ACTIVATION_FAILURE_DETAIL " | context=" context, "ERROR")
+        return false
+    }
+
+    try WinActivate(target)
+    if WaitForTargetForegroundWindow(hwnd, Min(600, Max(0, deadline - MonotonicTickMs())), relationPolicy) {
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        if (relation != "exact")
+            WriteLog("視窗前景已確認為同一互動視窗群組：relation=" relation
+                " target=" hwnd " foreground=" foregroundHwnd " | context=" context)
+        return true
+    }
+
+    currentThreadId := DllCall("kernel32\GetCurrentThreadId", "uint")
+    foregroundHwnd := DllCall("user32\GetForegroundWindow", "ptr")
+    foregroundThreadId := foregroundHwnd
+        ? DllCall("user32\GetWindowThreadProcessId", "ptr", foregroundHwnd, "ptr", 0, "uint")
+        : 0
+    targetThreadId := DllCall("user32\GetWindowThreadProcessId", "ptr", hwnd, "ptr", 0, "uint")
+    attachedForeground := false
+    attachedTarget := false
+    attachForegroundError := 0
+    attachTargetError := 0
+    bringResult := false
+    bringError := 0
+    foregroundResult := false
+    foregroundError := 0
+    detachTargetResult := true
+    detachTargetError := 0
+    detachForegroundResult := true
+    detachForegroundError := 0
+
+    previousCritical := Critical("On")
+    try {
+        if (foregroundThreadId && foregroundThreadId != currentThreadId) {
+            DllCall("kernel32\SetLastError", "uint", 0)
+            attachedForeground := DllCall("user32\AttachThreadInput", "uint", currentThreadId,
+                "uint", foregroundThreadId, "int", true, "int") ? true : false
+            attachForegroundError := attachedForeground ? 0 : A_LastError
+        }
+        if (targetThreadId && targetThreadId != currentThreadId
+            && targetThreadId != foregroundThreadId) {
+            DllCall("kernel32\SetLastError", "uint", 0)
+            attachedTarget := DllCall("user32\AttachThreadInput", "uint", currentThreadId,
+                "uint", targetThreadId, "int", true, "int") ? true : false
+            attachTargetError := attachedTarget ? 0 : A_LastError
+        }
+
+        DllCall("kernel32\SetLastError", "uint", 0)
+        bringResult := DllCall("user32\BringWindowToTop", "ptr", hwnd, "int") ? true : false
+        bringError := bringResult ? 0 : A_LastError
+        DllCall("kernel32\SetLastError", "uint", 0)
+        foregroundResult := DllCall("user32\SetForegroundWindow", "ptr", hwnd, "int") ? true : false
+        foregroundError := foregroundResult ? 0 : A_LastError
+    } finally {
+        if attachedTarget {
+            DllCall("kernel32\SetLastError", "uint", 0)
+            try detachTargetResult := DllCall("user32\AttachThreadInput", "uint", currentThreadId,
+                "uint", targetThreadId, "int", false, "int") ? true : false
+            catch
+                detachTargetResult := false
+            detachTargetError := detachTargetResult ? 0 : A_LastError
+        }
+        if attachedForeground {
+            DllCall("kernel32\SetLastError", "uint", 0)
+            try detachForegroundResult := DllCall("user32\AttachThreadInput", "uint", currentThreadId,
+                "uint", foregroundThreadId, "int", false, "int") ? true : false
+            catch
+                detachForegroundResult := false
+            detachForegroundError := detachForegroundResult ? 0 : A_LastError
+        }
+        Critical(previousCritical)
+    }
+
+    if WaitForTargetForegroundWindow(hwnd, Min(900, Max(0, deadline - MonotonicTickMs())), relationPolicy) {
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        WriteLog("視窗前景強化成功：mode=AttachThreadInput relation=" relation
+            " target=" hwnd " foreground=" foregroundHwnd
+            " attachForeground=" attachedForeground "/" attachForegroundError
+            " attachTarget=" attachedTarget "/" attachTargetError
+            " detachForeground=" detachForegroundResult "/" detachForegroundError
+            " detachTarget=" detachTargetResult "/" detachTargetError
+            " bring=" bringResult "/" bringError
+            " setForeground=" foregroundResult "/" foregroundError
+            " | context=" context)
+        return true
+    }
+
+    ; Windows 的 foreground-lock 仍拒絕時，只在同一互動工作階段且使用者沒有
+    ; 正按住 Alt 時做一次完整脈衝；避免鎖定／斷線環境或真實按鍵被干擾。
+    altPulseReason := ""
+    altPulseUsed := CanUseForegroundAltPulse(hwnd, &altPulseReason)
+    if altPulseUsed {
+        previousCritical := Critical("On")
+        try {
+            DllCall("user32\keybd_event", "uchar", 0x12, "uchar", 0, "uint", 0, "uptr", 0)
+            try DllCall("user32\SetForegroundWindow", "ptr", hwnd, "int")
+            try DllCall("user32\BringWindowToTop", "ptr", hwnd, "int")
+        } finally {
+            DllCall("user32\keybd_event", "uchar", 0x12, "uchar", 0,
+                "uint", 0x0002, "uptr", 0)
+            Critical(previousCritical)
+        }
+    }
+
+    if (altPulseUsed
+        && WaitForTargetForegroundWindow(hwnd, Max(0, deadline - MonotonicTickMs()), relationPolicy)) {
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        WriteLog("視窗前景強化成功：mode=AltPulse relation=" relation
+            " target=" hwnd " foreground=" foregroundHwnd " | context=" context)
+        return true
+    }
+
+    currentForeground := DllCall("user32\GetForegroundWindow", "ptr")
+    finalDesktopState := GetInteractiveDesktopState()
+    if !finalDesktopState.ok {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := finalDesktopState.reason
+            . "；currentDesktop=" finalDesktopState.currentDesktop
+            . "；inputDesktop=" finalDesktopState.inputDesktop
+            . "；wtsState=" finalDesktopState.wtsState
+    } else {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "WINDOW_FOREGROUND_DENIED"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "relation="
+        . GetWindowRelationToTarget(currentForeground, hwnd)
+        . "；policy=" relationPolicy
+        . "；foreground=" currentForeground
+        . "；setForeground=" foregroundResult "/" foregroundError
+    }
+    WriteLog("視窗前景強化失敗：target={" DescribeWindowForInputLog(hwnd)
+        "} foreground={" DescribeWindowForInputLog(currentForeground) "}"
+        " relation=" GetWindowRelationToTarget(currentForeground, hwnd)
+        " policy=" relationPolicy
+        " attachForeground=" attachedForeground "/" attachForegroundError
+        " attachTarget=" attachedTarget "/" attachTargetError
+        " detachForeground=" detachForegroundResult "/" detachForegroundError
+        " detachTarget=" detachTargetResult "/" detachTargetError
+        " bring=" bringResult "/" bringError
+        " setForeground=" foregroundResult "/" foregroundError
+        " altPulse=" altPulseUsed "/" altPulseReason
+        " targetGui={" DescribeGuiThreadForInputLog(hwnd) "}"
+        " foregroundGui={" DescribeGuiThreadForInputLog(currentForeground) "}"
+        " self={" DescribeAutomationProcessForInputLog() "}"
+        " desktopBefore=current:" desktopState.currentDesktop ",input:" desktopState.inputDesktop
+        ",wts:" desktopState.wtsState
+        " desktopAfter=ok:" finalDesktopState.ok ",reason:" finalDesktopState.reason
+        ",current:" finalDesktopState.currentDesktop ",input:" finalDesktopState.inputDesktop
+        ",wts:" finalDesktopState.wtsState
+        " | context=" context, "WARN")
+    return false
+}
+
+GetWindowAtScreenPoint(screenX, screenY) {
+    packedPoint := (Round(screenX) & 0xFFFFFFFF) | ((Round(screenY) & 0xFFFFFFFF) << 32)
+    return DllCall("user32\WindowFromPoint", "int64", packedPoint, "ptr")
+}
+
+IsTargetWindowAtScreenPoint(hwnd, screenX, screenY, &hitHwnd := 0, &relation := "") {
+    hitHwnd := GetWindowAtScreenPoint(screenX, screenY)
+    relation := GetWindowRelationToTarget(hitHwnd, hwnd)
+    return IsSafeInputWindowRelation(relation, "root")
+}
+
+PrepareVerifiedWindowForInput(hwnd, expectedPid := 0, context := "", &reason := "") {
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+    LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
+    LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
+    reason := ""
+    if !hwnd || !WinExist("ahk_id " hwnd) {
+        reason := "window_missing"
+        return false
+    }
+
+    desktopState := GetInteractiveDesktopState()
+    if !desktopState.ok {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := desktopState.reason
+            . "；currentDesktop=" desktopState.currentDesktop
+            . "；inputDesktop=" desktopState.inputDesktop
+            . "；wtsState=" desktopState.wtsState
+        reason := LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+        return false
+    }
+
+    try {
+        actualPid := WinGetPID("ahk_id " hwnd)
+        if (expectedPid > 0 && actualPid != expectedPid) {
+            reason := "pid_changed expected=" expectedPid " actual=" actualPid
+            return false
+        }
+        if !DllCall("user32\IsWindowVisible", "ptr", hwnd, "int") {
+            reason := "not_visible"
+            return false
+        }
+        if !DllCall("user32\IsWindowEnabled", "ptr", hwnd, "int") {
+            reason := "not_enabled"
+            return false
+        }
+        if DllCall("user32\IsHungAppWindow", "ptr", hwnd, "int") {
+            reason := "window_hung"
+            return false
+        }
+        if (WinGetExStyle("ahk_id " hwnd) & 0x08000000) {
+            reason := "no_activate_style"
+            return false
+        }
+        cloakedBuf := Buffer(4, 0)
+        hr := DllCall("dwmapi\DwmGetWindowAttribute", "ptr", hwnd, "uint", 14,
+            "ptr", cloakedBuf.Ptr, "uint", 4, "int")
+        if (hr = 0 && NumGet(cloakedBuf, 0, "uint") != 0) {
+            reason := "cloaked"
+            return false
+        }
+        restoreReason := ""
+        if !RestoreMinimizedWindowPreservingPlacement(hwnd, context, &restoreReason) {
+            reason := restoreReason
+            return false
+        }
+    } catch as e {
+        reason := "inspect_failed:" e.Message
+        return false
+    }
+
+    if !ForceActivateWindowForInput(hwnd, 3000, context, "root") {
+        reason := LAST_INPUT_ACTIVATION_FAILURE_DETAIL != ""
+            ? LAST_INPUT_ACTIVATION_FAILURE_DETAIL : "foreground_denied"
+        return false
+    }
+    return true
+}
+
+ClickVerifiedWindowClientPoint(hwnd, clientX, clientY, expectedPid := 0, context := "") {
+    reason := ""
+    if !PrepareVerifiedWindowForInput(hwnd, expectedPid, context, &reason) {
+        WriteLog("目標視窗安全點擊已取消：" reason " | hwnd=" hwnd
+            " client=" clientX "," clientY " | context=" context, "WARN")
+        return false
+    }
+
+    oldMouseMode := A_CoordModeMouse
+    try {
+        WinGetClientPos(&originX, &originY, &clientW, &clientH, "ahk_id " hwnd)
+        pointX := Round(clientX)
+        pointY := Round(clientY)
+        if (pointX < 0 || pointY < 0 || pointX >= clientW || pointY >= clientH) {
+            WriteLog("目標視窗安全點擊已取消：client 座標超界 | hwnd=" hwnd
+                " point=" pointX "," pointY " client=" clientW "x" clientH
+                " | context=" context, "WARN")
+            return false
+        }
+        screenX := originX + pointX
+        screenY := originY + pointY
+        CoordMode("Mouse", "Screen")
+        MouseMove(screenX, screenY, 0)
+        RawSleep(80)
+        previousCritical := Critical("On")
+        try {
+            if (expectedPid > 0 && WinGetPID("ahk_id " hwnd) != expectedPid)
+                return false
+            relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+            if !IsSafeInputWindowRelation(relation, "root")
+                return false
+            if !IsTargetWindowAtScreenPoint(hwnd, screenX, screenY, &hitHwnd, &hitRelation)
+                return false
+            MouseClick("Left", screenX, screenY)
+        } finally {
+            Critical(previousCritical)
+        }
+        WriteLog("已安全點擊目標視窗 client 座標 | hwnd=" hwnd
+            " client=" pointX "," pointY " screen=" screenX "," screenY
+            " | context=" context)
+        return true
+    } catch as e {
+        WriteLog("目標視窗安全點擊失敗：" e.Message " | context=" context, "WARN")
+        return false
+    } finally {
+        CoordMode("Mouse", oldMouseMode)
+    }
+}
+
+SendKeyToVerifiedWindow(hwnd, keySpec, expectedPid := 0, context := "") {
+    reason := ""
+    if !PrepareVerifiedWindowForInput(hwnd, expectedPid, context, &reason) {
+        WriteLog("目標視窗安全送鍵已取消：" reason " | hwnd=" hwnd
+            " key=" keySpec " | context=" context, "WARN")
+        return false
+    }
+
+    previousCritical := Critical("On")
+    try {
+        if (expectedPid > 0 && WinGetPID("ahk_id " hwnd) != expectedPid)
+            return false
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        if !IsSafeInputWindowRelation(relation, "root")
+            return false
+        SendEvent(keySpec)
+        return true
+    } catch as e {
+        WriteLog("目標視窗安全送鍵失敗：" e.Message " | context=" context, "WARN")
+        return false
+    } finally {
+        Critical(previousCritical)
+    }
+}
+
 ClickOkwwClientPoint(okwwHwnd, clientX, clientY) {
     if !okwwHwnd || !WinExist("ahk_id " okwwHwnd)
         return false
 
     try {
+        if !ForceActivateWindowForInput(okwwHwnd, 1800, "OKWW 座標點擊", "root") {
+            WriteLog("OKWW 座標點擊失敗：送出滑鼠前無法確認目標在前景 | hwnd="
+                okwwHwnd " client=" clientX "," clientY, "WARN")
+            return false
+        }
+
         winClientX := 0
         winClientY := 0
         WinGetClientPos(&winClientX, &winClientY, , , "ahk_id " okwwHwnd)
@@ -3258,8 +4396,26 @@ ClickOkwwClientPoint(okwwHwnd, clientX, clientY) {
         CoordMode("Mouse", "Screen")
         try {
             MouseMove(screenX, screenY, 0)
-            Sleep 150
-            MouseClick("Left")
+            RawSleep(150)
+            previousCritical := Critical("On")
+            try {
+                foregroundRelation := GetForegroundRelationToTarget(okwwHwnd, &foregroundHwnd)
+                if !IsSafeInputWindowRelation(foregroundRelation, "root") {
+                    WriteLog("OKWW 座標點擊已取消：點擊前目標已失去前景"
+                        " | target=" okwwHwnd " foreground=" foregroundHwnd
+                        " relation=" foregroundRelation, "WARN")
+                    return false
+                }
+                if !IsTargetWindowAtScreenPoint(okwwHwnd, screenX, screenY, &hitHwnd, &hitRelation) {
+                    WriteLog("OKWW 座標點擊已取消：座標實際命中其他視窗"
+                        " | target=" okwwHwnd " hit=" hitHwnd " relation=" hitRelation
+                        " screen=" screenX "," screenY, "WARN")
+                    return false
+                }
+                MouseClick("Left", screenX, screenY)
+            } finally {
+                Critical(previousCritical)
+            }
         } finally {
             CoordMode("Mouse", oldMouseMode)
         }
@@ -3272,7 +4428,14 @@ ClickOkwwClientPoint(okwwHwnd, clientX, clientY) {
 }
 
 SendF11ToOkww(okwwHwnd) {
+    global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+
+    LAST_OKWW_F11_FAILURE_CODE := ""
+    LAST_OKWW_F11_FAILURE_DETAIL := ""
     if !okwwHwnd || !WinExist("ahk_id " okwwHwnd) {
+        LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_TARGET_INVALID"
+        LAST_OKWW_F11_FAILURE_DETAIL := "目標視窗已失效；hwnd=" okwwHwnd
         WriteLog("OKWW F11 發送失敗：目標視窗已失效 | hwnd=" okwwHwnd, "ERROR")
         return false
     }
@@ -3280,30 +4443,133 @@ SendF11ToOkww(okwwHwnd) {
     try {
         title := WinGetTitle("ahk_id " okwwHwnd)
         pid := WinGetPID("ahk_id " okwwHwnd)
-        procName := StrLower(WinGetProcessName("ahk_id " okwwHwnd))
-        if (procName != "pythonw.exe"
-            || !RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$")) {
+        unusableReason := ""
+        if !PrepareOkwwWindowForInput(okwwHwnd, &unusableReason) {
+            procName := ""
+            try procName := StrLower(WinGetProcessName("ahk_id " okwwHwnd))
+            LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_TARGET_UNUSABLE"
+            LAST_OKWW_F11_FAILURE_DETAIL := "最終視窗不可操作；reason=" unusableReason
+                . "；pid=" pid "；process=" procName "；title=" title
             WriteLog("OKWW F11 發送前安全檢查失敗：pid=" pid
-                " process=" procName " title=" title, "ERROR")
+                " process=" procName " title=" title " reason=" unusableReason, "ERROR")
             return false
         }
 
-        try WinRestore("ahk_id " okwwHwnd)
-        WinActivate("ahk_id " okwwHwnd)
-        if WinWaitActive("ahk_id " okwwHwnd, , 3) {
-            Sleep 500
-            SendEvent("{F11}")
-            WriteLog("已直接發送 F11 到 OKWW 最終主視窗：hwnd="
-                okwwHwnd " pid=" pid " title=" title)
-            return true
+        if !ForceActivateWindowForInput(okwwHwnd, 3500, "OKWW F11", "root") {
+            foregroundHwnd := DllCall("user32\GetForegroundWindow", "ptr")
+            LAST_OKWW_F11_FAILURE_CODE := (LAST_INPUT_ACTIVATION_FAILURE_CODE = "INTERACTIVE_DESKTOP_UNAVAILABLE")
+                ? "INTERACTIVE_DESKTOP_UNAVAILABLE" : "OKWW_F11_FOREGROUND_FAILED"
+            LAST_OKWW_F11_FAILURE_DETAIL := "無法確認 OKWW 最終主視窗位於前景"
+                . (LAST_INPUT_ACTIVATION_FAILURE_DETAIL != ""
+                    ? "；" LAST_INPUT_ACTIVATION_FAILURE_DETAIL : "")
+                . "；target=" okwwHwnd "；foreground=" foregroundHwnd
+            WriteLog("OKWW F11 發送失敗：無法確認最終主視窗位於前景；不再以 ControlSend 誤報成功"
+                " | target=" okwwHwnd " foreground=" foregroundHwnd
+                " pid=" pid " title=" title, "ERROR")
+            return false
         }
 
-        WriteLog("OKWW 無法切至前景，改用 ControlSend 定向發送 F11：hwnd="
-            okwwHwnd " pid=" pid " title=" title, "WARN")
-        ControlSend("{F11}", , "ahk_id " okwwHwnd)
-        WriteLog("已透過 ControlSend 發送 F11 到 OKWW 最終主視窗")
+        RawSleep(300)
+        ; SendEvent 僅允許真正主根視窗在前景；任何 owned popup／modal 都不可接收 F11。
+        if !IsSafeOkwwKeyboardForeground(okwwHwnd, &preRelation, &preForeground,
+            &preSafetyReason) {
+            WriteLog("OKWW F11 主根前景在等待後未通過最終安全條件，重新啟用真正主視窗"
+                " | target=" okwwHwnd " foreground=" preForeground
+                " relation=" preRelation " reason=" preSafetyReason, "WARN")
+            if !ForceActivateWindowForInput(okwwHwnd, 1800, "OKWW F11 嚴格主視窗重試", "root") {
+                LAST_OKWW_F11_FAILURE_CODE := (LAST_INPUT_ACTIVATION_FAILURE_CODE
+                    = "INTERACTIVE_DESKTOP_UNAVAILABLE")
+                    ? "INTERACTIVE_DESKTOP_UNAVAILABLE" : "OKWW_F11_FOREGROUND_LOST"
+                LAST_OKWW_F11_FAILURE_DETAIL := "主根前景不安全且嚴格主視窗重試失敗"
+                    . "；relation=" preRelation "；reason=" preSafetyReason
+                    . (LAST_INPUT_ACTIVATION_FAILURE_DETAIL != ""
+                        ? "；" LAST_INPUT_ACTIVATION_FAILURE_DETAIL : "")
+                WriteLog("OKWW F11 發送失敗：嚴格主視窗前景重試仍失敗 | "
+                    . LAST_OKWW_F11_FAILURE_DETAIL, "ERROR")
+                return false
+            }
+            RawSleep(150)
+        }
+
+        keyDown := false
+        previousCritical := Critical("On")
+        try {
+            ; 視窗代號可能在等待期間被 OKWW 更新程序重建；送鍵前於同一個
+            ; Critical 區段重驗身分、PID 與真正 foreground，避免 F11 落到別的程式。
+            finalDesktopState := GetInteractiveDesktopState()
+            if !finalDesktopState.ok {
+                LAST_OKWW_F11_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+                LAST_OKWW_F11_FAILURE_DETAIL := "送鍵前互動桌面已失效；reason="
+                    . finalDesktopState.reason "；currentDesktop=" finalDesktopState.currentDesktop
+                    . "；inputDesktop=" finalDesktopState.inputDesktop
+                    . "；wtsState=" finalDesktopState.wtsState
+                WriteLog("OKWW F11 發送失敗：送鍵前互動桌面已失效 | "
+                    . LAST_OKWW_F11_FAILURE_DETAIL, "ERROR")
+                return false
+            }
+
+            ; 不論來源是 manager handoff 或 snapshot fallback，真正送 F11 的當下
+            ; 全系統只能有一個健康 final，且必須就是本次選定的 hwnd。
+            finalCandidateCount := CountUsableOkwwFinalWindows(&finalSelectedIncluded,
+                okwwHwnd)
+            if (finalCandidateCount > 1) {
+                LAST_OKWW_F11_FAILURE_CODE := "OKWW_FINAL_WINDOW_AMBIGUOUS"
+                LAST_OKWW_F11_FAILURE_DETAIL := "送鍵前同時存在多個健康 OKWW final"
+                    . "；candidates=" finalCandidateCount "；target=" okwwHwnd
+                WriteLog("OKWW F11 發送失敗：送鍵當下存在多個健康 final；拒絕選擇"
+                    " | candidates=" finalCandidateCount " target=" okwwHwnd, "ERROR")
+                return false
+            }
+            if !finalSelectedIncluded {
+                LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_TARGET_CHANGED"
+                LAST_OKWW_F11_FAILURE_DETAIL := "送鍵前選定視窗已不在唯一健康 final 集合"
+                    . "；candidates=" finalCandidateCount "；target=" okwwHwnd
+                return false
+            }
+
+            finalReason := ""
+            currentPid := 0
+            try currentPid := WinGetPID("ahk_id " okwwHwnd)
+            if (currentPid != pid || !IsUsableOkwwFinalWindow(okwwHwnd, &finalReason)) {
+                LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_TARGET_CHANGED"
+                LAST_OKWW_F11_FAILURE_DETAIL := "送鍵前目標身分已改變；originalPid=" pid
+                    . "；currentPid=" currentPid "；reason=" finalReason
+                WriteLog("OKWW F11 發送失敗：送鍵前目標身分已改變 | hwnd=" okwwHwnd
+                    " originalPid=" pid " currentPid=" currentPid " reason=" finalReason, "ERROR")
+                return false
+            }
+
+            if !IsSafeOkwwKeyboardForeground(okwwHwnd, &foregroundRelation, &foregroundHwnd,
+                &foregroundSafetyReason) {
+                LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_FOREGROUND_LOST"
+                LAST_OKWW_F11_FAILURE_DETAIL := "送鍵前目標失去安全前景關係；relation="
+                    . foregroundRelation "；reason=" foregroundSafetyReason
+                    . "；target=" okwwHwnd "；foreground=" foregroundHwnd
+                WriteLog("OKWW F11 發送失敗：送鍵前目標又失去前景 | hwnd=" okwwHwnd
+                    " foreground=" foregroundHwnd " relation=" foregroundRelation
+                    " reason=" foregroundSafetyReason, "ERROR")
+                return false
+            }
+
+            ; 只送一次明確的按下／放開。ControlSend 對 Qt/pythonw 視窗可能完全無效，
+            ; 舊版卻無條件回傳成功，正是 MyTUF 反覆卡在登入頁仍宣告 F11 成功的原因。
+            SendEvent("{F11 down}")
+            keyDown := true
+            RawSleep(60)
+            SendEvent("{F11 up}")
+            keyDown := false
+        } finally {
+            if keyDown
+                try SendEvent("{F11 up}")
+            Critical(previousCritical)
+        }
+        WriteLog("已在驗證過的 OKWW 前景以模擬鍵盤嘗試送出一次 F11；不宣告登入成功，實際效果交由後續主畫面驗證"
+            " | hwnd=" okwwHwnd " foreground=" foregroundHwnd
+            " relation=" foregroundRelation " pid=" pid " title=" title)
         return true
     } catch as e {
+        LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_EXCEPTION"
+        LAST_OKWW_F11_FAILURE_DETAIL := e.Message
         WriteLog("OKWW F11 發送失敗：hwnd=" okwwHwnd " | " e.Message, "ERROR")
         return false
     }
@@ -3332,11 +4598,9 @@ PrepareOkwwTopmostOperation(okwwHwnd) {
     }
 
     try {
-        WinRestore("ahk_id " okwwHwnd)
         WinSetAlwaysOnTop(1, "ahk_id " okwwHwnd)
-        WinActivate("ahk_id " okwwHwnd)
-        WinWaitActive("ahk_id " okwwHwnd, , 2)
-        WriteLog("OKWW F11 前：已設置 OKWW 置頂，並暫時取消鳴潮/LRMCAI 置頂")
+        WriteLog("OKWW F11 前：已設置 OKWW 置頂，並暫時取消鳴潮/LRMCAI 置頂；"
+            "前景驗證由接續的 OCR／F11 操作各自執行")
     } catch as e {
         WriteLog("OKWW 置頂準備失敗: " e.Message, "WARN")
     }
@@ -3372,6 +4636,9 @@ ScheduleOkwwMinimizeSweeps(context := "") {
 
 DelayedOkwwMinimizeSweep() {
     global __OKWW_MINIMIZE_SWEEP_REMAINING, __OKWW_MINIMIZE_SWEEP_CONTEXT
+    global __WAITING_FOR_INTERACTIVE_DESKTOP
+    if __WAITING_FOR_INTERACTIVE_DESKTOP
+        return
     if (__OKWW_MINIMIZE_SWEEP_REMAINING <= 0)
         return
 
@@ -3488,8 +4755,8 @@ CloseOkwwProcessPid(pid, displayName) {
     WriteLog("局部關閉 " displayName "：PID=" pid)
     try ProcessClose(pid)
 
-    waitUntil := A_TickCount + 2000
-    while (ProcessExist(pid) && A_TickCount < waitUntil)
+    waitUntil := MonotonicTickMs() + 2000
+    while (ProcessExist(pid) && MonotonicTickMs() < waitUntil)
         Sleep 100
 
     if ProcessExist(pid) {
@@ -3697,8 +4964,8 @@ FindActionableUe4CrashWindow() {
 }
 
 WaitForUe4CrashWindowDismissal(hwnd, timeoutMs := 2500) {
-    deadline := A_TickCount + timeoutMs
-    while (A_TickCount < deadline) {
+    deadline := MonotonicTickMs() + timeoutMs
+    while (MonotonicTickMs() < deadline) {
         if !IsObject(GetActionableUe4CrashWindow(hwnd))
             return true
         Sleep 100
@@ -3707,10 +4974,10 @@ WaitForUe4CrashWindowDismissal(hwnd, timeoutMs := 2500) {
 }
 
 CrashWatcherTick() {
-    global CFG_FILE
+    global CFG_FILE, __WAITING_FOR_INTERACTIVE_DESKTOP
     static busy := false
     static lastSkippedSignature := ""
-    if busy
+    if (busy || __WAITING_FOR_INTERACTIVE_DESKTOP)
         return
 
     crashWindow := FindActionableUe4CrashWindow()
@@ -3792,14 +5059,18 @@ CrashWatcherTick() {
         IniWrite FormatTime(, "yyyy-MM-dd HH:mm:ss"), CFG_FILE, "restart_tracking", "last_ue4_crash_time"
         IniWrite crashOcrSummary, CFG_FILE, "restart_tracking", "last_ue4_crash_ocr"
 
-        WinActivate "ahk_id " hwndC
-        Sleep 120
-        if IsObject(btn)
-            MouseClick "left", btn[1], btn[2]
-        else
-            Send "{Enter}"
+        inputOk := false
+        if IsObject(btn) {
+            inputOk := ClickVerifiedWindowClientPoint(hwndC, btn[1], btn[2],
+                crashWindow.pid, "UE4 崩潰確認按鈕")
+        } else {
+            inputOk := SendKeyToVerifiedWindow(hwndC, "{Enter}",
+                crashWindow.pid, "UE4 崩潰確認 Enter")
+        }
+        if !inputOk
+            WriteLog("UE4 崩潰視窗輸入安全條件未通過；不向其他前景程式誤送滑鼠／Enter，改嘗試定向 WinClose", "WARN")
 
-        dismissed := WaitForUe4CrashWindowDismissal(hwndC, 2500)
+        dismissed := inputOk ? WaitForUe4CrashWindowDismissal(hwndC, 2500) : false
         if !dismissed {
             WriteLog("UE4 崩潰視窗按下確認後仍可操作，嘗試 WinClose；PID=" crashWindow.pid " HWND=" hwndC, "WARN")
             try WinClose("ahk_id " hwndC)
@@ -3819,17 +5090,25 @@ CrashWatcherTick() {
         ; 統一走 RequestRestart：
         ; 1) 正確設置重啟旗標，避免 OnExit 誤停錄影
         ; 2) 沿用既有重啟計數/通知/crash hotkey 模式判定
+        crashRestartCode := "UE4_FATAL_DIALOG"
+        if !inputOk {
+            if (LAST_INPUT_ACTIVATION_FAILURE_CODE = "INTERACTIVE_DESKTOP_UNAVAILABLE")
+                crashRestartCode := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+            else if (LAST_INPUT_ACTIVATION_FAILURE_CODE = "WINDOW_FOREGROUND_DENIED")
+                crashRestartCode := "WINDOW_FOREGROUND_DENIED"
+        }
         RequestRestart(
             "偵測到可操作的 UE4 致命錯誤視窗；title=" crashWindow.title
                 " pid=" crashWindow.pid " hwnd=" hwndC " exe=" crashWindow.processName
-                "；OCR=" crashOcrSummary,
-            "ERROR", true, "UE4_FATAL_DIALOG", "UE4 全域崩潰監看")
+                "；OCR=" crashOcrSummary
+                . (!inputOk ? "；安全輸入未送出=" LAST_INPUT_ACTIVATION_FAILURE_DETAIL : ""),
+            "ERROR", true, crashRestartCode, "UE4 全域崩潰監看")
         return
     } finally busy := false
 }
 
 ; A) 更新彈窗偵測（簡體關鍵詞）＋ OCR 算出【退出】中心點點擊
-;    進入前：把鳴潮視窗貼齊右上角
+;    辨識期間只做背景擷取；除了真正命中並操作 UI 外，不移動、不縮放遊戲視窗。
 DetectWutheringAndExit(&loginDetected := false) {
     global WUTHERING_NO_WINDOW_TOLERANCE
 
@@ -3844,16 +5123,12 @@ DetectWutheringAndExit(&loginDetected := false) {
         return "no_window"
     }
 
-    ; 視窗移動策略：先偵測到穩定目標視窗，再開始持續重試移動。
-    movedTopRight := false
-    nextMoveRetryTick := A_TickCount
     foundTargetWindow := false
-    stableWindowHit := 0
 
     ; ⏱️ 至少等待 30 秒讓遊戲完全啟動（登入畫面一般需要 25-35 秒）
-    earlyExitDeadline := A_TickCount + 30000
+    earlyExitDeadline := MonotonicTickMs() + 30000
     
-    deadline := A_TickCount + 1800000   ; 1800 秒（30 分鐘）
+    deadline := MonotonicTickMs() + 1800000   ; 1800 秒（30 分鐘）
     kwUpdate1 := "更新完成"
     kwUpdate2 := "请重新启动游戏"
     kwUpdate3 := "遊戲即將重啟"
@@ -3867,11 +5142,18 @@ DetectWutheringAndExit(&loginDetected := false) {
     loginUIKeywords := [ "伺服器", "服务器", "賬號", "账号", "帳號", "账户" ]
     noWindowStreak := 0
 
-    while (A_TickCount < deadline) {
+    while (MonotonicTickMs() < deadline) {
         hwnd := GetWutheringGameHwnd()
+        currentGamePid := 0
+        currentGameClass := ""
+        identityReason := ""
+        if (hwnd && !GetWutheringWindowIdentity(hwnd, &currentGamePid,
+            &currentGameClass, &identityReason)) {
+            WriteLog("鳴潮視窗身分驗證失敗，本輪當作無有效視窗"
+                " | hwnd=" hwnd " reason=" identityReason, "WARN")
+            hwnd := 0
+        }
         if !hwnd {
-            stableWindowHit := 0
-
             ; 尚未真正抓到目標視窗前，不做 no_window 累計，避免啟動初期誤判。
             if !foundTargetWindow {
                 Sleep 500
@@ -3889,46 +5171,22 @@ DetectWutheringAndExit(&loginDetected := false) {
             continue
         }
         noWindowStreak := 0
-        stableWindowHit += 1
 
         ; 在 OCR 主迴圈中持續做非阻塞的登入模板輔助點擊。
         TryAssistLoginTemplateBeforeOcr()
 
         if !foundTargetWindow {
             foundTargetWindow := true
-            WriteLog("已找到目標鳴潮視窗，開始準備移動到右上角")
-        }
-
-        ; 需要連續命中至少 2 次同類視窗，才開始移動，降低初始化中假視窗干擾。
-        if (!movedTopRight && stableWindowHit >= 2 && A_TickCount >= nextMoveRetryTick) {
-            okMove := false
-            try okMove := MoveWindowTopRight(hwnd, 0, 0)
-            catch as e {
-                WriteLog("視窗移動失敗（非致命）: " e.Message, "WARN")
-                okMove := false
-            }
-
-            if okMove {
-                movedTopRight := true
-                WriteLog("視窗位置處理完成（保留原尺寸與狀態），後續不再重試移動")
-            } else {
-                nextMoveRetryTick := A_TickCount + 1500
-            }
+            WriteLog("已找到目標鳴潮視窗；保留使用者的位置、尺寸與最大化狀態")
         }
 
         ; 首先用模板檢測叉叉按鈕（不涉及 OCR，更快速）
         closeIconPath := A_ScriptDir "\0510.png"
         if FileExist(closeIconPath) {
             try {
-                foundX := 0
-                foundY := 0
-                searchRight := (A_ScreenWidth > 0) ? (A_ScreenWidth - 1) : 1919
-                searchBottom := (A_ScreenHeight > 0) ? (A_ScreenHeight - 1) : 1079
-                isFound := ImageSearch(&foundX, &foundY, 0, 0, searchRight, searchBottom, closeIconPath)
-                if isFound {
+                if ClickTemplateIfFound(closeIconPath, false) {
                     ShowTip("✅ 檢測到叉叉提示 → 自動點擊", 800)
-                    MouseClick "left", foundX, foundY
-                    WriteLog("已點擊叉叉按鈕 位置:" foundX "," foundY, "INFO")
+                    WriteLog("已在鳴潮 client 內安全點擊一次叉叉按鈕", "INFO")
                     Sleep 1000
                     continue
                 }
@@ -4008,15 +5266,18 @@ DetectWutheringAndExit(&loginDetected := false) {
 
         if (foundUpdate && IsObject(btnCenter)) {
             ShowTip("✅ 偵測到更新完成 → 點擊按鈕", 800)
-            MouseClick "left", btnCenter[1], btnCenter[2]
-            ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
-            WriteStepResult("鳴潮檢測", true, "update")
-            return "update"
+            if ClickWutheringClientPointForInput(hwnd, btnCenter[1], btnCenter[2],
+                "更新／重新啟動確認 OCR") {
+                ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
+                WriteStepResult("鳴潮檢測", true, "update")
+                return "update"
+            }
+            WriteLog("更新確認文字已命中，但安全點擊未通過；保留在迴圈內重試", "WARN")
         }
         
         
         ; ✅ 優化：檢測到登入按鈕相關文字，且超過最小等待時間（30秒）才判定為登入畫面
-        if (foundLoginBtn && A_TickCount >= earlyExitDeadline) {
+        if (foundLoginBtn && MonotonicTickMs() >= earlyExitDeadline) {
             loginDetected := true
             WriteLog("✅ 檢測到登入畫面（已超過 30 秒啟動時間，找到登入按鈕關鍵字），無需更新，繼續正常流程")
             MuteWutheringAudioAtStartup()
@@ -4027,7 +5288,7 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
         
         ; 如果只find到登入UI但沒找到按鈕，也要等待足夠時間再判定
-        if (foundLoginUI && A_TickCount >= earlyExitDeadline + 10000) {
+        if (foundLoginUI && MonotonicTickMs() >= earlyExitDeadline + 10000) {
             loginDetected := true
             WriteLog("⚠️ 檢測到登入UI（伺服器/賬號相關），判定為登入畫面，繼續")
             MuteWutheringAudioAtStartup()
@@ -4036,7 +5297,7 @@ DetectWutheringAndExit(&loginDetected := false) {
             WriteStepResult("鳴潮檢測", true, "login(ui)")
             return "login"
         }
-        
+
         Sleep 900
     }
 
@@ -4069,6 +5330,9 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     variations := [30, 40, 50, 60, 80, 100]
     stableNeeded := 2
     stable := 0
+    stableHwnd := 0
+    stablePid := 0
+    stableClass := ""
     checkIntervalMs := 500
 
     baselineWidth := 1280
@@ -4081,11 +5345,12 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     WriteLog("模板驗證參數: mode=background-client template=" templateFile
         " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
 
-    deadline := A_TickCount + timeoutSec*1000
-    lastProgressLog := A_TickCount
+    ; 使用排除遠端軟暫停的時鐘：PAUSE 期間不消耗 20/30/90 秒驗證期限。
+    deadline := PauseAwareTickMs() + timeoutSec*1000
+    lastProgressLog := PauseAwareTickMs()
     sampleCount := 0
     bestVar := 0
-    while (A_TickCount < deadline) {
+    while (PauseAwareTickMs() < deadline) {
         sampleCount += 1
 
         if (!hwnd || !WinExist("ahk_id " hwnd)) {
@@ -4099,10 +5364,42 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             }
         }
 
+        samplePid := 0
+        sampleClass := ""
+        identityReason := ""
+        if !GetWutheringWindowIdentity(hwnd, &samplePid, &sampleClass, &identityReason) {
+            WriteLog("模板驗證略過無效遊戲視窗"
+                " | hwnd=" hwnd " reason=" identityReason, "WARN")
+            hwnd := 0
+            stable := 0
+            bestVar := 0
+            stableHwnd := 0
+            stablePid := 0
+            stableClass := ""
+            Sleep checkIntervalMs
+            continue
+        }
+
+        if (hwnd != stableHwnd || samplePid != stablePid || sampleClass != stableClass) {
+            if stableHwnd {
+                WriteLog("模板驗證目標身分已變更，清除穩定命中"
+                    " | old=" stableHwnd "/" stablePid "/" stableClass
+                    " new=" hwnd "/" samplePid "/" sampleClass, "WARN")
+            }
+            stableHwnd := hwnd
+            stablePid := samplePid
+            stableClass := sampleClass
+            stable := 0
+            bestVar := 0
+        }
+
         try {
             frame := ImagePutBuffer("ahk_id " hwnd)
         } catch as e {
             WriteLog("模板驗證背景截圖失敗: " e.Message, "WARN")
+            ; 擷取失敗代表樣本序列中斷，不能讓前一次命中跨過失敗樣本累積。
+            stable := 0
+            bestVar := 0
             Sleep checkIntervalMs
             continue
         }
@@ -4131,6 +5428,8 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
         cropX := searchW - roiRightMargin - cropW
         cropY := searchH - roiBottomMargin - cropH
         if (cropW <= 0 || cropH <= 0 || cropX < 0 || cropY < 0) {
+            stable := 0
+            bestVar := 0
             Sleep checkIntervalMs
             continue
         }
@@ -4152,24 +5451,43 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
             WriteLog("模板驗證背景比對失敗: " e.Message, "WARN")
         }
 
+        postPid := 0
+        postClass := ""
+        postIdentityReason := ""
+        if (!GetWutheringWindowIdentity(hwnd, &postPid, &postClass, &postIdentityReason)
+            || postPid != samplePid || postClass != sampleClass) {
+            WriteLog("模板驗證樣本完成後遊戲視窗身分已改變，捨棄本次樣本"
+                " | hwnd=" hwnd " before=" samplePid "/" sampleClass
+                " after=" postPid "/" postClass " reason=" postIdentityReason, "WARN")
+            hwnd := 0
+            stable := 0
+            bestVar := 0
+            stableHwnd := 0
+            stablePid := 0
+            stableClass := ""
+            Sleep checkIntervalMs
+            continue
+        }
+
         if found {
             stable += 1
             ShowTip("✅ 模板偵測 " stable "/" stableNeeded "（Var=" matchedVar "）", 600)
             if (stable >= stableNeeded) {
                 WriteStepResult("主畫面模板驗證", true, "樣本=" sampleCount " var=" matchedVar
-                    " mode=" searchMode " capture=" captureW "x" captureH)
+                    " mode=" searchMode " capture=" captureW "x" captureH
+                    " hwnd=" stableHwnd " pid=" stablePid " class=" stableClass)
                 return true
             }
         } else {
             stable := 0
         }
 
-        if (A_TickCount - lastProgressLog >= 5000) {
-            remainSec := Round((deadline - A_TickCount) / 1000.0, 1)
+        if (PauseAwareTickMs() - lastProgressLog >= 5000) {
+            remainSec := Round((deadline - PauseAwareTickMs()) / 1000.0, 1)
             WriteLog("模板驗證進行中: 樣本=" sampleCount " 連續命中=" stable "/" stableNeeded
                 " 最後Var=" (bestVar ? bestVar : "-") " mode=" searchMode
                 " capture=" captureW "x" captureH " 剩餘=" remainSec "s")
-            lastProgressLog := A_TickCount
+            lastProgressLog := PauseAwareTickMs()
         }
 
         Sleep checkIntervalMs
@@ -4180,12 +5498,396 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     return false
 }
 
+CreateOkwwManagerHandoffRequest(timeoutSec := 92) {
+    CleanupStaleOkwwManagerHandoffFiles()
+    nonce := FormatTime(, "yyyyMMddHHmmss") "_"
+        . DllCall("kernel32\GetCurrentProcessId", "uint") "_"
+        . DllCall("kernel32\GetTickCount64", "uint64") "_" Random(100000, 999999)
+    reportPath := RuntimeFiles_EnsureDir("暫存") "\okww_handoff_" nonce ".ini"
+    deadlineTick := DllCall("kernel32\GetTickCount64", "uint64")
+        + Max(1, Integer(timeoutSec)) * 1000
+    try FileDelete(reportPath)
+    cancelPath := reportPath ".cancel"
+    try FileDelete(cancelPath)
+    return {
+        nonce: nonce,
+        path: reportPath,
+        cancelPath: cancelPath,
+        mutexName: "Local\WutheringAuto_OKWW_Handoff_" nonce,
+        deadlineTick: deadlineTick
+    }
+}
+
+CleanupStaleOkwwManagerHandoffFiles() {
+    tempDir := RuntimeFiles_EnsureDir("暫存")
+    nowTick := MonotonicTickMs()
+    cutoff := DateAdd(A_Now, -30, "Minutes")
+    Loop Files, tempDir "\okww_handoff_*.ini.cancel", "F" {
+        ; GetTickCount64 absolute 值跨 Windows 重啟不可比較；30 分鐘 wall-clock
+        ; 上限確保舊 boot 留下的 tombstone 最終也能被回收。
+        expired := A_LoopFileTimeModified < cutoff
+        try expired := expired
+            || Integer(Trim(FileRead(A_LoopFileFullPath, "UTF-8"))) <= nowTick
+        if expired
+            try FileDelete(A_LoopFileFullPath)
+    }
+    for pattern in ["okww_handoff_*.ini", "okww_handoff_*.ini.tmp.*"] {
+        Loop Files, tempDir "\" pattern, "F" {
+            if (A_LoopFileTimeModified < cutoff)
+                try FileDelete(A_LoopFileFullPath)
+        }
+    }
+}
+
+CleanupOkwwManagerHandoffRequest(request, managerPid := 0) {
+    if !IsObject(request) || !request.HasOwnProp("path")
+        return
+
+    lockHandle := DllCall("kernel32\CreateMutexW", "ptr", 0, "int", false,
+        "str", request.mutexName, "ptr")
+    lockOwned := false
+    if lockHandle {
+        waitResult := DllCall("kernel32\WaitForSingleObject", "ptr", lockHandle,
+            "uint", 5000, "uint")
+        lockOwned := (waitResult = 0 || waitResult = 0x80)
+    }
+    if !lockOwned {
+        WriteLog("OKWW handoff cleanup 無法取得 per-nonce mutex；交由 stale 清理"
+            " | nonce=" request.nonce, "ERROR")
+        if lockHandle
+            DllCall("kernel32\CloseHandle", "ptr", lockHandle)
+        return
+    }
+
+    try {
+        try FileDelete(request.cancelPath)
+        try FileAppend(request.deadlineTick, request.cancelPath, "UTF-8-RAW")
+        catch as e {
+            WriteLog("OKWW handoff cleanup 無法建立 cancel tombstone；保留現場避免晚寫競態"
+                " | nonce=" request.nonce " error=" e.Message, "ERROR")
+            return
+        }
+        try FileDelete(request.path)
+        try {
+            Loop Files, request.path ".tmp.*", "F"
+                try FileDelete(A_LoopFileFullPath)
+        }
+    } finally {
+        try DllCall("kernel32\ReleaseMutex", "ptr", lockHandle, "int")
+        try DllCall("kernel32\CloseHandle", "ptr", lockHandle, "int")
+    }
+
+    ; 自動提權會以新 PID 繼續 manager；不可用最初 Run 回傳的 PID 判斷已安全退出。
+    ; cancel tombstone 一律保留到 absolute deadline 之後，阻止任何晚到/換 PID 寫回。
+    delayMs := Max(1000, request.deadlineTick - MonotonicTickMs() + 1000)
+    SetTimer(() => DeleteOkwwHandoffCancelAfterDeadline(request.cancelPath,
+        request.deadlineTick), -delayMs)
+}
+
+DeleteOkwwHandoffCancelAfterDeadline(cancelPath, deadlineTick) {
+    if (MonotonicTickMs() <= deadlineTick) {
+        SetTimer(() => DeleteOkwwHandoffCancelAfterDeadline(cancelPath, deadlineTick), -1000)
+        return
+    }
+    try FileDelete(cancelPath)
+}
+
+CountUsableOkwwFinalWindows(&selectedIncluded := false, selectedHwnd := 0) {
+    selectedIncluded := false
+    count := 0
+    try {
+        for candidateHwnd in WinGetList() {
+            candidateReason := ""
+            if !IsUsableOkwwFinalWindow(candidateHwnd, &candidateReason, true)
+                continue
+            count += 1
+            if (selectedHwnd && candidateHwnd = selectedHwnd)
+                selectedIncluded := true
+        }
+    }
+    return count
+}
+
+ValidateOkwwManagerHandoffTarget(report, &currentTitle := "", &reason := "",
+    &candidateCount := 0) {
+    currentTitle := ""
+    reason := ""
+    candidateCount := 0
+    if !IsObject(report) || !report.HasOwnProp("hwnd") || !report.HasOwnProp("pid") {
+        reason := "report_shape_invalid"
+        return false
+    }
+
+    hwnd := report.hwnd
+    if !hwnd || !WinExist("ahk_id " hwnd) {
+        reason := "window_missing"
+        return false
+    }
+    try {
+        actualPid := WinGetPID("ahk_id " hwnd)
+        if (actualPid != report.pid) {
+            reason := "pid_mismatch reported=" report.pid " actual=" actualPid
+            return false
+        }
+        identityReason := ""
+        if !IsUsableOkwwFinalWindow(hwnd, &identityReason, true) {
+            reason := "identity_or_health_invalid:" identityReason
+            return false
+        }
+        candidateCount := CountUsableOkwwFinalWindows(&selectedIncluded, hwnd)
+        if !selectedIncluded {
+            reason := "selected_not_in_healthy_candidate_set"
+            return false
+        }
+        currentTitle := WinGetTitle("ahk_id " hwnd)
+        return true
+    } catch as e {
+        reason := "target_inspect_failed:" e.Message
+        return false
+    }
+}
+
+ReadAndValidateOkwwManagerHandoff(reportPath, expectedNonce) {
+    try {
+        nonce := IniRead(reportPath, "handoff", "nonce", "")
+        result := IniRead(reportPath, "handoff", "result", "")
+        pidText := IniRead(reportPath, "handoff", "pid", "")
+        hwndText := IniRead(reportPath, "handoff", "hwnd", "")
+        reportedTitle := IniRead(reportPath, "handoff", "title", "")
+        candidateCountText := IniRead(reportPath, "handoff", "candidateCount", "")
+        selectionSource := IniRead(reportPath, "handoff", "selectionSource", "")
+        if (nonce != expectedNonce)
+            return { ok: false, reason: "nonce_mismatch" }
+        if !RegExMatch(result, "^[0-9A-Za-z_-]{1,96}$")
+            return { ok: false, reason: "result_invalid" }
+        pid := Integer(pidText)
+        hwnd := Integer(hwndText)
+        reportedCandidateCount := Integer(candidateCountText)
+        if (pid <= 0 || hwnd <= 0 || reportedCandidateCount < 1)
+            return { ok: false, reason: "pid_or_hwnd_invalid" }
+        if !RegExMatch(selectionSource, "^[0-9A-Za-z_-]{1,96}$")
+            return { ok: false, reason: "selection_source_invalid" }
+        if (reportedCandidateCount > 1)
+            return {
+                ok: false,
+                reason: "reported_candidate_count_ambiguous",
+                ambiguousCount: reportedCandidateCount
+            }
+
+        report := {
+            ok: true,
+            nonce: nonce,
+            result: result,
+            pid: pid,
+            hwnd: hwnd,
+            title: reportedTitle,
+            candidateCount: reportedCandidateCount,
+            selectionSource: selectionSource
+        }
+        currentTitle := ""
+        liveReason := ""
+        liveCandidateCount := 0
+        if !ValidateOkwwManagerHandoffTarget(report, &currentTitle, &liveReason,
+            &liveCandidateCount)
+            return { ok: false, reason: liveReason }
+        if (liveCandidateCount > 1)
+            return {
+                ok: false,
+                reason: "live_candidate_count_ambiguous",
+                ambiguousCount: liveCandidateCount
+            }
+        report.currentTitle := currentTitle
+        return report
+    } catch as e {
+        return { ok: false, reason: "read_failed:" e.Message }
+    }
+}
+
+GetOkwwFinalWindowSignature(hwnd) {
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        return ""
+    pid := 0
+    try pid := WinGetPID("ahk_id " hwnd)
+    return (pid > 0) ? (pid "|" hwnd) : ""
+}
+
+CaptureOkwwFinalWindowSignatures() {
+    signatures := Map()
+    try {
+        for hwnd in WinGetList() {
+            identityReason := ""
+            if !IsOkwwFinalWindowIdentity(hwnd, &identityReason)
+                continue
+            signature := GetOkwwFinalWindowSignature(hwnd)
+            if (signature != "")
+                signatures[signature] := true
+        }
+    }
+    return signatures
+}
+
+FindBestOkwwFinalWindow(&selectedTitle := "", excludePid := 0,
+    excludedSignatures := 0, requireOutsideSnapshot := false, &eligibleCount := 0) {
+    selectedTitle := ""
+    eligibleCount := 0
+    bestHwnd := 0
+    bestScore := -1
+
+    ; WinGetList 依 Z-order 由前到後；只接受健康視窗，最小化視窗則只放寬
+    ; 尺寸條件（真正操作前會先還原再完整驗證）。避免舊的 hung／disabled／
+    ; cloaked pythonw 殘窗比新視窗更早被穩定命中。
+    zOrderBonus := 1000
+    try {
+        for hwnd in WinGetList() {
+            pid := 0
+            try pid := WinGetPID("ahk_id " hwnd)
+            if (excludePid > 0 && pid = excludePid)
+                continue
+
+            if (requireOutsideSnapshot && IsObject(excludedSignatures)) {
+                signature := pid "|" hwnd
+                if excludedSignatures.Has(signature)
+                    continue
+            }
+
+            reason := ""
+            if !IsUsableOkwwFinalWindow(hwnd, &reason, true)
+                continue
+            eligibleCount += 1
+
+            width := 0
+            height := 0
+            try WinGetPos(, , &width, &height, "ahk_id " hwnd)
+            score := zOrderBonus
+            foregroundRelation := GetForegroundRelationToTarget(hwnd)
+            if (foregroundRelation = "exact")
+                score += 10000
+            else if IsSafeInputWindowRelation(foregroundRelation, "family")
+                score += 8000
+            else if (foregroundRelation = "same_process")
+                score += 500
+            try score += (WinGetMinMax("ahk_id " hwnd) = -1 ? 0 : 2000)
+            score += Min(1500, (width * height) // 1000)
+
+            if (score > bestScore) {
+                bestScore := score
+                bestHwnd := hwnd
+                selectedTitle := WinGetTitle("ahk_id " hwnd)
+            }
+            zOrderBonus -= 1
+        }
+    }
+    return bestHwnd
+}
+
+IsOkwwFinalWindowIdentity(hwnd, &reason := "") {
+    reason := ""
+    if !hwnd || !WinExist("ahk_id " hwnd) {
+        reason := "window_missing"
+        return false
+    }
+
+    try {
+        title := WinGetTitle("ahk_id " hwnd)
+        procName := StrLower(WinGetProcessName("ahk_id " hwnd))
+        if (procName != "pythonw.exe"
+            || !RegExMatch(title, "i)^OK-WW\s+v[\d.]+\s+Global(?:\s*-\s*OK-WW)?\s*$")) {
+            reason := "identity_mismatch"
+            return false
+        }
+
+        root := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+        if (root && root != hwnd) {
+            reason := "not_top_level"
+            return false
+        }
+        return true
+    } catch as e {
+        reason := "identity_inspect_failed:" e.Message
+        return false
+    }
+}
+
+PrepareOkwwWindowForInput(hwnd, &reason := "") {
+    reason := ""
+    if !IsOkwwFinalWindowIdentity(hwnd, &reason)
+        return false
+
+    restoreReason := ""
+    if !RestoreMinimizedWindowPreservingPlacement(hwnd, "OKWW 輸入準備", &restoreReason) {
+        reason := "restore_failed:" restoreReason
+        return false
+    }
+    return IsUsableOkwwFinalWindow(hwnd, &reason)
+}
+
+IsUsableOkwwFinalWindow(hwnd, &reason := "", allowMinimized := false) {
+    if !IsOkwwFinalWindowIdentity(hwnd, &reason)
+        return false
+
+    try {
+
+        if !DllCall("user32\IsWindowVisible", "ptr", hwnd, "int") {
+            reason := "not_visible"
+            return false
+        }
+        if !DllCall("user32\IsWindowEnabled", "ptr", hwnd, "int") {
+            reason := "not_enabled"
+            return false
+        }
+
+        exStyle := WinGetExStyle("ahk_id " hwnd)
+        if (exStyle & 0x08000000) { ; WS_EX_NOACTIVATE
+            reason := "no_activate_style"
+            return false
+        }
+        if DllCall("user32\IsHungAppWindow", "ptr", hwnd, "int") {
+            reason := "window_hung"
+            return false
+        }
+
+        cloaked := Buffer(4, 0)
+        try {
+            hr := DllCall("dwmapi\DwmGetWindowAttribute", "ptr", hwnd, "uint", 14,
+                "ptr", cloaked.Ptr, "uint", 4, "int")
+            if (hr = 0 && NumGet(cloaked, 0, "uint") != 0) {
+                reason := "cloaked"
+                return false
+            }
+        }
+
+        minMax := WinGetMinMax("ahk_id " hwnd)
+        if (allowMinimized && minMax = -1)
+            return true
+
+        width := 0
+        height := 0
+        WinGetPos(, , &width, &height, "ahk_id " hwnd)
+        if (width < 500 || height < 280) {
+            reason := "window_too_small"
+            return false
+        }
+        return true
+    } catch as e {
+        reason := "inspect_failed:" e.Message
+        return false
+    }
+}
+
 ; C) OKWW F11 自動登入後的兩階段遊戲就緒驗證
 WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+
     WriteStep("OKWW F11 後遊戲就緒", "第一階段背景等待 " firstWaitSec " 秒")
     if WaitEscMenuOCR(hwnd, firstWaitSec) {
         WriteStepResult("OKWW F11 後遊戲就緒", true, "第一階段已檢測到主畫面；未點擊遊戲")
-        return { ok: true, centerClicked: false, phase: "initial_ready" }
+        return {
+            ok: true,
+            centerClicked: false,
+            phase: "initial_ready",
+            clickFailureCode: "",
+            clickFailureDetail: ""
+        }
     }
 
     WriteLog("OKWW F11 後 " firstWaitSec " 秒仍未檢測到主畫面；準備短暫啟用鳴潮並點擊客戶區正中央", "WARN")
@@ -4193,10 +5895,24 @@ WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
 
     hwnd := GetWutheringGameHwnd()
     centerClicked := ClickWutheringClientCenter(hwnd, "OKWW F11 後自動登入喚醒")
+    clickFailureCode := ""
+    clickFailureDetail := ""
+    if !centerClicked {
+        ; 在點擊失敗的當下立刻固化原因。接下來 30 秒的 timer／遠端 hook
+        ; 可能另行做前景操作，不可到階段結束才讀取可變全域。
+        clickFailureCode := LAST_INPUT_ACTIVATION_FAILURE_CODE
+        clickFailureDetail := LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+        if (clickFailureCode = "WINDOW_FOREGROUND_DENIED")
+            clickFailureCode := "GAME_CENTER_FOREGROUND_DENIED"
+        else if (clickFailureCode = "")
+            clickFailureCode := "GAME_CENTER_INPUT_NOT_READY"
+    }
     if centerClicked {
         WriteLog("遊戲客戶區正中央左鍵已送出；開始第二階段背景等待 " afterClickWaitSec " 秒")
     } else {
-        WriteLog("遊戲客戶區正中央左鍵未能送出；仍進入第二階段背景等待 " afterClickWaitSec " 秒", "WARN")
+        WriteLog("遊戲客戶區正中央左鍵未能送出；仍進入第二階段背景等待 "
+            afterClickWaitSec " 秒 | code=" clickFailureCode
+            " detail=" clickFailureDetail, "WARN")
     }
 
     Sleep 800
@@ -4204,75 +5920,248 @@ WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
     if WaitEscMenuOCR(hwnd, afterClickWaitSec) {
         WriteStepResult("OKWW F11 後遊戲就緒", true,
             "第二階段已檢測到主畫面；中心左鍵=" (centerClicked ? "成功" : "失敗"))
-        return { ok: true, centerClicked: centerClicked, phase: "after_click_ready" }
+        return {
+            ok: true,
+            centerClicked: centerClicked,
+            phase: "after_click_ready",
+            clickFailureCode: clickFailureCode,
+            clickFailureDetail: clickFailureDetail
+        }
     }
 
     WriteStepResult("OKWW F11 後遊戲就緒", false,
         "第二階段逾時；中心左鍵=" (centerClicked ? "成功" : "失敗"))
-    return { ok: false, centerClicked: centerClicked, phase: "after_click_timeout" }
+    return {
+        ok: false,
+        centerClicked: centerClicked,
+        phase: "after_click_timeout",
+        clickFailureCode: clickFailureCode,
+        clickFailureDetail: clickFailureDetail
+    }
 }
 
 ; D) 短暫啟用鳴潮後，以實體滑鼠點擊遊戲客戶區正中央。
 ;    僅在實際操作期間暫時置頂，finally 一律取消，不改變普通／最大化視窗尺寸。
 ClickWutheringClientCenter(hwnd, context := "") {
-    global WUTHERING_PROCESS_EXE
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+    LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
+    LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
 
     if !hwnd || !WinExist("ahk_id " hwnd)
         hwnd := GetWutheringGameHwnd()
     if !hwnd || !WinExist("ahk_id " hwnd) {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_CENTER_INPUT_NOT_READY"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "找不到有效鳴潮視窗；context=" context
         WriteLog("遊戲中心點擊失敗：找不到有效鳴潮視窗 | context=" context, "WARN")
         return false
+    }
+
+    try {
+        ; 中心座標必須在下層完成互動桌面檢查並還原最小化視窗後才計算。
+        return ClickWutheringClientPointForInput(hwnd, 0, 0,
+            context "｜客戶區正中央", true)
+    } catch as e {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_CENTER_INPUT_NOT_READY"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "中心點擊例外：" e.Message
+        WriteLog("遊戲中心點擊失敗：" e.Message " | context=" context, "WARN")
+        return false
+    }
+}
+
+ClickWutheringClientPointForInput(hwnd, clientPointX, clientPointY, context := "", useClientCenter := false) {
+    global WUTHERING_PROCESS_EXE
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        return false
+
+    ; 背景辨識可接受相容 class，但實體滑鼠只能落在 Client 的 Unreal 主窗。
+    ; 若先前取得的是同 PID owned popup，重新解析真正主窗；找不到就取消輸入，
+    ; 絕不因 popup 尺寸夠大而點到錯誤畫面。
+    primaryHwnd := ResolveWutheringPrimaryInputWindow(hwnd)
+    if !primaryHwnd {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_PRIMARY_INPUT_WINDOW_MISSING"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "找不到 Client-Win64-Shipping.exe 的 UnrealWindow 主視窗"
+            . "；candidate=" hwnd
+        WriteLog("遊戲座標點擊已取消：" LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+            " | context=" context, "ERROR")
+        return false
+    }
+    if (primaryHwnd != hwnd) {
+        WriteLog("遊戲輸入目標已由同 PID popup 修正為 UnrealWindow 主視窗"
+            " | candidate=" hwnd " primary=" primaryHwnd " | context=" context, "WARN")
+        hwnd := primaryHwnd
     }
 
     target := "ahk_id " hwnd
     oldMouseMode := A_CoordModeMouse
     topmostPulse := false
     try {
-        procName := StrLower(WinGetProcessName(target))
-        if (procName != StrLower(WUTHERING_PROCESS_EXE)) {
-            WriteLog("遊戲中心點擊安全檢查失敗：process=" procName " hwnd=" hwnd
+        expectedGamePid := WinGetPID(target)
+        expectedGameProcess := StrLower(WinGetProcessName(target))
+        expectedGameClass := WinGetClass(target)
+        expectedGameRoot := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+        if (expectedGamePid <= 0
+            || expectedGameProcess != StrLower(WUTHERING_PROCESS_EXE)
+            || StrLower(expectedGameClass) != "unrealwindow"
+            || expectedGameRoot != hwnd) {
+            LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_INPUT_TARGET_CHANGED"
+            LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "輸入前目標身分不符"
+                . "；hwnd=" hwnd "；pid=" expectedGamePid
+                . "；process=" expectedGameProcess "；class=" expectedGameClass
+                . "；root=" expectedGameRoot
+            WriteLog("遊戲座標點擊已取消：" LAST_INPUT_ACTIVATION_FAILURE_DETAIL
                 " | context=" context, "ERROR")
             return false
         }
 
-        ; 只有最小化時才還原；普通與最大化視窗不做 WinRestore，避免改變遊戲尺寸。
-        if (WinGetMinMax(target) = -1) {
-            WinRestore(target)
-            Sleep 150
+        desktopState := GetInteractiveDesktopState()
+        if !desktopState.ok {
+            LAST_INPUT_ACTIVATION_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+            LAST_INPUT_ACTIVATION_FAILURE_DETAIL := desktopState.reason
+                . "；currentDesktop=" desktopState.currentDesktop
+                . "；inputDesktop=" desktopState.inputDesktop
+                . "；wtsState=" desktopState.wtsState
+            WriteLog("遊戲座標點擊已中止：目前不是可互動桌面 | "
+                . LAST_INPUT_ACTIVATION_FAILURE_DETAIL " | context=" context, "ERROR")
+            return false
         }
 
-        ; 實體滑鼠必須確保鳴潮位於最前方；置頂只維持到本次點擊結束。
+        procName := StrLower(WinGetProcessName(target))
+        if (procName != StrLower(WUTHERING_PROCESS_EXE)) {
+            WriteLog("遊戲座標點擊安全檢查失敗：process=" procName " hwnd=" hwnd
+                " | context=" context, "ERROR")
+            return false
+        }
+
+        ; 只有最小化時才依原 WINDOWPLACEMENT 還原；最大化後最小化必須恢復為最大化。
+        restoreReason := ""
+        if !RestoreMinimizedWindowPreservingPlacement(hwnd,
+            "鳴潮點擊｜" context, &restoreReason) {
+            LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_WINDOW_RESTORE_FAILED"
+            LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "reason=" restoreReason "；hwnd=" hwnd
+            WriteLog("遊戲座標點擊失敗：無法依原顯示狀態還原最小化視窗 | "
+                LAST_INPUT_ACTIVATION_FAILURE_DETAIL " | context=" context, "ERROR")
+            return false
+        }
+
+        inputReadyReason := ""
+        if !IsUsableWutheringInputWindow(hwnd, &inputReadyReason) {
+            LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_WINDOW_NOT_INPUT_READY"
+            LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "reason=" inputReadyReason "；hwnd=" hwnd
+            WriteLog("遊戲座標點擊失敗：視窗存在但目前不可輸入 | hwnd=" hwnd
+                " reason=" inputReadyReason " | context=" context, "WARN")
+            return false
+        }
+
         try {
             WinSetAlwaysOnTop(1, target)
             topmostPulse := true
         } catch as e {
-            WriteLog("遊戲中心點擊：暫時置頂失敗，仍嘗試啟用視窗 | " e.Message, "WARN")
+            WriteLog("遊戲座標點擊：暫時置頂失敗，仍嘗試強化前景切換 | " e.Message, "WARN")
         }
 
-        WinActivate(target)
-        if !WinWaitActive(target, , 1.5) {
-            WriteLog("遊戲中心點擊失敗：1.5 秒內無法啟用鳴潮視窗 | context=" context, "WARN")
+        if !ForceActivateWindowForInput(hwnd, 3000, "鳴潮點擊｜" context, "root") {
+            WriteLog("遊戲座標點擊失敗：強化前景切換仍無法啟用鳴潮 | hwnd=" hwnd
+                " client=" clientPointX "," clientPointY " | context=" context, "WARN")
             return false
         }
 
         WinGetClientPos(&clientX, &clientY, &clientW, &clientH, target)
-        if (clientW <= 0 || clientH <= 0) {
-            WriteLog("遊戲中心點擊失敗：客戶區尺寸無效 " clientW "x" clientH
-                " | context=" context, "WARN")
+        clickClientX := useClientCenter ? Floor(clientW / 2) : Round(clientPointX)
+        clickClientY := useClientCenter ? Floor(clientH / 2) : Round(clientPointY)
+        if (clientW <= 0 || clientH <= 0 || clickClientX < 0 || clickClientY < 0
+            || clickClientX >= clientW || clickClientY >= clientH) {
+            WriteLog("遊戲座標點擊失敗：客戶區座標超界 clientPoint=" clickClientX "," clickClientY
+                " client=" clientW "x" clientH " | context=" context, "WARN")
             return false
         }
 
-        clickX := clientX + Floor(clientW / 2)
-        clickY := clientY + Floor(clientH / 2)
+        clickX := clientX + clickClientX
+        clickY := clientY + clickClientY
         CoordMode("Mouse", "Screen")
         MouseMove(clickX, clickY, 0)
-        Sleep 80
-        MouseClick("left", clickX, clickY)
-        WriteLog("已用實體滑鼠點擊鳴潮客戶區正中央：screen=" clickX "," clickY
+        RawSleep(80)
+        previousCritical := Critical("On")
+        try {
+            finalDesktopState := GetInteractiveDesktopState()
+            if !finalDesktopState.ok {
+                LAST_INPUT_ACTIVATION_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
+                LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "點擊前互動桌面已失效；reason="
+                    . finalDesktopState.reason
+                    . "；currentDesktop=" finalDesktopState.currentDesktop
+                    . "；inputDesktop=" finalDesktopState.inputDesktop
+                    . "；wtsState=" finalDesktopState.wtsState
+                WriteLog("遊戲座標點擊已取消：" LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+                    " | context=" context, "ERROR")
+                return false
+            }
+
+            try {
+                finalPid := WinGetPID(target)
+                finalProcess := StrLower(WinGetProcessName(target))
+                finalClass := WinGetClass(target)
+                finalRoot := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+            } catch as e {
+                LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_INPUT_TARGET_CHANGED"
+                LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "點擊前無法重驗目標；" e.Message
+                WriteLog("遊戲座標點擊已取消：" LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+                    " | context=" context, "ERROR")
+                return false
+            }
+            if (finalPid != expectedGamePid
+                || finalProcess != StrLower(WUTHERING_PROCESS_EXE)
+                || StrLower(finalClass) != "unrealwindow"
+                || finalRoot != hwnd || finalRoot != expectedGameRoot) {
+                LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_INPUT_TARGET_CHANGED"
+                LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "點擊前目標身分已變更"
+                    . "；expected=" hwnd "/" expectedGamePid "/" expectedGameClass
+                    . "/root=" expectedGameRoot
+                    . "；actual=" hwnd "/" finalPid "/" finalClass
+                    . "/process=" finalProcess "/root=" finalRoot
+                WriteLog("遊戲座標點擊已取消：" LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+                    " | context=" context, "ERROR")
+                return false
+            }
+
+            foregroundRelation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+            if !IsSafeInputWindowRelation(foregroundRelation, "root") {
+                LAST_INPUT_ACTIVATION_FAILURE_CODE := useClientCenter
+                    ? "GAME_CENTER_FOREGROUND_DENIED" : "WINDOW_FOREGROUND_DENIED"
+                LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "點擊前目標失去前景"
+                    . "；target=" hwnd "；foreground=" foregroundHwnd
+                    . "；relation=" foregroundRelation "；context=" context
+                WriteLog("遊戲座標點擊已取消：點擊前目標已失去前景"
+                    " | target=" hwnd " foreground=" foregroundHwnd
+                    " relation=" foregroundRelation " | context=" context, "WARN")
+                return false
+            }
+            if !IsTargetWindowAtScreenPoint(hwnd, clickX, clickY, &hitHwnd, &hitRelation) {
+                LAST_INPUT_ACTIVATION_FAILURE_CODE := useClientCenter
+                    ? "GAME_CENTER_OCCLUDED" : "GAME_CLICK_OCCLUDED"
+                LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "點擊座標被其他視窗遮擋"
+                    . "；target=" hwnd "；hit=" hitHwnd "；relation=" hitRelation
+                    . "；screen=" clickX "," clickY "；context=" context
+                WriteLog("遊戲座標點擊已取消：座標實際命中其他視窗"
+                    " | target=" hwnd " hit=" hitHwnd " relation=" hitRelation
+                    " screen=" clickX "," clickY " | context=" context, "WARN")
+                return false
+            }
+            MouseClick("left", clickX, clickY)
+        } finally {
+            Critical(previousCritical)
+        }
+        WriteLog("已用實體滑鼠點擊鳴潮客戶區：screen=" clickX "," clickY
+            " clientPoint=" clickClientX "," clickClientY
             " client=" clientW "x" clientH " hwnd=" hwnd " | context=" context)
         return true
     } catch as e {
-        WriteLog("遊戲中心點擊失敗：" e.Message " | context=" context, "WARN")
+        if (LAST_INPUT_ACTIVATION_FAILURE_CODE = "") {
+            LAST_INPUT_ACTIVATION_FAILURE_CODE := useClientCenter
+                ? "GAME_CENTER_INPUT_NOT_READY" : "GAME_CLICK_INPUT_NOT_READY"
+            LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "遊戲座標點擊例外：" e.Message
+        }
+        WriteLog("遊戲座標點擊失敗：" e.Message " | context=" context, "WARN")
         return false
     } finally {
         if (topmostPulse && WinExist(target))
@@ -4281,31 +6170,29 @@ ClickWutheringClientCenter(hwnd, context := "") {
     }
 }
 
-; E) 點擊指定窗口中心
-ClickWindowCenter(hwnd) {
-    if !hwnd
-        return false
-    try {
-        oldMode := A_CoordModeMouse
-        CoordMode "Mouse", "Screen"
-        WinGetPos(&x, &y, &w, &h, "ahk_id " hwnd)
-        if (w = "" || h = "" || w <= 0 || h <= 0)
-            return false
-        cx := x + (w // 2)
-        cy := y + (h // 2)
-        WriteLog("點擊視窗中心: " cx "," cy)
-        MouseClick "left", cx, cy
-        return true
-    } catch as e {
-        WriteLog("點擊視窗中心失敗: " e.Message, "WARN")
-        return false
-    } finally {
-        if IsSet(oldMode)
-            CoordMode "Mouse", oldMode
+ResolveWutheringPrimaryInputWindow(preferredHwnd := 0) {
+    preferredPid := 0
+    if (preferredHwnd && WinExist("ahk_id " preferredHwnd)) {
+        try preferredPid := WinGetPID("ahk_id " preferredHwnd)
+        try {
+            if (WinGetClass("ahk_id " preferredHwnd) = "UnrealWindow"
+                && IsValidGameWindow(preferredHwnd))
+                return preferredHwnd
+        }
     }
+
+    try {
+        for candidate in WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow") {
+            if (preferredPid > 0 && WinGetPID("ahk_id " candidate) != preferredPid)
+                continue
+            if IsValidGameWindow(candidate)
+                return candidate
+        }
+    }
+    return 0
 }
 
-; F) 取得並啟動鳴潮路徑（可記憶）
+; E) 取得並啟動鳴潮路徑（可記憶）
 EnsureWutheringRunning() {
     global WUTHERING_STARTUP_WAIT_SEC
 
@@ -4383,8 +6270,8 @@ IsWutheringProcessRunning() {
 }
 
 WaitForProcessRunning(exeName, timeoutSec := 30) {
-    deadline := A_TickCount + timeoutSec * 1000
-    while (A_TickCount < deadline) {
+    deadline := MonotonicTickMs() + timeoutSec * 1000
+    while (MonotonicTickMs() < deadline) {
         if ProcessExist(exeName)
             return true
 
@@ -4402,12 +6289,43 @@ WaitForProcessRunning(exeName, timeoutSec := 30) {
 }
 
 GetWutheringGameHwnd() {
+    ; 優先沿用目前真正接收輸入的遊戲頂層／owner 視窗。部分 Unreal/覆蓋層
+    ; 會讓同一進程同時存在多個大型 HWND，舊版直接取 WinGetList()[1] 後再用
+    ; 精確 HWND 等待 active，畫面明明已在前景仍可能被誤判失敗。
+    foregroundHwnd := DllCall("user32\GetForegroundWindow", "ptr")
+    if foregroundHwnd {
+        foregroundCandidates := [
+            foregroundHwnd,
+            DllCall("user32\GetAncestor", "ptr", foregroundHwnd, "uint", 2, "ptr"),
+            DllCall("user32\GetAncestor", "ptr", foregroundHwnd, "uint", 3, "ptr")
+        ]
+        for candidate in foregroundCandidates {
+            if !candidate
+                continue
+            procName := ""
+            className := ""
+            try procName := StrLower(WinGetProcessName("ahk_id " candidate))
+            try className := WinGetClass("ahk_id " candidate)
+            ; 前景候選可能是同 PID 的大型 owned popup。實體遊戲主窗固定優先
+            ; UnrealWindow，不能因 popup 正好在前景就把它當成主遊戲 HWND。
+            if (procName = "client-win64-shipping.exe"
+                && className = "UnrealWindow" && IsValidGameWindow(candidate))
+                return candidate
+        }
+    }
+
     ; ✅ 優先條件：執行程序 + UnrealWindow 類別（完全初始化的遊戲視窗）
     hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
     if (hwndList.Length > 0) {
-        hwnd := hwndList[1]
-        if (IsValidGameWindow(hwnd))
-            return hwnd
+        for hwnd in hwndList {
+            if (IsValidGameWindow(hwnd)
+                && IsSafeInputWindowRelation(GetForegroundRelationToTarget(hwnd), "family"))
+                return hwnd
+        }
+        for hwnd in hwndList {
+            if IsValidGameWindow(hwnd)
+                return hwnd
+        }
     }
 
     ; ⚠️ 回退：部分環境 class 可能不同，但需驗證視窗有效性
@@ -4431,6 +6349,24 @@ IsValidGameWindow(hwnd) {
     ; 檢查視窗是否存在
     if !WinExist("ahk_id " hwnd)
         return false
+
+    try {
+        if (StrLower(WinGetProcessName("ahk_id " hwnd)) != "client-win64-shipping.exe")
+            return false
+
+        root := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+        if (root && root != hwnd)
+            return false
+    } catch {
+        return false
+    }
+
+    ; 最小化／短暫停用／短暫無回應仍代表遊戲視窗存在；是否能接收實體輸入
+    ; 由 IsUsableWutheringInputWindow 在真正操作前判斷，避免誤報 no_window。
+    minMax := 0
+    try minMax := WinGetMinMax("ahk_id " hwnd)
+    if (minMax = -1)
+        return true
     
     ; 取得視窗寬高
     try WinGetPos , , &w, &h, "ahk_id " hwnd
@@ -4439,18 +6375,57 @@ IsValidGameWindow(hwnd) {
     }
     
     ; 檢查視窗有合理的尺寸（排除 0x0 或異常小的初始化視窗）
-    ; 遊戲視窗通常至少 800x600
-    if (w < 800 || h < 600) {
+    ; 排除 0x0／啟動器臨時小窗，但允許使用者採較小視窗模式。
+    if (w < 500 || h < 280) {
         return false
     }
-    
+
     ; ✅ 視窗有效
     return true
 }
 
+GetWutheringWindowIdentity(hwnd, &pid := 0, &className := "", &reason := "") {
+    global WUTHERING_PROCESS_EXE
+
+    pid := 0
+    className := ""
+    reason := ""
+    if !IsValidGameWindow(hwnd) {
+        reason := "identity_or_window_invalid"
+        return false
+    }
+
+    try {
+        pid := WinGetPID("ahk_id " hwnd)
+        procName := StrLower(WinGetProcessName("ahk_id " hwnd))
+        className := WinGetClass("ahk_id " hwnd)
+        root := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
+        if (pid <= 0) {
+            reason := "pid_invalid"
+            return false
+        }
+        if (procName != StrLower(WUTHERING_PROCESS_EXE)) {
+            reason := "process_mismatch:" procName
+            return false
+        }
+        if (className = "") {
+            reason := "class_missing"
+            return false
+        }
+        if (root != hwnd) {
+            reason := "not_root_window:" root
+            return false
+        }
+        return true
+    } catch as e {
+        reason := "identity_inspect_failed:" e.Message
+        return false
+    }
+}
+
 WaitForWutheringGameWindow(timeoutSec := 120) {
-    deadline := A_TickCount + timeoutSec * 1000
-    while (A_TickCount < deadline) {
+    deadline := MonotonicTickMs() + timeoutSec * 1000
+    while (MonotonicTickMs() < deadline) {
         hwnd := GetWutheringGameHwnd()
         if hwnd
             return hwnd
@@ -4525,119 +6500,6 @@ IniReadSafe(file, section, key, default) {
     } catch {
         return default
     }
-}
-
-; 獲取工作區域信息（排除工作列）
-GetWorkArea() {
-    rect := Buffer(16)
-    DllCall("SystemParametersInfo", "UInt", 48, "UInt", 0, "Ptr", rect, "UInt", 0) ; SPI_GETWORKAREA
-    return {
-        left: NumGet(rect, 0, "Int"),
-        top: NumGet(rect, 4, "Int"), 
-        right: NumGet(rect, 8, "Int"),
-        bottom: NumGet(rect, 12, "Int"),
-        width: NumGet(rect, 8, "Int") - NumGet(rect, 0, "Int"),
-        height: NumGet(rect, 12, "Int") - NumGet(rect, 4, "Int")
-    }
-}
-
-; C) 將一般狀態的指定窗口貼齊螢幕右上角，不改變原始尺寸或最大化／最小化狀態
-MoveWindowTopRight(hwnd, marginX := 0, marginY := 0) {
-    if !hwnd {
-        WriteLog("MoveWindowTopRight: 無效的視窗句柄", "ERROR")
-        return false
-    }
-    
-    ; 嘗試最多3次
-    Loop 3 {
-        attempt := A_Index
-        WriteLog("嘗試移動視窗到右上角 (第 " attempt " 次)...")
-
-        ; 遊戲初始化期間可能重建視窗，舊 hwnd 會瞬間失效，先重新校驗一次。
-        if !WinExist("ahk_id " hwnd) {
-            newHwnd := GetWutheringGameHwnd()
-            if newHwnd {
-                WriteLog("原視窗句柄失效，改用新句柄: " newHwnd, "WARN")
-                hwnd := newHwnd
-            } else {
-                WriteLog("目前找不到可用鳴潮視窗句柄，稍後重試", "WARN")
-                if (attempt < 3) {
-                    Sleep 500
-                    continue
-                }
-                return false
-            }
-        }
-
-        try {
-            windowState := WinGetMinMax("ahk_id " hwnd)
-            if (windowState = 1) {
-                WriteLog("鳴潮視窗目前為最大化；保留原狀態與尺寸，略過右上角移動")
-                return true
-            }
-            if (windowState = -1) {
-                WriteLog("鳴潮視窗目前為最小化；保留原狀態與尺寸，稍後再嘗試移動", "WARN")
-                return false
-            }
-
-            WinGetPos &x, &y, &w, &h, "ahk_id " hwnd
-            if (w = "" || h = "" || w <= 0 || h <= 0) {
-                WriteLog("無法取得視窗尺寸: w=" w ", h=" h, "ERROR")
-                if (attempt < 3) {
-                    Sleep 500
-                    continue
-                }
-                return false
-            }
-
-            wa := GetWorkArea()
-            newX := wa.right - w - marginX  ; 貼齊工作區右側但保留原寬度
-            newY := wa.top + marginY           ; 貼齊工作區上側
-            
-            WriteLog("移動視窗（保留尺寸）: 從 (" x "," y "," w "," h
-                ") 到 (" newX "," newY "," w "," h ")")
-            WinMove(newX, newY, , , "ahk_id " hwnd)
-            Sleep 300  ; 等待視窗移動完成
-            
-            ; 驗證位置、尺寸及視窗狀態均符合預期。
-            WinGetPos &actualX, &actualY, &actualW, &actualH, "ahk_id " hwnd
-            actualState := WinGetMinMax("ahk_id " hwnd)
-            positionOk := (Abs(actualX - newX) <= 10 && Abs(actualY - newY) <= 10)
-            sizeOk := (Abs(actualW - w) <= 2 && Abs(actualH - h) <= 2)
-            stateOk := (actualState = windowState)
-            if (positionOk && sizeOk && stateOk) {
-                WriteLog("✓ 視窗成功移動到右上角，尺寸與狀態保持不變 ("
-                    actualX "," actualY "," actualW "," actualH ")")
-                return true
-            } else {
-                WriteLog("視窗移動驗證未通過：目標位置=(" newX "," newY
-                    ") 實際位置=(" actualX "," actualY
-                    ") | 原尺寸=" w "x" h " 實際尺寸=" actualW "x" actualH
-                    " | 原狀態=" windowState " 實際狀態=" actualState, "WARN")
-                if (attempt < 3) {
-                    Sleep 500
-                    continue
-                }
-            }
-        } catch as e {
-            WriteLog("視窗移動失敗: " e.Message, "ERROR")
-            if InStr(e.Message, "Target window not found") {
-                newHwnd := GetWutheringGameHwnd()
-                if newHwnd {
-                    WriteLog("移動時句柄失效，重抓新句柄後重試: " newHwnd, "WARN")
-                    hwnd := newHwnd
-                }
-            }
-            if (attempt < 3) {
-                Sleep 500
-                continue
-            }
-            return false
-        }
-    }
-    
-    WriteLog("視窗移動失敗（已達最大重試次數）", "ERROR")
-    return false
 }
 
 ; D) 繁→簡（常見詞）
@@ -4829,6 +6691,60 @@ GetOkwwRuntimeSnapshotState() {
     return "missing"
 }
 
+IsForegroundInputFailureCode(reasonCode) {
+    code := StrUpper(Trim(reasonCode, " `t`r`n"))
+    return (code = "WINDOW_FOREGROUND_DENIED"
+        || code = "OKWW_F11_FOREGROUND_FAILED"
+        || code = "OKWW_F11_FOREGROUND_LOST"
+        || code = "GAME_CENTER_FOREGROUND_DENIED")
+}
+
+GetForegroundInputFailureStreak() {
+    global CFG_FILE
+    return ToIntRange(IniReadSafe(CFG_FILE, "restart_tracking",
+        "foreground_input_failure_streak", "0"), 0, 0, 100)
+}
+
+SetForegroundInputFailureStreak(value, reason := "") {
+    global CFG_FILE
+    nextValue := ToIntRange(value, 0, 0, 100)
+    IniWrite nextValue, CFG_FILE, "restart_tracking", "foreground_input_failure_streak"
+    if (reason != "")
+        WriteLog("前景輸入連續失敗計數=" nextValue " | " reason)
+    return nextValue
+}
+
+IncrementForegroundInputFailureStreak(reason := "") {
+    global CFG_FILE
+    previousCritical := Critical("On")
+    try {
+        current := ToIntRange(IniReadSafe(CFG_FILE, "restart_tracking",
+            "foreground_input_failure_streak", "0"), 0, 0, 100)
+        nextValue := Min(100, current + 1)
+        IniWrite nextValue, CFG_FILE, "restart_tracking", "foreground_input_failure_streak"
+    } finally {
+        Critical(previousCritical)
+    }
+    if (reason != "")
+        WriteLog("前景輸入連續失敗計數=" nextValue " | " reason)
+    return nextValue
+}
+
+ResetForegroundInputFailureStreak(reason := "") {
+    global CFG_FILE
+    previousCritical := Critical("On")
+    try {
+        previous := ToIntRange(IniReadSafe(CFG_FILE, "restart_tracking",
+            "foreground_input_failure_streak", "0"), 0, 0, 100)
+        IniWrite 0, CFG_FILE, "restart_tracking", "foreground_input_failure_streak"
+    } finally {
+        Critical(previousCritical)
+    }
+    if (previous > 0)
+        WriteLog("前景輸入連續失敗計數已歸零（原 " previous "）"
+            . (reason != "" ? " | " reason : ""))
+}
+
 RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNSPECIFIED", stage := "未指定") {
     global LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE, LAST_RESTART_RECOVERY
     global LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE, CRASH_RESTART_MODE
@@ -4865,14 +6781,226 @@ RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNS
     detail .= " | reason=" reason
     WriteLog("觸發重啟請求：" detail, level)
     WriteStep("重啟請求", detail, level)
+
+    probeKind := (InStr(reasonCode, "GAME_") || InStr(stage, "鳴潮")) ? "game" : "okww"
+
+    ; 鎖定畫面、RDP 斷線或切到非互動桌面時，重啟任何程式都拿不到輸入，
+    ; 因此直接保留遠端 STOP／心跳並等待；同時寄出一次明確通知。
+    if (reasonCode = "INTERACTIVE_DESKTOP_UNAVAILABLE") {
+        LAST_RESTART_RECOVERY := "互動桌面不可用；等待恢復後乾淨重啟（不計重啟額度）"
+        NotifyUiInputBlockedOnce(reasonCode, stage, reason, 0)
+        if !WaitForInteractiveDesktopBeforeRestart(probeKind)
+            return
+        RestartAutoScript(reason, false)
+        return
+    }
+
+    ; 單次 foreground-lock 可能由程式啟動時序造成，先給一次不計 10 次額度的
+    ; 乾淨重啟。新程序若仍連續遇到同類拒絕，才停止重啟風暴並等待輸入恢復。
+    if IsForegroundInputFailureCode(reasonCode) {
+        foregroundStreak := IncrementForegroundInputFailureStreak(
+            "code=" reasonCode " | stage=" stage)
+        if (foregroundStreak = 1) {
+            LAST_RESTART_RECOVERY := "首次前景拒絕；先做一次不計額度的乾淨重啟"
+            WriteLog("首次前景輸入被拒絕：先重建 OKWW／鳴潮視窗，不消耗 10 次重啟額度", "WARN")
+            RestartAutoScript(reason, false)
+            return
+        }
+
+        LAST_RESTART_RECOVERY := "連續 " foregroundStreak
+            . " 次前景拒絕；等待 UI 輸入恢復後乾淨重啟（不計重啟額度）"
+        NotifyUiInputBlockedOnce(reasonCode, stage, reason, foregroundStreak)
+        if !WaitForInteractiveDesktopBeforeRestart(probeKind)
+            return
+        RestartAutoScript(reason, false)
+        return
+    }
+
+    ; 只有連續同類 foreground 問題才沿用 streak；其他故障會切斷這條鏈。
+    ResetForegroundInputFailureStreak("遇到其他重啟原因 code=" reasonCode)
     RestartAutoScript(reason)
 }
 
+ProbeForegroundAccessForRecovery(preferredKind, &detail := "", &recreateRecommended := false) {
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE
+    detail := ""
+    recreateRecommended := false
+    hwnd := 0
+    targetName := preferredKind
+    if (preferredKind = "okww") {
+        title := ""
+        hwnd := FindBestOkwwFinalWindow(&title)
+        if hwnd {
+            detail := "target=okww hwnd=" hwnd " title=" title
+            usableReason := ""
+            if !IsUsableOkwwFinalWindow(hwnd, &usableReason, true) {
+                recreateRecommended := true
+                detail .= " structural_failure=" usableReason
+                return false
+            }
+        }
+    } else {
+        targetName := "game"
+        hwnd := GetWutheringGameHwnd()
+        if hwnd {
+            primaryHwnd := ResolveWutheringPrimaryInputWindow(hwnd)
+            if !primaryHwnd {
+                recreateRecommended := true
+                detail := "target=game hwnd=" hwnd " structural_failure=primary_window_missing"
+                return false
+            }
+            hwnd := primaryHwnd
+            detail := "target=game hwnd=" hwnd
+            usableReason := ""
+            if !IsUsableWutheringInputWindow(hwnd, &usableReason) {
+                recreateRecommended := true
+                detail .= " structural_failure=" usableReason
+                return false
+            }
+        }
+    }
+
+    ; 原目標已消失時代表下一步本來就需要乾淨重啟，不必永遠卡在恢復探測。
+    if !hwnd {
+        detail := "target=" targetName " missing；允許乾淨重啟重建視窗"
+        return true
+    }
+
+    relationPolicy := "root"
+    ok := ForceActivateWindowForInput(hwnd, 1800,
+        "等待 UI 輸入恢復探測｜" targetName, relationPolicy)
+    if (ok && preferredKind = "okww") {
+        safetyReason := ""
+        if !IsSafeOkwwKeyboardForeground(hwnd, &relation, &foregroundHwnd, &safetyReason) {
+            detail .= " activation=unsafe relation=" relation " foreground=" foregroundHwnd
+                . " reason=" safetyReason
+            return false
+        }
+        detail .= " activation=ok relation=" relation " foreground=" foregroundHwnd
+        return true
+    }
+    if (ok && preferredKind = "game") {
+        inputReason := ""
+        if !IsUsableWutheringInputWindow(hwnd, &inputReason) {
+            detail .= " activation=unsafe reason=" inputReason
+            return false
+        }
+    }
+    detail .= ok ? " activation=ok" : " activation=failed code=" LAST_INPUT_ACTIVATION_FAILURE_CODE
+    return ok
+}
+
+WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
+    global __WAITING_FOR_INTERACTIVE_DESKTOP, REMOTE_CONTROL_ACTIVE
+    global __OKWW_MINIMIZE_SWEEP_REMAINING
+    global REMOTE_STOP_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+
+    acquired := false
+    previousCritical := Critical("On")
+    try {
+        if !__WAITING_FOR_INTERACTIVE_DESKTOP {
+            __WAITING_FOR_INTERACTIVE_DESKTOP := true
+            acquired := true
+        }
+    } finally {
+        Critical(previousCritical)
+    }
+    if !acquired {
+        WriteLog("等待可互動桌面：已有等待程序進行中，略過重複入口", "INFO")
+        return false
+    }
+
+    try {
+        ; 等待可能持續數小時：停止會產生畫面／雲端流量的診斷與 UI 計時器；
+        ; 遠端命令輪詢、心跳與 STOP 仍由 RemoteControlFirestore 繼續運作。
+        try StopRuntimeDiagnostics()
+        try SetTimer(CrashWatcherTick, 0)
+        try SetTimer(DelayedOkwwMinimizeSweep, 0)
+        __OKWW_MINIMIZE_SWEEP_REMAINING := 0
+        try TryStopScreenRecording("等待解鎖／UI 輸入恢復，先正常封口")
+
+        WriteStep("等待可互動桌面",
+            "暫停 UI 操作與診斷快照，保留遠端命令；恢復後重啟不計入 10 次額度", "WARN")
+        lastLogTick := 0
+        stableHits := 0
+        targetProbeFailures := 0
+        loop {
+            if (REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED) {
+                WriteLog("等待 UI 輸入恢復已中止：程式正在執行停止／離開流程", "WARN")
+                return false
+            }
+
+            paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+            state := GetInteractiveDesktopState()
+            probeOk := false
+            probeDetail := ""
+            recreateRecommended := false
+            if (state.ok && !paused)
+                probeOk := ProbeForegroundAccessForRecovery(preferredKind, &probeDetail,
+                    &recreateRecommended)
+
+            if (state.ok && !paused && probeOk) {
+                targetProbeFailures := 0
+                stableHits += 1
+                if (stableHits >= 2) {
+                    WriteLog("UI 輸入環境已連續確認恢復，現在執行一次不計額度的乾淨重啟"
+                        " | currentDesktop=" state.currentDesktop
+                        " inputDesktop=" state.inputDesktop " wts=" state.wtsState
+                        " | " probeDetail, "WARN")
+                    WriteStep("等待可互動桌面", "連續 2 次確認恢復，準備乾淨重啟", "WARN")
+                    return true
+                }
+                Sleep 1000
+                continue
+            }
+
+            stableHits := 0
+            if (state.ok && !paused) {
+                targetProbeFailures += 1
+                ; hung／disabled／主窗遺失等結構性故障連續兩次就應重建；
+                ; 單純 foreground-lock 則低頻等約 5 分鐘後只做一次不計額度的乾淨重啟。
+                probeFailureLimit := recreateRecommended ? 2 : 20
+                if (targetProbeFailures >= probeFailureLimit) {
+                    recoveryKind := recreateRecommended
+                        ? "目標視窗結構性故障"
+                        : "互動桌面正常但前景連續被拒絕"
+                    WriteLog("等待 UI 輸入恢復已達探測門檻，執行一次不計額度的乾淨重啟"
+                        " | kind=" recoveryKind " failures=" targetProbeFailures
+                        " | " probeDetail, "WARN")
+                    WriteStep("等待可互動桌面",
+                        recoveryKind "；探測 " targetProbeFailures " 次後重建視窗", "WARN")
+                    return true
+                }
+            } else {
+                ; 鎖屏／斷線與遠端 PAUSE 的時間不計入目標程式故障門檻。
+                targetProbeFailures := 0
+            }
+            nowTick := MonotonicTickMs()
+            if (lastLogTick = 0 || nowTick - lastLogTick >= 60000) {
+                pauseText := paused ? "；遠端目前為 PAUSE" : ""
+                WriteLog("仍在等待 UI 輸入恢復；不關閉程式、不增加重啟次數"
+                    " | reason=" state.reason
+                    " currentDesktop=" state.currentDesktop
+                    " inputDesktop=" state.inputDesktop " wts=" state.wtsState
+                    " | probe=" probeDetail " failures=" targetProbeFailures pauseText, "INFO")
+                lastLogTick := nowTick
+            }
+            ; 前景被拒絕可能是 RDP 客戶端最小化；低頻探測即可，避免一直搶使用者焦點。
+            Sleep 15000
+        }
+    } finally {
+        previousCritical := Critical("On")
+        try __WAITING_FOR_INTERACTIVE_DESKTOP := false
+        finally Critical(previousCritical)
+    }
+}
+
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
-RestartAutoScript(reason := "") {
+RestartAutoScript(reason := "", countTowardsLimit := true) {
     global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE
     global LAST_RESTART_RECOVERY, LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE
-    global CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, MAIL_NOTIFY_ENABLED
+    global CRASH_RESTART_MODE, __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+    global __RESTART_HANDOFF_LAUNCHED, MAIL_NOTIFY_ENABLED
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
@@ -4882,12 +7010,15 @@ RestartAutoScript(reason := "") {
 
     __RESTART_IN_PROGRESS := true
     __NEXTSERVER_RESTART := false
+    __RESTART_HANDOFF_LAUNCHED := false
     
-    ; 增加重啟計數
-    restartCount++
+    ; 鎖定／RDP／前景輸入恢復後的乾淨重啟，不應消耗一般故障的 10 次額度。
+    if countTowardsLimit
+        restartCount++
     nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-    WriteLog("準備重啟全自動腳本，第 " restartCount " 次重啟，原因: " reason, "WARN")
-    WriteStep("重啟流程", "第 " restartCount " 次 | " reason, "WARN")
+    countDetail := countTowardsLimit ? "第 " restartCount " 次" : "不計額度（目前 " restartCount " 次）"
+    WriteLog("準備重啟全自動腳本，" countDetail "，原因: " reason, "WARN")
+    WriteStep("重啟流程", countDetail " | " reason, "WARN")
 
     ; 記錄最近一次重啟原因，供下一次啟動追蹤
     IniWrite reason, CFG_FILE, "restart_tracking", "last_restart_reason"
@@ -4899,7 +7030,7 @@ RestartAutoScript(reason := "") {
     IniWrite LAST_RESTART_LRMC_STATE, CFG_FILE, "restart_tracking", "last_restart_lrmc_state"
     
     ; 檢查是否超過最大重啟次數
-    if (restartCount > MAX_RESTART_COUNT) {
+    if (countTowardsLimit && restartCount > MAX_RESTART_COUNT) {
         WriteLog("重啟次數已達上限 (" MAX_RESTART_COUNT ")，停止重啟以避免無限循環。最後原因: " reason, "ERROR")
         WriteStep("重啟流程", "超過上限，停止重啟", "ERROR")
         ShowTip("❌ 重啟次數過多，停止執行", 5000)
@@ -4943,12 +7074,23 @@ RestartAutoScript(reason := "") {
                 try {
                     global AhkExe
                     restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" nextserver'
+                    ; #SingleInstance Force 可能在 Run 尚未回傳前就要求舊實例退出；
+                    ; 必須先標記 handoff，catch 再回滾，避免 OnExit 提前封口錄影。
+                    __RESTART_HANDOFF_LAUNCHED := true
                     Run(restartCmd)
                     WriteLog("nextserver 重啟命令已發送")
                     WriteStep("重啟流程", "nextserver 命令已發送")
                 } catch as e {
                     WriteLog("nextserver 重啟失敗: " e.Message, "ERROR")
                     WriteStep("重啟流程", "nextserver 重啟失敗 | " e.Message, "ERROR")
+                    ; 新程序沒有成功接手時，舊程序不可帶著 handoff 旗標退出，
+                    ; 否則 OnExit 會略過正常封口並留下孤兒 FFmpeg。
+                    __RESTART_IN_PROGRESS := false
+                    __NEXTSERVER_RESTART := false
+                    __RESTART_HANDOFF_LAUNCHED := false
+                    ForceStopManagedScreenRecording("nextserver 接手程序啟動失敗")
+                    Sleep 1000
+                    ExitApp
                 }
                 Sleep 1000
                 ExitApp
@@ -4956,6 +7098,9 @@ RestartAutoScript(reason := "") {
                 WriteLog("無更多伺服器可切換，停止執行", "WARN")
                 WriteStep("重啟流程", "無更多伺服器可切換，停止", "WARN")
                 ShowTip("✅ 所有伺服器今日循環已完成", 3000)
+                __RESTART_IN_PROGRESS := false
+                __NEXTSERVER_RESTART := false
+                ForceStopManagedScreenRecording("所有伺服器今日循環已完成")
                 Sleep 3000
                 ExitApp
             }
@@ -4977,12 +7122,19 @@ RestartAutoScript(reason := "") {
         restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
         if (CRASH_RESTART_MODE)
             restartCmd .= ' resume'
+        __RESTART_HANDOFF_LAUNCHED := true
         Run(restartCmd)
         WriteLog("重啟命令已發送")
         WriteStep("重啟流程", "restart 命令已發送")
     } catch as e {
         WriteLog("重啟失敗: " e.Message, "ERROR")
         WriteStep("重啟流程", "重啟失敗 | " e.Message, "ERROR")
+        __RESTART_IN_PROGRESS := false
+        __NEXTSERVER_RESTART := false
+        __RESTART_HANDOFF_LAUNCHED := false
+        ForceStopManagedScreenRecording("restart 接手程序啟動失敗")
+        Sleep 1000
+        ExitApp
     }
     
     ; 結束當前進程
@@ -5012,8 +7164,8 @@ MonitorRewardAndShutdown() {
     initialPos := GetLogFileLength(logPath)
     state := LoadRewardMonitorRuntimeState(logPath, initialPos)
     startDelaySec := Round(REWARD_START_DELAY_MS / 1000)
-    warmupDeadline := state.pendingReason != "" ? A_TickCount : A_TickCount + REWARD_START_DELAY_MS
-    warmupFinishedLogged := (warmupDeadline <= A_TickCount)
+    warmupDeadline := state.pendingReason != "" ? MonotonicTickMs() : MonotonicTickMs() + REWARD_START_DELAY_MS
+    warmupFinishedLogged := (warmupDeadline <= MonotonicTickMs())
     pausedLogged := false
     pendingPauseLogged := false
     pendingWarmupLogged := false
@@ -5036,7 +7188,7 @@ MonitorRewardAndShutdown() {
 
         loop {
             paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
-            warmupFinished := (A_TickCount >= warmupDeadline)
+            warmupFinished := (MonotonicTickMs() >= warmupDeadline)
 
             if paused {
                 if !pausedLogged {
@@ -5232,15 +7384,15 @@ WaitRewardMonitorForShutdown(totalMs, phase := "") {
     if (totalMs <= 0)
         return true
 
-    deadline := A_TickCount + totalMs
-    while (A_TickCount < deadline) {
+    deadline := MonotonicTickMs() + totalMs
+    while (MonotonicTickMs() < deadline) {
         if (REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY) {
             if (phase != "")
                 WriteLog("等待中止（" phase "）：收到停止/離開請求", "WARN")
             return false
         }
 
-        remain := deadline - A_TickCount
+        remain := deadline - MonotonicTickMs()
         chunk := (remain > 300) ? 300 : remain
         if (chunk < 1)
             break
@@ -5425,24 +7577,24 @@ TryRecoverLrmcDuringRewardMonitor() {
         return false
     }
 
-    if (__REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK > 0 && (A_TickCount - __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK) < REWARD_LRMCAI_RESTART_COOLDOWN_MS)
+    if (__REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK > 0 && (MonotonicTickMs() - __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK) < REWARD_LRMCAI_RESTART_COOLDOWN_MS)
         return false
 
     if (!IsSet(AhkExe) || AhkExe = "" || !FileExist(AhkExe)) {
         WriteLog("收尾監測：LRMCAI 已退出，但找不到可用 AutoHotkey 執行檔，無法重啟", "ERROR")
-        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := MonotonicTickMs()
         return false
     }
 
     cmd := '"' AhkExe '" "' A_ScriptDir '\開啟LRMC.ahk" resume'
     try {
         Run(cmd)
-        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := MonotonicTickMs()
         WriteLog("收尾監測：偵測 LRMCAI 已退出，已用 resume 快捷鍵模式重啟（不走 OCR）", "WARN")
         ShowTip("⚠️ LRMCAI 退出，已自動熱鍵重啟", 1200)
         return true
     } catch as e {
-        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := A_TickCount
+        __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := MonotonicTickMs()
         WriteLog("收尾監測：LRMCAI 收尾監測熱鍵重啟失敗: " e.Message, "ERROR")
         return false
     }
@@ -5573,6 +7725,7 @@ ResetRestartTrackingOnFreshStart() {
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_recovery"
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_process_snapshot"
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_lrmc_state"
+    IniWrite "0", CFG_FILE, "restart_tracking", "foreground_input_failure_streak"
     SetLrmcRunResumeReady(false, "正常首次啟動")
     WriteLog("正常首次啟動：已重置重啟計數器、重啟原因與 LRMCAI 接續狀態")
 }
@@ -5601,7 +7754,8 @@ HandleCycleFinishAndShutdown(completedTime := "") {
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", nextServerMode := "") {
-    global __RESTART_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_HANDOFF_LAUNCHED
+    global __CLEAN_FINAL_EXIT_REQUESTED
     stopType := ResolveShutdownStopType(stopTypeCode)
     if (!relaunchForNextServer && !__RESTART_IN_PROGRESS)
         __CLEAN_FINAL_EXIT_REQUESTED := true
@@ -5619,13 +7773,14 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
     try ProcessClose("Client-Win64-Shipping.exe")
     catch
         try Run("taskkill /F /IM Client-Win64-Shipping.exe", , "Hide")
-    Sleep 600
+    ; 關閉／錄影封口不可受遠端軟暫停閘門阻塞。
+    RawSleep(600)
 
     ; 2) LRMCAI
     try ProcessClose("LRMCAI.exe")
     catch
         try Run("taskkill /F /IM LRMCAI.exe", , "Hide")
-    Sleep 600
+    RawSleep(600)
 
     ; 3) OKWW（主程式 + 更新檢測）
     try ProcessClose("ok-ww.exe")
@@ -5663,16 +7818,28 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
     if relaunchForNextServer {
         WriteLog("伺服器排程：準備啟動下一輪流程", "WARN")
         ShowTip("🔁 切換下一個伺服器，準備重啟流程", 2000)
-        Sleep 1200
+        RawSleep(1200)
         nextServerArg := (nextServerMode = "remote") ? "nextserver remote" : "nextserver"
-        try Run('"' AhkExe '" "' A_ScriptFullPath '" ' nextServerArg)
-        catch as e
+        __RESTART_HANDOFF_LAUNCHED := true
+        try {
+            Run('"' AhkExe '" "' A_ScriptFullPath '" ' nextServerArg)
+        }
+        catch as e {
             WriteLog("啟動下一輪伺服器流程失敗: " e.Message, "ERROR")
+            __RESTART_IN_PROGRESS := false
+            __NEXTSERVER_RESTART := false
+            __RESTART_HANDOFF_LAUNCHED := false
+            ForceStopManagedScreenRecording("下一伺服器接手程序啟動失敗")
+        }
     }
 
     WriteLog("收尾關閉流程已完成，所有流程已停止")
     ShowTip("✅ 已關閉並停止所有流程", 2000)
-    Sleep 800
+    ; Remote STOP 只有走到所有關閉、錄影封口與通知皆完成的這一點，
+    ; 才當場把 APPLIED ACK durable stage 並清除 command claim；OnExit 只補送雲端。
+    ; 一般收尾／切服沒有 active STOP，這個 marker 會安全 no-op。
+    try RC_MarkActiveStopSideEffectsComplete("ShutdownGameLrmcOkww-tail")
+    RawSleep(800)
     ExitApp
 }
 
@@ -5830,6 +7997,51 @@ CompletePendingServerSwitchNotification() {
     return true
 }
 
+IsUsableWutheringInputWindow(hwnd, &reason := "") {
+    reason := ""
+    if !IsValidGameWindow(hwnd) {
+        reason := "identity_or_window_invalid"
+        return false
+    }
+
+    try {
+        if !DllCall("user32\IsWindowVisible", "ptr", hwnd, "int") {
+            reason := "not_visible"
+            return false
+        }
+        if !DllCall("user32\IsWindowEnabled", "ptr", hwnd, "int") {
+            reason := "not_enabled"
+            return false
+        }
+        if DllCall("user32\IsHungAppWindow", "ptr", hwnd, "int") {
+            reason := "window_hung"
+            return false
+        }
+        if (WinGetExStyle("ahk_id " hwnd) & 0x08000000) {
+            reason := "no_activate_style"
+            return false
+        }
+
+        cloakedBuf := Buffer(4, 0)
+        hr := DllCall("dwmapi\DwmGetWindowAttribute", "ptr", hwnd, "uint", 14,
+            "ptr", cloakedBuf.Ptr, "uint", 4, "int")
+        if (hr = 0 && NumGet(cloakedBuf, 0, "uint") != 0) {
+            reason := "cloaked"
+            return false
+        }
+
+        WinGetClientPos(, , &clientW, &clientH, "ahk_id " hwnd)
+        if (clientW < 200 || clientH < 150) {
+            reason := "client_too_small:" clientW "x" clientH
+            return false
+        }
+        return true
+    } catch as e {
+        reason := "inspect_failed:" e.Message
+        return false
+    }
+}
+
 ServerSwitchSourceLabel(sourceCode) {
     code := StrUpper(Trim(sourceCode, " `t`r`n"))
     if (code = "WEB_SERVER_SWITCH")
@@ -5837,6 +8049,83 @@ ServerSwitchSourceLabel(sourceCode) {
     if (code = "AUTO_SCHEDULE")
         return "自動排程切換"
     return "伺服器切換"
+}
+
+NotifyUiInputBlockedOnce(reasonCode, stage, reason, foregroundStreak := 0) {
+    global __UI_INPUT_BLOCKED_MAIL_SENT, MAIL_NOTIFY_ENABLED
+
+    acquired := false
+    previousCritical := Critical("On")
+    try {
+        if !__UI_INPUT_BLOCKED_MAIL_SENT {
+            __UI_INPUT_BLOCKED_MAIL_SENT := true
+            acquired := true
+        }
+    } finally {
+        Critical(previousCritical)
+    }
+    if !acquired
+        return false
+
+    statusDetail := "code=" reasonCode " | stage=" stage
+    if (foregroundStreak > 0)
+        statusDetail .= " | 連續前景拒絕=" foregroundStreak
+    statusDetail .= " | 保留遠端 STOP，等待桌面／前景輸入恢復"
+    WriteStep("等待可互動桌面", statusDetail, "WARN")
+    try RC_RecordRuntimeEvent("UI 輸入暫停", statusDetail, "WARN")
+    try SyncRemoteControlRuntimeState()
+
+    if !MAIL_NOTIFY_ENABLED {
+        WriteLog("UI 輸入暫停通知未寄送：郵件通知未啟用", "WARN")
+        return false
+    }
+
+    mailResult := SendUiInputBlockedNotifyMail(reasonCode, stage, reason, foregroundStreak)
+    if mailResult.ok
+        WriteLog("UI 輸入暫停通知信已寄出 | " statusDetail, "WARN")
+    else
+        WriteLog("UI 輸入暫停通知信寄送失敗：" mailResult.message
+            " | " statusDetail, "WARN")
+    return mailResult.ok
+}
+
+; 這封信發生在桌面已無法安全操作時，絕對不能彈出設定 GUI。
+; 僅讀取既有 SMTP 欄位；不完整就寫入日誌並讓遠端狀態繼續運作。
+SendUiInputBlockedNotifyMail(reasonCode, stage, reason, foregroundStreak := 0) {
+    global CFG_FILE, MAIL_SECTION
+
+    cfgPath := Trim(CFG_FILE, " `t`r`n")
+    section := Trim(MAIL_SECTION, " `t`r`n")
+    if (cfgPath = "" || !FileExist(cfgPath))
+        return { ok: false, message: "找不到既有設定檔" }
+
+    smtpHost := Trim(IniReadSafe(cfgPath, section, "smtp_host", ""), " `t`r`n")
+    smtpPort := Trim(IniReadSafe(cfgPath, section, "smtp_port", "587"), " `t`r`n")
+    smtpUser := Trim(IniReadSafe(cfgPath, section, "smtp_user", ""), " `t`r`n")
+    smtpPass := Trim(IniReadSafe(cfgPath, section, "smtp_pass", ""), " `t`r`n")
+    if (smtpPass = "")
+        smtpPass := Trim(IniReadSafe(cfgPath, section, "smtp_password", ""), " `t`r`n")
+    mailFrom := Trim(IniReadSafe(cfgPath, section, "from", ""), " `t`r`n")
+    mailTo := Trim(IniReadSafe(cfgPath, section, "to", ""), " `t`r`n")
+    subjectPrefix := Trim(IniReadSafe(cfgPath, section, "subject_prefix", "LRMCAI"), " `t`r`n")
+    useSsl := Trim(IniReadSafe(cfgPath, section, "use_ssl", "1"), " `t`r`n")
+
+    if (smtpHost = "" || smtpUser = "" || smtpPass = "" || mailFrom = "" || mailTo = "")
+        return { ok: false, message: "既有 SMTP 欄位不完整（未開啟設定視窗）" }
+    if !(smtpPort ~= "^\d+$")
+        return { ok: false, message: "smtp_port 不是數字: " smtpPort }
+
+    nowText := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    subject := subjectPrefix " UI輸入暫停 [" reasonCode "] " nowText
+    body := BuildNotifyMailBody("流程已暫停，等待可互動桌面／前景輸入恢復。", nowText)
+    body .= "`r`n原因代碼：" reasonCode
+    body .= "`r`n發生階段：" stage
+    body .= "`r`n詳細原因：" reason
+    if (foregroundStreak > 0)
+        body .= "`r`n連續前景拒絕次數：" foregroundStreak
+    body .= "`r`n處理方式：不再連續重啟；保留網頁遠端 STOP 與心跳，恢復後只做一次乾淨重啟。"
+    return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass,
+        mailFrom, mailTo, subject, body, useSsl)
 }
 
 SendServerSwitchCompletedNotifyMail(target, targetIndex, targetTotal, sourceCode := "") {
@@ -7007,8 +9296,8 @@ SelectRecordingOutputFolderWithUserToken(initialPath := "") {
         return {ok: false, cancelled: false, path: "", message: "啟動資料夾選擇器失敗: " e.Message}
     }
 
-    deadline := A_TickCount + 600000
-    while (A_TickCount < deadline) {
+    deadline := MonotonicTickMs() + 600000
+    while (MonotonicTickMs() < deadline) {
         if FileExist(replyPath)
             break
         Sleep 100
@@ -7415,8 +9704,13 @@ ResolveRuntimeDiagnosticsDir() {
 StartRuntimeDiagnostics() {
     global RUNTIME_DIAGNOSTICS_ENABLED, RUNTIME_DIAGNOSTICS_INTERVAL_SEC
     global __RUNTIME_DIAGNOSTICS_ACTIVE, __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK
+    global __WAITING_FOR_INTERACTIVE_DESKTOP
 
     StopRuntimeDiagnostics()
+    if __WAITING_FOR_INTERACTIVE_DESKTOP {
+        WriteLog("即時診斷暫不啟動：目前正等待可互動桌面", "INFO")
+        return false
+    }
     diagDir := ResolveRuntimeDiagnosticsDir()
     EnvSet("WUTHERING_DIAGNOSTICS_DIR", diagDir)
     try DirCreate(diagDir)
@@ -7467,7 +9761,7 @@ ScheduleRuntimeErrorSnapshot(message, level := "WARN") {
     if !__RUNTIME_DIAGNOSTICS_ACTIVE || __RUNTIME_SNAPSHOT_BUSY || __RUNTIME_ERROR_SNAPSHOT_PENDING
         return false
     if (__RUNTIME_LAST_ERROR_SNAPSHOT_TICK > 0
-        && A_TickCount - __RUNTIME_LAST_ERROR_SNAPSHOT_TICK < 10000)
+        && MonotonicTickMs() - __RUNTIME_LAST_ERROR_SNAPSHOT_TICK < 10000)
         return false
 
     __RUNTIME_ERROR_SNAPSHOT_PENDING := true
@@ -7515,16 +9809,16 @@ CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
         if preserveErrorCopy {
             errorPath := diagDir "\error_" FormatTime(, "yyyyMMdd_HHmmss") "_" A_TickCount ".jpg"
             FileCopy(latestPath, errorPath, 1)
-            __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := A_TickCount
+            __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := MonotonicTickMs()
             PruneRuntimeDiagnosticScreenshots(RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT)
         }
 
         ; 本機錯誤圖可即時保存，但 Firestore 截圖最多每 60 秒寫一次，
         ; 避免錯誤連發時消耗免費寫入與對外流量額度。
         canPublishRemote := (__RUNTIME_LAST_REMOTE_SNAPSHOT_TICK <= 0
-            || A_TickCount - __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK >= 60000)
+            || MonotonicTickMs() - __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK >= 60000)
         if (REMOTE_CONTROL_ACTIVE && canPublishRemote) {
-            __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK := A_TickCount
+            __RUNTIME_LAST_REMOTE_SNAPSHOT_TICK := MonotonicTickMs()
             base64 := ImagePutBase64(latestPath)
             dataUri := "data:image/jpeg;base64," base64
             ; 截圖寫入獨立 media 文件，不會再膨脹命令／心跳控制文件。
@@ -7992,8 +10286,8 @@ LaunchRecordingWorker(mode, sessionDir) {
         ; 若剛好仍在補傳上一段，先給它完成；逾時就停止我們自己的 helper，
         ; 殘留 .partial 會由收尾 worker 覆寫，不會當成完成檔。
         if (__SCREEN_RECORDING_SYNC_WORKER_PID > 0 && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID)) {
-            deadline := A_TickCount + 30000
-            while (A_TickCount < deadline && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID))
+            deadline := MonotonicTickMs() + 30000
+            while (MonotonicTickMs() < deadline && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID))
                 Sleep 200
             if ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID) {
                 try ProcessClose(__SCREEN_RECORDING_SYNC_WORKER_PID)
@@ -8331,7 +10625,8 @@ StopFfmpegScreenRecording(pid) {
         if attached {
             DllCall("Kernel32\SetConsoleCtrlHandler", "ptr", 0, "int", true)
             signaled := DllCall("Kernel32\GenerateConsoleCtrlEvent", "uint", 0, "uint", 0, "int") ? true : false
-            Sleep 120
+            ; 錄影正常封口屬關閉保底，遠端 PAUSE 時也必須繼續。
+            RawSleep(120)
             DllCall("Kernel32\FreeConsole")
             DllCall("Kernel32\SetConsoleCtrlHandler", "ptr", 0, "int", false)
         }
@@ -8352,26 +10647,26 @@ StopFfmpegScreenRecording(pid) {
         }
     }
 
-    deadlineSoft := A_TickCount + 15000
-    while (A_TickCount < deadlineSoft) {
+    deadlineSoft := MonotonicTickMs() + 15000
+    while (MonotonicTickMs() < deadlineSoft) {
         if !ProcessExist(pid)
             return true
-        Sleep 100
+        RawSleep(100)
     }
 
     ; 超過 15 秒仍未結束才強制停止；之前已完成的五分鐘分段不受影響。
     WriteLog("FFmpeg PID=" pid " 在 15 秒內未正常結束，執行強制停止；最後未封口分段可能需捨棄", "WARN")
     try ProcessClose(pid)
 
-    deadlineHard := A_TickCount + 2000
-    while (A_TickCount < deadlineHard) {
+    deadlineHard := MonotonicTickMs() + 2000
+    while (MonotonicTickMs() < deadlineHard) {
         if !ProcessExist(pid)
             return true
-        Sleep 100
+        RawSleep(100)
     }
 
     try RunWait('taskkill /F /PID ' pid, , "Hide")
-    Sleep 150
+    RawSleep(150)
     return !ProcessExist(pid)
 }
 
@@ -8931,21 +11226,13 @@ GetOcrBlockCenter(block) {
 ServerClickClient(hwnd, x, y, logText := "") {
     if !hwnd
         return false
-
-    oldMouseMode := A_CoordModeMouse
-    try WinActivate "ahk_id " hwnd
-    Sleep 100
-    CoordMode "Mouse", "Client"
-
-    MouseMove Round(x), Round(y)
-    Sleep 50
-    Click
-    Sleep 100
-
-    CoordMode "Mouse", oldMouseMode
-    if (logText != "")
-        WriteLog(logText "，點擊客戶區座標=" Round(x) "," Round(y))
-    return true
+    context := logText != "" ? logText : "伺服器 client 點擊"
+    clicked := ClickWutheringClientPointForInput(hwnd, Round(x), Round(y), context)
+    if clicked && logText != ""
+        WriteLog(logText "，已安全點擊客戶區座標=" Round(x) "," Round(y))
+    else if (!clicked && logText != "")
+        WriteLog(logText "，安全點擊失敗，未送出滑鼠輸入", "WARN")
+    return clicked
 }
 
 MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
@@ -8983,11 +11270,6 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     }
 
     WriteLog("伺服器排程：準備選擇伺服器 -> " CURRENT_SERVER_TARGET "（嘗試 " attempt "/" maxAttempts "）")
-    try WinActivate "ahk_id " hwnd
-    try WinRestore "ahk_id " hwnd
-    WinWaitActive "ahk_id " hwnd, , 3
-    Sleep 400
-
     ; 先在登入畫面做一次 OCR：若已是目標伺服器，直接略過切換，不做任何點擊
     preMatched := false
     preTempFile := RuntimeFiles_NewImagePath("server_precheck")
@@ -9048,11 +11330,13 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
                 c := GetOcrBlockCenter(block)
                 if (IsObject(c) && IsLikelyServerNameText(txt)) {
-                    ServerClickClient(hwnd, c[1], c[2], "伺服器排程：找到伺服器名稱區塊（" txt "）")
-                    serverMenuOpened := true
-                    menuOpenBy := "server-name"
-                    Sleep 1600
-                    break
+                    if ServerClickClient(hwnd, c[1], c[2],
+                        "伺服器排程：找到伺服器名稱區塊（" txt "）") {
+                        serverMenuOpened := true
+                        menuOpenBy := "server-name"
+                        Sleep 1600
+                        break
+                    }
                 }
             }
         }
@@ -9063,7 +11347,14 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     ; 若 OCR 沒找到伺服器名稱區塊，直接用客戶區內固定座標（例如 640,549）
     if !serverMenuOpened {
-        ServerClickClient(hwnd, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y, "伺服器排程：OCR 未找到伺服器名稱區塊，改用客戶區固定座標=" SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y)
+        serverMenuOpened := ServerClickClient(hwnd, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y,
+            "伺服器排程：OCR 未找到伺服器名稱區塊，改用客戶區固定座標="
+                SERVER_SWITCH_POINT_X "," SERVER_SWITCH_POINT_Y)
+        if !serverMenuOpened {
+            WriteLog("伺服器排程：無法安全開啟伺服器選單，準備重試", "WARN")
+            Sleep 800
+            return TrySelectScheduledServer(hwnd, attempt + 1)
+        }
         Sleep 1600
     } else {
         WriteLog("伺服器排程：已開啟伺服器選單，方式=" menuOpenBy)
@@ -9093,10 +11384,12 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
             if (!targetClicked && IsServerTargetMatch(txt, CURRENT_SERVER_TARGET)) {
                 c := GetOcrBlockCenter(block)
                 if IsObject(c) {
-                    ServerClickClient(hwnd, c[1], c[2], "伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）")
-                    targetClicked := true
-                    Sleep 500
-                    break
+                    if ServerClickClient(hwnd, c[1], c[2],
+                        "伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）") {
+                        targetClicked := true
+                        Sleep 500
+                        break
+                    }
                 }
             }
         }
@@ -9125,10 +11418,12 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
                 if IsServerConfirmText(txt) {
                     c := GetOcrBlockCenter(block)
                     if IsObject(c) {
-                        ServerClickClient(hwnd, c[1], c[2], "伺服器排程：已點擊確認按鈕（OCR: " txt "）")
-                        confirmClicked := true
-                        Sleep 600
-                        break
+                        if ServerClickClient(hwnd, c[1], c[2],
+                            "伺服器排程：已點擊確認按鈕（OCR: " txt "）") {
+                            confirmClicked := true
+                            Sleep 600
+                            break
+                        }
                     }
                 }
             }
@@ -9141,9 +11436,10 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     if !confirmClicked {
         confirmX := 890
         confirmY := 543
-        ServerClickClient(hwnd, confirmX, confirmY, "伺服器排程：未找到確認文字，改用固定確認座標")
-        Sleep 600
-        confirmClicked := true
+        confirmClicked := ServerClickClient(hwnd, confirmX, confirmY,
+            "伺服器排程：未找到確認文字，改用固定確認座標")
+        if confirmClicked
+            Sleep 600
     }
 
     if confirmClicked {
@@ -9347,116 +11643,72 @@ IsValidImagePutSearchHit(hit, haystack) {
         && hit[2] < haystack.height
 }
 
-FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := false) {
+FindTemplateInWutheringWindow(templatePath, &outX, &outY, activateWindow := false, &outHwnd := 0) {
     outX := 0
     outY := 0
+    outHwnd := 0
     hwnd := GetWutheringGameHwnd()
     if !hwnd
         return false
+    outHwnd := hwnd
 
     splitPath templatePath, &tplName
+    templateRole := (tplName = "登入.png") ? "帳號異地登入後重新登入備援"
+        : ((tplName = "0510.png") ? "關閉彈窗備援" : "一般模板")
 
-    ; 預設採 PrintWindow client-only 背景截圖，不還原、不啟用、不置頂鳴潮。
-    ; 回傳值仍轉成螢幕座標，讓既有點擊流程可以直接使用。
-    if !activateWindow {
-        try {
-            ; ImagePut 遇最小化視窗可能先以 SW_SHOWNOACTIVATE 還原；
-            ; client 座標必須在截圖後取得，避免沿用最小化位置。
-            frame := ImagePutBuffer("ahk_id " hwnd)
-            WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " hwnd)
-            if (clientW <= 0 || clientH <= 0)
-                return false
-
-            searchFrame := frame
-            templateFrame := ImagePutBuffer(templatePath)
-            ; ImagePut 預設以模板中心為錨點；點擊流程需要左上座標。
-            templateFrame.x := 0
-            templateFrame.y := 0
-            offsetX := 0
-            offsetY := 0
-
-            ; 叉叉模板只搜尋背景 client 的右上區塊。
-            if (tplName = "0510.png") {
-                offsetX := Floor(frame.width * 0.50)
-                roiW := frame.width - offsetX
-                roiH := Max(1, Floor(frame.height * 0.25))
-                if (roiW <= 0 || roiH <= 0)
-                    return false
-                searchFrame := frame.Crop(offsetX, 0, roiW, roiH)
-            }
-
-            for _, v in [0, 20, 30, 40, 60] {
-                hit := searchFrame.ImageSearch(templateFrame, v)
-                if IsValidImagePutSearchHit(hit, searchFrame) {
-                    outX := clientX + offsetX + hit[1]
-                    outY := clientY + offsetY + hit[2]
-                    return true
-                }
-            }
-        } catch as e {
-            WriteLog("鳴潮背景模板搜尋失敗: " templatePath " | " e.Message, "WARN")
-        }
-        return false
-    }
-
-    if (activateWindow) {
-        topmostPulse := false
-        try {
-            WinRestore("ahk_id " hwnd)
-            WinSetAlwaysOnTop(1, "ahk_id " hwnd)
-            topmostPulse := true
-            WinActivate("ahk_id " hwnd)
-            Sleep 80
-        } finally {
-            if (topmostPulse && WinExist("ahk_id " hwnd))
-                try WinSetAlwaysOnTop(0, "ahk_id " hwnd)
-        }
-    }
-
+    ; 為相容既有呼叫保留 activateWindow 參數，但不再允許它啟用視窗。
+    ; 一律採 PrintWindow client-only 背景截圖，不還原、不啟用、不置頂鳴潮。
+    ; 回傳值保留為命中當下的 client-relative 座標，避免視窗移動後
+    ; 先轉 screen 再反推 client 造成偏移。
     try {
-        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
-        if (ww <= 0 || wh <= 0)
+        frame := ImagePutBuffer("ahk_id " hwnd)
+        if (frame.width <= 0 || frame.height <= 0)
             return false
 
-        x1 := Max(0, wx)
-        y1 := Max(0, wy)
-        x2 := Min(A_ScreenWidth - 1, wx + ww - 1)
-        y2 := Min(A_ScreenHeight - 1, wy + wh - 1)
+        searchFrame := frame
+        templateFrame := ImagePutBuffer(templatePath)
+        templateFrame.x := 0
+        templateFrame.y := 0
+        offsetX := 0
+        offsetY := 0
 
-        ; 叉叉模板只在遊戲視窗右上區塊搜尋，避免誤命中左上或中間的相似圖示。
+        ; 叉叉模板只搜尋背景 client 的右上區塊。
         if (tplName = "0510.png") {
-            roiLeft := wx + Floor(ww * 0.50)
-            roiTop := wy
-            roiRight := wx + ww - 1
-            roiBottom := wy + Floor(wh * 0.25)
-            x1 := Max(0, roiLeft)
-            y1 := Max(0, roiTop)
-            x2 := Min(A_ScreenWidth - 1, roiRight)
-            y2 := Min(A_ScreenHeight - 1, roiBottom)
-            WriteLog("叉叉模板使用右上四分之一ROI搜尋: " x1 "," y1 " -> " x2 "," y2)
+            offsetX := Floor(frame.width * 0.50)
+            roiW := frame.width - offsetX
+            roiH := Max(1, Floor(frame.height * 0.25))
+            if (roiW <= 0 || roiH <= 0)
+                return false
+            searchFrame := frame.Crop(offsetX, 0, roiW, roiH)
         }
 
-        if (x2 <= x1 || y2 <= y1)
-            return false
-
-        return FindTemplateOnScreenWithTolerance(templatePath, &outX, &outY, x1, y1, x2, y2)
+        for _, v in [0, 20, 30, 40, 60] {
+            hit := searchFrame.ImageSearch(templateFrame, v)
+            if IsValidImagePutSearchHit(hit, searchFrame) {
+                outX := offsetX + hit[1]
+                outY := offsetY + hit[2]
+                return true
+            }
+        }
+    } catch as e {
+        WriteLog("鳴潮背景模板搜尋失敗（" templateRole "）: " templatePath " | " e.Message, "WARN")
     }
-
     return false
 }
 
 ClickTemplateIfFound(templatePath, logIfMissing := true, activateWindowForSearch := false) {
     x := 0
     y := 0
-    oldMode := A_CoordModeMouse
-    topmostForClickHwnd := 0
+    splitPath templatePath, &tplName
+    templateRole := (tplName = "登入.png") ? "帳號異地登入後重新登入備援"
+        : ((tplName = "0510.png") ? "關閉彈窗備援" : "一般模板")
     try {
-        found := FindTemplateInWutheringWindow(templatePath, &x, &y, activateWindowForSearch)
-        if !found
-            found := FindTemplateOnScreenWithTolerance(templatePath, &x, &y, 0, 0, A_ScreenWidth - 1, A_ScreenHeight - 1)
+        ; 登入.png／0510.png 都只能在鳴潮 client 的背景截圖內命中。
+        ; 禁止退回全螢幕搜尋，避免其他程式或網站出現相似圖片時被誤點。
+        matchedHwnd := 0
+        found := FindTemplateInWutheringWindow(templatePath, &x, &y, false, &matchedHwnd)
 
         if found {
-            splitPath templatePath, &tplName
             clickX := x
             clickY := y
             if GetImageFileSize(templatePath, &imgW, &imgH) {
@@ -9468,97 +11720,31 @@ ClickTemplateIfFound(templatePath, logIfMissing := true, activateWindowForSearch
                 clickY := y + 8
             }
 
-            clickX := Min(A_ScreenWidth - 1, Max(0, clickX))
-            clickY := Min(A_ScreenHeight - 1, Max(0, clickY))
-
-            CoordMode "Mouse", "Screen"
-            hwnd := GetWutheringGameHwnd()
-            if (hwnd) {
-                try {
-                    WinRestore("ahk_id " hwnd)
-                    ; 收尾監測採背景搜尋；只有真的找到模板、準備點擊時才短暫置頂。
-                    if !activateWindowForSearch {
-                        WinSetAlwaysOnTop(1, "ahk_id " hwnd)
-                        topmostForClickHwnd := hwnd
-                        Sleep 80
-                    }
-                    WinActivate("ahk_id " hwnd)
-                    WinWaitActive("ahk_id " hwnd, , 0.8)
-                }
+            if !matchedHwnd || !WinExist("ahk_id " matchedHwnd) {
+                WriteLog("模板已命中但原鳴潮視窗已失效，取消點擊: " templatePath, "WARN")
+                return false
             }
 
-            ; 主通道：實體滑鼠點擊
-            MouseMove clickX, clickY
-            Sleep 40
-            MouseClick "left", clickX, clickY
-            WriteLog("模板檢測到並點擊(滑鼠): " . templatePath . " @" . clickX . "," . clickY)
-
-            ; 備援通道：對遊戲視窗發送客戶區點擊訊息，避免滑鼠被鎖視角時失效
-            if (hwnd && WinExist("ahk_id " hwnd)) {
-                try {
-                    pt := Buffer(8, 0)
-                    NumPut("int", clickX, pt, 0)
-                    NumPut("int", clickY, pt, 4)
-                    DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt)
-                    cx := NumGet(pt, 0, "int")
-                    cy := NumGet(pt, 4, "int")
-                    if (cx >= 0 && cy >= 0) {
-                        lParam := (cy << 16) | (cx & 0xFFFF)
-                        PostMessage 0x201, 1, lParam, , "ahk_id " hwnd
-                        Sleep 20
-                        PostMessage 0x202, 0, lParam, , "ahk_id " hwnd
-                        WriteLog("模板點擊備援(PostMessage)已送出: client=" cx "," cy)
-                    }
-                } catch as e {
-                    WriteLog("模板點擊備援(PostMessage)失敗: " e.Message, "WARN")
-                }
-            }
-
-            ; 叉叉按鈕額外補一個「右下偏移」點，兼容部分場景把滑鼠中心對到目標中心而非尖端。
-            if (tplName = "0510.png") {
-                tipOffsetX := 12
-                tipOffsetY := 12
-                clickX2 := Min(A_ScreenWidth - 1, Max(0, clickX + tipOffsetX))
-                clickY2 := Min(A_ScreenHeight - 1, Max(0, clickY + tipOffsetY))
-                MouseMove clickX2, clickY2
-                Sleep 30
-                MouseClick "left", clickX2, clickY2
-                WriteLog("叉叉模板補點擊(尖端補償): base=" clickX "," clickY " -> offset=" clickX2 "," clickY2)
-
-                if (hwnd && WinExist("ahk_id " hwnd)) {
-                    try {
-                        pt2 := Buffer(8, 0)
-                        NumPut("int", clickX2, pt2, 0)
-                        NumPut("int", clickY2, pt2, 4)
-                        DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt2)
-                        cx2 := NumGet(pt2, 0, "int")
-                        cy2 := NumGet(pt2, 4, "int")
-                        if (cx2 >= 0 && cy2 >= 0) {
-                            lParam2 := (cy2 << 16) | (cx2 & 0xFFFF)
-                            PostMessage 0x201, 1, lParam2, , "ahk_id " hwnd
-                            Sleep 20
-                            PostMessage 0x202, 0, lParam2, , "ahk_id " hwnd
-                            WriteLog("叉叉補點擊備援(PostMessage): client=" cx2 "," cy2)
-                        }
-                    } catch as e {
-                        WriteLog("叉叉補點擊備援(PostMessage)失敗: " e.Message, "WARN")
-                    }
-                }
-            }
-            return true
+            ; 搜尋結果已是原 HWND 的 client-relative 座標；安全 wrapper
+            ; 會在實際點擊前依視窗當下位置轉成螢幕座標。
+            clientPointX := clickX
+            clientPointY := clickY
+            clicked := ClickWutheringClientPointForInput(matchedHwnd,
+                clientPointX, clientPointY, "模板點擊｜" tplName)
+            if clicked
+                WriteLog("模板已在鳴潮 client 命中並安全點擊一次（" templateRole "）: " templatePath
+                    " client=" clientPointX "," clientPointY)
+            else
+                WriteLog("模板已命中但安全點擊未通過: " templatePath, "WARN")
+            return clicked
         }
     } catch as e {
         ; 可選檢測：任何錯誤都不影響主流程。
         WriteLog("模板檢測略過（不影響主流程）: " . templatePath . " | " . e.Message, "WARN")
         return false
-    } finally {
-        if (topmostForClickHwnd && WinExist("ahk_id " topmostForClickHwnd)) {
-            try WinSetAlwaysOnTop(0, "ahk_id " topmostForClickHwnd)
-        }
-        CoordMode "Mouse", oldMode
     }
     if (logIfMissing)
-        WriteLog("模板未檢測到: " . templatePath, "INFO")
+        WriteLog("模板未檢測到（" templateRole "）: " . templatePath, "INFO")
     return false
 }
 
@@ -9567,7 +11753,7 @@ TryAssistLoginTemplateBeforeOcr() {
     static warnedMissingTemplate := false
 
     intervalMs := 1000
-    nowTick := A_TickCount
+    nowTick := MonotonicTickMs()
     if (nowTick - lastAttemptTick < intervalMs)
         return
     lastAttemptTick := nowTick
@@ -9576,14 +11762,14 @@ TryAssistLoginTemplateBeforeOcr() {
     if !FileExist(loginTemplate) {
         if !warnedMissingTemplate {
             warnedMissingTemplate := true
-            WriteLog("OCR 前模板輔助：找不到登入.png，略過此輔助機制", "WARN")
+            WriteLog("OCR 前帳號異地登入備援：找不到登入.png，略過此備援機制", "WARN")
         }
         return
     }
     warnedMissingTemplate := false
 
     if ClickTemplateIfFound(loginTemplate, false)
-        WriteLog("OCR 前模板輔助：已檢測到登入.png並點擊")
+        WriteLog("OCR 前帳號異地登入備援：已檢測到登入.png 並完成重新登入點擊")
 }
 
 GetImageFileSize(path, &w, &h) {

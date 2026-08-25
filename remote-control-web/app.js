@@ -512,13 +512,18 @@ function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
     "HANDLER_ERROR",
     "NO_HANDLER",
   ]);
+  const rejectedBecauseAlreadyCompleted =
+    reportedAckResult === "ALREADY_COMPLETED_TODAY" &&
+    current.requestedState === "SWITCH_SERVER";
 
   // 一旦看過這筆精確回覆，就永久保留；後續 ACK 前進不應改寫既有結果。
   if (previousStatus === "ACKED" || previousStatus === "REJECTED") {
     nextStatus = previousStatus;
     nextReason = current.statusReason || "EXACT_ACK";
   } else if (ackStateMatches && ackTargetMatches) {
-    nextStatus = rejectedResults.has(reportedAckResult) ? "REJECTED" : "ACKED";
+    nextStatus = (rejectedResults.has(reportedAckResult) || rejectedBecauseAlreadyCompleted)
+      ? "REJECTED"
+      : "ACKED";
     nextAckAt = reportedAckAt || current.ackAt;
     nextAckResult = reportedAckResult || "APPLIED";
     nextAckDetail = reportedAckDetail;
