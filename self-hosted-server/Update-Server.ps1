@@ -20,10 +20,10 @@ if (-not (Test-Path -LiteralPath $envPath)) {
 }
 
 function Invoke-Compose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & docker compose --env-file $script:envPath -f (Join-Path $script:serverRoot 'compose.yml') @Arguments
+    param([Parameter(Mandatory = $true)][string[]]$ComposeArguments)
+    & docker compose --env-file $script:envPath -f (Join-Path $script:serverRoot 'compose.yml') @ComposeArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Docker Compose 操作失敗：$($Arguments -join ' ')"
+        throw "Docker Compose 操作失敗：$($ComposeArguments -join ' ')"
     }
 }
 
@@ -145,7 +145,7 @@ try {
     }
 
     Write-Host "建立更新前資料庫備份（$currentVersion -> $targetVersion）…"
-    Invoke-Compose exec -T backup /usr/local/bin/backup-now.sh preupdate
+    Invoke-Compose -ComposeArguments @('exec', '-T', 'backup', '/usr/local/bin/backup-now.sh', 'preupdate')
 
     $currentImageId = [string](& docker image inspect 'wuthering-control-api:current' --format '{{.Id}}' 2>$null)
     if ([string]::IsNullOrWhiteSpace($currentImageId)) { throw '找不到目前的 API 映像，請先完成初次安裝。' }
@@ -160,11 +160,11 @@ try {
         $sourceChanged = $true
     }
 
-    Invoke-Compose config -q
+    Invoke-Compose -ComposeArguments @('config', '-q')
     Write-Host '建立新伺服器映像並執行資料庫 migration…'
-    Invoke-Compose build --pull api backup
-    Invoke-Compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile
-    Invoke-Compose up -d
+    Invoke-Compose -ComposeArguments @('build', '--pull', 'api', 'backup')
+    Invoke-Compose -ComposeArguments @('run', '--rm', '--no-deps', 'caddy', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile')
+    Invoke-Compose -ComposeArguments @('up', '-d')
     if (-not (Test-ServerHealth)) { throw '新版本在 3 分鐘內未通過網站／資料庫／影片服務健康檢查。' }
 
     Write-Host "伺服器更新完成：$currentVersion -> $(Get-ServerVersion $serverRoot)"

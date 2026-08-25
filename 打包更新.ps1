@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.46',
-    [string]$LauncherVersion = '4.57',
-    [string]$ServerVersion = '1.0.2'
+    [string]$PayloadVersion = '4.47',
+    [string]$LauncherVersion = '4.58',
+    [string]$ServerVersion = '1.0.3'
 )
 
 $ErrorActionPreference = 'Stop'

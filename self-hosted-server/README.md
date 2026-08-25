@@ -34,6 +34,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 安裝工具會產生 `.env` 密鑰、建立服務、執行 migration、健康檢查、第一次備份與實際還原測試。網站直接開啟即可使用，不需要帳號、密碼或私人啟用連結。伺服器會自動設定 `Secure + HttpOnly + SameSite=Strict` Cookie，僅用來區分各瀏覽器的直播觀看租約，不作為人工驗證步驟。
 
+直接存取模式代表任何知道公開網址的人都能查看狀態並操作控制台；請勿公開分享網址，且仍應只開放 Caddy 的 HTTPS 與必要的 SRT 連接埠。
+
 ## 既有兩台裝置與 7 天並行
 
 - 安裝後執行 `Manage-Server.ps1 -Action ImportFirestore`；伺服器會匯入既有 UID、nonce、設定 revision 與實際設定，並把自架網址以 discovery 欄位寫回原 client 文件。
