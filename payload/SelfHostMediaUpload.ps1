@@ -156,8 +156,9 @@ if ($script:ServerUrl -notmatch '^https://[A-Za-z0-9.-]+(?::\d+)?$' -and
 if (-not $protectedToken) { throw '尚未取得自架裝置憑證。' }
 
 $protectedBytes = [Convert]::FromBase64String($protectedToken)
-$plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
-    $protectedBytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+Add-Type -AssemblyName System.Security
+$plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+    $protectedBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 $script:DeviceToken = [Text.Encoding]::UTF8.GetString($plainBytes)
 if ($script:DeviceToken -notmatch '^[A-Za-z0-9_-]{40,180}$') { throw '解密後的裝置憑證格式無效。' }
 

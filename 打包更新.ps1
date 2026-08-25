@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.49',
-    [string]$LauncherVersion = '4.60',
-    [string]$ServerVersion = '1.0.5'
+    [string]$PayloadVersion = '4.50',
+    [string]$LauncherVersion = '4.61',
+    [string]$ServerVersion = '1.0.6'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,6 +91,18 @@ Invoke-AhkValidate $payloadRuntime 'payload\RecordingFinalizeWorker.ahk' '錄影
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveLoopbackTest.ahk' '直播 loopback 測試語法 validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveAutomaticFallbackTest.ahk' '直播自動回退測試語法 validate'
 Invoke-AhkValidate $runtime '打包啟動器.ahk' 'Launcher AHK validate'
+$uploaderTokens = $null
+$uploaderParseErrors = $null
+[void][Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $projectRoot 'payload\SelfHostMediaUpload.ps1'),
+    [ref]$uploaderTokens, [ref]$uploaderParseErrors)
+if ($uploaderParseErrors.Count -gt 0) {
+    throw "中央影片上傳 PowerShell 語法錯誤：$($uploaderParseErrors[0].Message)"
+}
+Add-Type -AssemblyName System.Security
+if (-not ('System.Security.Cryptography.ProtectedData' -as [type])) {
+    throw '目前 PowerShell 無法載入 DPAPI ProtectedData 型別。'
+}
 & npm.cmd --prefix self-hosted-server run check
 Assert-ExitCode 'Server 靜態檢查'
 & npm.cmd --prefix self-hosted-server test
