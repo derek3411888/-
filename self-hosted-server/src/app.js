@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -372,12 +371,18 @@ async function serveSnapshot(res, uid) {
   const result = await query("SELECT * FROM snapshots WHERE uid=$1", [uid]);
   if (!result.rowCount) throw new HttpError(404, "尚無快照", "SNAPSHOT_NOT_FOUND");
   const filePath = assertChildPath(config.snapshotRoot, path.join(config.snapshotRoot, result.rows[0].relative_path));
-  const stat = await fsp.stat(filePath);
+  let data;
+  try {
+    data = await fsp.readFile(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new HttpError(404, "快照正在更新，請稍後重試", "SNAPSHOT_NOT_FOUND");
+    throw error;
+  }
   res.writeHead(200, {
-    "Content-Type": "image/jpeg", "Content-Length": stat.size,
+    "Content-Type": "image/jpeg", "Content-Length": data.length,
     "Cache-Control": "private, no-store", "X-Captured-At": result.rows[0].captured_at.toISOString(),
   });
-  fs.createReadStream(filePath).pipe(res);
+  res.end(data);
 }
 
 async function listDevices() {
@@ -471,7 +476,7 @@ async function serveStatic(res, pathname) {
   const data = await fsp.readFile(filePath);
   res.writeHead(200, {
     "Content-Type": contentType, "Content-Length": data.length,
-    "Cache-Control": pathname === "/" || pathname === "/index.html" ? "no-store" : "public, max-age=3600",
+    "Cache-Control": pathname === "/vendor/hls.min.js" ? "public, max-age=86400" : "no-cache",
     "X-Content-Type-Options": "nosniff",
   });
   res.end(data);
@@ -624,12 +629,12 @@ async function handleRequest(req, res) {
     return;
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/recordings/:sessionId/video");
-  if (params && req.method === "GET") {
+  if (params && ["GET", "HEAD"].includes(req.method)) {
     await streamVideo(req, res, await resolvePlayable(normalizeUid(params.uid), params.sessionId));
     return;
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/recordings/:sessionId/segments/:segmentId/video");
-  if (params && req.method === "GET") {
+  if (params && ["GET", "HEAD"].includes(req.method)) {
     await streamVideo(req, res, await resolvePlayable(normalizeUid(params.uid), params.sessionId, params.segmentId));
     return;
   }

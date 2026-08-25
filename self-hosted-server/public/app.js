@@ -214,21 +214,59 @@ function renderRecordings() {
 }
 
 async function openRecording(recording) {
+  const uid = state.selectedUid;
+  if (!uid) return;
   $("playbackCard").hidden = false;
   setText("playbackTitle", recording.base_name);
   setText("playbackMeta", `${recording.state}｜${recording.detail || ""}`);
   const video = $("playbackVideo");
+  const status = $("playbackStatus");
+  const directLink = $("playbackDirectLink");
+  const segments = $("segmentList");
+  segments.replaceChildren();
   video.pause();
   video.removeAttribute("src");
   video.load();
-  if (recording.playable) video.src = `/api/v1/devices/${encodeURIComponent(state.selectedUid)}/recordings/${recording.id}/video`;
-  const payload = await api(`/api/v1/devices/${encodeURIComponent(state.selectedUid)}/recordings/${recording.id}/segments`);
-  const segments = $("segmentList"); segments.replaceChildren();
+  directLink.hidden = true;
+  status.textContent = "正在讀取可播放影片…";
+
+  const setPlaybackSource = (url, label, selectedButton = null) => {
+    for (const button of segments.querySelectorAll("button")) button.classList.toggle("active", button === selectedButton);
+    video.pause();
+    video.src = url;
+    video.load();
+    directLink.href = url;
+    directLink.hidden = false;
+    status.textContent = `${label}正在載入；若瀏覽器阻擋自動播放，請按影片上的播放鍵。`;
+    video.play().catch(() => {
+      status.textContent = `${label}已選取，請按影片上的播放鍵。`;
+    });
+  };
+  video.onloadedmetadata = () => { status.textContent = `影片已載入（${duration(video.duration)}），可以播放或拖曳進度。`; };
+  video.onplaying = () => { status.textContent = "正在播放。"; };
+  video.onerror = () => {
+    const mediaCode = video.error?.code ? `（錯誤 ${video.error.code}）` : "";
+    status.textContent = `影片載入失敗${mediaCode}；請按「直接開啟目前影片」，或稍後重試。`;
+  };
+
+  const encodedUid = encodeURIComponent(uid);
+  if (recording.playable) {
+    setPlaybackSource(`/api/v1/devices/${encodedUid}/recordings/${recording.id}/video`, "完整影片");
+  }
+  const payload = await api(`/api/v1/devices/${encodedUid}/recordings/${recording.id}/segments`);
+  let latestPlayable = null;
   for (const item of payload.segments) {
     const button = document.createElement("button"); button.type = "button"; button.disabled = !item.playable;
     button.textContent = `${item.segment_index + 1}｜${item.state}`;
-    button.addEventListener("click", () => { video.src = `/api/v1/devices/${encodeURIComponent(state.selectedUid)}/recordings/${recording.id}/segments/${item.id}/video`; video.play().catch(() => {}); });
+    const url = `/api/v1/devices/${encodedUid}/recordings/${recording.id}/segments/${item.id}/video`;
+    button.addEventListener("click", () => setPlaybackSource(url, `第 ${item.segment_index + 1} 段`, button));
     segments.append(button);
+    if (item.playable) latestPlayable = { url, label: `第 ${item.segment_index + 1} 段`, button };
+  }
+  if (!recording.playable && latestPlayable) {
+    setPlaybackSource(latestPlayable.url, latestPlayable.label, latestPlayable.button);
+  } else if (!recording.playable) {
+    status.textContent = "這場錄影尚未有完成上傳及轉換的片段，請稍後重讀。";
   }
   $("playbackCard").scrollIntoView({ behavior: "smooth", block: "start" });
 }

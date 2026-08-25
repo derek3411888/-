@@ -215,6 +215,11 @@ async function main() {
     browser: true, raw: true, headers: { Range: "bytes=0-99" },
   });
   assert(video.status === 206 && (await video.arrayBuffer()).byteLength === 100, "HTTP Range playback failed");
+  const videoHead = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings/${recording.id}/video`, {
+    method: "HEAD", browser: true, raw: true,
+  });
+  assert(videoHead.status === 200 && Number(videoHead.headers.get("content-length")) > 0,
+    "HTTP HEAD playback probe failed");
 
   const lease = await request(`/api/v1/live/${encodeURIComponent(uid)}/lease`, { method: "POST", browser: true, body: {} });
   const liveControl = await request("/api/v1/device/control", { device: true });

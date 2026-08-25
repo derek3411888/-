@@ -77,6 +77,10 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
 .recording-item button { justify-self: start; }
 .recording-item small, .session-item small { color: var(--muted); }
 .segment-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.segment-list button.active { background: #e6f5fc; border-color: #69add2; color: var(--primary); font-weight: 700; }
+.playback-feedback { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.playback-feedback .hint { margin: 0; }
+.button-link { display: inline-flex; align-items: center; min-height: 38px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--primary); text-decoration: none; font-weight: 650; }
 .form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
 .toggle { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
 .toggle input { width: 18px; height: 18px; }

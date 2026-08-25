@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { pipeline } from "node:stream/promises";
 import { config, assertChildPath } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import { HttpError, boundedText, integer } from "./utils.js";
@@ -392,34 +393,59 @@ export async function resolvePlayable(uid, sessionId, segmentId = "") {
 }
 
 export async function streamVideo(req, res, filePath) {
-  const stat = await fsp.stat(filePath);
-  const range = /^bytes=(\d*)-(\d*)$/i.exec(String(req.headers.range ?? ""));
-  res.setHeader("Accept-Ranges", "bytes");
-  res.setHeader("Content-Type", "video/mp4");
-  res.setHeader("Cache-Control", "private, no-store");
-  if (!range) {
-    res.writeHead(200, { "Content-Length": stat.size });
-    fs.createReadStream(filePath).pipe(res);
-    return;
+  let handle;
+  try {
+    handle = await fsp.open(filePath, "r");
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new HttpError(404, "影片檔案不存在或正在整理", "VIDEO_FILE_NOT_FOUND");
+    throw error;
   }
-  let start = range[1] ? Number(range[1]) : 0;
-  let end = range[2] ? Number(range[2]) : stat.size - 1;
-  if (!range[1] && range[2]) {
-    const suffix = Number(range[2]);
-    start = Math.max(0, stat.size - suffix);
-    end = stat.size - 1;
+  try {
+    const stat = await handle.stat();
+    const rangeHeader = String(req.headers.range ?? "");
+    const range = rangeHeader ? /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader) : null;
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Cache-Control", "private, no-store");
+    if (!rangeHeader) {
+      res.writeHead(200, { "Content-Length": stat.size });
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      await pipeline(handle.createReadStream({ autoClose: false }), res);
+      return;
+    }
+    if (!range) {
+      res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+      res.end();
+      return;
+    }
+    let start = range[1] ? Number(range[1]) : 0;
+    let end = range[2] ? Number(range[2]) : stat.size - 1;
+    if (!range[1] && range[2]) {
+      const suffix = Number(range[2]);
+      start = Math.max(0, stat.size - suffix);
+      end = stat.size - 1;
+    }
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
+      res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+      res.end();
+      return;
+    }
+    end = Math.min(end, stat.size - 1);
+    res.writeHead(206, {
+      "Content-Length": end - start + 1,
+      "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+    });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    await pipeline(handle.createReadStream({ autoClose: false, start, end }), res);
+  } finally {
+    await handle.close().catch(() => {});
   }
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
-    res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
-    res.end();
-    return;
-  }
-  end = Math.min(end, stat.size - 1);
-  res.writeHead(206, {
-    "Content-Length": end - start + 1,
-    "Content-Range": `bytes ${start}-${end}/${stat.size}`,
-  });
-  fs.createReadStream(filePath, { start, end }).pipe(res);
 }
 
 async function deleteCompletedSession(row) {

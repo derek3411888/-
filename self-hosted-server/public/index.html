@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260826-live-fallback">
+  <link rel="stylesheet" href="/styles.css?v=20260826-video-head">
 </head>
 <body>
   <main id="appView" class="shell">
@@ -108,6 +108,10 @@
       <article id="playbackCard" class="card" hidden>
         <div class="section-title"><div><h2 id="playbackTitle">影片回看</h2><p id="playbackMeta"></p></div></div>
         <video id="playbackVideo" controls playsinline preload="metadata"></video>
+        <div class="playback-feedback">
+          <p id="playbackStatus" class="hint" aria-live="polite">請選擇要回看的錄影。</p>
+          <a id="playbackDirectLink" class="button-link" href="#" target="_blank" rel="noopener" hidden>直接開啟目前影片</a>
+        </div>
         <div id="segmentList" class="segment-list"></div>
       </article>
     </section>
@@ -143,6 +147,6 @@
 
   <div id="toast" class="toast" hidden></div>
   <script src="/vendor/hls.min.js?v=1.6.13"></script>
-  <script type="module" src="/app.js?v=20260826-live-fallback"></script>
+  <script type="module" src="/app.js?v=20260826-video-head"></script>
 </body>
 </html>
