@@ -93,9 +93,10 @@
 - `OKWW_AUTOBATTLE_CHECK_FAILED` 不再觸發舊的局部復原函式；wrapper 只取回同一次流程已穩定鎖定的最終 `pythonw` HWND，做相同的程序名／標題安全檢查後嘗試注入一次 `F11`。通過前景輸入安全條件後會排程最小化並讓主流程繼續，但回傳資料明確拆成 `f11InputAttempted=true`、`f11EffectConfirmed=false`；只有登入入口後續主畫面驗證通過才可把效果視為確認。直接送鍵本身失敗時，才依實際 F11 失敗原因走原 `RequestRestart()`。
 - 登入畫面完成 OKWW F11 鍵盤注入後，先以 `WaitEscMenuOCR()` 背景等待主畫面 20 秒；兩次穩定命中必須來自同一 `{HWND, PID, class}`，擷取失敗、身分變更或 HWND 重建都須清空累積。未命中才短暫啟用／置頂鳴潮，對遊戲客戶區正中央送一次實體滑鼠左鍵；點擊前同一 `Critical` 內須再次驗 input desktop、PID、`Client-Win64-Shipping.exe`、`UnrealWindow`、root 與 `WindowFromPoint`，`finally` 立即取消置頂，再背景等待 30 秒。20／30／90 秒期限使用 pause-aware clock，遠端 PAUSE 的時間不能被誤算成逾時；一般 `Sleep()` 以最多 100ms 分片，讓命令輪詢、心跳與 STOP timer 可插入。中心點擊失敗必須當場固化 code/detail（包含 foreground denied、occluded、target changed），不能 30 秒後才讀可能被其他 timer 覆蓋的全域。最小化視窗依 `WINDOWPLACEMENT/WPF_RESTORETOMAXIMIZED` 還原，不得把最大化後最小化的遊戲改成普通尺寸。第二階段仍未命中才觸發重啟；鎖屏、RDP 斷線或非互動 input desktop 時停止 UI 計時器、診斷快照及目前錄影並等待，同時保留遠端輪詢／心跳／STOP。桌面已可互動但目標 hung/disabled/主窗失效時連續 2 次便乾淨重建；單純 foreground-lock 低頻探測約 5 分鐘仍失敗也只做一次不計額度的乾淨重啟，不能永久卡住或消耗 10 次一般重啟額度。遊戲本來已在主畫面的入口仍維持既有 90 秒驗證，不做中心點擊。
 
-### 3.13 鳴潮前景與置頂原則
+### 3.13 鳴潮位置、前景與置頂原則
 - 一般 OCR 與模板輪詢均使用 ImagePut 的 `PrintWindow + PW_CLIENTONLY` 背景 client 截圖，不因輪詢而 `WinActivate` 或將鳴潮設為置頂。
-- 程式不得在啟動或 OCR 輪詢階段主動移動鳴潮視窗，也不得改變其寬高或最大化狀態。只有確實需要鍵鼠輸入且視窗原本最小化時，才依原 `WINDOWPLACEMENT/WPF_RESTORETOMAXIMIZED` 還原；其他時候完全保留使用者版面。
+- 啟動檢測抓到同一個有效鳴潮主視窗 HWND 連續 2 次後，普通視窗須先定位到「該視窗所在螢幕」工作區右上角；使用 `SetWindowPos` 的 `NOSIZE + NOZORDER + NOACTIVATE + NOOWNERZORDER`，不得改寬高、不得啟用、不得置頂或改變 Z-order。實際位置、原尺寸與視窗狀態全部驗證通過前，登入輔助、OCR 與 OKWW 一律不可繼續。20 秒仍未完成時以 `GAME_WINDOW_POSITION_FAILED` 進入重啟，不可帶錯誤位置往下跑。最大化本身已貼齊工作區，可保留原狀並視為通過；最小化無法驗證位置，必須保持封鎖並重試。
+- 除上述一次性位置處理外，程式不得在 OCR／模板輪詢階段主動移動鳴潮視窗，也不得改變其寬高或最大化狀態。只有確實需要鍵鼠輸入且視窗原本最小化時，才依原 `WINDOWPLACEMENT/WPF_RESTORETOMAXIMIZED` 還原；其他時候完全保留使用者版面。
 - `WaitEscMenuOCR()` 的 `icon_main.png` 驗證使用背景截圖右下 ROI；即使鳴潮被其他視窗遮住，也不應搶回前景。模板以 1280×720 UI 比例建立，捕獲尺寸不同時先正規化為 1280×720 再比對；已用 2560×1440 與 2560×1400 錄影畫面驗證可命中。
 - 登入／叉叉等模板預搜尋也預設走背景 client 比對。只有確定命中並準備實際滑鼠點擊時，才短暫還原、啟用及置頂鳴潮；`finally` 必須保證取消置頂。
 - 保留原本登入 OCR 主迴圈每秒呼叫 `TryAssistLoginTemplateBeforeOcr()` 的輔助點擊，也保留兩個 OKWW 啟動入口前的 `登入.png` 點擊；這些搜尋仍先走背景比對，只有模板命中並實際點擊時才短暫切到前景。

@@ -2116,11 +2116,15 @@ RC_SendCommandAckHttp(ack) {
             DllCall("kernel32\Sleep", "uint", 80)
     }
 
-    return { ok: false,
+    conflictMessage := "Firestore ACK conditional PATCH conflicted "
+        . maxAttempts
+        . " times; pending journal retained for a later retry"
+    return {
+        ok: false,
         status: IsObject(lastConflict) ? lastConflict.status : 409,
         body: IsObject(lastConflict) ? lastConflict.body : "",
-        msg: "Firestore ACK conditional PATCH conflicted " maxAttempts
-            " times; pending journal retained for a later retry" }
+        msg: conflictMessage
+    }
 }
 
 RC_TryFlushPendingCommandAck(source := "retry") {

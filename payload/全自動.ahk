@@ -106,7 +106,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.53"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.54"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2527,7 +2527,6 @@ WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
     loginDetected := false
-    TryAssistLoginTemplateBeforeOcr()
     detectState := DetectWutheringAndExit(&loginDetected)
     if (detectState = "update") {
         updateLoops++
@@ -2577,6 +2576,14 @@ loop {
         WriteLog("鳴潮視窗尚未就緒（no_window），等待後重試（連續=" noWindowLoopCount "，累計=" elapsedNoWindowSec " 秒）", "WARN")
         Sleep 3000
         continue
+    }
+
+    if (detectState = "position_failed") {
+        WriteLog("鳴潮視窗未能在期限內安全定位到右上角；不執行後續 OCR／OKWW", "ERROR")
+        RequestRestart(
+            "同一個有效鳴潮主視窗已穩定出現，但 20 秒內仍無法驗證位於所在螢幕工作區右上角且尺寸不變",
+            "ERROR", CRASH_RESTART_MODE, "GAME_WINDOW_POSITION_FAILED", "鳴潮視窗定位")
+        return
     }
 
     noWindowLoopCount := 0
@@ -3117,47 +3124,61 @@ StartOKWWFlow(isRestart) {
 
     if !okwwHwnd {
         if ambiguousCandidateSeen {
+            ambiguousReason := "目前全系統同時存在多個健康 OKWW pythonw final（最多 "
+                . ambiguousCandidateCount
+                . " 個，包含啟動前既有與本次新視窗）；為避免把 F11 送到錯誤實例而停止"
             return {
                 ok: false,
                 code: "OKWW_FINAL_WINDOW_AMBIGUOUS",
                 stage: "等待OKWW最終主視窗",
-                reason: "目前全系統同時存在多個健康 OKWW pythonw final（最多 "
-                    ambiguousCandidateCount " 個，包含啟動前既有與本次新視窗）；為避免把 F11 送到錯誤實例而停止"
+                reason: ambiguousReason
             }
         }
         if (managerLaunchError != "") {
+            managerLaunchReason := "OKWW 管理腳本啟動失敗，且 "
+                . maxAttempts
+                . " 秒內未找到 snapshot 外唯一新 final："
+                . managerLaunchError
             return {
                 ok: false,
                 code: "OKWW_MANAGER_LAUNCH_FAILED",
                 stage: "OKWW管理腳本啟動",
-                reason: "OKWW 管理腳本啟動失敗，且 " maxAttempts
-                    " 秒內未找到 snapshot 外唯一新 final：" . managerLaunchError
+                reason: managerLaunchReason
             }
         }
         if InStr(handoffStatus, "rejected:") = 1 || InStr(handoffStatus, "target_lost:") = 1 {
+            invalidHandoffReason := "manager handoff 未通過 nonce/PID/HWND/identity/健康重驗，且 "
+                . maxAttempts
+                . " 秒內沒有 snapshot 外唯一新 final；status="
+                . handoffStatus
             return {
                 ok: false,
                 code: "OKWW_MANAGER_HANDOFF_INVALID",
                 stage: "驗證OKWW管理腳本交接",
-                reason: "manager handoff 未通過 nonce/PID/HWND/identity/健康重驗，且 "
-                    maxAttempts " 秒內沒有 snapshot 外唯一新 final；status=" handoffStatus
+                reason: invalidHandoffReason
             }
         }
         if managerExitObserved {
+            managerExitReason := "OKWW manager 已退出且未留下有效 handoff；"
+                . maxAttempts
+                . " 秒內也沒有 snapshot 外唯一新 final；status="
+                . handoffStatus
             return {
                 ok: false,
                 code: "OKWW_MANAGER_EXITED_WITHOUT_HANDOFF",
                 stage: "等待OKWW最終主視窗",
-                reason: "OKWW manager 已退出且未留下有效 handoff；" maxAttempts
-                    " 秒內也沒有 snapshot 外唯一新 final；status=" handoffStatus
+                reason: managerExitReason
             }
         }
+        finalTimeoutReason := "OKWW manager 仍在執行或狀態未知，但 "
+            . maxAttempts
+            . " 秒內既無有效 handoff，也未找到 snapshot 外唯一新 final；status="
+            . handoffStatus
         return {
             ok: false,
             code: "OKWW_FINAL_WINDOW_TIMEOUT",
             stage: "等待OKWW最終主視窗",
-            reason: "OKWW manager 仍在執行或狀態未知，但 " maxAttempts
-                " 秒內既無有效 handoff，也未找到 snapshot 外唯一新 final；status=" handoffStatus
+            reason: finalTimeoutReason
         }
     }
 
@@ -5108,7 +5129,8 @@ CrashWatcherTick() {
 }
 
 ; A) 更新彈窗偵測（簡體關鍵詞）＋ OCR 算出【退出】中心點點擊
-;    辨識期間只做背景擷取；除了真正命中並操作 UI 外，不移動、不縮放遊戲視窗。
+;    遊戲主視窗穩定後只做一次「不啟用、不縮放、不改 Z-order」的右上角定位；
+;    其餘辨識期間只做背景擷取，除了真正命中並操作 UI 外不搶前景。
 DetectWutheringAndExit(&loginDetected := false) {
     global WUTHERING_NO_WINDOW_TOLERANCE
 
@@ -5124,6 +5146,11 @@ DetectWutheringAndExit(&loginDetected := false) {
     }
 
     foundTargetWindow := false
+    positionCandidateHwnd := 0
+    positionStableHits := 0
+    positionDeadlineTick := 0
+    nextPositionAttemptTick := 0
+    positionCompleted := false
 
     ; ⏱️ 至少等待 30 秒讓遊戲完全啟動（登入畫面一般需要 25-35 秒）
     earlyExitDeadline := MonotonicTickMs() + 30000
@@ -5154,6 +5181,10 @@ DetectWutheringAndExit(&loginDetected := false) {
             hwnd := 0
         }
         if !hwnd {
+            positionCandidateHwnd := 0
+            positionStableHits := 0
+            positionDeadlineTick := 0
+            nextPositionAttemptTick := 0
             ; 尚未真正抓到目標視窗前，不做 no_window 累計，避免啟動初期誤判。
             if !foundTargetWindow {
                 Sleep 500
@@ -5172,13 +5203,53 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
         noWindowStreak := 0
 
-        ; 在 OCR 主迴圈中持續做非阻塞的登入模板輔助點擊。
-        TryAssistLoginTemplateBeforeOcr()
+        if (hwnd = positionCandidateHwnd) {
+            positionStableHits += 1
+        } else {
+            positionCandidateHwnd := hwnd
+            positionStableHits := 1
+            positionDeadlineTick := MonotonicTickMs() + 20000
+            nextPositionAttemptTick := 0
+            positionCompleted := false
+        }
 
         if !foundTargetWindow {
             foundTargetWindow := true
-            WriteLog("已找到目標鳴潮視窗；保留使用者的位置、尺寸與最大化狀態")
+            WriteLog("已找到目標鳴潮視窗；待同一 HWND 穩定後只定位一次右上角")
         }
+
+        ; 同一個主視窗連續命中兩次才定位，避開 Unreal 啟動期間的臨時／重建視窗。
+        ; 定位是後續登入輔助、OCR 與 OKWW 的硬性前置條件；驗證成功前不得繼續。
+        if !positionCompleted {
+            nowPositionTick := MonotonicTickMs()
+            if (positionStableHits < 2) {
+                Sleep 200
+                continue
+            }
+            if (nowPositionTick < nextPositionAttemptTick) {
+                Sleep 100
+                continue
+            }
+
+            positionCompleted := PositionWutheringWindowTopRight(hwnd)
+            if !positionCompleted {
+                if (nowPositionTick >= positionDeadlineTick) {
+                    WriteStepResult("鳴潮視窗定位", false,
+                        "20 秒內無法驗證右上角位置與原尺寸")
+                    return "position_failed"
+                }
+                nextPositionAttemptTick := MonotonicTickMs() + 1000
+                WriteLog("鳴潮右上角定位尚未完成；後續步驟保持封鎖並於 1 秒後重試", "WARN")
+                Sleep 200
+                continue
+            }
+
+            WriteStepResult("鳴潮視窗定位", true,
+                "右上角位置已驗證；未改尺寸、未啟用、未改 Z-order")
+        }
+
+        ; 只有右上角定位通過後，才允許登入模板輔助或後續 OCR。
+        TryAssistLoginTemplateBeforeOcr()
 
         ; 首先用模板檢測叉叉按鈕（不涉及 OCR，更快速）
         closeIconPath := A_ScriptDir "\0510.png"
@@ -6421,6 +6492,123 @@ GetWutheringWindowIdentity(hwnd, &pid := 0, &className := "", &reason := "") {
         reason := "identity_inspect_failed:" e.Message
         return false
     }
+}
+
+; 將一般狀態的鳴潮主視窗貼齊「它目前所在螢幕」的工作區右上角。
+; SetWindowPos flags 明確禁止變更尺寸、Z-order 與前景狀態，避免重現搶前景或改視窗大小。
+PositionWutheringWindowTopRight(hwnd) {
+    Loop 3 {
+        attempt := A_Index
+        pid := 0
+        className := ""
+        identityReason := ""
+        if !GetWutheringWindowIdentity(hwnd, &pid, &className, &identityReason) {
+            WriteLog("右上角定位略過：本輪遊戲 HWND 身分已失效；交由外層重新取得穩定主視窗"
+                " | hwnd=" hwnd " reason=" identityReason, "WARN")
+            return false
+        }
+
+        try {
+            windowState := WinGetMinMax("ahk_id " hwnd)
+            if (windowState = 1) {
+                WriteLog("鳴潮為最大化狀態；不改狀態、不改尺寸，略過右上角定位")
+                return true
+            }
+            if (windowState = -1) {
+                WriteLog("鳴潮為最小化狀態；無法驗證右上角位置，保持封鎖並等待重試", "WARN")
+                return false
+            }
+
+            WinGetPos &oldX, &oldY, &oldW, &oldH, "ahk_id " hwnd
+            if (oldW <= 0 || oldH <= 0) {
+                WriteLog("右上角定位無法取得有效視窗尺寸"
+                    " | hwnd=" hwnd " size=" oldW "x" oldH, "WARN")
+                return false
+            }
+
+            monitor := DllCall("user32\MonitorFromWindow", "ptr", hwnd,
+                "uint", 2, "ptr") ; MONITOR_DEFAULTTONEAREST
+            if !monitor {
+                WriteLog("右上角定位無法取得視窗所在螢幕 | hwnd=" hwnd, "WARN")
+                return false
+            }
+
+            monitorInfo := Buffer(40, 0)
+            NumPut("uint", 40, monitorInfo, 0)
+            if !DllCall("user32\GetMonitorInfoW", "ptr", monitor,
+                "ptr", monitorInfo, "int") {
+                WriteLog("右上角定位無法取得螢幕工作區 | win32=" A_LastError, "WARN")
+                return false
+            }
+
+            workLeft := NumGet(monitorInfo, 20, "int")
+            workTop := NumGet(monitorInfo, 24, "int")
+            workRight := NumGet(monitorInfo, 28, "int")
+            workBottom := NumGet(monitorInfo, 32, "int")
+            if (workRight <= workLeft || workBottom <= workTop) {
+                WriteLog("右上角定位取得無效工作區"
+                    " | rect=" workLeft "," workTop "," workRight "," workBottom, "WARN")
+                return false
+            }
+
+            ; 即使普通視窗比工作區更寬，也以右邊緣貼齊為準；不可改寬度來硬塞進工作區。
+            newX := workRight - oldW
+            newY := workTop
+            if (Abs(oldX - newX) <= 2 && Abs(oldY - newY) <= 2) {
+                WriteLog("鳴潮已位於目前螢幕工作區右上角；尺寸與前景狀態不變"
+                    " | hwnd=" hwnd " pos=" oldX "," oldY " size=" oldW "x" oldH)
+                return true
+            }
+
+            ; SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+            flags := 0x0001 | 0x0004 | 0x0010 | 0x0200
+            moved := DllCall("user32\SetWindowPos", "ptr", hwnd, "ptr", 0,
+                "int", newX, "int", newY, "int", 0, "int", 0,
+                "uint", flags, "int")
+            moveError := A_LastError
+            if !moved {
+                WriteLog("鳴潮右上角定位呼叫失敗"
+                    " | attempt=" attempt "/3 hwnd=" hwnd " win32=" moveError, "WARN")
+                if (attempt < 3) {
+                    Sleep 200
+                    continue
+                }
+                return false
+            }
+
+            Sleep 150
+            WinGetPos &actualX, &actualY, &actualW, &actualH, "ahk_id " hwnd
+            actualState := WinGetMinMax("ahk_id " hwnd)
+            positionOk := Abs(actualX - newX) <= 10 && Abs(actualY - newY) <= 10
+            sizeOk := actualW = oldW && actualH = oldH
+            stateOk := actualState = windowState
+            if (positionOk && sizeOk && stateOk) {
+                WriteLog("鳴潮已安全移到目前螢幕工作區右上角"
+                    " | hwnd=" hwnd " from=" oldX "," oldY " to=" actualX "," actualY
+                    " size=" actualW "x" actualH " no_activate=1 no_resize=1 no_zorder=1")
+                return true
+            }
+
+            WriteLog("鳴潮右上角定位驗證未通過"
+                " | attempt=" attempt "/3 target=" newX "," newY
+                " actual=" actualX "," actualY " original_size=" oldW "x" oldH
+                " actual_size=" actualW "x" actualH " state=" windowState ">" actualState, "WARN")
+            if (attempt < 3) {
+                Sleep 200
+                continue
+            }
+        } catch as e {
+            WriteLog("鳴潮右上角定位例外（非致命）"
+                " | attempt=" attempt "/3 hwnd=" hwnd " error=" e.Message, "WARN")
+            if (attempt < 3) {
+                Sleep 200
+                continue
+            }
+            return false
+        }
+    }
+
+    return false
 }
 
 WaitForWutheringGameWindow(timeoutSec := 120) {
