@@ -7,11 +7,9 @@ import { config, assertChildPath } from "./config.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
 import {
-  activateBrowser,
   browserCookie,
-  clearBrowserCookie,
+  ensureBrowser,
   enrollDevice,
-  requireBrowser,
   requireDevice,
   requireSameOrigin,
 } from "./auth.js";
@@ -418,15 +416,6 @@ async function deviceDetails(uid) {
   return { device: device.rows[0], events: events.rows, commands: commands.rows, settings: settings.rows[0] ?? null };
 }
 
-async function openEnrollmentWindow() {
-  const until = new Date(Date.now() + config.enrollmentWindowMinutes * 60_000);
-  await query(
-    "UPDATE system_settings SET value=jsonb_build_object('openUntil',$1::text),updated_at=now() WHERE key='enrollment'",
-    [until.toISOString()],
-  );
-  return { openUntil: until.toISOString() };
-}
-
 async function createLiveLease(uid, browserSession) {
   const expiresAt = new Date(Date.now() + config.liveLeaseSeconds * 1000);
   const device = await query("SELECT uid,last_seen FROM devices WHERE uid=$1", [uid]);
@@ -511,17 +500,9 @@ async function handleRequest(req, res) {
     else sendJson(res, 401, { error: "media unauthorized" });
     return;
   }
-  if (pathname === "/api/v1/auth/activate" && req.method === "POST") {
-    const ip = clientIp(req);
-    if (!limiter.check(`activate:${ip}`, 5, 10 * 60_000)) throw new HttpError(429, "啟用嘗試過多，請稍後再試", "RATE_LIMITED");
-    const body = await readJson(req, config.maxJsonBytes);
-    const activated = await activateBrowser(req, body.token, body.label);
-    sendJson(res, 200, { ok: true, session: activated.session }, { "Set-Cookie": browserCookie(activated.token, activated.session.expires_at) });
-    return;
-  }
   if (pathname === "/api/v1/device/enroll" && req.method === "POST") {
     const ip = clientIp(req);
-    if (!limiter.check(`enroll:${ip}`, 12, 10 * 60_000)) throw new HttpError(429, "裝置註冊嘗試過多", "RATE_LIMITED");
+    if (!limiter.check(`enroll:${ip}`, 60, 10 * 60_000)) throw new HttpError(429, "裝置註冊嘗試過多", "RATE_LIMITED");
     const body = await readJson(req, config.maxJsonBytes);
     sendJson(res, 200, await enrollDevice(body));
     return;
@@ -590,28 +571,15 @@ async function handleRequest(req, res) {
     throw new HttpError(404, "找不到裝置 API", "NOT_FOUND");
   }
 
-  const browser = await requireBrowser(req);
+  const browserAccess = await ensureBrowser(req);
+  const browser = browserAccess.session;
+  if (browserAccess.token) res.setHeader("Set-Cookie", browserCookie(browserAccess.token, browser.expires_at));
   if (!["GET", "HEAD"].includes(req.method)) requireSameOrigin(req);
   if (pathname === "/api/v1/auth/me" && req.method === "GET") {
-    sendJson(res, 200, { session: browser, publicUrl: config.publicUrl });
+    sendJson(res, 200, { session: browser, publicUrl: config.publicUrl, accessMode: "direct" });
     return;
   }
-  if (pathname === "/api/v1/auth/logout" && req.method === "POST") {
-    await query("UPDATE browser_sessions SET revoked_at=now() WHERE id=$1", [browser.id]);
-    sendEmpty(res, 204, { "Set-Cookie": clearBrowserCookie() });
-    return;
-  }
-  if (pathname === "/api/v1/auth/sessions" && req.method === "GET") {
-    const sessions = await query("SELECT id,label,user_agent,ip_address,created_at,last_seen_at,expires_at FROM browser_sessions WHERE revoked_at IS NULL AND expires_at>now() ORDER BY last_seen_at DESC");
-    sendJson(res, 200, { sessions: sessions.rows, currentId: browser.id });
-    return;
-  }
-  let params = routeMatch(pathname, "/api/v1/auth/sessions/:sessionId");
-  if (params && req.method === "DELETE") {
-    await query("UPDATE browser_sessions SET revoked_at=now() WHERE id=$1", [params.sessionId]);
-    sendEmpty(res);
-    return;
-  }
+  let params;
   if (pathname === "/api/v1/events" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     res.write(`event: ready\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`);
@@ -679,10 +647,6 @@ async function handleRequest(req, res) {
   const liveMatch = /^\/live\/([^/]+)\/(.+)$/.exec(pathname);
   if (liveMatch && req.method === "GET") {
     await proxyHls(req, res, normalizeUid(decodeURIComponent(liveMatch[1])), liveMatch[2]);
-    return;
-  }
-  if (pathname === "/api/v1/admin/enrollment-window" && req.method === "POST") {
-    sendJson(res, 200, await openEnrollmentWindow());
     return;
   }
   if (pathname === "/api/v1/admin/migration" && req.method === "GET") {

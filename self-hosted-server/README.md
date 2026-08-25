@@ -32,13 +32,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 直接按 Enter 就採用 D 槽資料、E 槽備份。只有在明確接受 Docker named volume 位於其他磁碟時，才使用 `-AllowDockerStorageOutsideDataDrive` 略過防呆；一般安裝不建議略過。
 
-安裝工具會產生 `.env` 密鑰、建立服務、執行 migration、健康檢查、第一次備份與實際還原測試，最後輸出 24 小時內有效且只能用一次的私人啟用連結。
-
-網站沒有帳號密碼。啟用連結成功後只在該瀏覽器設定 `Secure + HttpOnly + SameSite=Strict` Cookie；網址中的啟用碼會立即移除。可在網站撤銷其他瀏覽器，或執行：
-
-```powershell
-.\Manage-Server.ps1 -Action ActivationLink
-```
+安裝工具會產生 `.env` 密鑰、建立服務、執行 migration、健康檢查、第一次備份與實際還原測試。網站直接開啟即可使用，不需要帳號、密碼或私人啟用連結。伺服器會自動設定 `Secure + HttpOnly + SameSite=Strict` Cookie，僅用來區分各瀏覽器的直播觀看租約，不作為人工驗證步驟。
 
 ## 既有兩台裝置與 7 天並行
 
@@ -48,7 +42,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 - 必須連續 7 天無一致性錯誤、Firestore 命令／設定均已 ACK，而且每台至少有一場完整中央影片，網站才允許切換。
 - 切換後 7 天內每 15 分鐘保留一次低頻 Firestore 緊急通道；到期後固定 Firestore 讀寫停止。自架 API 本身仍能把裝置切回 `fallback`。
 
-新電腦必須先在網站按「開放新增裝置 10 分鐘」，才可自動註冊。知道 UID 但沒有有效裝置憑證，或註冊窗口已過期，都不能使用裝置 API。
+新電腦第一次啟動 Payload 會直接自動註冊，不需要配對碼或註冊窗口。註冊後仍使用每台裝置各自的隨機憑證呼叫裝置 API，憑證由 Windows DPAPI 加密保存。
 
 ## 影片與容量規則
 

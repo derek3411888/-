@@ -1,4 +1,3 @@
-import { createActivationLink } from "./auth.js";
 import { closeDatabase, migrate, query } from "./db.js";
 import {
   forceMigrationMode,
@@ -11,9 +10,6 @@ async function main() {
   await migrate();
   const [command = "help", argument = ""] = process.argv.slice(2);
   switch (command) {
-    case "activation-link":
-      process.stdout.write(`${await createActivationLink(Number(argument) || 24)}\n`);
-      break;
     case "status": {
       const [readiness, devices, sessions, alerts] = await Promise.all([
         migrationReadiness(),
@@ -33,12 +29,8 @@ async function main() {
     case "force-mode":
       process.stdout.write(`${JSON.stringify(await forceMigrationMode(argument), null, 2)}\n`);
       break;
-    case "revoke-browser":
-      await query("UPDATE browser_sessions SET revoked_at=now() WHERE id=$1", [argument]);
-      process.stdout.write("ok\n");
-      break;
     default:
-      process.stdout.write("Commands: activation-link [hours], status, import-firestore, publish-discovery, force-mode <shadow|primary|fallback|disabled>, revoke-browser <uuid>\n");
+      process.stdout.write("Commands: status, import-firestore, publish-discovery, force-mode <shadow|primary|fallback|disabled>\n");
   }
 }
 

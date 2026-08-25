@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
-import { createActivationLink } from "../src/auth.js";
 import { config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
 
@@ -52,35 +51,26 @@ async function waitFor(check, message, timeoutMs = 30_000) {
 async function main() {
   assert((await request("/health/ready")).ok, "ready endpoint failed");
   await query("UPDATE system_settings SET value=jsonb_build_object('openUntil',NULL),updated_at=now() WHERE key='enrollment'");
-  const unauthorizedBrowser = await fetch(`${base}/api/v1/devices`);
-  assert(unauthorizedBrowser.status === 401, "unauthorized browser reached protected API");
-  const activationUrl = await createActivationLink(1);
-  const activationToken = new URL(activationUrl).hash.replace(/^#activate=/, "");
-  const activationResponse = await fetch(`${base}/api/v1/auth/activate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: activationToken, label: "integration-smoke" }),
+  const directAccess = await fetch(`${base}/api/v1/auth/me`);
+  assert(directAccess.ok, `direct browser access failed: ${directAccess.status}`);
+  cookie = String(directAccess.headers.get("set-cookie") ?? "").split(";")[0];
+  assert(cookie.includes("="), "automatic browser cookie missing");
+  const directAccessBody = await directAccess.json();
+  assert(directAccessBody.accessMode === "direct", "browser access mode is not direct");
+  const directDeviceList = await request("/api/v1/devices", { browser: true });
+  assert(Array.isArray(directDeviceList.devices), "direct browser could not list devices");
+  const rejectedCrossSiteMutation = await fetch(`${base}/api/v1/admin/migration/mode`, {
+    method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "primary" }),
   });
-  assert(activationResponse.ok, `activation failed: ${activationResponse.status}`);
-  cookie = String(activationResponse.headers.get("set-cookie") ?? "").split(";")[0];
-  assert(cookie.includes("="), "activation cookie missing");
-  const reusedActivation = await fetch(`${base}/api/v1/auth/activate`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: activationToken, label: "reused" }),
-  });
-  assert(reusedActivation.status === 401, "one-time activation token was reusable");
+  assert(rejectedCrossSiteMutation.status === 403, "mutation without CSRF confirmation was accepted");
 
-  const closedEnrollment = await fetch(`${base}/api/v1/device/enroll`, {
+  const automaticEnrollment = await fetch(`${base}/api/v1/device/enroll`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ uid: `${uid}-closed`, deviceToken: crypto.randomBytes(48).toString("base64url") }),
+    body: JSON.stringify({ uid, displayName: "整合測試裝置", deviceAlias: "smoke",
+      lastNonce: 0, settingsRevision: 0, deviceToken }),
   });
-  assert(closedEnrollment.status === 403, "closed enrollment window accepted a new UID");
-
-  await request("/api/v1/admin/enrollment-window", { method: "POST", body: {}, browser: true });
-  await request("/api/v1/device/enroll", {
-    method: "POST",
-    body: { uid, displayName: "整合測試裝置", deviceAlias: "smoke", lastNonce: 0, settingsRevision: 0, deviceToken },
-  });
+  assert(automaticEnrollment.ok, `automatic device enrollment failed: ${automaticEnrollment.status}`);
   const forgedUid = await fetch(`${base}/api/v1/device/enroll`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ uid: `${uid}-forged`, deviceToken }),
@@ -260,6 +250,7 @@ async function main() {
   const serverLog = await fs.stat(`${config.serverLogRoot}/server.log`);
   assert(serverLog.isFile() && serverLog.size > 0, "mounted rotating server log was not written");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
+    directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
     videoRange: true, liveHls: true, invalidSrtRejected: true, serverLog: true }));
 }
 

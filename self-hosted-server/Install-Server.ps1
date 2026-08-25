@@ -136,12 +136,11 @@ if ($LASTEXITCODE -ne 0) { throw '首次資料庫備份／驗證失敗。' }
 & docker compose --env-file $envPath -f compose.yml exec -T backup /usr/local/bin/restore-test.sh
 if ($LASTEXITCODE -ne 0) { throw '首次資料庫實際還原測試失敗。' }
 
-$activationLink = (& docker compose --env-file $envPath -f compose.yml exec -T api node src/cli.js activation-link 24 | Select-Object -Last 1).Trim()
 Write-Host ''
 Write-Host '安裝完成。請在路由器與 Windows 防火牆開放：'
 Write-Host '  TCP 80、TCP 443、UDP 8890'
 Write-Host "控制網站：https://$PublicHostname"
-Write-Host '24 小時內有效、只能使用一次的私人啟用連結：'
-Write-Host $activationLink
+Write-Host '網站可直接開啟使用，不需要帳號、密碼或啟用連結。'
+Write-Host '新裝置第一次啟動會自動加入，不需要開放註冊窗口。'
 Write-Host "資料位置：$dataFull"
 Write-Host "備份位置：$backupFull"

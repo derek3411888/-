@@ -4,20 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260826-direct-access">
 </head>
 <body>
-  <section id="activationView" class="activation-shell" hidden>
-    <div class="activation-card">
-      <span class="brand-mark">WW</span>
-      <h1>私人控制台</h1>
-      <p id="activationMessage">需要由 Docker 主機產生的私人啟用連結。</p>
-      <button id="activateButton" type="button" hidden>啟用這個瀏覽器</button>
-      <small>這裡沒有帳號密碼；啟用後會安全記住本裝置。</small>
-    </div>
-  </section>
-
-  <main id="appView" class="shell" hidden>
+  <main id="appView" class="shell">
     <header class="app-header">
       <div>
         <h1>鳴潮自動鋤地控制台</h1>
@@ -25,7 +15,7 @@
       </div>
       <div class="header-badges">
         <span id="migrationBadge" class="badge warning">讀取中</span>
-        <span class="badge ok">免月費自架</span>
+        <span class="badge ok">網址直接使用</span>
       </div>
     </header>
 
@@ -140,25 +130,19 @@
         </form>
 
         <article class="card">
-          <div class="section-title"><div><h2>遷移與伺服器</h2><p>達成條件前不會切走 Firestore。</p></div></div>
+          <div class="section-title"><div><h2>存取與遷移</h2><p>網址直接使用；新裝置第一次啟動會自動加入。</p></div></div>
           <div id="migrationStatus" class="key-values"></div>
           <div class="button-row">
             <button id="cutoverButton" type="button" disabled>正式切換至自架</button>
-            <button id="openEnrollmentButton" type="button">開放新增裝置 10 分鐘</button>
           </div>
           <div id="alertsList" class="alerts"></div>
         </article>
       </div>
-
-      <article class="card">
-        <div class="section-title"><div><h2>已授權瀏覽器</h2><p>可撤銷遺失或不再使用的瀏覽器。</p></div><button id="logoutButton" type="button">登出這台</button></div>
-        <div id="browserSessions" class="session-list"></div>
-      </article>
     </section>
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/vendor/hls.min.js"></script>
-  <script type="module" src="/app.js"></script>
+  <script src="/vendor/hls.min.js?v=1.6.13"></script>
+  <script type="module" src="/app.js?v=20260826-direct-access"></script>
 </body>
 </html>

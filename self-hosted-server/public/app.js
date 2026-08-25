@@ -14,7 +14,6 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
-const activationView = $("activationView");
 const appView = $("appView");
 const deviceSelect = $("deviceSelect");
 
@@ -58,28 +57,6 @@ async function api(path, options = {}) {
     throw error;
   }
   return payload;
-}
-
-function showActivation(message, canActivate = false) {
-  appView.hidden = true;
-  activationView.hidden = false;
-  setText("activationMessage", message);
-  $("activateButton").hidden = !canActivate;
-}
-
-async function activateFromHash() {
-  const match = /^#activate=([A-Za-z0-9_-]+)$/.exec(location.hash);
-  if (!match) return false;
-  showActivation("正在驗證私人啟用連結…");
-  try {
-    await api("/api/v1/auth/activate", { method: "POST", body: { token: match[1], label: navigator.platform || "瀏覽器" } });
-    history.replaceState(null, "", `${location.pathname}${location.search}`);
-    return true;
-  } catch (error) {
-    history.replaceState(null, "", `${location.pathname}${location.search}`);
-    showActivation(error.message);
-    return false;
-  }
 }
 
 function migrationLabel(mode) {
@@ -285,8 +262,8 @@ async function sendCommand(command, extras = {}) {
 }
 
 async function refreshAdmin() {
-  const [migration, sessions, alerts] = await Promise.all([
-    api("/api/v1/admin/migration"), api("/api/v1/auth/sessions"), api("/api/v1/admin/alerts"),
+  const [migration, alerts] = await Promise.all([
+    api("/api/v1/admin/migration"), api("/api/v1/admin/alerts"),
   ]);
   const node = $("migrationStatus"); node.replaceChildren();
   const rows = [
@@ -302,15 +279,6 @@ async function refreshAdmin() {
   for (const [key, value] of rows) { const row = document.createElement("div"); const k = document.createElement("strong"); k.textContent = key; const v = document.createElement("span"); v.textContent = value; row.append(k, v); node.append(row); }
   $("cutoverButton").disabled = !migration.ready || migration.mode !== "shadow";
 
-  const sessionsNode = $("browserSessions"); sessionsNode.replaceChildren();
-  for (const item of sessions.sessions) {
-    const row = document.createElement("div"); row.className = "session-item";
-    const title = document.createElement("strong"); title.textContent = item.id === sessions.currentId ? `${item.label || "瀏覽器"}（目前）` : item.label || "瀏覽器";
-    const meta = document.createElement("small"); meta.textContent = `${item.ip_address}｜最後使用 ${formatTime(item.last_seen_at)}｜到期 ${formatTime(item.expires_at)}`;
-    row.append(title, meta);
-    if (item.id !== sessions.currentId) { const revoke = document.createElement("button"); revoke.type = "button"; revoke.textContent = "撤銷"; revoke.addEventListener("click", async () => { await api(`/api/v1/auth/sessions/${item.id}`, { method: "DELETE" }); await refreshAdmin(); }); row.append(revoke); }
-    sessionsNode.append(row);
-  }
   const alertsNode = $("alertsList"); alertsNode.replaceChildren();
   for (const item of alerts.alerts) { const row = document.createElement("div"); row.className = "alert-item"; row.textContent = `${formatTime(item.created_at)}｜${item.message}`; alertsNode.append(row); }
 }
@@ -381,17 +349,13 @@ function bindEvents() {
   });
   $("startLiveButton").addEventListener("click", () => startLive().catch((error) => toast(error.message)));
   $("stopLiveButton").addEventListener("click", () => stopLive());
-  $("openEnrollmentButton").addEventListener("click", async () => { try { const result = await api("/api/v1/admin/enrollment-window", { method: "POST" }); toast(`已開放到 ${formatTime(result.openUntil)}`); } catch (error) { toast(error.message); } });
   $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與影片均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
-  $("logoutButton").addEventListener("click", async () => { await api("/api/v1/auth/logout", { method: "POST" }); location.reload(); });
   window.addEventListener("beforeunload", () => { clearInterval(state.liveTimer); clearInterval(state.periodicTimer); });
 }
 
 async function boot() {
-  await activateFromHash();
-  try { state.me = await api("/api/v1/auth/me"); }
-  catch { showActivation("需要由 Docker 主機產生的私人啟用連結。"); return; }
-  activationView.hidden = true; appView.hidden = false;
+  state.me = await api("/api/v1/auth/me");
+  appView.hidden = false;
   bindEvents();
   await refresh();
   clearInterval(state.periodicTimer);
@@ -401,4 +365,8 @@ async function boot() {
   events.onerror = () => setText("deviceSummary", "即時連線暫時中斷，正在自動重連…");
 }
 
-boot().catch((error) => showActivation(`控制台載入失敗：${error.message}`));
+boot().catch((error) => {
+  appView.hidden = false;
+  setText("deviceSummary", `控制台載入失敗：${error.message}`);
+  toast(`控制台載入失敗：${error.message}`);
+});

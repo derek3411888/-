@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('Status','ActivationLink','OpenLogs','ImportFirestore','RestoreTest','Shadow','Primary','Fallback','Stop','Start')]
+    [ValidateSet('Status','OpenLogs','ImportFirestore','RestoreTest','Shadow','Primary','Fallback','Stop','Start')]
     [string]$Action = 'Status'
 )
 
@@ -13,7 +13,6 @@ $compose = @('compose', '--env-file', $envPath, '-f', 'compose.yml')
 
 switch ($Action) {
     'Status' { & docker @compose ps; & docker @compose exec -T api node src/cli.js status }
-    'ActivationLink' { & docker @compose exec -T api node src/cli.js activation-link 24 }
     'OpenLogs' { & docker @compose logs --tail 300 }
     'ImportFirestore' { & docker @compose exec -T api node src/cli.js import-firestore }
     'RestoreTest' { & docker @compose exec -T backup /usr/local/bin/restore-test.sh }
