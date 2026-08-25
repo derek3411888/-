@@ -364,6 +364,11 @@ RCSH_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, heigh
 
 RCSH_HandleLiveControl(resp) {
     global RCSH_LIVE_EXPIRES_AT
+    ; Heartbeat/control responses from older servers did not always contain
+    ; the flattened live fields.  Missing fields mean "no live update", not
+    ; "lease expired"; otherwise every heartbeat can stop a healthy preview.
+    if (resp = "" || !InStr(resp, '"selfHostedLiveEnabled"'))
+        return false
     enabled := RC_JsonGetBoolean(resp, "selfHostedLiveEnabled", false)
     publishUrl := RC_JsonGetString(resp, "selfHostedLivePublishUrl")
     RCSH_LIVE_EXPIRES_AT := RC_JsonGetInteger(resp, "selfHostedLiveExpiresAt", 0)
@@ -371,6 +376,7 @@ RCSH_HandleLiveControl(resp) {
         RCSH_StartLivePreview(publishUrl)
     else
         RCSH_StopLivePreview("lease expired")
+    return true
 }
 
 RCSH_ExpireLivePreviewIfNeeded() {

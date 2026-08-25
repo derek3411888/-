@@ -2,6 +2,7 @@ import fsp from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { config, assertChildPath } from "./config.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
@@ -56,6 +57,7 @@ import {
 
 const eventHub = new EventHub();
 const limiter = new RateLimiter();
+const liveLeaseTouches = new Map();
 const startedAt = Date.now();
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -430,16 +432,56 @@ async function createLiveLease(uid, browserSession) {
      ON CONFLICT(uid,browser_session_id) DO UPDATE SET expires_at=EXCLUDED.expires_at,updated_at=now()`,
     [uid, browserSession.id, expiresAt],
   );
+  liveLeaseTouches.set(`${uid}:${browserSession.id}`, Date.now());
   eventHub.emit("live", { uid, active: true, expiresAt });
   return { uid, active: true, expiresAt, playlistUrl: `/live/${encodeURIComponent(uid)}/index.m3u8` };
 }
 
-async function proxyHls(req, res, uid, suffix) {
+async function touchLiveLease(uid, browserSessionId) {
+  const key = `${uid}:${browserSessionId}`;
+  const now = Date.now();
+  if (now - (liveLeaseTouches.get(key) ?? 0) < 20_000) return;
+  const expiresAt = new Date(now + config.liveLeaseSeconds * 1000);
+  const result = await query(
+    `UPDATE live_leases SET expires_at=GREATEST(expires_at,$3),updated_at=now()
+     WHERE uid=$1 AND browser_session_id=$2 AND expires_at>now() RETURNING expires_at`,
+    [uid, browserSessionId, expiresAt],
+  );
+  if (!result.rowCount) {
+    liveLeaseTouches.delete(key);
+    throw new HttpError(410, "即時畫面觀看已到期，請重新按下開啟", "LIVE_LEASE_EXPIRED");
+  }
+  liveLeaseTouches.set(key, now);
+}
+
+async function fetchHlsUpstream(upstreamUrl, rangeHeader) {
+  const headers = { Cookie: "cookieCheck=1" };
+  if (rangeHeader) headers.Range = rangeHeader;
+  const signal = AbortSignal.timeout(15_000);
+  let upstream = await fetch(upstreamUrl, { headers, redirect: "manual", signal });
+  const location = upstream.headers.get("location");
+  if (upstream.status >= 300 && upstream.status < 400 && location) {
+    const redirectedUrl = new URL(location, upstreamUrl);
+    if (redirectedUrl.origin !== upstreamUrl.origin) {
+      await upstream.body?.cancel().catch(() => {});
+      throw new HttpError(502, "直播服務回傳不安全的重新導向", "LIVE_UPSTREAM_REDIRECT");
+    }
+    const cookie = String(upstream.headers.get("set-cookie") ?? "").split(";", 1)[0];
+    await upstream.body?.cancel().catch(() => {});
+    if (cookie) headers.Cookie = cookie;
+    upstream = await fetch(redirectedUrl, { headers, redirect: "manual", signal });
+  }
+  return upstream;
+}
+
+async function proxyHls(req, res, uid, suffix, searchParams, browserSessionId) {
+  await touchLiveLease(uid, browserSessionId);
   const safeSuffix = suffix.split("/").filter((part) => part && part !== "." && part !== "..").map(encodeURIComponent).join("/");
-  const upstream = await fetch(`http://mediamtx:8888/${encodeURIComponent(uid)}/${safeSuffix}`, {
-    headers: req.headers.range ? { Range: req.headers.range } : {},
-    signal: AbortSignal.timeout(15_000),
-  });
+  const upstreamUrl = new URL(`http://mediamtx:8888/${encodeURIComponent(uid)}/${safeSuffix}`);
+  for (const [name, value] of searchParams) {
+    if (name !== "t") upstreamUrl.searchParams.append(name, value);
+  }
+  const upstream = await fetchHlsUpstream(upstreamUrl, req.headers.range);
   if (!upstream.ok || !upstream.body) throw new HttpError(upstream.status === 404 ? 404 : 502, "直播畫面尚未就緒", "LIVE_NOT_READY");
   const headers = {
     "Content-Type": upstream.headers.get("content-type") ?? "application/octet-stream",
@@ -447,8 +489,12 @@ async function proxyHls(req, res, uid, suffix) {
   };
   const length = upstream.headers.get("content-length");
   if (length) headers["Content-Length"] = length;
+  for (const name of ["content-range", "accept-ranges"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers[name] = value;
+  }
   res.writeHead(upstream.status, headers);
-  Readable.fromWeb(upstream.body).pipe(res);
+  await pipeline(Readable.fromWeb(upstream.body), res);
 }
 
 async function mediaAuthorization(body) {
@@ -523,7 +569,7 @@ async function handleRequest(req, res) {
     if (pathname === "/api/v1/device/heartbeat" && req.method === "PUT") {
       const body = await readJson(req, config.maxJsonBytes);
       await updateHeartbeat(uid, body);
-      sendJson(res, 200, await deviceControl(uid, false));
+      sendJson(res, 200, await deviceControl(uid, true));
       return;
     }
     if (pathname === "/api/v1/device/commands/ack" && req.method === "POST") {
@@ -644,14 +690,16 @@ async function handleRequest(req, res) {
     return;
   }
   if (params && req.method === "DELETE") {
-    await query("DELETE FROM live_leases WHERE uid=$1 AND browser_session_id=$2", [normalizeUid(params.uid), browser.id]);
+    const uid = normalizeUid(params.uid);
+    await query("DELETE FROM live_leases WHERE uid=$1 AND browser_session_id=$2", [uid, browser.id]);
+    liveLeaseTouches.delete(`${uid}:${browser.id}`);
     eventHub.emit("live", { uid: params.uid, active: false, at: Date.now() });
     sendEmpty(res);
     return;
   }
   const liveMatch = /^\/live\/([^/]+)\/(.+)$/.exec(pathname);
   if (liveMatch && req.method === "GET") {
-    await proxyHls(req, res, normalizeUid(decodeURIComponent(liveMatch[1])), liveMatch[2]);
+    await proxyHls(req, res, normalizeUid(decodeURIComponent(liveMatch[1])), liveMatch[2], url.searchParams, browser.id);
     return;
   }
   if (pathname === "/api/v1/admin/migration" && req.method === "GET") {
@@ -703,6 +751,10 @@ async function cleanupRuntimeData() {
     await query("DELETE FROM diagnostic_snapshots WHERE id=$1", [row.id]);
   }
   await query("UPDATE devices SET state='OFFLINE',status='{}'::jsonb,updated_at=now() WHERE last_seen<now()-interval '7 days'");
+  const staleTouchBefore = Date.now() - config.liveLeaseSeconds * 2_000;
+  for (const [key, touchedAt] of liveLeaseTouches) {
+    if (touchedAt < staleTouchBefore) liveLeaseTouches.delete(key);
+  }
   await pruneMedia();
 }
 

@@ -341,11 +341,24 @@ function attachLive(url, attempt) {
   if (state.liveHls) { state.liveHls.destroy(); state.liveHls = null; }
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = `${url}?t=${Date.now()}`;
+    video.load();
+    video.play().catch(() => {});
   } else if (window.Hls?.isSupported()) {
-    const hls = new window.Hls({ liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
-    state.liveHls = hls; hls.loadSource(`${url}?t=${Date.now()}`); hls.attachMedia(video);
+    const hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
+    state.liveHls = hls; hls.attachMedia(video); hls.loadSource(`${url}?t=${Date.now()}`);
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-    hls.on(window.Hls.Events.ERROR, (_, data) => { if (data.fatal) scheduleLiveRetry(url, attempt + 1); });
+    hls.on(window.Hls.Events.ERROR, (_, data) => {
+      if (!data.fatal) return;
+      setText("liveMessage", `即時串流尚未就緒，正在重試（${attempt + 1}）…`);
+      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && attempt < 2) {
+        hls.recoverMediaError();
+        return;
+      }
+      scheduleLiveRetry(url, attempt + 1);
+    });
+  } else {
+    setText("liveMessage", "這個瀏覽器不支援 HLS 播放，請改用最新版 Chrome、Edge 或 Safari。");
+    return;
   }
   video.onplaying = () => { clearTimeout(state.liveRetryTimer); setText("liveBadge", "直播中"); $("liveBadge").className = "badge ok"; setText("liveMessage", "近即時畫面已連線；保持此頁開啟會自動續期。"); };
   video.onerror = () => scheduleLiveRetry(url, attempt + 1);
@@ -354,6 +367,7 @@ function attachLive(url, attempt) {
 function scheduleLiveRetry(url, attempt) {
   if (!state.liveActive) return;
   clearTimeout(state.liveRetryTimer);
+  setText("liveBadge", "正在重新連線"); $("liveBadge").className = "badge warning";
   state.liveRetryTimer = setTimeout(() => attachLive(url, attempt), Math.min(5000, 2000 + attempt * 100));
 }
 

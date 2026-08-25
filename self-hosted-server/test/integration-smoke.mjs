@@ -222,6 +222,12 @@ async function main() {
     "HTTP HEAD playback probe failed");
 
   const lease = await request(`/api/v1/live/${encodeURIComponent(uid)}/lease`, { method: "POST", browser: true, body: {} });
+  const liveHeartbeat = await request("/api/v1/device/heartbeat", {
+    method: "PUT", device: true, body: { state: "RUN", displayName: "整合測試裝置", lastNonce: Number(stop.nonce) },
+  });
+  assert(liveHeartbeat.fields?.selfHostedLiveEnabled?.booleanValue === true
+    && Number(liveHeartbeat.fields?.selfHostedLiveExpiresAt?.integerValue) > Date.now(),
+  "heartbeat response lost the active live lease");
   const liveControl = await request("/api/v1/device/control", { device: true });
   assert(liveControl.live.active && liveControl.live.publishUrl.includes("passphrase="), "encrypted live URL missing");
   const rejectedSrtRead = await fetch(`${base}/internal/media-auth`, {
