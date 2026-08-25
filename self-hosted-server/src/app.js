@@ -58,6 +58,7 @@ import {
 const eventHub = new EventHub();
 const limiter = new RateLimiter();
 const liveLeaseTouches = new Map();
+const liveHlsSessions = new Map();
 const startedAt = Date.now();
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -454,11 +455,25 @@ async function touchLiveLease(uid, browserSessionId) {
   liveLeaseTouches.set(key, now);
 }
 
-async function fetchHlsUpstream(upstreamUrl, rangeHeader) {
-  const headers = { Cookie: "cookieCheck=1" };
+function rememberHlsCookies(headers, jar) {
+  const values = typeof headers.getSetCookie === "function"
+    ? headers.getSetCookie() : [headers.get("set-cookie")];
+  for (const value of values) {
+    const match = /^([^=;\s]+)=([^;]*)/.exec(String(value ?? ""));
+    if (match) jar.set(match[1], match[2]);
+  }
+}
+
+function hlsCookieHeader(jar) {
+  return [...jar].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+async function fetchHlsWithCookies(upstreamUrl, rangeHeader, jar, signal) {
+  const headers = {};
   if (rangeHeader) headers.Range = rangeHeader;
-  const signal = AbortSignal.timeout(15_000);
+  if (jar.size) headers.Cookie = hlsCookieHeader(jar);
   let upstream = await fetch(upstreamUrl, { headers, redirect: "manual", signal });
+  rememberHlsCookies(upstream.headers, jar);
   const location = upstream.headers.get("location");
   if (upstream.status >= 300 && upstream.status < 400 && location) {
     const redirectedUrl = new URL(location, upstreamUrl);
@@ -466,11 +481,29 @@ async function fetchHlsUpstream(upstreamUrl, rangeHeader) {
       await upstream.body?.cancel().catch(() => {});
       throw new HttpError(502, "直播服務回傳不安全的重新導向", "LIVE_UPSTREAM_REDIRECT");
     }
-    const cookie = String(upstream.headers.get("set-cookie") ?? "").split(";", 1)[0];
     await upstream.body?.cancel().catch(() => {});
-    if (cookie) headers.Cookie = cookie;
+    if (jar.size) headers.Cookie = hlsCookieHeader(jar);
     upstream = await fetch(redirectedUrl, { headers, redirect: "manual", signal });
+    rememberHlsCookies(upstream.headers, jar);
   }
+  return upstream;
+}
+
+async function fetchHlsUpstream(upstreamUrl, rangeHeader, sessionKey) {
+  let session = liveHlsSessions.get(sessionKey);
+  if (!session) {
+    session = { cookies: new Map(), touchedAt: Date.now() };
+    liveHlsSessions.set(sessionKey, session);
+  }
+  const signal = AbortSignal.timeout(15_000);
+  let hadHlsSession = session.cookies.has("hlsSession");
+  let upstream = await fetchHlsWithCookies(upstreamUrl, rangeHeader, session.cookies, signal);
+  if (upstream.status === 401 && hadHlsSession) {
+    await upstream.body?.cancel().catch(() => {});
+    session.cookies.clear();
+    upstream = await fetchHlsWithCookies(upstreamUrl, rangeHeader, session.cookies, signal);
+  }
+  session.touchedAt = Date.now();
   return upstream;
 }
 
@@ -481,7 +514,7 @@ async function proxyHls(req, res, uid, suffix, searchParams, browserSessionId) {
   for (const [name, value] of searchParams) {
     if (name !== "t") upstreamUrl.searchParams.append(name, value);
   }
-  const upstream = await fetchHlsUpstream(upstreamUrl, req.headers.range);
+  const upstream = await fetchHlsUpstream(upstreamUrl, req.headers.range, `${uid}:${browserSessionId}`);
   if (!upstream.ok || !upstream.body) throw new HttpError(upstream.status === 404 ? 404 : 502, "直播畫面尚未就緒", "LIVE_NOT_READY");
   const headers = {
     "Content-Type": upstream.headers.get("content-type") ?? "application/octet-stream",
@@ -693,6 +726,7 @@ async function handleRequest(req, res) {
     const uid = normalizeUid(params.uid);
     await query("DELETE FROM live_leases WHERE uid=$1 AND browser_session_id=$2", [uid, browser.id]);
     liveLeaseTouches.delete(`${uid}:${browser.id}`);
+    liveHlsSessions.delete(`${uid}:${browser.id}`);
     eventHub.emit("live", { uid: params.uid, active: false, at: Date.now() });
     sendEmpty(res);
     return;
@@ -754,6 +788,9 @@ async function cleanupRuntimeData() {
   const staleTouchBefore = Date.now() - config.liveLeaseSeconds * 2_000;
   for (const [key, touchedAt] of liveLeaseTouches) {
     if (touchedAt < staleTouchBefore) liveLeaseTouches.delete(key);
+  }
+  for (const [key, session] of liveHlsSessions) {
+    if (session.touchedAt < staleTouchBefore) liveHlsSessions.delete(key);
   }
   await pruneMedia();
 }

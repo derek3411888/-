@@ -245,10 +245,28 @@ async function main() {
     "testsrc=size=320x180:rate=12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
     "-g", "24", "-f", "mpegts", internalSrt], { stdio: "ignore" });
   try {
-    await waitFor(async () => {
+    const masterText = await waitFor(async () => {
       const response = await fetch(`${base}${lease.playlistUrl}`, { headers: { Cookie: cookie } });
-      return response.ok && (await response.text()).includes("#EXTM3U");
+      if (!response.ok) return null;
+      const text = await response.text();
+      return text.includes("#EXTM3U") ? text : null;
     }, "HLS live playlist did not become ready", 45_000);
+    const child = masterText.split(/\r?\n/).find((line) => line && !line.startsWith("#") && line.includes(".m3u8"));
+    assert(child, "HLS master playlist did not contain a media playlist");
+    const mediaUrl = new URL(child, `${base}${lease.playlistUrl}`).href;
+    const mediaText = await waitFor(async () => {
+      const response = await fetch(mediaUrl, { headers: { Cookie: cookie } });
+      if (!response.ok) return null;
+      const text = await response.text();
+      return text.includes("#EXTM3U") ? text : null;
+    }, "HLS media playlist did not become ready", 20_000);
+    const resources = [
+      ...[...mediaText.matchAll(/URI="([^"]+)"/g)].map((match) => match[1]),
+      ...mediaText.split(/\r?\n/).filter((line) => line && !line.startsWith("#")),
+    ];
+    assert(resources.length, "HLS media playlist did not contain playable resources");
+    const resource = await fetch(new URL(resources.at(-1), mediaUrl), { headers: { Cookie: cookie } });
+    assert(resource.ok && (await resource.arrayBuffer()).byteLength > 0, "HLS media resource could not be read");
   } finally {
     publisher.kill("SIGTERM");
   }
@@ -262,7 +280,7 @@ async function main() {
   assert(serverLog.isFile() && serverLog.size > 0, "mounted rotating server log was not written");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
     directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
-    videoRange: true, liveHls: true, invalidSrtRejected: true, serverLog: true }));
+    videoRange: true, liveHls: true, liveHlsResources: true, invalidSrtRejected: true, serverLog: true }));
 }
 
 try { await main(); }
