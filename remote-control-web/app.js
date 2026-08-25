@@ -28,7 +28,7 @@ const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const MAX_REMOTE_SERVERS = 10;
-const WEB_BUILD = "20260825-selfhost-migration";
+const WEB_BUILD = "20260826-selfhost-redirect";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -2180,13 +2180,13 @@ btnReloadSettings.addEventListener("click", () => {
   renderSettingsPage(true);
 });
 
-async function redirectToSelfHostedControlIfCutOver() {
+async function redirectToSelfHostedControl() {
   if (new URLSearchParams(location.search).get("legacy") === "1") return false;
   try {
     const migration = await getDoc(doc(db, COLLECTION, "__selfhost_migration"));
     const data = migration.exists() ? migration.data() : {};
     const destination = String(data.selfHostedServerUrl || "").replace(/\/+$/, "");
-    if (data.selfHostedMode === "primary" && /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/.test(destination)) {
+    if (/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/.test(destination)) {
       statusMsg.textContent = "控制平台已搬遷，正在前往新的私人 HTTPS 網站…";
       location.replace(destination);
       return true;
@@ -2197,7 +2197,7 @@ async function redirectToSelfHostedControlIfCutOver() {
   return false;
 }
 
-if (!(await redirectToSelfHostedControlIfCutOver())) {
+if (!(await redirectToSelfHostedControl())) {
   statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
   setActiveView(activeView, false);
   startClientListener();

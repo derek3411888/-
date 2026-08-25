@@ -1,6 +1,6 @@
 # AHK 遠端控制台
 
-這是遷移期間保留的 Firestore 舊控制台。自架平台切換為 `primary` 後，頁面會讀取 `__selfhost_migration` 並導向新的私人 HTTPS 網站；只有在網址加上 `?legacy=1` 時才保留舊頁供緊急查核。
+這是遷移期間保留的 Firestore 舊控制台。只要 `__selfhost_migration` 已發布有效的私人 HTTPS 網址，頁面就會導向新站；只有在網址加上 `?legacy=1` 時才保留舊頁供緊急查核。
 
 ## Firebase 設定
 
