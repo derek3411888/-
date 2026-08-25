@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.47',
-    [string]$LauncherVersion = '4.58',
-    [string]$ServerVersion = '1.0.3'
+    [string]$PayloadVersion = '4.48',
+    [string]$LauncherVersion = '4.59',
+    [string]$ServerVersion = '1.0.4'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,6 +88,8 @@ if ([string]$package.version -ne $ServerVersion) { throw "server package 版本�
 Write-Host '執行語法與單元測試…'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
 Invoke-AhkValidate $payloadRuntime 'payload\RecordingFinalizeWorker.ahk' '錄影 worker AHK validate'
+Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveLoopbackTest.ahk' '直播 loopback 測試語法 validate'
+Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveAutomaticFallbackTest.ahk' '直播自動回退測試語法 validate'
 Invoke-AhkValidate $runtime '打包啟動器.ahk' 'Launcher AHK validate'
 & npm.cmd --prefix self-hosted-server run check
 Assert-ExitCode 'Server 靜態檢查'

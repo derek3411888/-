@@ -9,6 +9,7 @@ const state = {
   refreshTimer: 0,
   periodicTimer: 0,
   liveTimer: 0,
+  liveRetryTimer: 0,
   liveHls: null,
   liveActive: false,
 };
@@ -297,6 +298,7 @@ async function startLive() {
 
 function attachLive(url, attempt) {
   if (!state.liveActive) return;
+  clearTimeout(state.liveRetryTimer);
   const video = $("liveVideo");
   if (state.liveHls) { state.liveHls.destroy(); state.liveHls = null; }
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -305,15 +307,21 @@ function attachLive(url, attempt) {
     const hls = new window.Hls({ liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
     state.liveHls = hls; hls.loadSource(`${url}?t=${Date.now()}`); hls.attachMedia(video);
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-    hls.on(window.Hls.Events.ERROR, (_, data) => { if (data.fatal && state.liveActive && attempt < 12) setTimeout(() => attachLive(url, attempt + 1), 2500); });
+    hls.on(window.Hls.Events.ERROR, (_, data) => { if (data.fatal) scheduleLiveRetry(url, attempt + 1); });
   }
-  video.onplaying = () => { setText("liveBadge", "直播中"); $("liveBadge").className = "badge ok"; setText("liveMessage", "近即時畫面已連線；保持此頁開啟會自動續期。"); };
-  video.onerror = () => { if (state.liveActive && attempt < 12) setTimeout(() => attachLive(url, attempt + 1), 2500); };
+  video.onplaying = () => { clearTimeout(state.liveRetryTimer); setText("liveBadge", "直播中"); $("liveBadge").className = "badge ok"; setText("liveMessage", "近即時畫面已連線；保持此頁開啟會自動續期。"); };
+  video.onerror = () => scheduleLiveRetry(url, attempt + 1);
+}
+
+function scheduleLiveRetry(url, attempt) {
+  if (!state.liveActive) return;
+  clearTimeout(state.liveRetryTimer);
+  state.liveRetryTimer = setTimeout(() => attachLive(url, attempt), Math.min(5000, 2000 + attempt * 100));
 }
 
 async function stopLive() {
   if (!state.liveActive) return;
-  state.liveActive = false; clearInterval(state.liveTimer);
+  state.liveActive = false; clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer);
   try { await api(`/api/v1/live/${encodeURIComponent(state.selectedUid)}/lease`, { method: "DELETE" }); } catch {}
   if (state.liveHls) { state.liveHls.destroy(); state.liveHls = null; }
   const video = $("liveVideo"); video.pause(); video.removeAttribute("src"); video.load();
@@ -350,7 +358,7 @@ function bindEvents() {
   $("startLiveButton").addEventListener("click", () => startLive().catch((error) => toast(error.message)));
   $("stopLiveButton").addEventListener("click", () => stopLive());
   $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與影片均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
-  window.addEventListener("beforeunload", () => { clearInterval(state.liveTimer); clearInterval(state.periodicTimer); });
+  window.addEventListener("beforeunload", () => { clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer); clearInterval(state.periodicTimer); });
 }
 
 async function boot() {

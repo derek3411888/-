@@ -17,6 +17,9 @@ global RCSH_LAST_FIRESTORE_READ_AT := 0
 global RCSH_LAST_FIRESTORE_WRITE_AT := 0
 global RCSH_LIVE_PID := 0
 global RCSH_LIVE_URL := ""
+global RCSH_LIVE_SOURCE_URL := ""
+global RCSH_LIVE_STARTED_AT := 0
+global RCSH_LIVE_ROUTE := "public"
 global RCSH_LIVE_EXPIRES_AT := 0
 global RCSH_PREVIEW_MARKER := "WUTHERING_RUNTIME_PREVIEW_V1"
 global RCSH_HTTP_FAILURE_COUNT := 0
@@ -382,10 +385,49 @@ RCSH_ExpireLivePreviewIfNeeded() {
 }
 
 RCSH_StartLivePreview(publishUrl) {
-    global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_PREVIEW_MARKER
-    if (RCSH_LIVE_PID > 0 && ProcessExist(RCSH_LIVE_PID) && RCSH_LIVE_URL = publishUrl)
-        return true
-    RCSH_StopLivePreview("lease changed")
+    global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
+    global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE, RCSH_PREVIEW_MARKER
+    publishUrl := Trim(publishUrl, " `t`r`n")
+    if (publishUrl = "")
+        return false
+
+    nowMs := RC_UnixMs()
+    sameLease := RCSH_LIVE_SOURCE_URL = publishUrl
+    if (RCSH_LIVE_PID > 0 && ProcessExist(RCSH_LIVE_PID)) {
+        if sameLease
+            return true
+        RCSH_StopLivePreview("lease changed")
+        sameLease := false
+    } else if (sameLease && RCSH_LIVE_PID > 0) {
+        elapsedMs := RCSH_LIVE_STARTED_AT > 0 ? Max(0, nowMs - RCSH_LIVE_STARTED_AT) : 0
+        previousRoute := RCSH_LIVE_ROUTE
+        ; A public-DDNS SRT connection can fail on the Docker host when the
+        ; router does not support UDP NAT loopback.  Only after an early exit
+        ; do we try localhost; normal remote clients keep the public route.
+        if (elapsedMs <= 30000)
+            RCSH_LIVE_ROUTE := previousRoute = "public" ? "loopback" : "public"
+        else
+            RCSH_LIVE_ROUTE := "public"
+        RC_Log("Self-hosted live preview exited early. route=" previousRoute
+            " elapsedMs=" elapsedMs " retryRoute=" RCSH_LIVE_ROUTE, "WARN")
+        RCSH_LIVE_PID := 0
+        RCSH_LIVE_URL := ""
+        RCSH_LIVE_STARTED_AT := 0
+    }
+
+    if !sameLease {
+        RCSH_LIVE_SOURCE_URL := publishUrl
+        RCSH_LIVE_ROUTE := "public"
+    }
+
+    effectiveUrl := publishUrl
+    if (RCSH_LIVE_ROUTE = "loopback") {
+        loopbackUrl := RCSH_LoopbackSrtUrl(publishUrl)
+        if (loopbackUrl != "")
+            effectiveUrl := loopbackUrl
+        else
+            RCSH_LIVE_ROUTE := "public"
+    }
     ffmpegExe := ""
     try ffmpegExe := ResolveScreenRecordingFfmpegExePath("")
     if (ffmpegExe = "" || !FileExist(ffmpegExe)) {
@@ -395,7 +437,7 @@ RCSH_StartLivePreview(publishUrl) {
     cmd := '"' ffmpegExe '" -hide_banner -loglevel warning -f gdigrab -framerate 12 -i desktop '
         . '-vf "scale=-2:720" -an -c:v libx264 -preset ultrafast -tune zerolatency '
         . '-pix_fmt yuv420p -b:v 1500k -maxrate 1500k -bufsize 3000k -g 24 '
-        . '-metadata comment=' RCSH_PREVIEW_MARKER ' -f mpegts "' publishUrl '"'
+        . '-metadata comment=' RCSH_PREVIEW_MARKER ' -f mpegts "' effectiveUrl '"'
     try {
         pid := 0
         Run(cmd, , "Hide", &pid)
@@ -404,8 +446,12 @@ RCSH_StartLivePreview(publishUrl) {
             return false
         }
         RCSH_LIVE_PID := pid
-        RCSH_LIVE_URL := publishUrl
-        RC_Log("Self-hosted live preview started. pid=" pid)
+        RCSH_LIVE_URL := effectiveUrl
+        RCSH_LIVE_STARTED_AT := nowMs
+        RC_Log("Self-hosted live preview started. pid=" pid " route=" RCSH_LIVE_ROUTE)
+        ; Re-check independently from the 10-second control poll so localhost
+        ; fallback starts promptly without blocking the farming workflow.
+        SetTimer(RCSH_LiveStartupWatchdog.Bind(publishUrl, pid), -12000)
         return true
     } catch as e {
         RCSH_SetError("live preview start: " e.Message)
@@ -413,11 +459,33 @@ RCSH_StartLivePreview(publishUrl) {
     }
 }
 
+RCSH_LiveStartupWatchdog(publishUrl, expectedPid) {
+    global RCSH_LIVE_PID, RCSH_LIVE_SOURCE_URL, RCSH_LIVE_EXPIRES_AT
+    if (RCSH_LIVE_PID != expectedPid || RCSH_LIVE_SOURCE_URL != publishUrl)
+        return
+    if (RCSH_LIVE_EXPIRES_AT > 0 && RC_UnixMs() >= RCSH_LIVE_EXPIRES_AT) {
+        RCSH_StopLivePreview("startup watchdog found expired lease")
+        return
+    }
+    if !ProcessExist(expectedPid)
+        RCSH_StartLivePreview(publishUrl)
+}
+
+RCSH_LoopbackSrtUrl(publishUrl) {
+    loopbackUrl := RegExReplace(publishUrl,
+        "i)^srt://(?:\[[^\]]+\]|[^:/?]+):", "srt://127.0.0.1:", &replaceCount, 1)
+    return replaceCount = 1 ? loopbackUrl : ""
+}
+
 RCSH_StopLivePreview(reason := "") {
-    global RCSH_LIVE_PID, RCSH_LIVE_URL
+    global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
+    global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE
     pid := RCSH_LIVE_PID
     RCSH_LIVE_PID := 0
     RCSH_LIVE_URL := ""
+    RCSH_LIVE_SOURCE_URL := ""
+    RCSH_LIVE_STARTED_AT := 0
+    RCSH_LIVE_ROUTE := "public"
     if (pid <= 0)
         return true
     try {
