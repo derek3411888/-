@@ -110,6 +110,10 @@ RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") 
     RC_PENDING_COMMAND_CLAIM := RC_LoadCommandClaimJournal()
     RC_ReconcileFinalizedCommandClaimFromLocalAck("startup")
 
+    ; 自架端沿用相同 UID、nonce journal 與 callback。初次 URL／模式由下方
+    ; Firestore discovery 欄位自動帶入，不要求使用者到執行端配對。
+    RCSH_Init(cfgPath)
+
     RC_StartupRestoreDesiredState()
 
     RC_Log("RemoteControl initialized. uid=" RC_UID " display=" RC_DISPLAY_NAME " collection=" RC_COLLECTION
@@ -130,7 +134,8 @@ RC_StartupRestoreDesiredState() {
         RC_REMOTE_DESIRED_STATE := "RUN"
     RC_SetPausedFlag(false)
 
-    resp := RC_FirestoreGetClientDoc()
+    firestoreResp := RCSH_ShouldReadFirestore(true) ? RC_FirestoreGetClientDoc() : ""
+    resp := RCSH_SelectControlResponse(firestoreResp)
     if (resp != "") {
         RC_ProcessRemoteSettings(resp)
         RC_QueuePendingCommandFromResponse(resp, "startup")
@@ -168,6 +173,7 @@ RC_Shutdown(cleanFinalExit := false) {
     try RC_FinalizeActiveStopAck("shutdown", false)
     try RC_TryFlushPendingCommandAck("shutdown")
     RC_PatchClientState("OFFLINE", true)
+    try RCSH_Shutdown()
     if (cleanFinalExit && RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT)
         RC_DeleteRuntimeSnapshot()
 }
@@ -238,10 +244,15 @@ RC_BuildStringArrayJson(values) {
     return json "]"
 }
 
-RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height := 0) {
+RC_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, height := 0, level := "INFO") {
     global RC_ENABLED, RC_UID
     if !RC_ENABLED
         return false
+    selfHostedOk := RCSH_IsAvailable()
+        ? RCSH_PublishRuntimeSnapshot(dataUri, capturedAt, reason, width, height, level) : false
+    if RCSH_IsPrimary()
+        return selfHostedOk
+
     ; 單張硬上限配合每 60 秒節流，讓單一可見總覽頁即使全天開啟，
     ; 仍對 Firestore 免費層每月 10 GiB outbound 留有餘裕。
     if (dataUri = "" || StrLen(dataUri) > 140000) {
@@ -284,6 +295,9 @@ RC_DeleteRuntimeSnapshot() {
     if !RC_ENABLED
         return false
 
+    if RCSH_IsPrimary()
+        return true ; 中央快照依 7 天離線保留規則清理，不在正常退出時刪除。
+
     r := RC_HttpRequest("DELETE", RC_ClientMediaDocUrl())
     ; 文件原本就不存在也視為已清理，避免正常關閉出現假警告。
     if (r.ok || r.status = 404) {
@@ -303,6 +317,8 @@ RC_PublishRuntimeVideoPreview(dataUri, capturedAt, durationSec := 6, width := 0,
 RC_CleanupLegacyMediaFields() {
     ; 4.36 曾把 JPEG／MP4 Base64 放在控制文件。新版第一次啟動即刪除這些欄位，
     ; 否則即使停止上傳，Firestore 仍會在網頁監聽或 PATCH 回應中傳送舊內容。
+    if RCSH_IsPrimary() && !RCSH_ShouldWriteFirestore()
+        return true
     body := '{"fields":{"mediaSchemaVersion":{"integerValue":"2"}}}'
     url := RC_ClientDocUrl()
     for fieldName in [
@@ -362,7 +378,8 @@ RC_PollCommandTickCore() {
     if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
         return
 
-    resp := RC_FirestoreGetClientDoc()
+    firestoreResp := RCSH_ShouldReadFirestore(false) ? RC_FirestoreGetClientDoc() : ""
+    resp := RCSH_SelectControlResponse(firestoreResp)
     if (resp = "")
         return
 
@@ -1385,6 +1402,9 @@ RC_PatchClientState(state, isShutdown) {
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
     nowMs := RC_UnixMs()
+    selfHostedOk := RCSH_IsAvailable() ? RCSH_SendHeartbeat(state) : false
+    if (RCSH_IsPrimary() && !RCSH_ShouldWriteFirestore())
+        return selfHostedOk
 
     currentStepName := Trim(CURRENT_STEP_NAME, " `t`r`n")
     currentStepDetail := Trim(CURRENT_STEP_DETAIL, " `t`r`n")
@@ -2148,7 +2168,9 @@ RC_TryFlushPendingCommandAck(source := "retry") {
     requestOk := false
     retryNewer := false
     try {
-        r := RC_SendCommandAckHttp(pending)
+        r := RCSH_IsPrimary()
+            ? RCSH_SendCommandAckHttp(pending)
+            : RC_SendCommandAckHttp(pending)
         requestOk := r.ok
         if requestOk {
             cleared := RC_ClearPendingCommandAckIfMatch(pending, source)
@@ -2191,6 +2213,11 @@ RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
     global RC_LAST_SETTINGS_APPLIED_REVISION
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     nowMs := (ackAt > 0 ? ackAt : RC_UnixMs())
+    if RCSH_IsPrimary() {
+        if !RCSH_SendSettingsAck(revision, resultCode, resultDetail, applied)
+            RC_Log("Self-hosted settings ACK failed; local applied revision remains durable", "WARN")
+        return
+    }
     effectiveSettings := RC_ReadEffectiveRemoteSettings()
     currentServer := Trim(CURRENT_SERVER_TARGET, " `t`r`n")
     serverIndex := (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_INDEX > 0 ? SERVER_SCHEDULE_INDEX : 0)
@@ -2273,11 +2300,17 @@ RC_FirestoreGetClientDoc() {
     url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsIntervalSec"
     url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsErrorKeepCount"
     url .= "&mask.fieldPaths=desiredMaxRestartCount"
+    url .= "&mask.fieldPaths=selfHostedServerUrl"
+    url .= "&mask.fieldPaths=selfHostedMode"
+    url .= "&mask.fieldPaths=selfHostedEpoch"
+    url .= "&mask.fieldPaths=selfHostedFirestoreFallbackUntil"
+    url .= "&mask.fieldPaths=selfHostedUpdatedAt"
     r := RC_HttpRequest("GET", url, "")
     if !r.ok {
         RC_Log("RemoteControl poll failed: " r.msg, "WARN")
         return ""
     }
+    try RCSH_ProcessDiscoveryResponse(r.body)
     return r.body
 }
 

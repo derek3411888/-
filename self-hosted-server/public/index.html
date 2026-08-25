@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>鳴潮自動鋤地控制台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section id="activationView" class="activation-shell" hidden>
+    <div class="activation-card">
+      <span class="brand-mark">WW</span>
+      <h1>私人控制台</h1>
+      <p id="activationMessage">需要由 Docker 主機產生的私人啟用連結。</p>
+      <button id="activateButton" type="button" hidden>啟用這個瀏覽器</button>
+      <small>這裡沒有帳號密碼；啟用後會安全記住本裝置。</small>
+    </div>
+  </section>
+
+  <main id="appView" class="shell" hidden>
+    <header class="app-header">
+      <div>
+        <h1>鳴潮自動鋤地控制台</h1>
+        <p>自架 Docker・PostgreSQL 多機控制</p>
+      </div>
+      <div class="header-badges">
+        <span id="migrationBadge" class="badge warning">讀取中</span>
+        <span class="badge ok">免月費自架</span>
+      </div>
+    </header>
+
+    <section class="device-bar card">
+      <label>控制電腦
+        <select id="deviceSelect"></select>
+      </label>
+      <div>
+        <strong id="deviceTitle">尚未選擇裝置</strong>
+        <span id="deviceSummary">正在讀取狀態…</span>
+      </div>
+      <button id="refreshButton" type="button">立即重讀</button>
+    </section>
+
+    <nav class="tabs" aria-label="控制台頁面">
+      <button class="active" data-tab="overview" type="button">總覽</button>
+      <button data-tab="diagnostics" type="button">診斷記錄</button>
+      <button data-tab="videos" type="button">影片</button>
+      <button data-tab="settings" type="button">設定</button>
+    </nav>
+
+    <section class="tab-panel active" data-panel="overview">
+      <div class="grid two">
+        <article class="card">
+          <div class="section-title"><div><h2>流程控制</h2><p>命令必須收到精確 ACK 才算完成。</p></div></div>
+          <div class="flow-box">
+            <span id="flowBadge" class="badge muted">等待裝置</span>
+            <strong id="flowServer">尚無流程資料</strong>
+            <p id="flowStep">—</p>
+            <p id="switchProgress" class="hint"></p>
+          </div>
+          <div class="button-row">
+            <button id="pauseButton" class="warn" type="button">暫停</button>
+            <button id="runButton" class="ok" type="button">啟動</button>
+            <button id="stopButton" class="danger" type="button">關閉腳本</button>
+          </div>
+          <label class="field">跳到指定伺服器
+            <div class="inline">
+              <select id="serverSelect"><option value="">無設定</option></select>
+              <button id="switchButton" type="button">切換</button>
+              <button id="completeButton" type="button">標記今日完成</button>
+            </div>
+          </label>
+          <p id="serverProgress" class="hint">尚未收到今日伺服器進度。</p>
+          <div id="commandStatus" class="notice muted">尚未送出命令。</div>
+          <details><summary>裝置詳細狀態</summary><pre id="deviceMeta"></pre></details>
+        </article>
+
+        <article class="card snapshot-card">
+          <div class="section-title"><div><h2>最新執行畫面</h2><p id="snapshotMeta">尚無快照</p></div></div>
+          <div id="snapshotEmpty" class="empty">等待裝置上傳最新快照。</div>
+          <img id="snapshotImage" alt="裝置最新執行畫面" hidden>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-panel" data-panel="diagnostics">
+      <div class="grid two">
+        <article class="card">
+          <div class="section-title"><div><h2>錄影與上傳狀態</h2><p>本機正式錄影不受中央服務故障影響。</p></div></div>
+          <div id="recordingStatus" class="key-values"></div>
+        </article>
+        <article class="card">
+          <div class="section-title"><div><h2>最近流程事件</h2><p>保留最近 50 筆畫面所需資料。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>時間</th><th>等級</th><th>事件</th><th>內容</th></tr></thead><tbody id="eventsBody"></tbody></table></div>
+        </article>
+      </div>
+      <article class="card">
+        <div class="section-title"><div><h2>命令歷史</h2><p>送出、ACK、取消與失敗原因都會保留。</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>送出時間</th><th>命令</th><th>Nonce</th><th>狀態</th><th>結果</th></tr></thead><tbody id="commandsBody"></tbody></table></div>
+      </article>
+    </section>
+
+    <section class="tab-panel" data-panel="videos">
+      <div class="grid video-grid">
+        <article class="card">
+          <div class="section-title"><div><h2>近即時畫面</h2><p>720p／12fps；有人觀看時才推流。</p></div><span id="liveBadge" class="badge muted">未啟動</span></div>
+          <video id="liveVideo" controls muted playsinline></video>
+          <div class="button-row">
+            <button id="startLiveButton" class="ok" type="button">開啟即時畫面</button>
+            <button id="stopLiveButton" type="button" disabled>停止觀看</button>
+          </div>
+          <p id="liveMessage" class="hint">啟動後約 10 秒開始；離開後 90 秒自動停止推流。</p>
+        </article>
+        <article class="card">
+          <div class="section-title"><div><h2>完整錄影與片段</h2><p>執行中可看已封口片段，結束後顯示單一 MP4。</p></div></div>
+          <div id="recordingList" class="recording-list"></div>
+        </article>
+      </div>
+      <article id="playbackCard" class="card" hidden>
+        <div class="section-title"><div><h2 id="playbackTitle">影片回看</h2><p id="playbackMeta"></p></div></div>
+        <video id="playbackVideo" controls playsinline preload="metadata"></video>
+        <div id="segmentList" class="segment-list"></div>
+      </article>
+    </section>
+
+    <section class="tab-panel" data-panel="settings">
+      <div class="grid two">
+        <form id="settingsForm" class="card">
+          <div class="section-title"><div><h2>執行端設定</h2><p>並行驗證結束前由 Firestore 保存。</p></div></div>
+          <label class="toggle"><input id="scheduleEnabled" type="checkbox">啟用伺服器排程</label>
+          <label class="field">伺服器清單（每行一個）<textarea id="serverList" rows="5"></textarea></label>
+          <div class="form-grid">
+            <label class="field">最大重啟次數<input id="maxRestart" type="number" min="1" max="50"></label>
+            <label class="field">快照間隔（秒）<input id="snapshotInterval" type="number" min="60" max="600"></label>
+            <label class="field">錯誤圖保留<input id="snapshotKeep" type="number" min="5" max="200"></label>
+          </div>
+          <label class="toggle"><input id="diagnosticsEnabled" type="checkbox">啟用即時診斷</label>
+          <label class="toggle"><input id="mailEnabled" type="checkbox">啟用郵件通知</label>
+          <button id="saveSettingsButton" class="ok" type="submit">儲存設定</button>
+          <p id="settingsMessage" class="hint"></p>
+        </form>
+
+        <article class="card">
+          <div class="section-title"><div><h2>遷移與伺服器</h2><p>達成條件前不會切走 Firestore。</p></div></div>
+          <div id="migrationStatus" class="key-values"></div>
+          <div class="button-row">
+            <button id="cutoverButton" type="button" disabled>正式切換至自架</button>
+            <button id="openEnrollmentButton" type="button">開放新增裝置 10 分鐘</button>
+          </div>
+          <div id="alertsList" class="alerts"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <div class="section-title"><div><h2>已授權瀏覽器</h2><p>可撤銷遺失或不再使用的瀏覽器。</p></div><button id="logoutButton" type="button">登出這台</button></div>
+        <div id="browserSessions" class="session-list"></div>
+      </article>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/vendor/hls.min.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

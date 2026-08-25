@@ -1,0 +1,34 @@
+logLevel: info
+logDestinations: [stdout]
+
+authMethod: http
+authHTTPAddress: http://api:3000/internal/media-auth
+
+rtsp: false
+rtmp: false
+webrtc: false
+moq: false
+playback: false
+api: false
+metrics: false
+pprof: false
+
+hls: true
+hlsAddress: :8888
+hlsEncryption: false
+hlsAllowOrigins: []
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsMuxerCloseAfter: 30s
+
+srt: true
+srtAddress: :8890
+
+pathDefaults:
+  source: publisher
+  overridePublisher: true
+
+paths:
+  all_others:

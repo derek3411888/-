@@ -7,3 +7,8 @@ config/
 payload/temp*.png
 payload/ue4crash*.png
 payload/menu*.png
+
+# Self-hosted server local dependencies, secrets, and disposable smoke data
+self-hosted-server/node_modules/
+self-hosted-server/.env
+.server-test/

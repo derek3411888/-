@@ -44,6 +44,18 @@ last_settings_ack_detail=
 last_settings_ack_applied=0
 last_settings_ack_at=0
 
+[self_hosted]
+; 由 Firestore migration discovery 自動填入，不需要在執行端手動配對。
+; 正式環境只接受 HTTPS；localhost 測試可使用 HTTP。
+server_url=
+mode=shadow
+epoch=
+firestore_fallback_until=0
+; 裝置 token 由程式產生並以目前 Windows 使用者的 DPAPI 加密，請勿手動修改。
+device_token_dpapi=
+; 每段 HTTPS 續傳上限；直播期間會自動降到 2 Mbps。
+upload_limit_mbps=8
+
 [restart_tracking]
 ; 可由新版控制網站調整，允許 1～50
 max_restart_count=10

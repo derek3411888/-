@@ -29,6 +29,7 @@ catch
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include RemoteControlFirestore.ahk
+#Include RemoteControlSelfHost.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -106,7 +107,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.54"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.55"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -4059,6 +4060,87 @@ RestoreMinimizedWindowPreservingPlacement(hwnd, context := "", &reason := "") {
     }
 }
 
+TryActivateWindowByVerifiedCaptionClick(hwnd, context := "", &detail := "") {
+    detail := ""
+    if !hwnd || !WinExist("ahk_id " hwnd) {
+        detail := "target_missing"
+        return false
+    }
+    for buttonName in ["LButton", "RButton", "MButton"] {
+        if GetKeyState(buttonName, "P") {
+            detail := "physical_mouse_button_down:" buttonName
+            return false
+        }
+    }
+
+    oldMouseMode := A_CoordModeMouse
+    originalX := 0
+    originalY := 0
+    moved := false
+    try {
+        WinGetPos(&windowX, &windowY, &windowW, &windowH, "ahk_id " hwnd)
+        WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " hwnd)
+        captionHeight := clientY - windowY
+        ; 只允許點擊已驗證屬於目標 root 的非客戶區標題列。沒有標題列的
+        ; borderless 視窗不走這個恢復方式，避免誤觸遊戲或 OKWW 功能按鈕。
+        if (windowW < 240 || captionHeight < 10 || captionHeight > 120) {
+            detail := "no_safe_caption window=" windowW "x" windowH
+                . " clientOrigin=" clientX "," clientY " captionHeight=" captionHeight
+            return false
+        }
+        candidateY := Round(windowY + captionHeight / 2)
+        candidateXs := [
+            Round(windowX + windowW * 0.50),
+            Round(windowX + windowW * 0.35),
+            Round(windowX + windowW * 0.65)
+        ]
+        selectedX := 0
+        hitSummary := ""
+        for candidateX in candidateXs {
+            hitHwnd := 0
+            hitRelation := ""
+            if IsTargetWindowAtScreenPoint(hwnd, candidateX, candidateY, &hitHwnd, &hitRelation) {
+                selectedX := candidateX
+                break
+            }
+            hitSummary .= (hitSummary != "" ? "," : "") candidateX ":" hitHwnd "/" hitRelation
+        }
+        if !selectedX {
+            detail := "caption_occluded y=" candidateY " hits=" hitSummary
+            return false
+        }
+
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&originalX, &originalY)
+        MouseMove(selectedX, candidateY, 0)
+        moved := true
+        RawSleep(60)
+        previousCritical := Critical("On")
+        try {
+            if !WinExist("ahk_id " hwnd)
+                return false
+            if !IsTargetWindowAtScreenPoint(hwnd, selectedX, candidateY, &hitHwnd, &hitRelation) {
+                detail := "caption_lost_before_click hit=" hitHwnd " relation=" hitRelation
+                return false
+            }
+            MouseClick("Left", selectedX, candidateY, 1, 0)
+        } finally {
+            Critical(previousCritical)
+        }
+        detail := "sent screen=" selectedX "," candidateY
+            . " target=" hwnd " context=" context
+        return true
+    } catch as e {
+        detail := "caption_click_exception:" e.Message
+        return false
+    } finally {
+        if moved {
+            try MouseMove(originalX, originalY, 0)
+        }
+        CoordMode("Mouse", oldMouseMode)
+    }
+}
+
 ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPolicy := "family") {
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
 
@@ -4101,6 +4183,38 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
         if (relation != "exact")
             WriteLog("視窗前景已確認為同一互動視窗群組：relation=" relation
                 " target=" hwnd " foreground=" foregroundHwnd " | context=" context)
+        return true
+    }
+
+    ; ShellExperienceHost 的通知視窗有時會長時間保有 foreground，並以拒絕存取
+    ; 阻止 AttachThreadInput。先要求 Windows 切到已驗證目標；若仍失敗，只在
+    ; 目標未被遮擋的非客戶區標題列送出一次實體點擊，之後仍必須重新驗證前景。
+    switchAttempted := false
+    switchError := ""
+    try {
+        DllCall("kernel32\SetLastError", "uint", 0)
+        DllCall("user32\SwitchToThisWindow", "ptr", hwnd, "int", true)
+        switchAttempted := true
+        switchError := A_LastError
+    } catch as e {
+        switchError := e.Message
+    }
+    if (switchAttempted
+        && WaitForTargetForegroundWindow(hwnd, Min(350, Max(0, deadline - MonotonicTickMs())), relationPolicy)) {
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        WriteLog("視窗前景強化成功：mode=SwitchToThisWindow relation=" relation
+            " target=" hwnd " foreground=" foregroundHwnd " | context=" context)
+        return true
+    }
+
+    captionClickDetail := ""
+    captionClickUsed := TryActivateWindowByVerifiedCaptionClick(hwnd, context, &captionClickDetail)
+    if (captionClickUsed
+        && WaitForTargetForegroundWindow(hwnd, Min(500, Max(0, deadline - MonotonicTickMs())), relationPolicy)) {
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        WriteLog("視窗前景強化成功：mode=VerifiedCaptionClick relation=" relation
+            " target=" hwnd " foreground=" foregroundHwnd
+            " detail=" captionClickDetail " | context=" context)
         return true
     }
 
@@ -4230,6 +4344,8 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
         " detachTarget=" detachTargetResult "/" detachTargetError
         " bring=" bringResult "/" bringError
         " setForeground=" foregroundResult "/" foregroundError
+        " switchToThisWindow=" switchAttempted "/" switchError
+        " captionClick=" captionClickUsed "/" captionClickDetail
         " altPulse=" altPulseUsed "/" altPulseReason
         " targetGui={" DescribeGuiThreadForInputLog(hwnd) "}"
         " foregroundGui={" DescribeGuiThreadForInputLog(currentForeground) "}"
@@ -8659,15 +8775,15 @@ ReadCombinedConfigState() {
 }
 
 ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
-    ; 加寬最小視窗尺寸以容納雙欄
-    g := Gui("+Resize +MinSize1550x760", "整合設定（程式路徑 + 郵件通知）")
-    g.SetFont("s10", "Microsoft JhengHei UI")
+    ; 15 吋 1080p（常見 125% 縮放）是最低版面基準。大型三欄改為分頁，
+    ; 讓儲存按鈕固定留在可見底部，也不再依賴不存在的主視窗捲動。
+    g := Gui("+Resize +MinSize1060x620", "整合設定")
+    g.SetFont("s9", "Microsoft JhengHei UI")
 
     ; === 頂部共用區域 (全寬) ===
-    g.AddText("w1510", "【觸發原因】" reason)
-    g.AddText("w1510", "【設定檔位置】" cfgPath)
-    g.AddText("w1510", "【說明】以下欄位會載入目前設定，你可以一次全部修改後儲存。")
-    g.AddText("w1510", "【路徑要求】三個程式路徑都必須存在；若之後檢測到空白或錯誤，會再次跳出此視窗。")
+    g.AddText("w1080", "【觸發原因】" reason)
+    g.AddText("w1080", "【設定檔位置】" cfgPath)
+    g.AddText("w1080", "【說明】請分頁完成設定；三個程式路徑必須存在，儲存按鈕固定在視窗底部。")
 
     summary := "目前偵測值：`r`n"
     summary .= "OKWW: " state.okwwPath "`r`n"
@@ -8709,15 +8825,15 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "runtime_diagnostics.image_dir: " ResolveRuntimeDiagnosticsDir() "`r`n"
     summary .= "runtime_diagnostics.video_preview_enabled: " state.runtimeDiagnosticsVideoPreviewEnabled "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
-    g.AddEdit("xm w1510 r8 ReadOnly", summary)
-
-    if (state.needSetup)
-        g.AddEdit("xm y+8 w1510 r4 ReadOnly", "目前需修正：`r`n" state.errorText)
+    tabs := g.AddTab3("xm y+10 w1080 h500", [
+        "基本路徑與通知", "螢幕錄影", "遠端與診斷", "目前設定"
+    ])
+    tabs.UseTab(1)
 
     ; ==========================================
     ; === 左欄開始 (使用 Section 建立錨點) ===
     ; ==========================================
-    g.AddText("xm y+15 Section w500", "【基本路徑設定】")
+    g.AddText("Section w500", "【基本路徑設定】")
 
     g.AddText("xs y+12 w95", "OKWW")
     edOkww := g.AddEdit("x+8 w345", state.okwwPath)
@@ -8751,7 +8867,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     edServerSwitchY := g.AddEdit("x+5 w50", state.serverSwitchY)
     g.AddText("x+10 w115 c666666", "預設(640,549)")
 
-    g.AddText("xs y+22 w450", "【郵件設定】")
+    ; 郵件放在同分頁右欄，基本分頁高度可控制在 500 以內。
+    g.AddText("x570 ys Section w450", "【郵件設定】")
     cbSendEnabled := g.AddCheckbox("xs y+8 w440", "啟用收尾通知寄信")
     cbSendEnabled.Value := state.sendEnabled ? 1 : 0
     txtMailHint := g.AddText("xs y+4 w440 c666666", state.sendEnabled ? "目前啟用寄信：需填寫 SMTP 欄位" : "目前停用寄信：可略過 SMTP 欄位")
@@ -8783,7 +8900,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     ; ==========================================
     ; === 右欄開始 (ys 對齊左欄頂部，新 Section) ===
     ; ==========================================
-    g.AddText("x600 ys Section w440", "【螢幕錄影設定】")
+    tabs.UseTab(2)
+    g.AddText("Section w440", "【螢幕錄影設定】")
     cbScreenRecordingEnabled := g.AddCheckbox("xs y+10 w440", "啟用螢幕錄影")
     cbScreenRecordingEnabled.Value := state.screenRecordingEnabled ? 1 : 0
 
@@ -8820,7 +8938,9 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     txtScreenRecordingArgsHint := g.AddText("xs y+4 w440 c666666", "簡易模式會自動生成，進階可手動修改")
 
-    g.AddText("xs y+8 w80", "輸出資料夾")
+    ; 分段／輸出移到右欄，避免 1080p 高 DPI 下內容超出頁籤卻無法捲動。
+    g.AddText("x570 ys Section w440", "【分段、輸出與收尾】")
+    g.AddText("xs y+10 w80", "輸出資料夾")
     edScreenRecordingOutputDir := g.AddEdit("x+5 w205", state.screenRecordingOutputDir)
     btnScreenRecordingOutputDir := g.AddButton("x+5 w70", "瀏覽...")
     btnScreenRecordingTestOutput := g.AddButton("x+5 w70", "測試寫入")
@@ -8847,7 +8967,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     ; ==========================================
     ; === 第三欄：遠端控制識別設定 ===
     ; ==========================================
-    g.AddText("x1060 ys Section w440", "【遠端控制識別】")
+    tabs.UseTab(3)
+    g.AddText("Section w440", "【遠端控制識別】")
     g.AddText("xs y+10 w440 c666666", "建議兩台機器填不同裝置別名，網頁上會更好辨認。")
 
     g.AddText("xs y+10 w80", "裝置別名")
@@ -8871,12 +8992,21 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     g.AddText("x+15 w95", "錯誤圖保留")
     edRuntimeDiagnosticsKeepCount := g.AddEdit("x+5 w60", state.runtimeDiagnosticsErrorKeepCount)
     g.AddText("x+5 w30", "張")
-    cbRuntimeVideoPreviewEnabled := g.AddCheckbox("xs y+8 w440", "網路短影片暫停實作（不會上傳影片）")
+    cbRuntimeVideoPreviewEnabled := g.AddCheckbox("xs y+8 w440", "舊 Firestore 短影片已停用（自架直播由新網站按需啟動）")
     cbRuntimeVideoPreviewEnabled.Value := 0
     cbRuntimeVideoPreviewEnabled.Enabled := false
-    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h66", "網頁只顯示每 60 秒更新的最新截圖、錄影結果路徑與最近 50 筆事件；本機圖片集中在程式資料夾的『診斷快照』，完整長影片仍存到錄影輸出資料夾。")
+    txtRuntimeDiagnosticsHint := g.AddText("xs y+5 w440 c666666 h66", "Firestore 舊頁只顯示最新截圖與事件；自架網站另提供按需直播及中央影片回看。本機圖片集中在程式資料夾的『診斷快照』，正式原始影片仍保留在錄影輸出資料夾。")
 
-    ; === 底部按鈕區 ===
+    tabs.UseTab(4)
+    g.AddText("Section w1010", "【目前有效設定】")
+    g.AddEdit("xs y+8 w1010 r14 ReadOnly", summary)
+    if (state.needSetup) {
+        g.AddText("xs y+10 w1010 cC62828", "【目前需修正】")
+        g.AddEdit("xs y+5 w1010 r5 ReadOnly", state.errorText)
+    }
+
+    tabs.UseTab()
+    ; === 底部按鈕區（永遠位於分頁外） ===
     btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
     btnCancel := g.AddButton("x+12 w110 h34", "取消")
 
@@ -8885,6 +9015,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         done: false,
         saved: false,
         gui: g,
+        tabs: tabs,
         btnSave: btnSave,
         btnCancel: btnCancel,
         cfgPath: cfgPath,
@@ -8991,8 +9122,15 @@ ShowGuiFitToScreen(g, margin := 24) {
 
     try {
         WinGetPos(&x, &y, &w, &h, "ahk_id " g.Hwnd)
-        maxW := A_ScreenWidth - (margin * 2)
-        maxH := A_ScreenHeight - (margin * 2)
+        workLeft := 0
+        workTop := 0
+        workRight := A_ScreenWidth
+        workBottom := A_ScreenHeight
+        try MonitorGetWorkArea(MonitorGetPrimary(), &workLeft, &workTop, &workRight, &workBottom)
+        workW := workRight - workLeft
+        workH := workBottom - workTop
+        maxW := workW - (margin * 2)
+        maxH := workH - (margin * 2)
 
         if (maxW < 640)
             maxW := 640
@@ -9002,20 +9140,28 @@ ShowGuiFitToScreen(g, margin := 24) {
         newW := (w > maxW) ? maxW : w
         newH := (h > maxH) ? maxH : h
 
-        if (newW != w || newH != h) {
-            newX := Floor((A_ScreenWidth - newW) / 2)
-            newY := Floor((A_ScreenHeight - newH) / 2)
-            if (newX < margin)
-                newX := margin
-            if (newY < margin)
-                newY := margin
-            WinMove(newX, newY, newW, newH, "ahk_id " g.Hwnd)
-        }
+        newX := workLeft + Floor((workW - newW) / 2)
+        newY := workTop + Floor((workH - newH) / 2)
+        if (newX < workLeft + margin)
+            newX := workLeft + margin
+        if (newY < workTop + margin)
+            newY := workTop + margin
+        WinMove(newX, newY, newW, newH, "ahk_id " g.Hwnd)
     } catch {
     }
 }
 
 OnCombinedSetupGuiSize(thisGui, minMax, width, height) {
+    global __MAIL_SETUP
+    if IsObject(__MAIL_SETUP) {
+        try {
+            __MAIL_SETUP.tabs.GetPos(&tabX, &tabY)
+            tabW := Max(1020, width - 32)
+            ; 讓頁籤永遠停在底部按鈕上方；1080p 高 DPI 環境縮放時也不會互相覆蓋。
+            tabH := Max(440, height - tabY - 72)
+            __MAIL_SETUP.tabs.Move(16, tabY, tabW, tabH)
+        }
+    }
     ReflowCombinedSetupFooterButtons(width, height)
 }
 
@@ -10024,7 +10170,7 @@ CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
                 dataUri := "data:image/jpeg;base64," ImagePutBase64(latestPath)
             }
             RC_PublishRuntimeSnapshot(dataUri, RC_UnixMs(), SubStr(reason, 1, 180),
-                targetWidth, targetHeight)
+                targetWidth, targetHeight, preserveErrorCopy ? "ERROR" : "INFO")
         }
         return true
     } catch as e {

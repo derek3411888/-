@@ -3,7 +3,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.54"
+global PACK_LAUNCHER_BUILD_VERSION := "4.55"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false

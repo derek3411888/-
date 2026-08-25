@@ -150,7 +150,7 @@
 - Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
 - 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
 - 即時診斷預設每 60 秒以 ImagePut 擷取低畫質 JPEG；所有主程式／子流程產生的圖片集中到 `<程式根目錄>\診斷快照`，OCR 暫存圖位於其下 `暫存` 且使用後刪除，啟動時會搬移舊 `%LOCALAPPDATA%\WutheringAuto\diagnostics` 圖片並清除超過 24 小時的殘留暫存。`latest.jpg` 原子覆寫；WARN／ERROR 仍依設定保留固定總份數，但 Firestore 上傳硬性限制最多每 60 秒一次。
-- 網路短影片功能目前暫停實作：`video_preview_enabled` 啟動時會強制遷移為 `0`，設定介面不可啟用，網站不顯示影片播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。完整長影片維持本機／UNC 分段錄影與背景收尾，不受影響。舊版 preview FFmpeg marker 判斷保留，只為避免更新交界誤把殘留預覽程序當主錄影。
+- 舊 Firestore Base64「網路短影片」目前停用：`video_preview_enabled` 啟動時會強制遷移為 `0`，舊網站不顯示播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。這不包含自架平台的按需 SRT／HLS 近即時畫面；自架直播使用獨立 FFmpeg marker，也不得被正式錄影接管或停止邏輯誤殺。
 - Firestore 控制文件為 `ahk_clients/{UID}`；JPEG 放在同集合的 `{UID}__media`。為相容缺少 `docKind` 的舊 client，網頁主查詢使用 `uid != ""`（media 只有 `clientUid`），並只為目前選取裝置訂閱一份 media 文件。正常完整結束會 PATCH client 為 `OFFLINE` 後刪除 media 文件；錯誤、系統關機、強制終止與重啟交接保留最後快照。網頁開啟期間會交易式刪除最後心跳超過 7 天、且再連續觀察 10 分鐘沒有 listener 更新的 client 與 media，避免誤刪時鐘錯誤但仍持續心跳的裝置。
 - AHK 命令輪詢至少 10 秒且 GET 只取命令欄位與 `desiredSettings*` 欄位；心跳至少 60 秒（預設 90 秒）。心跳、命令 ACK、設定 ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
 - 錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
@@ -168,6 +168,15 @@
 - 網頁標記完成使用既有 `[server_completed]` 與每日 04:00 循環。標記目前流程不立即停止，後續才略過；全部完成時新程序必須乾淨退出，不可執行已完成目標。
 - `nextserver` 新程序會先把切換提醒寫入 `[server_switch_notify]`。只有 `開啟LRMC.ahk` 成功送出 Ctrl+F1 並寫入 `[lrmc_runtime] run_started=1` 後才算切換完成、寄信並清除 pending；失敗／停用也要保存並在網頁顯示結果。
 - 程式啟動期間收到的新 nonce 必須排隊到伺服器排程 runtime ready，不可把它當成啟動基準吞掉。完整 claim journal 必須先於 `last_nonce` 與 callback 落盤；中斷後依相同 nonce/state/目標與 durable ACK 決定恢復或跳過。若排隊的 `COMPLETE_SERVER` 標記了剛載入的目前目標，`RefreshServerScheduleAfterStartupCommands()` 必須在主流程開始前重選下一個待執行目標或全部完成後退出；執行中收到完成命令才維持不中斷。
+
+
+### 3.21 自架 Docker 控制、直播與影片平台
+- `self-hosted-server/` 包含 PostgreSQL、Node API/網站、Caddy、MediaMTX、備份與一鍵安裝／更新工具。
+- `payload/RemoteControlSelfHost.ahk` 沿用既有 durable nonce／claim／ACK 狀態機；shadow 期間 Firestore 是唯一命令來源，primary 才切換到 PostgreSQL。裝置 token 只存伺服器雜湊，本機以 Windows DPAPI 保存。
+- `payload/SelfHostMediaUpload.ps1` 由錄影 worker 呼叫，以 SHA-256、Content-Range 續傳封口 MKV；中央故障不阻塞本機錄影，未完成前不得清除 staging。
+- 直播使用獨立 `WUTHERING_RUNTIME_PREVIEW_V1` FFmpeg marker、720p/12fps、加密 SRT；正式錄影掃描會排除它，啟動時只清理由該 marker 識別的孤兒預覽程序。
+- 切換門檻會核對 Firestore 命令與設定 ACK、兩端 nonce、一致性錯誤、7 天時間及每台完整錄影。切換後 GitHub Pages 會導向自架 HTTPS；`?legacy=1` 保留緊急檢查入口。
+- 完整部署、網路埠、備份／還原與維運指令見 `self-hosted-server/README.md`。
 
 ## 4) 伺服器排程與完成判定（高風險區）
 ### 4.1 切日規則（非常重要）
@@ -192,6 +201,8 @@
 - payload/全自動.ahk：主控流程
 - payload/FolderPickerHelper.ahk：一般權限網路／映射磁碟／UNC 資料夾選擇器
 - payload/RecordingFinalizeWorker.ahk：錄影分段補傳、合併、驗證與安全清理
+- payload/RemoteControlSelfHost.ahk：自架 discovery、裝置憑證、命令傳輸、心跳、快照與直播 FFmpeg
+- payload/SelfHostMediaUpload.ps1：中央片段 SHA-256／Content-Range 續傳與完成通知
 - payload/開啟LRMC.ahk：啟動並操作 LRMCAI
 - payload/自動開啟OKWW.ahk：OKWW 啟動管理
 - payload/聲骸合成.ahk：聲骸流程
@@ -209,8 +220,9 @@
 3. 重建 payload.zip（根層直接放 payload 目錄內容，不可多包一層 payload）
 4. 編譯 打包啟動器.ahk -> 根目錄 全自動鋤地.exe（必須在重建 zip 後，才能內嵌最新版 payload.zip）
 5. 計算 payload.zip 與根目錄啟動器 EXE 的 SHA256
-6. 同時提升 payload 與 launcher 版本，更新 manifest 兩組版本、URL 與 SHA256
-7. git commit + push main，讓客戶端能直接取得更新
+6. 建立同版 `self-hosted-server` 套件並計算 SHA256
+7. 同時提升 payload、launcher 與 server 版本，更新 manifest 三組版本、URL 與 SHA256
+8. git commit + push main，讓客戶端與 Docker 主機都能取得更新
 
 > 維運約定：以後每次「打包更新」都必須同時重新編譯、升版並發布 Payload 與 Launcher，不可只更新其中一個。
 

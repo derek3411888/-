@@ -48,7 +48,8 @@ try {
             ExitApp(0)
         state := ""
         try state := IniRead(sessionDir "\session.ini", "recording", "state", "")
-        if (state != "sync_waiting" && state != "copy_waiting")
+        if (state != "sync_waiting" && state != "copy_waiting"
+            && state != "complete_upload_pending")
             ExitApp(5)
         WorkerLog(sessionDir, "目的端仍不可用，60 秒後重試（" A_Index "/120）", "WARN")
         Sleep 60000
@@ -296,6 +297,56 @@ WorkerPublishRecordingStatus(status) {
     }
 }
 
+WorkerTrySelfHostedUpload(sessionDir, mode) {
+    cfg := WorkerReadSession(sessionDir)
+    if (cfg.configPath = "" || !FileExist(cfg.configPath))
+        return true
+    serverUrl := ""
+    selfHostedMode := "disabled"
+    protectedToken := ""
+    try {
+        serverUrl := Trim(IniRead(cfg.configPath, "self_hosted", "server_url", ""), " `t`r`n/")
+        selfHostedMode := StrLower(Trim(IniRead(cfg.configPath, "self_hosted", "mode", "shadow"), " `t`r`n"))
+        protectedToken := Trim(IniRead(cfg.configPath, "self_hosted", "device_token_dpapi", ""), " `t`r`n")
+    } catch {
+        return true
+    }
+    if (serverUrl = "" || selfHostedMode = "disabled")
+        return true
+    if (protectedToken = "") {
+        WorkerLog(sessionDir, "中央上傳等待裝置憑證；本機影片不受影響", "WARN")
+        try IniWrite("credential_waiting", sessionDir "\session.ini", "self_hosted", "upload_state")
+        return false
+    }
+
+    uploader := A_ScriptDir "\SelfHostMediaUpload.ps1"
+    powershell := A_WinDir "\System32\WindowsPowerShell\v1.0\powershell.exe"
+    if !FileExist(uploader) || !FileExist(powershell) {
+        WorkerLog(sessionDir, "中央上傳工具缺失；本機影片與分段已保留", "ERROR")
+        try IniWrite("uploader_missing", sessionDir "\session.ini", "self_hosted", "upload_state")
+        return false
+    }
+    try IniWrite(mode = "finalize" ? "finalizing" : "uploading",
+        sessionDir "\session.ini", "self_hosted", "upload_state")
+    cmd := '"' powershell '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'
+        . uploader '" -Mode "' mode '" -SessionDir "' sessionDir '"'
+    exitCode := -1
+    try exitCode := RunWait(cmd, A_ScriptDir, "Hide")
+    catch as e {
+        WorkerLog(sessionDir, "啟動中央上傳工具失敗: " e.Message, "WARN")
+    }
+    if (exitCode = 0) {
+        try IniWrite(mode = "finalize" ? "finalize_accepted" : "uploaded",
+            sessionDir "\session.ini", "self_hosted", "upload_state")
+        try IniWrite(WorkerUnixMs(), sessionDir "\session.ini", "self_hosted", "last_success_unix_ms")
+        return true
+    }
+    try IniWrite("retry_pending", sessionDir "\session.ini", "self_hosted", "upload_state")
+    try IniWrite(exitCode, sessionDir "\session.ini", "self_hosted", "last_exit_code")
+    WorkerLog(sessionDir, "中央片段上傳暫時失敗，exit=" exitCode "；保留本機來源供續傳", "WARN")
+    return false
+}
+
 WorkerToIntRange(value, defaultValue, minValue, maxValue) {
     n := defaultValue
     try n := Integer(Trim(value, " `t`r`n"))
@@ -362,7 +413,7 @@ WorkerCopyFileVerified(sourcePath, targetPath) {
     }
 }
 
-WorkerSyncSession(sessionDir, includeNewest) {
+WorkerSyncSession(sessionDir, includeNewest, skipCentral := false) {
     cfg := WorkerReadSession(sessionDir)
     if (cfg.destinationDir = "" || !WorkerIsSafeBaseName(cfg.baseName)) {
         WorkerLog(sessionDir, "session.ini 缺少 destination_dir/base_name", "ERROR")
@@ -376,6 +427,11 @@ WorkerSyncSession(sessionDir, includeNewest) {
     copyCount := includeNewest ? files.Length : Max(0, files.Length - 1)
     if (copyCount <= 0)
         return true
+
+    ; 中央 HTTPS 上傳與使用者選擇的本機／網路目的地互相獨立。
+    ; 中央失敗只留下續傳狀態，不能阻塞既有目的端複製。
+    if !skipCentral
+        WorkerTrySelfHostedUpload(sessionDir, "sync")
 
     destinationSegments := cfg.destinationDir "\" cfg.baseName "_segments"
     try DirCreate(destinationSegments)
@@ -553,11 +609,20 @@ WorkerFinalizeSession(sessionDir) {
         return false
     }
 
+    ; 封口後立即補齊中央分段並送出 expectedSegments。失敗時後面的本機
+    ; 合併仍照常進行，但最後不清除 staging，讓同一 worker／下次啟動續傳。
+    centralComplete := WorkerTrySelfHostedUpload(sessionDir, "finalize")
+
     ; 先把所有可播放分段補到目的端；即使稍後合併失敗仍能逐段回看。
-    if !WorkerSyncSession(sessionDir, true)
+    if !WorkerSyncSession(sessionDir, true, true)
         return false
 
     if !cfg.autoMerge {
+        if !centralComplete {
+            WorkerWriteState(sessionDir, "complete_upload_pending",
+                "本機分段已驗證；中央影片仍待續傳，來源已保留")
+            return false
+        }
         WorkerWriteState(sessionDir, "complete", "已補傳並驗證全部分段，自動合併已停用")
         WorkerLog(sessionDir, "全部分段已補傳；設定為不自動合併")
         if WorkerIsSafeSessionDir(sessionDir)
@@ -575,6 +640,14 @@ WorkerFinalizeSession(sessionDir) {
     if !WorkerCopyFileVerified(mergedPath, destinationFinal) {
         WorkerWriteState(sessionDir, "copy_waiting", "完整影片目的端複製失敗")
         WorkerLog(sessionDir, "完整影片複製失敗，保留本機合併檔與全部分段: " destinationFinal, "WARN")
+        return false
+    }
+
+
+    if !centralComplete {
+        WorkerWriteState(sessionDir, "complete_upload_pending",
+            "本機完整影片已驗證；中央影片仍待續傳，來源已保留")
+        WorkerLog(sessionDir, "本機收尾完成，但中央續傳尚未完成；不清除 staging", "WARN")
         return false
     }
 

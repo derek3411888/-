@@ -1,0 +1,123 @@
+name: wuthering-control
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wuthering_control
+      POSTGRES_USER: wuthering
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Taipei
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wuthering -d wuthering_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: &rotated_logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "15"
+
+  api:
+    image: wuthering-control-api:${SERVER_IMAGE_TAG:-current}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://wuthering:${POSTGRES_PASSWORD}@postgres:5432/wuthering_control
+      PUBLIC_URL: https://${PUBLIC_HOSTNAME}
+      PUBLIC_SRT_HOST: ${PUBLIC_SRT_HOST}
+      PUBLIC_SRT_PORT: ${PUBLIC_SRT_PORT:-8890}
+      SESSION_SECRET: ${SESSION_SECRET}
+      LIVE_TOKEN_SECRET: ${LIVE_TOKEN_SECRET}
+      LIVE_SRT_PASSPHRASE: ${LIVE_SRT_PASSPHRASE}
+      MEDIA_ROOT: /data/media
+      SNAPSHOT_ROOT: /data/snapshots
+      SERVER_LOG_ROOT: /data/logs
+      MIN_FREE_GB: ${MIN_FREE_GB:-20}
+      SESSIONS_PER_DEVICE: ${SESSIONS_PER_DEVICE:-5}
+      FIRESTORE_IMPORT_ENABLED: ${FIRESTORE_IMPORT_ENABLED:-true}
+      FIRESTORE_PROJECT_ID: ${FIRESTORE_PROJECT_ID:-ww-control-a3988}
+      FIRESTORE_API_KEY: ${FIRESTORE_API_KEY}
+      FIRESTORE_COLLECTION: ${FIRESTORE_COLLECTION:-ahk_clients}
+      TZ: Asia/Taipei
+    volumes:
+      - type: bind
+        source: ${DATA_ROOT_HOST}
+        target: /data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    logging: *rotated_logs
+
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.1
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${PUBLIC_SRT_PORT:-8890}:8890/udp"
+    environment:
+      MTX_PATHDEFAULTS_SRTPUBLISHPASSPHRASE: ${LIVE_SRT_PASSPHRASE}
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    logging: *rotated_logs
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      mediamtx:
+        condition: service_started
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging: *rotated_logs
+
+  backup:
+    build:
+      context: ./backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: wuthering_control
+      PGUSER: wuthering
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Taipei
+    volumes:
+      - type: bind
+        source: ${BACKUP_ROOT_HOST}
+        target: /backups
+    logging: *rotated_logs
+
+volumes:
+  postgres_data:
+    name: wuthering_control_postgres_data
+  caddy_data:
+    name: wuthering_control_caddy_data
+  caddy_config:
+    name: wuthering_control_caddy_config
