@@ -9,6 +9,7 @@ RUN npm ci --omit=dev
 COPY migrations ./migrations
 COPY public ./public
 COPY src ./src
+COPY test ./test
 
 ENV NODE_ENV=production \
     PORT=3000 \

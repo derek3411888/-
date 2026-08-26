@@ -32,6 +32,7 @@ catch
 #Include RemoteControlSelfHost.ahk
 #Include OkwwOcrTextMatchers.ahk
 #Include WutheringServerNames.ahk
+#Include SelfHealingPolicy.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -109,7 +110,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.72"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.73"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2847,6 +2848,7 @@ ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 
 ; 成功完成流程，重置重啟計數器
 IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
+ResetSelfHealingTracking("主流程已成功進入收尾監測")
 WriteLog("流程成功完成，已重置重啟計數器")
 WriteStep("主流程完成", "重啟計數已歸零")
 StartPendingServerSwitchCompletionMonitor()
@@ -7147,6 +7149,209 @@ ResetForegroundInputFailureStreak(reason := "") {
             . (reason != "" ? " | " reason : ""))
 }
 
+ReadSelfHealingRuntimeState() {
+    global CFG_FILE
+    section := "self_healing"
+    return {
+        state: Trim(IniReadSafe(CFG_FILE, section, "state", "idle"), " `t`r`n"),
+        fingerprint: Trim(IniReadSafe(CFG_FILE, section, "failure_fingerprint", ""), " `t`r`n"),
+        code: Trim(IniReadSafe(CFG_FILE, section, "failure_code", ""), " `t`r`n"),
+        stage: Trim(IniReadSafe(CFG_FILE, section, "failure_stage", ""), " `t`r`n"),
+        consecutive: ToIntRange(IniReadSafe(CFG_FILE, section,
+            "consecutive_count", "0"), 0, 0, 100),
+        lastAt: ToIntRange(IniReadSafe(CFG_FILE, section,
+            "last_failure_at_unix_ms", "0"), 0, 0, 9999999999999),
+        nextRetryAt: ToIntRange(IniReadSafe(CFG_FILE, section,
+            "next_retry_at_unix_ms", "0"), 0, 0, 9999999999999),
+        category: Trim(IniReadSafe(CFG_FILE, section, "category", ""), " `t`r`n"),
+        action: Trim(IniReadSafe(CFG_FILE, section, "action", ""), " `t`r`n"),
+        detail: Trim(IniReadSafe(CFG_FILE, section, "detail", ""), " `t`r`n")
+    }
+}
+
+WriteSelfHealingRuntimeState(state, reasonCode := "", stage := "", consecutive := 0,
+    category := "", action := "", detail := "", nextRetryAt := 0,
+    fingerprint := "", lastFailureAt := 0) {
+    global CFG_FILE
+    section := "self_healing"
+    nowMs := RC_UnixMs()
+    try {
+        IniWrite SubStr(Trim(state, " `t`r`n"), 1, 40), CFG_FILE, section, "state"
+        IniWrite SubStr(Trim(fingerprint, " `t`r`n"), 1, 240), CFG_FILE, section, "failure_fingerprint"
+        IniWrite SubStr(Trim(reasonCode, " `t`r`n"), 1, 100), CFG_FILE, section, "failure_code"
+        IniWrite SubStr(Trim(stage, " `t`r`n"), 1, 160), CFG_FILE, section, "failure_stage"
+        IniWrite Min(100, Max(0, consecutive + 0)), CFG_FILE, section, "consecutive_count"
+        IniWrite SubStr(Trim(category, " `t`r`n"), 1, 40), CFG_FILE, section, "category"
+        IniWrite SubStr(Trim(action, " `t`r`n"), 1, 500), CFG_FILE, section, "action"
+        IniWrite SubStr(Trim(detail, " `t`r`n"), 1, 1200), CFG_FILE, section, "detail"
+        IniWrite Max(0, nextRetryAt + 0), CFG_FILE, section, "next_retry_at_unix_ms"
+        IniWrite (lastFailureAt > 0 ? lastFailureAt : nowMs), CFG_FILE, section,
+            "last_failure_at_unix_ms"
+        IniWrite nowMs, CFG_FILE, section, "updated_at_unix_ms"
+        return true
+    } catch as e {
+        WriteLog("自動修復狀態落盤失敗：" e.Message, "WARN")
+        return false
+    }
+}
+
+ResetSelfHealingTracking(reason := "") {
+    global CFG_FILE
+    nowMs := RC_UnixMs()
+    try {
+        IniWrite "healthy", CFG_FILE, "self_healing", "state"
+        IniWrite "", CFG_FILE, "self_healing", "failure_fingerprint"
+        IniWrite "", CFG_FILE, "self_healing", "failure_code"
+        IniWrite "", CFG_FILE, "self_healing", "failure_stage"
+        IniWrite "0", CFG_FILE, "self_healing", "consecutive_count"
+        IniWrite "", CFG_FILE, "self_healing", "category"
+        IniWrite "", CFG_FILE, "self_healing", "action"
+        IniWrite SubStr(reason, 1, 1200), CFG_FILE, "self_healing", "detail"
+        IniWrite "0", CFG_FILE, "self_healing", "next_retry_at_unix_ms"
+        IniWrite "0", CFG_FILE, "self_healing", "last_failure_at_unix_ms"
+        IniWrite nowMs, CFG_FILE, "self_healing", "updated_at_unix_ms"
+        if (reason != "")
+            WriteLog("自動修復連續錯誤狀態已歸零 | " reason)
+    } catch as e {
+        WriteLog("重置自動修復狀態失敗：" e.Message, "WARN")
+    }
+}
+
+PrepareSelfHealingPolicy(reasonCode, stage, reason) {
+    previous := ReadSelfHealingRuntimeState()
+    nowMs := RC_UnixMs()
+    elapsedMs := previous.lastAt > 0 ? Max(0, nowMs - previous.lastAt) : -1
+    policy := SelfHealBuildPolicy(reasonCode, stage, previous.fingerprint,
+        previous.consecutive, elapsedMs)
+    policy.nowMs := nowMs
+    policy.nextRetryAt := nowMs + policy.cooldownSec * 1000
+    detail := "連續同錯誤=" policy.consecutive
+        . " | cooldown=" policy.cooldownSec "s | circuit=" (policy.circuitOpen ? "open" : "closed")
+        . " | reason=" SubStr(reason, 1, 700)
+    WriteSelfHealingRuntimeState(policy.cooldownSec > 0 ? "repairing" : "restart_scheduled",
+        reasonCode, stage, policy.consecutive, policy.category, policy.action, detail,
+        policy.nextRetryAt, policy.fingerprint, nowMs)
+    if (policy.consecutive >= 2) {
+        try RC_RecordRuntimeEvent("自動修復",
+            "code=" reasonCode " | count=" policy.consecutive " | action=" policy.action
+                " | cooldown=" policy.cooldownSec "s", policy.circuitOpen ? "ERROR" : "WARN")
+    }
+    return policy
+}
+
+CloseExactProcessForSelfHealing(exeName, displayName) {
+    closed := 0
+    try {
+        escapedName := StrReplace(exeName, "'", "''")
+        query := "Select ProcessId,Name from Win32_Process where Name='" escapedName "'"
+        for proc in ComObjGet("winmgmts:").ExecQuery(query) {
+            pid := proc.ProcessId + 0
+            if (pid <= 0 || pid = DllCall("GetCurrentProcessId"))
+                continue
+            if CloseOkwwProcessPid(pid, displayName)
+                closed += 1
+        }
+    } catch as e {
+        WriteLog("自動修復無法掃描 " displayName "：" e.Message, "WARN")
+    }
+    return closed
+}
+
+CloseManagedAhkForSelfHealing(scriptNames) {
+    closed := 0
+    for item in EnumerateAuxManagedAhkProcesses() {
+        if !(item.name ~= "i)^(" scriptNames ")$")
+            continue
+        if CloseOkwwProcessPid(item.pid, item.name)
+            closed += 1
+    }
+    return closed
+}
+
+PerformSafeSelfHealing(policy) {
+    global dataDir
+    summary := ""
+    if policy.circuitOpen {
+        try TryStopScreenRecording("同錯誤連續 " policy.consecutive
+            " 次進入自動修復熔斷，先正常封口避免浪費空間")
+    }
+
+    switch policy.category {
+        case "okww":
+            summary := RestartOnlyOkwwForAutoBattleRetry()
+        case "server_switch":
+            gameClosed := CloseExactProcessForSelfHealing("Client-Win64-Shipping.exe", "鳴潮")
+            okwwClosed := CloseOkwwLauncherProcessesOnly() + CloseOkwwPythonProcesses()
+            summary := "game_closed=" gameClosed " okww_closed=" okwwClosed
+        case "synthesis":
+            scriptsClosed := CloseManagedAhkForSelfHealing("聲骸合成\.ahk")
+            try FileDelete(dataDir "\synthesis_restart.flag")
+            summary := "synthesis_ahk_closed=" scriptsClosed " stale_flag_cleared=1"
+        case "lrmc":
+            lrmcClosed := CloseExactProcessForSelfHealing("LRMCAI.exe", "LRMCAI")
+            scriptsClosed := CloseManagedAhkForSelfHealing("開啟LRMC\.ahk")
+            summary := "lrmc_closed=" lrmcClosed " manager_closed=" scriptsClosed
+        case "game":
+            gameClosed := CloseExactProcessForSelfHealing("Client-Win64-Shipping.exe", "鳴潮")
+            okwwClosed := CloseOkwwManagerScriptsOnly()
+                + CloseOkwwLauncherProcessesOnly() + CloseOkwwPythonProcesses()
+            summary := "game_closed=" gameClosed " okww_closed=" okwwClosed
+        default:
+            scriptsClosed := CloseManagedAhkForSelfHealing(
+                "自動開啟OKWW\.ahk|開啟LRMC\.ahk|聲骸合成\.ahk")
+            summary := "managed_aux_closed=" scriptsClosed
+    }
+    WriteLog("自動修復動作完成 | category=" policy.category
+        " | action=" policy.action " | " summary, "WARN")
+    WriteStep("自動修復", policy.action " | " summary, "WARN")
+    return summary
+}
+
+WaitForSelfHealingCooldown(policy, reasonCode, stage, reason) {
+    global REMOTE_CONTROL_ACTIVE, REMOTE_STOP_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+    if (policy.cooldownSec <= 0)
+        return true
+
+    deadlineTick := MonotonicTickMs() + policy.cooldownSec * 1000
+    lastReportTick := 0
+    detailBase := "同一錯誤連續 " policy.consecutive " 次；已執行：" policy.action
+    WriteSelfHealingRuntimeState(policy.circuitOpen ? "circuit_open" : "cooldown",
+        reasonCode, stage, policy.consecutive, policy.category, policy.action,
+        detailBase, policy.nextRetryAt, policy.fingerprint, policy.nowMs)
+
+    loop {
+        if (REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED) {
+            WriteSelfHealingRuntimeState("cancelled", reasonCode, stage,
+                policy.consecutive, policy.category, policy.action,
+                "等待期間收到停止要求", 0, policy.fingerprint, policy.nowMs)
+            return false
+        }
+        paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+        remainingMs := Max(0, deadlineTick - MonotonicTickMs())
+        if (remainingMs <= 0 && !paused)
+            break
+        nowTick := MonotonicTickMs()
+        if (lastReportTick = 0 || nowTick - lastReportTick >= 30000) {
+            remainingSec := Ceil(remainingMs / 1000)
+            pauseText := paused ? "；遠端 PAUSE，冷卻完成後仍等待 RUN" : ""
+            progressDetail := detailBase "；剩餘 " remainingSec " 秒" pauseText
+            WriteStep("自動修復等待", progressDetail,
+                policy.circuitOpen ? "ERROR" : "WARN")
+            WriteSelfHealingRuntimeState(policy.circuitOpen ? "circuit_open" : "cooldown",
+                reasonCode, stage, policy.consecutive, policy.category, policy.action,
+                progressDetail, policy.nextRetryAt, policy.fingerprint, policy.nowMs)
+            try SyncRemoteControlRuntimeState()
+            lastReportTick := nowTick
+        }
+        Sleep 1000
+    }
+
+    WriteSelfHealingRuntimeState("retrying", reasonCode, stage, policy.consecutive,
+        policy.category, policy.action, "冷卻完成，準備一次乾淨重啟", 0,
+        policy.fingerprint, policy.nowMs)
+    return true
+}
+
 RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNSPECIFIED", stage := "未指定") {
     global LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE, LAST_RESTART_RECOVERY
     global LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE, CRASH_RESTART_MODE
@@ -7220,6 +7425,12 @@ RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNS
 
     ; 只有連續同類 foreground 問題才沿用 streak；其他故障會切斷這條鏈。
     ResetForegroundInputFailureStreak("遇到其他重啟原因 code=" reasonCode)
+    policy := PrepareSelfHealingPolicy(reasonCode, stage, reason)
+    repairSummary := PerformSafeSelfHealing(policy)
+    LAST_RESTART_RECOVERY .= "；自動修復=" policy.action
+        . "；同錯誤=" policy.consecutive " 次；repair=" repairSummary
+    if !WaitForSelfHealingCooldown(policy, reasonCode, stage, reason)
+        return
     RestartAutoScript(reason)
 }
 
@@ -7444,6 +7655,11 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
         try SetTimer(CrashWatcherTick, 0)
         SetLrmcRunResumeReady(false, "重啟次數達上限")
         ForceStopManagedScreenRecording("重啟次數達上限")
+        previousHealing := ReadSelfHealingRuntimeState()
+        WriteSelfHealingRuntimeState("halted", LAST_RESTART_CODE, LAST_RESTART_STAGE,
+            previousHealing.consecutive, previousHealing.category, previousHealing.action,
+            "已達最大重啟次數 " MAX_RESTART_COUNT "；停止自動操作並等待人工／網頁重新啟動",
+            0, previousHealing.fingerprint, previousHealing.lastAt)
 
         Sleep 5000
         ; 重置計數器
@@ -8128,6 +8344,7 @@ ResetRestartTrackingOnFreshStart() {
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_process_snapshot"
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_lrmc_state"
     IniWrite "0", CFG_FILE, "restart_tracking", "foreground_input_failure_streak"
+    ResetSelfHealingTracking("正常首次啟動")
     SetLrmcRunResumeReady(false, "正常首次啟動")
     WriteLog("正常首次啟動：已重置重啟計數器、重啟原因與 LRMCAI 接續狀態")
 }

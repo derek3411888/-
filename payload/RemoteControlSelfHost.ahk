@@ -314,6 +314,7 @@ RCSH_SendHeartbeat(state) {
     if (serverTotal > 1 && serverIndex > 0 && currentServer != "")
         currentServerLabel := serverIndex "/" serverTotal " | " currentServer
     recording := RC_ReadRecordingStatus()
+    selfHealing := RC_ReadSelfHealingStatus()
     serverProgress := RC_ReadServerProgress()
     switchNotify := RC_ReadServerSwitchNotifyStatus()
     eventsJson := RC_BuildRecentEventsJson()
@@ -352,6 +353,17 @@ RCSH_SendHeartbeat(state) {
     status .= '"progressTotal":' recording.progressTotal ","
     status .= '"progressPercent":' recording.progressPercent ","
     status .= '"progressUnit":"' RC_JsonEsc(recording.progressUnit) '"'
+    status .= "},"
+    status .= '"selfHealing":{'
+    status .= '"state":"' RC_JsonEsc(selfHealing.state) '",'
+    status .= '"code":"' RC_JsonEsc(selfHealing.code) '",'
+    status .= '"stage":"' RC_JsonEsc(selfHealing.stage) '",'
+    status .= '"consecutive":' selfHealing.consecutive ","
+    status .= '"category":"' RC_JsonEsc(selfHealing.category) '",'
+    status .= '"action":"' RC_JsonEsc(SubStr(selfHealing.action, 1, 500)) '",'
+    status .= '"detail":"' RC_JsonEsc(SubStr(selfHealing.detail, 1, 1200)) '",'
+    status .= '"nextRetryAt":' selfHealing.nextRetryAt ","
+    status .= '"updatedAt":' selfHealing.updatedAt
     status .= "},"
     status .= '"live":{'
     status .= '"active":' (RCSH_LIVE_PID > 0 && ProcessExist(RCSH_LIVE_PID) ? "true" : "false") ","

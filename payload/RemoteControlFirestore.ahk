@@ -1321,6 +1321,25 @@ RC_ReadRecordingStatus() {
     }
 }
 
+RC_ReadSelfHealingStatus() {
+    global RC_CFG_PATH
+    section := "self_healing"
+    return {
+        state: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "state", "healthy"), " `t`r`n"),
+        code: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "failure_code", ""), " `t`r`n"),
+        stage: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "failure_stage", ""), " `t`r`n"),
+        consecutive: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section,
+            "consecutive_count", "0"), 0, 0, 100),
+        category: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "category", ""), " `t`r`n"),
+        action: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "action", ""), " `t`r`n"),
+        detail: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "detail", ""), " `t`r`n"),
+        nextRetryAt: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section,
+            "next_retry_at_unix_ms", "0"), 0, 0, 9999999999999),
+        updatedAt: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section,
+            "updated_at_unix_ms", "0"), 0, 0, 9999999999999)
+    }
+}
+
 RC_ReadEffectiveRemoteSettings() {
     global RC_CFG_PATH, RC_LAST_SETTINGS_APPLIED_REVISION
 

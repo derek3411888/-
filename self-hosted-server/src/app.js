@@ -29,6 +29,7 @@ import {
   listRecordings,
   pruneMedia,
   receiveSegmentChunk,
+  repairStalledMediaJobs,
   recordingSessionState,
   registerSegment,
   retrySegment,
@@ -639,11 +640,15 @@ async function serveStatic(res, pathname) {
   const [relative, contentType] = item;
   const root = relative.startsWith("../node_modules") ? path.dirname(config.staticRoot) : config.staticRoot;
   const filePath = assertChildPath(root, path.resolve(config.staticRoot, relative));
-  const data = await fsp.readFile(filePath);
+  let data = await fsp.readFile(filePath);
+  if (pathname === "/" || pathname === "/index.html") {
+    data = Buffer.from(data.toString("utf8").replaceAll("__SERVER_VERSION__", config.serverVersion), "utf8");
+  }
   res.writeHead(200, {
     "Content-Type": contentType, "Content-Length": data.length,
     "Cache-Control": pathname === "/vendor/hls.min.js" ? "public, max-age=86400" : "no-cache",
     "X-Content-Type-Options": "nosniff",
+    "X-Wuthering-Server-Version": config.serverVersion,
   });
   res.end(data);
   return true;
@@ -657,12 +662,18 @@ async function handleRequest(req, res) {
     return;
   }
   if (pathname === "/health/live" && req.method === "GET") {
-    sendJson(res, 200, { ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
+    sendJson(res, 200, {
+      ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      version: config.serverVersion, webSha256: config.webSha256,
+    });
     return;
   }
   if (pathname === "/health/ready" && req.method === "GET") {
     const db = await query("SELECT now() AS now");
-    sendJson(res, 200, { ok: true, database: true, at: db.rows[0].now });
+    sendJson(res, 200, {
+      ok: true, database: true, at: db.rows[0].now,
+      version: config.serverVersion, webSha256: config.webSha256,
+    });
     return;
   }
   if (pathname === "/internal/media-auth" && req.method === "POST") {
@@ -751,7 +762,10 @@ async function handleRequest(req, res) {
   if (browserAccess.token) res.setHeader("Set-Cookie", browserCookie(browserAccess.token, browser.expires_at));
   if (!["GET", "HEAD"].includes(req.method)) requireSameOrigin(req);
   if (pathname === "/api/v1/auth/me" && req.method === "GET") {
-    sendJson(res, 200, { session: browser, publicUrl: config.publicUrl, accessMode: "direct" });
+    sendJson(res, 200, {
+      session: browser, publicUrl: config.publicUrl, accessMode: "direct",
+      serverVersion: config.serverVersion, webSha256: config.webSha256,
+    });
     return;
   }
   let params;
@@ -891,6 +905,7 @@ async function start() {
   installFileLogger(config.serverLogRoot, { keep: 15 });
   await migrate();
   await resumeMediaJobs();
+  await repairStalledMediaJobs();
   if (config.firestore.enabled) {
     importFirestoreDevices().catch((error) => console.error("Firestore import failed", error));
   }
@@ -912,6 +927,14 @@ async function start() {
   server.listen(config.port, "0.0.0.0", () => console.log(`Wuthering control API listening on :${config.port}`));
   const heartbeatTimer = setInterval(() => eventHub.heartbeat(), 20_000);
   const cleanupTimer = setInterval(() => cleanupRuntimeData().catch(console.error), 60 * 60_000);
+  const mediaRepairTimer = setInterval(() => {
+    repairStalledMediaJobs().then((summary) => {
+      if (summary.repairedSegments || summary.repairedSessions) {
+        console.warn("Media auto-repair applied", summary);
+        eventHub.emit("recording", { autoRepair: summary, at: Date.now() });
+      }
+    }).catch((error) => console.error("Media auto-repair failed", error));
+  }, 60_000);
   const discoveryTimer = setInterval(() => {
     const work = config.firestore.enabled ? importFirestoreDevices() : publishDiscovery();
     work.catch(console.error);
@@ -921,7 +944,8 @@ async function start() {
 
   const shutdown = async (signal) => {
     console.log(`Received ${signal}, shutting down`);
-    clearInterval(heartbeatTimer); clearInterval(cleanupTimer); clearInterval(discoveryTimer); clearInterval(rateTimer);
+    clearInterval(heartbeatTimer); clearInterval(cleanupTimer); clearInterval(mediaRepairTimer);
+    clearInterval(discoveryTimer); clearInterval(rateTimer);
     await new Promise((resolve) => server.close(resolve));
     await closeDatabase();
     process.exit(0);

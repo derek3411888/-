@@ -9,7 +9,18 @@ process.env.SESSION_SECRET ||= "test-session-secret-abcdefghijklmnopqrstuvwxyz";
 process.env.LIVE_TOKEN_SECRET ||= "test-live-token-secret-abcdefghijklmnopqrstuvwxyz";
 process.env.LIVE_SRT_PASSPHRASE ||= "test-live-srt-passphrase-abcdefghijklm";
 
-const { streamVideo } = await import("../src/media.js");
+const { mediaAutoRetryEligible, streamVideo } = await import("../src/media.js");
+
+test("media auto-repair uses bounded retry and stale thresholds", () => {
+  const now = 2_000_000;
+  assert.equal(mediaAutoRetryEligible("segment", "ERROR", 0, now - 119_999, now), false);
+  assert.equal(mediaAutoRetryEligible("segment", "ERROR", 0, now - 120_000, now), true);
+  assert.equal(mediaAutoRetryEligible("segment", "PROCESSING", 2, now - 600_000, now), true);
+  assert.equal(mediaAutoRetryEligible("segment", "ERROR", 3, now - 999_999, now), false);
+  assert.equal(mediaAutoRetryEligible("session", "ERROR", 1, now - 120_000, now), true);
+  assert.equal(mediaAutoRetryEligible("session", "MERGING", 1, now - 1_799_999, now), false);
+  assert.equal(mediaAutoRetryEligible("session", "MERGING", 1, now - 1_800_000, now), true);
+});
 
 class MemoryResponse extends Writable {
   constructor() {

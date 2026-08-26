@@ -19,13 +19,13 @@
 
 固定公網 IPv4 填入 `.env` 的 `PUBLIC_IP_ADDRESS`。Caddy 會使用 Let's Encrypt 的短效公開 IP 憑證提供主要 HTTPS 入口，例如 `https://203.0.113.10/`；控制 API、GitHub Pages 導向及外網 SRT 都使用這個固定 IP，不依賴 DDNS。`PUBLIC_HOSTNAME` 只保留舊網址相容與憑證入口，不會發布給執行端。
 
-`.env` 的 `LOCAL_SRT_HOST` 應設為 Docker 主機的固定內網 IPv4（目前主機為 `192.168.0.194`）。裝置會優先走內網 SRT，再退回 DDNS，避開許多家用路由器只支援 HTTPS、卻不支援 UDP NAT loopback 的情況。安裝工具會自動偵測預設路由所在的 IPv4，也可用 `-LocalSrtHost` 明確指定。
+`.env` 的 `LOCAL_SRT_HOST` 應設為 Docker 主機的固定內網 IPv4（目前主機為 `192.168.0.194`）。裝置會優先走內網 SRT，再退回固定公網 IP，避開許多家用路由器只支援 HTTPS、卻不支援 UDP NAT loopback 的情況。安裝工具會自動偵測預設路由所在的 IPv4，也可用 `-LocalSrtHost` 明確指定。
 
 瀏覽器租約仍在最後一次觀看活動後 90 秒失效。裝置端收到的本機 FFmpeg 截止時間會額外保留 600 秒失聯保險，涵蓋長時間被主流程占用及舊版 Payload 更新前的過渡期；Payload 在計時器延遲後會先讀取最新控制狀態再判斷截止時間，避免忙碌流程在每次續租交界重建串流。伺服器一旦明確回報沒有觀看者，Payload 仍會立即停止，不會等待保險時間用完。
 
 ## 首次安裝
 
-1. 在路由器設定 DDNS，並把上述連接埠轉發到這台常開電腦。
+1. 確認固定公網 IPv4，並在路由器把上述連接埠轉發到這台常開電腦。`PUBLIC_HOSTNAME` 只為舊網址相容保留；新版裝置與主要網站不依賴 DDNS。
 2. 安裝並啟動 Docker Desktop（WSL 2 backend）。
 3. 準備兩個位置：預設中央影片／快照／Log 為 `D:\WutheringControlServer\data`，資料庫備份為 `E:\WutheringControlBackups`。
 4. Docker Desktop 的 PostgreSQL named volume 與容器映像位於 Docker 磁碟映像內。到 **Settings > Resources > Advanced > Disk image location** 將它移到 `D:\DockerDesktopData`，套用並等待 Docker 重啟；安裝工具會檢查，避免資料庫實際仍落在 E 或 C 槽。
@@ -76,6 +76,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 更新工具會先備份，再建立與啟動新版、執行 migration 並等待健康檢查；失敗時把 API 容器回復到上一個映像。容器 Log 使用 10 MB 輪替並保留 15 份。資料庫備份保留每日 14 份、每週 8 份與更新前 5 份。
+
+專案根目錄的 `完整發布更新.ps1` 是正式發布唯一入口；舊的 `編譯打包.bat` 也只會呼叫它。它會強制同次產生 Launcher、Payload、網站與 Docker 套件，推送 GitHub 後等待遠端 manifest 與雜湊一致，再從遠端套件部署 Docker、核對公開網站版本並執行控制／影片／直播整合測試。任何一段失敗都不會顯示「完整發布完成」。
 
 ## 驗證
 

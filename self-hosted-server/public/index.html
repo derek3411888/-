@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260826-recording-progress-v1">
+  <link rel="stylesheet" href="/styles.css?v=__SERVER_VERSION__">
 </head>
 <body>
   <main id="appView" class="shell">
@@ -14,6 +14,7 @@
         <p>自架 Docker・PostgreSQL 多機控制</p>
       </div>
       <div class="header-badges">
+        <span id="releaseBadge" class="badge muted">版本讀取中</span>
         <span id="migrationBadge" class="badge warning">讀取中</span>
         <span class="badge ok">網址直接使用</span>
       </div>
@@ -61,6 +62,7 @@
           </label>
           <p id="serverProgress" class="hint">尚未收到今日伺服器進度。</p>
           <div id="commandStatus" class="notice muted">尚未送出命令。</div>
+          <div id="selfHealingStatus" class="notice muted">自動偵錯：等待裝置回報。</div>
           <details><summary>裝置詳細狀態</summary><pre id="deviceMeta"></pre></details>
         </article>
 
@@ -160,6 +162,6 @@
 
   <div id="toast" class="toast" hidden></div>
   <script src="/vendor/hls.min.js?v=1.6.13"></script>
-  <script type="module" src="/app.js?v=20260826-recording-progress-v1"></script>
+  <script type="module" src="/app.js?v=__SERVER_VERSION__"></script>
 </body>
 </html>

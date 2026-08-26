@@ -7,7 +7,11 @@ const state = {
   recordings: [],
   eventSource: null,
   refreshTimer: 0,
+  selectedRefreshTimer: 0,
   periodicTimer: 0,
+  refreshInFlight: false,
+  refreshQueued: null,
+  activeTab: "overview",
   liveTimer: 0,
   liveRetryTimer: 0,
   liveHls: null,
@@ -241,7 +245,15 @@ function appendCell(row, value) {
   row.append(cell);
 }
 
-function renderDetails() {
+function refreshSnapshot(device = state.details?.device) {
+  if (!device) return;
+  const snapshot = $("snapshotImage");
+  snapshot.src = `/api/v1/devices/${encodeURIComponent(device.uid)}/snapshot?t=${Date.now()}`;
+  snapshot.onload = () => { snapshot.hidden = false; $("snapshotEmpty").hidden = true; setText("snapshotMeta", `更新於 ${new Date().toLocaleString("zh-TW", { hour12: false })}`); };
+  snapshot.onerror = () => { snapshot.hidden = true; $("snapshotEmpty").hidden = false; setText("snapshotMeta", "尚無快照"); };
+}
+
+function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   const wrapper = state.details;
   const device = wrapper?.device;
   if (!device) {
@@ -292,10 +304,25 @@ function renderDetails() {
     $("commandStatus").className = "notice muted";
   }
 
-  const snapshot = $("snapshotImage");
-  snapshot.src = `/api/v1/devices/${encodeURIComponent(device.uid)}/snapshot?t=${Date.now()}`;
-  snapshot.onload = () => { snapshot.hidden = false; $("snapshotEmpty").hidden = true; setText("snapshotMeta", `更新於 ${new Date().toLocaleString("zh-TW", { hour12: false })}`); };
-  snapshot.onerror = () => { snapshot.hidden = true; $("snapshotEmpty").hidden = false; setText("snapshotMeta", "尚無快照"); };
+  if (reloadSnapshot) refreshSnapshot(device);
+
+  const healing = status.selfHealing || {};
+  const healingState = String(healing.state || "healthy").toLowerCase();
+  const retrySeconds = healing.nextRetryAt
+    ? Math.max(0, Math.ceil((Number(healing.nextRetryAt) - Date.now()) / 1000)) : 0;
+  const healingLabel = {
+    healthy: "正常", idle: "正常", restart_scheduled: "準備修復",
+    repairing: "正在修復", cooldown: "冷卻等待", retrying: "正在重試",
+    circuit_open: "已抑制重啟迴圈", halted: "已停止並等待處理", cancelled: "已取消",
+  }[healingState] || healingState;
+  const healingParts = [`自動偵錯：${healingLabel}`];
+  if (healing.code) healingParts.push(`${healing.code}${healing.consecutive ? `（連續 ${healing.consecutive} 次）` : ""}`);
+  if (healing.action) healingParts.push(healing.action);
+  if (retrySeconds) healingParts.push(`${retrySeconds} 秒後再試`);
+  if (healing.detail && !healing.action) healingParts.push(healing.detail);
+  setText("selfHealingStatus", healingParts.join("｜"));
+  $("selfHealingStatus").className = `notice ${["halted", "circuit_open"].includes(healingState)
+    ? "danger" : ["repairing", "cooldown", "retrying", "restart_scheduled"].includes(healingState) ? "warning" : "ok"}`;
 
   const recording = status.recording || Object.fromEntries(Object.entries(status).filter(([key]) => key.toLowerCase().startsWith("recording")));
   const recordingNode = $("recordingStatus"); recordingNode.replaceChildren();
@@ -326,7 +353,8 @@ function renderDetails() {
   recordingNode.append(recordingCard);
 
   const live = status.live || {};
-  setText("liveDeviceStatus", live.detail || "裝置尚未回報直播傳輸狀態。");
+  const liveDetail = live.detail || "裝置尚未回報直播傳輸狀態。";
+  setText("liveDeviceStatus", `${liveDetail}${/UDP/i.test(liveDetail) ? "；正式錄影仍會走 HTTPS 續傳，不影響鋤地。" : ""}`);
   $("liveDeviceStatus").className = `transport-status ${["error"].includes(live.state) ? "danger" : ["retrying"].includes(live.state) ? "warning" : "muted"}`;
 
   const eventsBody = $("eventsBody"); eventsBody.replaceChildren();
@@ -345,7 +373,7 @@ function renderDetails() {
   }
   const displayedSettings = wrapper.settings?.status === "PENDING"
     ? wrapper.settings.settings : (device.settings || {});
-  renderSettings(displayedSettings);
+  if (reloadSettings && !$("settingsForm").contains(document.activeElement)) renderSettings(displayedSettings);
   setText("liveProfileSummary", `${liveQualityLabel(displayedSettings.liveQualityProfile)}；有人觀看時才推流。`);
 }
 
@@ -444,24 +472,74 @@ async function openRecording(recording) {
   $("playbackCard").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-async function refresh() {
-  const payload = await api("/api/v1/devices");
-  state.devices = payload.devices || [];
-  state.migration = payload.migration || {};
-  renderDevices();
-  if (state.selectedUid) {
-    const encoded = encodeURIComponent(state.selectedUid);
-    const [details, recordings] = await Promise.all([api(`/api/v1/devices/${encoded}`), api(`/api/v1/devices/${encoded}/recordings`)]);
-    state.details = details;
-    state.recordings = recordings.recordings || [];
-    renderDetails(); renderRecordings();
-  }
-  await refreshAdmin();
+function mergeRefreshOptions(left = {}, right = {}) {
+  return {
+    includeDevices: left.includeDevices !== false || right.includeDevices !== false,
+    includeRecordings: left.includeRecordings !== false || right.includeRecordings !== false,
+    reloadSnapshot: Boolean(left.reloadSnapshot || right.reloadSnapshot),
+    reloadSettings: Boolean(left.reloadSettings || right.reloadSettings),
+    admin: Boolean(left.admin || right.admin),
+  };
 }
 
-function scheduleRefresh() {
+async function refresh(options = {}) {
+  const requested = {
+    includeDevices: options.includeDevices !== false,
+    includeRecordings: options.includeRecordings !== false,
+    reloadSnapshot: Boolean(options.reloadSnapshot),
+    reloadSettings: options.reloadSettings !== false,
+    admin: Boolean(options.admin),
+  };
+  if (state.refreshInFlight) {
+    state.refreshQueued = mergeRefreshOptions(state.refreshQueued || {
+      includeDevices: false, includeRecordings: false, reloadSettings: false,
+    }, requested);
+    return;
+  }
+  state.refreshInFlight = true;
+  try {
+    const previousUid = state.selectedUid;
+    if (requested.includeDevices) {
+      const payload = await api("/api/v1/devices");
+      state.devices = payload.devices || [];
+      state.migration = payload.migration || {};
+      renderDevices();
+    }
+    const selectedChanged = previousUid !== state.selectedUid;
+    if (state.selectedUid) {
+      const encoded = encodeURIComponent(state.selectedUid);
+      const requests = [api(`/api/v1/devices/${encoded}`)];
+      if (requested.includeRecordings) requests.push(api(`/api/v1/devices/${encoded}/recordings`));
+      const [details, recordings] = await Promise.all(requests);
+      state.details = details;
+      if (recordings) state.recordings = recordings.recordings || [];
+      renderDetails({
+        reloadSnapshot: requested.reloadSnapshot || selectedChanged,
+        reloadSettings: requested.reloadSettings,
+      });
+      if (requested.includeRecordings) renderRecordings();
+    }
+    if (requested.admin) await refreshAdmin();
+  } finally {
+    state.refreshInFlight = false;
+    if (state.refreshQueued) {
+      const queued = state.refreshQueued;
+      state.refreshQueued = null;
+      setTimeout(() => refresh(queued).catch((error) => toast(error.message)), 0);
+    }
+  }
+}
+
+function scheduleFullRefresh() {
   clearTimeout(state.refreshTimer);
-  state.refreshTimer = setTimeout(() => refresh().catch((error) => toast(error.message)), 400);
+  state.refreshTimer = setTimeout(() => refresh({ reloadSettings: true }).catch((error) => toast(error.message)), 500);
+}
+
+function scheduleSelectedRefresh(includeRecordings = false) {
+  clearTimeout(state.selectedRefreshTimer);
+  state.selectedRefreshTimer = setTimeout(() => refresh({
+    includeDevices: false, includeRecordings, reloadSettings: false,
+  }).catch((error) => toast(error.message)), 650);
 }
 
 async function sendCommand(command, extras = {}) {
@@ -595,9 +673,12 @@ function bindEvents() {
   document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => {
     document.querySelectorAll("[data-tab]").forEach((item) => item.classList.toggle("active", item === button));
     document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
+    state.activeTab = button.dataset.tab;
+    if (state.activeTab === "settings") refresh({ admin: true, reloadSettings: true }).catch((error) => toast(error.message));
+    else if (state.activeTab === "videos") refresh({ includeDevices: false, includeRecordings: true, reloadSettings: false }).catch((error) => toast(error.message));
   }));
-  deviceSelect.addEventListener("change", async () => { await stopLive(); state.selectedUid = deviceSelect.value; localStorage.setItem("wuthering.selectedUid", state.selectedUid); await refresh(); });
-  $("refreshButton").addEventListener("click", () => refresh().catch((error) => toast(error.message)));
+  deviceSelect.addEventListener("change", async () => { await stopLive(); state.selectedUid = deviceSelect.value; localStorage.setItem("wuthering.selectedUid", state.selectedUid); await refresh({ reloadSnapshot: true, admin: state.activeTab === "settings" }); });
+  $("refreshButton").addEventListener("click", () => refresh({ reloadSnapshot: true, admin: state.activeTab === "settings" }).catch((error) => toast(error.message)));
   $("pauseButton").addEventListener("click", () => sendCommand("PAUSE").catch((error) => toast(error.message)));
   $("runButton").addEventListener("click", () => sendCommand("RUN").catch((error) => toast(error.message)));
   $("stopButton").addEventListener("click", () => { if (confirm("確定要遠端完整關閉腳本？")) sendCommand("STOP").catch((error) => toast(error.message)); });
@@ -621,7 +702,13 @@ function bindEvents() {
   $("startLiveButton").addEventListener("click", () => startLive().catch((error) => toast(error.message)));
   $("stopLiveButton").addEventListener("click", () => stopLive());
   $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與影片均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
-  window.addEventListener("beforeunload", () => { clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer); clearInterval(state.periodicTimer); });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
+  });
+  window.addEventListener("beforeunload", () => {
+    clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer); clearInterval(state.periodicTimer);
+    clearTimeout(state.refreshTimer); clearTimeout(state.selectedRefreshTimer);
+  });
 }
 
 async function boot() {
@@ -629,11 +716,23 @@ async function boot() {
   appView.hidden = false;
   bindEvents();
   state.me = await api("/api/v1/auth/me");
-  await refresh();
+  setText("releaseBadge", `Server ${state.me.serverVersion || "未知"}`);
+  $("releaseBadge").className = "badge muted";
+  await refresh({ reloadSnapshot: true, admin: true });
   clearInterval(state.periodicTimer);
-  state.periodicTimer = setInterval(() => refresh().catch((error) => toast(error.message)), 30_000);
+  state.periodicTimer = setInterval(() => {
+    if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
+  }, 60_000);
   const events = new EventSource("/api/v1/events"); state.eventSource = events;
-  ["device", "command", "settings", "snapshot", "live", "recording"].forEach((name) => events.addEventListener(name, scheduleRefresh));
+  ["device", "command", "settings"].forEach((name) => events.addEventListener(name, scheduleFullRefresh));
+  events.addEventListener("live", () => scheduleSelectedRefresh(false));
+  events.addEventListener("recording", () => scheduleSelectedRefresh(true));
+  events.addEventListener("snapshot", (event) => {
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      if (!payload.uid || payload.uid === state.selectedUid) refreshSnapshot();
+    } catch { refreshSnapshot(); }
+  });
   events.onerror = () => setText("deviceSummary", "即時連線暫時中斷，正在自動重連…");
 }
 

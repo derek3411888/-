@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
+import { repairStalledMediaJobs } from "../src/media.js";
 
 const base = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
 const uid = `smoke-device-${Date.now()}`;
@@ -226,11 +227,14 @@ async function main() {
   });
   await waitFor(async () => (await request(`/api/v1/device/recordings/segments/${segment.id}`, { device: true })).state === "READY",
     "segment remux did not finish");
-  await request(`/api/v1/device/recordings/sessions/${recording.id}/complete`, {
-    method: "POST", device: true, body: { expectedSegments: 1, expectedBytes: media.length },
-  });
+  await query(
+    `UPDATE recording_sessions SET state='ERROR',detail='smoke forced stale error',
+       updated_at=now()-interval '3 minutes' WHERE id=$1`, [recording.id],
+  );
+  const repair = await repairStalledMediaJobs();
+  assert(repair.repairedSessions === 1, "stale recording session was not auto-repaired");
   await waitFor(async () => (await request(`/api/v1/device/recordings/sessions/${recording.id}`, { device: true })).state === "COMPLETE",
-    "recording merge did not finish");
+    "auto-repaired recording merge did not finish");
   const recordingList = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings`, { browser: true });
   const completedRecording = recordingList.recordings.find((item) => item.id === recording.id);
   assert(completedRecording?.progress_percent === 100
@@ -319,7 +323,7 @@ async function main() {
   assert(serverLog.isFile() && serverLog.size > 0, "mounted rotating server log was not written");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
     directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
-    videoRange: true, recordingProgress: true, liveHls: true, liveHlsResources: true,
+    videoRange: true, recordingProgress: true, mediaAutoRepair: true, liveHls: true, liveHlsResources: true,
     invalidSrtRejected: true, serverLog: true }));
 }
 

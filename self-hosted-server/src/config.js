@@ -1,4 +1,7 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function integer(name, fallback, min, max) {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
@@ -29,11 +32,28 @@ function publicUrl() {
 }
 
 const publicBase = publicUrl();
+const staticRoot = path.resolve(process.env.STATIC_ROOT ?? fileURLToPath(new URL("../public", import.meta.url)));
+const packageInfo = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+
+function sha256Text(value) {
+  return crypto.createHash("sha256").update(value).digest("hex").toUpperCase();
+}
+
+function webAssetSha256(root) {
+  const names = ["app.js", "index.html", "styles.css"].sort();
+  const inventory = names.map((name) => {
+    const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, name))).digest("hex").toUpperCase();
+    return `${name}:${digest}`;
+  }).join("\n");
+  return sha256Text(inventory);
+}
 
 export const config = Object.freeze({
   port: integer("PORT", 3000, 1, 65535),
   databaseUrl: process.env.DATABASE_URL ?? "postgres://wuthering:wuthering@postgres:5432/wuthering_control",
   publicUrl: publicBase.origin,
+  serverVersion: String(packageInfo.version ?? "0.0.0"),
+  webSha256: webAssetSha256(staticRoot),
   publicSrtHost: srtHost("PUBLIC_SRT_HOST", publicBase.hostname),
   localSrtHost: srtHost("LOCAL_SRT_HOST"),
   publicSrtPort: integer("PUBLIC_SRT_PORT", 8890, 1, 65535),
@@ -43,8 +63,8 @@ export const config = Object.freeze({
   mediaRoot: path.resolve(process.env.MEDIA_ROOT ?? "/data/media"),
   snapshotRoot: path.resolve(process.env.SNAPSHOT_ROOT ?? "/data/snapshots"),
   serverLogRoot: path.resolve(process.env.SERVER_LOG_ROOT ?? "/data/logs"),
-  staticRoot: path.resolve(process.env.STATIC_ROOT ?? new URL("../public", import.meta.url).pathname),
-  migrationDir: path.resolve(process.env.MIGRATION_DIR ?? new URL("../migrations", import.meta.url).pathname),
+  staticRoot,
+  migrationDir: path.resolve(process.env.MIGRATION_DIR ?? fileURLToPath(new URL("../migrations", import.meta.url))),
   minFreeBytes: BigInt(integer("MIN_FREE_GB", 20, 1, 10_000)) * 1024n * 1024n * 1024n,
   sessionsPerDevice: integer("SESSIONS_PER_DEVICE", 5, 1, 100),
   browserSessionDays: integer("BROWSER_SESSION_DAYS", 180, 1, 730),

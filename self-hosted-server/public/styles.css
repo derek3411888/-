@@ -56,6 +56,7 @@ h2 { margin-bottom: .15rem; font-size: 1.12rem; }
 .inline > :first-child { flex: 1; }
 .notice { margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-left: 4px solid var(--primary); border-radius: 8px; background: #f6fafc; }
 .notice.ok { border-left-color: var(--ok); background: #f0faf5; }
+.notice.warning { border-left-color: var(--warn); background: #fff8ed; }
 .notice.danger { border-left-color: var(--danger); background: #fff3f4; }
 .notice.muted { color: var(--muted); }
 details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }

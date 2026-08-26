@@ -35,6 +35,35 @@ function Get-ServerVersion([string]$Root) {
     return [string]$package.version
 }
 
+function Get-WebAssetHash([string]$Root) {
+    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css') | Sort-Object) {
+        $path = Join-Path $Root "public\$name"
+        if (-not (Test-Path -LiteralPath $path)) { throw "伺服器套件缺少網站檔案：$path" }
+        "${name}:$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') } finally { $sha.Dispose() }
+}
+
+function Get-RunningServerIdentity {
+    $compose = @('--env-file', $script:envPath, '-f', (Join-Path $script:serverRoot 'compose.yml'))
+    $raw = @(& docker compose @compose exec -T api wget -q -O - http://127.0.0.1:3000/health/ready 2>$null) -join "`n"
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($raw)) {
+        try {
+            $health = $raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$health.version)) {
+                return [pscustomobject]@{ Version = [string]$health.version; WebSha256 = ([string]$health.webSha256).ToUpperInvariant() }
+            }
+        } catch {}
+    }
+    $version = @(& docker compose @compose exec -T api node -e "console.log(JSON.parse(require('node:fs').readFileSync('/app/package.json','utf8')).version)" 2>$null) -join ''
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($version)) {
+        return [pscustomobject]@{ Version = $version.Trim(); WebSha256 = '' }
+    }
+    return [pscustomobject]@{ Version = ''; WebSha256 = '' }
+}
+
 function Ensure-FixedIpRouting {
     $lines = @(Get-Content -LiteralPath $script:envPath -Encoding UTF8)
     $existing = $lines | Where-Object { $_ -match '^PUBLIC_IP_ADDRESS=\S+' } | Select-Object -First 1
@@ -145,29 +174,32 @@ try {
     & docker info | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop 尚未啟動。' }
 
-    $currentVersion = Get-ServerVersion $serverRoot
-    $targetVersion = $currentVersion
+    $sourceVersion = Get-ServerVersion $serverRoot
+    $runningIdentity = Get-RunningServerIdentity
+    $currentVersion = if ([string]::IsNullOrWhiteSpace($runningIdentity.Version)) { 'unknown' } else { $runningIdentity.Version }
+    $targetVersion = $sourceVersion
+    $targetWebSha256 = Get-WebAssetHash $serverRoot
     if (-not $UseLocalFiles) {
         Write-Host '讀取更新資訊並下載伺服器套件…'
         $manifestPath = Join-Path $tempRoot 'manifest.json'
         Invoke-WebRequest -UseBasicParsing -Uri $ManifestUrl -OutFile $manifestPath
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($requiredName in @('server_version', 'server_bundle_url', 'server_sha256')) {
+        foreach ($requiredName in @('server_version', 'server_bundle_url', 'server_sha256', 'web_sha256')) {
             if ([string]::IsNullOrWhiteSpace([string]$manifest.$requiredName)) {
                 throw "更新 manifest 缺少 $requiredName。"
             }
         }
         $targetVersion = [string]$manifest.server_version
-        try {
-            if ([version]$targetVersion -le [version]$currentVersion) {
-                Write-Host "目前已是最新伺服器版本 $currentVersion。"
-                return
+        $targetWebSha256 = ([string]$manifest.web_sha256).ToUpperInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($runningIdentity.Version)) {
+            if ([version]$targetVersion -lt [version]$runningIdentity.Version) {
+                throw "拒絕把執行中容器由 $($runningIdentity.Version) 降級為 $targetVersion。"
             }
-        } catch {
-            if ($targetVersion -eq $currentVersion) {
-                Write-Host "目前已是最新伺服器版本 $currentVersion。"
-                return
-            }
+        }
+        if ($targetVersion -eq $runningIdentity.Version -and
+            $targetWebSha256 -eq $runningIdentity.WebSha256) {
+            Write-Host "執行中的伺服器與網站已是最新版 $targetVersion。"
+            return
         }
         Invoke-WebRequest -UseBasicParsing -Uri ([string]$manifest.server_bundle_url) -OutFile $bundlePath
         $actualHash = (Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash
@@ -178,6 +210,10 @@ try {
         $bundleVersion = Get-ServerVersion $stagingRoot
         if ($bundleVersion -ne $targetVersion) {
             throw "套件版本 $bundleVersion 與 manifest 版本 $targetVersion 不一致。"
+        }
+        $bundleWebSha256 = Get-WebAssetHash $stagingRoot
+        if ($bundleWebSha256 -ne $targetWebSha256) {
+            throw "套件網站 SHA-256 不符；預期 $targetWebSha256，實際 $bundleWebSha256。"
         }
     }
 
@@ -205,7 +241,15 @@ try {
     Invoke-Compose -ComposeArguments @('up', '-d')
     if (-not (Test-ServerHealth)) { throw '新版本在 3 分鐘內未通過網站／資料庫／影片服務健康檢查。' }
 
-    Write-Host "伺服器更新完成：$currentVersion -> $(Get-ServerVersion $serverRoot)"
+    $deployedIdentity = Get-RunningServerIdentity
+    if ($deployedIdentity.Version -ne $targetVersion) {
+        throw "容器回報版本 $($deployedIdentity.Version)；預期 $targetVersion。"
+    }
+    if ($deployedIdentity.WebSha256 -ne $targetWebSha256) {
+        throw "容器網站 SHA-256 $($deployedIdentity.WebSha256)；預期 $targetWebSha256。"
+    }
+
+    Write-Host "伺服器與網站更新完成：$currentVersion -> $targetVersion｜web=$targetWebSha256"
     if ($rollbackImageTag) { & docker image rm $rollbackImageTag 2>$null | Out-Null }
 } catch {
     $failure = $_.Exception.Message

@@ -9,6 +9,29 @@ import { query, withTransaction } from "./db.js";
 import { HttpError, boundedText, integer } from "./utils.js";
 
 const activeJobs = new Set();
+const AUTO_RETRY_LIMIT = 3;
+const SEGMENT_ERROR_RETRY_MS = 2 * 60_000;
+const SEGMENT_PROCESSING_STALE_MS = 10 * 60_000;
+const SESSION_ERROR_RETRY_MS = 2 * 60_000;
+const SESSION_MERGING_STALE_MS = 30 * 60_000;
+
+export function mediaAutoRetryEligible(kind, state, retryCount, updatedAtMs, nowMs = Date.now()) {
+  const attempts = Math.max(0, Number(retryCount) || 0);
+  const updated = Number(updatedAtMs) || 0;
+  if (attempts >= AUTO_RETRY_LIMIT || updated <= 0 || nowMs < updated) return false;
+  const age = nowMs - updated;
+  if (kind === "segment") {
+    if (state === "ERROR") return age >= SEGMENT_ERROR_RETRY_MS;
+    if (state === "PROCESSING") return age >= SEGMENT_PROCESSING_STALE_MS;
+    return state === "UPLOADED";
+  }
+  if (kind === "session") {
+    if (state === "ERROR") return age >= SESSION_ERROR_RETRY_MS;
+    if (state === "MERGING") return age >= SESSION_MERGING_STALE_MS;
+    return state === "FINALIZE_PENDING";
+  }
+  return false;
+}
 
 function relativeToMedia(absolutePath) {
   return path.relative(config.mediaRoot, assertChildPath(config.mediaRoot, absolutePath)).split(path.sep).join("/");
@@ -580,4 +603,83 @@ export async function resumeMediaJobs() {
   for (const row of segments.rows) queueSegmentRemux(row.id);
   const sessions = await query("SELECT id FROM recording_sessions WHERE state IN ('FINALIZE_PENDING','MERGING')");
   for (const row of sessions.rows) queueSessionFinalize(row.id);
+}
+
+async function recordExhaustedMediaAlerts() {
+  await query(
+    `INSERT INTO server_alerts(level,code,message,details)
+     SELECT 'ERROR','MEDIA_AUTO_REPAIR_EXHAUSTED','錄影片段自動修復已達 3 次，等待人工檢查',
+       jsonb_build_object('kind','segment','jobId',s.id,'sessionId',s.session_id,'detail',s.error_detail)
+     FROM recording_segments s
+     WHERE s.state='ERROR' AND s.auto_retry_count >= $1
+       AND NOT EXISTS (
+         SELECT 1 FROM server_alerts a WHERE a.cleared_at IS NULL
+           AND a.code='MEDIA_AUTO_REPAIR_EXHAUSTED'
+           AND a.details->>'kind'='segment' AND a.details->>'jobId'=s.id::text
+       )`,
+    [AUTO_RETRY_LIMIT],
+  );
+  await query(
+    `INSERT INTO server_alerts(level,code,message,details)
+     SELECT 'ERROR','MEDIA_AUTO_REPAIR_EXHAUSTED','完整影片自動修復已達 3 次，已保留可播放片段',
+       jsonb_build_object('kind','session','jobId',rs.id,'uid',rs.uid,'detail',rs.detail)
+     FROM recording_sessions rs
+     WHERE rs.state='ERROR' AND rs.auto_retry_count >= $1
+       AND NOT EXISTS (
+         SELECT 1 FROM server_alerts a WHERE a.cleared_at IS NULL
+           AND a.code='MEDIA_AUTO_REPAIR_EXHAUSTED'
+           AND a.details->>'kind'='session' AND a.details->>'jobId'=rs.id::text
+       )`,
+    [AUTO_RETRY_LIMIT],
+  );
+}
+
+export async function repairStalledMediaJobs() {
+  const segments = await query(
+    `UPDATE recording_segments SET state='UPLOADED',error_detail='',
+       auto_retry_count=auto_retry_count+1,last_auto_repair_at=now(),updated_at=now()
+     WHERE auto_retry_count < $1
+       AND received_bytes=size_bytes AND upload_relative_path IS NOT NULL
+       AND ((state='ERROR' AND updated_at<now()-interval '2 minutes')
+         OR (state='PROCESSING' AND updated_at<now()-interval '10 minutes'))
+     RETURNING id,session_id,auto_retry_count`,
+    [AUTO_RETRY_LIMIT],
+  );
+  for (const row of segments.rows) queueSegmentRemux(row.id);
+
+  // UPLOADED/FINALIZE_PENDING are idempotent queue states. Requeue them on
+  // every repair pass without consuming an error retry.
+  const pendingSegments = await query("SELECT id FROM recording_segments WHERE state='UPLOADED'");
+  for (const row of pendingSegments.rows) queueSegmentRemux(row.id);
+
+  const sessions = await query(
+    `UPDATE recording_sessions rs SET state='FINALIZE_PENDING',detail='中央自動修復後重新合併',
+       progress_stage='SEGMENT_PROCESSING',auto_retry_count=rs.auto_retry_count+1,
+       last_auto_repair_at=now(),updated_at=now()
+     WHERE rs.auto_retry_count < $1
+       AND ((rs.state='ERROR' AND rs.updated_at<now()-interval '2 minutes')
+         OR (rs.state='MERGING' AND rs.updated_at<now()-interval '30 minutes'))
+       AND rs.expected_segments IS NOT NULL
+       AND (SELECT count(*) FROM recording_segments s WHERE s.session_id=rs.id)=rs.expected_segments
+       AND NOT EXISTS (SELECT 1 FROM recording_segments s WHERE s.session_id=rs.id AND s.state<>'READY')
+     RETURNING rs.id,rs.uid,rs.auto_retry_count`,
+    [AUTO_RETRY_LIMIT],
+  );
+  for (const row of sessions.rows) queueSessionFinalize(row.id);
+
+  const pendingSessions = await query(
+    `SELECT rs.id FROM recording_sessions rs
+     WHERE rs.state='FINALIZE_PENDING' AND rs.expected_segments IS NOT NULL
+       AND (SELECT count(*) FROM recording_segments s WHERE s.session_id=rs.id)=rs.expected_segments
+       AND NOT EXISTS (SELECT 1 FROM recording_segments s WHERE s.session_id=rs.id AND s.state<>'READY')`,
+  );
+  for (const row of pendingSessions.rows) queueSessionFinalize(row.id);
+
+  await recordExhaustedMediaAlerts();
+  return {
+    repairedSegments: segments.rowCount,
+    repairedSessions: sessions.rowCount,
+    queuedSegments: pendingSegments.rowCount,
+    queuedSessions: pendingSessions.rowCount,
+  };
 }
