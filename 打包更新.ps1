@@ -180,7 +180,8 @@ New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
 Assert-ZipContains 'self-hosted-server.zip' @(
     'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
     'public/index.html', 'public/app.js', 'public/styles.css',
-    'migrations/004_media_auto_repair.sql', 'Update-Server.ps1'
+    'migrations/004_media_auto_repair.sql', 'Update-Server.ps1',
+    'test/integration-smoke.mjs', 'test/media-stream.test.js'
 )
 
 $payloadHash = (Get-FileHash -LiteralPath 'payload.zip' -Algorithm SHA256).Hash
