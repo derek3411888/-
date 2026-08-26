@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$PublicHostname,
+    [string]$LocalSrtHost,
     [string]$DataRoot,
     [string]$BackupRoot,
     [switch]$AllowDockerStorageOutsideDataDrive
@@ -45,11 +46,38 @@ function Get-DockerDesktopStorageRoot {
     }
 }
 
+function Get-PreferredLanIPv4 {
+    try {
+        $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+            Sort-Object RouteMetric, InterfaceMetric)
+        foreach ($route in $routes) {
+            $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex `
+                -AddressState Preferred -ErrorAction SilentlyContinue)
+            foreach ($address in $addresses) {
+                $value = [string]$address.IPAddress
+                if ($value -and $value -notmatch '^(127\.|169\.254\.)') { return $value }
+            }
+        }
+    } catch {
+        Write-Warning "無法自動偵測內網 IPv4：$($_.Exception.Message)"
+    }
+    return ''
+}
+
 if ([string]::IsNullOrWhiteSpace($PublicHostname)) {
     $PublicHostname = Read-Host '請輸入路由器 DDNS 主機名稱（例如 example.asuscomm.com）'
 }
 if ($PublicHostname -notmatch '^[A-Za-z0-9.-]+$' -or $PublicHostname -notmatch '\.') {
     throw 'DDNS 主機名稱格式無效，請勿包含 https:// 或路徑。'
+}
+if ([string]::IsNullOrWhiteSpace($LocalSrtHost)) {
+    $LocalSrtHost = Get-PreferredLanIPv4
+}
+if (-not [string]::IsNullOrWhiteSpace($LocalSrtHost) -and $LocalSrtHost -notmatch '^[A-Za-z0-9.-]+$') {
+    throw '內網 SRT 主機格式無效，請輸入固定 IPv4 或內網主機名稱。'
+}
+if ([string]::IsNullOrWhiteSpace($LocalSrtHost)) {
+    Write-Warning '未偵測到內網 IPv4；同網路的執行端可能無法穿過路由器的 UDP NAT loopback。'
 }
 if ([string]::IsNullOrWhiteSpace($DataRoot)) {
     $answer = Read-Host '中央影片／快照／Log 資料夾 [D:\WutheringControlServer\data]'
@@ -97,6 +125,7 @@ if (-not $envValues.ContainsKey('LIVE_TOKEN_SECRET')) { $envValues.LIVE_TOKEN_SE
 if (-not $envValues.ContainsKey('LIVE_SRT_PASSPHRASE')) { $envValues.LIVE_SRT_PASSPHRASE = New-RandomSecret 24 }
 $envValues.PUBLIC_HOSTNAME = $PublicHostname.ToLowerInvariant()
 $envValues.PUBLIC_SRT_HOST = $PublicHostname.ToLowerInvariant()
+$envValues.LOCAL_SRT_HOST = $LocalSrtHost.ToLowerInvariant()
 $envValues.PUBLIC_SRT_PORT = '8890'
 $envValues.DATA_ROOT_HOST = Normalize-DockerPath $dataFull
 $envValues.BACKUP_ROOT_HOST = Normalize-DockerPath $backupFull
@@ -109,7 +138,7 @@ $envValues.FIRESTORE_COLLECTION = 'ahk_clients'
 $envValues.SERVER_IMAGE_TAG = 'current'
 
 $orderedNames = @(
-    'PUBLIC_HOSTNAME', 'PUBLIC_SRT_HOST', 'PUBLIC_SRT_PORT', 'DATA_ROOT_HOST', 'BACKUP_ROOT_HOST',
+    'PUBLIC_HOSTNAME', 'PUBLIC_SRT_HOST', 'LOCAL_SRT_HOST', 'PUBLIC_SRT_PORT', 'DATA_ROOT_HOST', 'BACKUP_ROOT_HOST',
     'POSTGRES_PASSWORD', 'SESSION_SECRET', 'LIVE_TOKEN_SECRET', 'LIVE_SRT_PASSPHRASE', 'MIN_FREE_GB', 'SESSIONS_PER_DEVICE',
     'FIRESTORE_IMPORT_ENABLED', 'FIRESTORE_PROJECT_ID', 'FIRESTORE_API_KEY', 'FIRESTORE_COLLECTION', 'SERVER_IMAGE_TAG'
 )
@@ -140,6 +169,7 @@ Write-Host ''
 Write-Host '安裝完成。請在路由器與 Windows 防火牆開放：'
 Write-Host '  TCP 80、TCP 443、UDP 8890'
 Write-Host "控制網站：https://$PublicHostname"
+Write-Host "內網 SRT 主機：$LocalSrtHost"
 Write-Host '網站可直接開啟使用，不需要帳號、密碼或啟用連結。'
 Write-Host '新裝置第一次啟動會自動加入，不需要開放註冊窗口。'
 Write-Host "資料位置：$dataFull"

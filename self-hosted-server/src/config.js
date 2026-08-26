@@ -14,6 +14,13 @@ function requiredSecret(name) {
   return value;
 }
 
+function srtHost(name, fallback = "") {
+  const value = String(process.env[name] ?? fallback).trim();
+  if (!value) return "";
+  if (!/^[A-Za-z0-9.-]+$/.test(value)) throw new Error(`${name} 必須是主機名稱或 IPv4 位址`);
+  return value;
+}
+
 function publicUrl() {
   const raw = String(process.env.PUBLIC_URL ?? "http://localhost:8080").replace(/\/+$/, "");
   const parsed = new URL(raw);
@@ -27,7 +34,8 @@ export const config = Object.freeze({
   port: integer("PORT", 3000, 1, 65535),
   databaseUrl: process.env.DATABASE_URL ?? "postgres://wuthering:wuthering@postgres:5432/wuthering_control",
   publicUrl: publicBase.origin,
-  publicSrtHost: String(process.env.PUBLIC_SRT_HOST ?? publicBase.hostname).trim(),
+  publicSrtHost: srtHost("PUBLIC_SRT_HOST", publicBase.hostname),
+  localSrtHost: srtHost("LOCAL_SRT_HOST"),
   publicSrtPort: integer("PUBLIC_SRT_PORT", 8890, 1, 65535),
   sessionSecret: requiredSecret("SESSION_SECRET"),
   liveSecret: requiredSecret("LIVE_TOKEN_SECRET"),

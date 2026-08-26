@@ -17,6 +17,8 @@
 
 不要公開 PostgreSQL、API 的 3000、MediaMTX 的 8888 或任何管理介面。
 
+`.env` 的 `LOCAL_SRT_HOST` 應設為 Docker 主機的固定內網 IPv4（目前主機為 `192.168.0.194`）。裝置會優先走內網 SRT，再退回 DDNS，避開許多家用路由器只支援 HTTPS、卻不支援 UDP NAT loopback 的情況。安裝工具會自動偵測預設路由所在的 IPv4，也可用 `-LocalSrtHost` 明確指定。
+
 ## 首次安裝
 
 1. 在路由器設定 DDNS，並把上述連接埠轉發到這台常開電腦。

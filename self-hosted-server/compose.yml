@@ -35,6 +35,7 @@ services:
       DATABASE_URL: postgres://wuthering:${POSTGRES_PASSWORD}@postgres:5432/wuthering_control
       PUBLIC_URL: https://${PUBLIC_HOSTNAME}
       PUBLIC_SRT_HOST: ${PUBLIC_SRT_HOST}
+      LOCAL_SRT_HOST: ${LOCAL_SRT_HOST:-}
       PUBLIC_SRT_PORT: ${PUBLIC_SRT_PORT:-8890}
       SESSION_SECRET: ${SESSION_SECRET}
       LIVE_TOKEN_SECRET: ${LIVE_TOKEN_SECRET}

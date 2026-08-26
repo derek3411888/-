@@ -20,6 +20,8 @@ global RCSH_LIVE_URL := ""
 global RCSH_LIVE_SOURCE_URL := ""
 global RCSH_LIVE_STARTED_AT := 0
 global RCSH_LIVE_ROUTE := "public"
+global RCSH_LIVE_CANDIDATES := []
+global RCSH_LIVE_CANDIDATE_INDEX := 0
 global RCSH_LIVE_EXPIRES_AT := 0
 global RCSH_PREVIEW_MARKER := "WUTHERING_RUNTIME_PREVIEW_V1"
 global RCSH_HTTP_FAILURE_COUNT := 0
@@ -371,9 +373,10 @@ RCSH_HandleLiveControl(resp) {
         return false
     enabled := RC_JsonGetBoolean(resp, "selfHostedLiveEnabled", false)
     publishUrl := RC_JsonGetString(resp, "selfHostedLivePublishUrl")
+    publishUrls := RC_JsonGetString(resp, "selfHostedLivePublishUrls")
     RCSH_LIVE_EXPIRES_AT := RC_JsonGetInteger(resp, "selfHostedLiveExpiresAt", 0)
     if (enabled && publishUrl != "")
-        RCSH_StartLivePreview(publishUrl)
+        RCSH_StartLivePreview(publishUrl, publishUrls)
     else
         RCSH_StopLivePreview("lease expired")
     return true
@@ -390,9 +393,10 @@ RCSH_ExpireLivePreviewIfNeeded() {
     return false
 }
 
-RCSH_StartLivePreview(publishUrl) {
+RCSH_StartLivePreview(publishUrl, publishUrls := "") {
     global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
     global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE, RCSH_PREVIEW_MARKER
+    global RCSH_LIVE_CANDIDATES, RCSH_LIVE_CANDIDATE_INDEX
     publishUrl := Trim(publishUrl, " `t`r`n")
     if (publishUrl = "")
         return false
@@ -407,15 +411,17 @@ RCSH_StartLivePreview(publishUrl) {
     } else if (sameLease && RCSH_LIVE_PID > 0) {
         elapsedMs := RCSH_LIVE_STARTED_AT > 0 ? Max(0, nowMs - RCSH_LIVE_STARTED_AT) : 0
         previousRoute := RCSH_LIVE_ROUTE
-        ; A public-DDNS SRT connection can fail on the Docker host when the
-        ; router does not support UDP NAT loopback.  Only after an early exit
-        ; do we try localhost; normal remote clients keep the public route.
-        if (elapsedMs <= 30000)
-            RCSH_LIVE_ROUTE := previousRoute = "public" ? "loopback" : "public"
+        ; The preferred LAN route can fail when a device is outside the home
+        ; network. Rotate through the server-provided LAN/public candidates;
+        ; localhost remains the final same-host compatibility fallback.
+        if (elapsedMs <= 30000 && RCSH_LIVE_CANDIDATES.Length > 1)
+            RCSH_LIVE_CANDIDATE_INDEX := Mod(RCSH_LIVE_CANDIDATE_INDEX,
+                RCSH_LIVE_CANDIDATES.Length) + 1
         else
-            RCSH_LIVE_ROUTE := "public"
+            RCSH_LIVE_CANDIDATE_INDEX := 1
         RC_Log("Self-hosted live preview exited early. route=" previousRoute
-            " elapsedMs=" elapsedMs " retryRoute=" RCSH_LIVE_ROUTE, "WARN")
+            " elapsedMs=" elapsedMs " retryCandidate=" RCSH_LIVE_CANDIDATE_INDEX
+            "/" RCSH_LIVE_CANDIDATES.Length, "WARN")
         RCSH_LIVE_PID := 0
         RCSH_LIVE_URL := ""
         RCSH_LIVE_STARTED_AT := 0
@@ -423,17 +429,18 @@ RCSH_StartLivePreview(publishUrl) {
 
     if !sameLease {
         RCSH_LIVE_SOURCE_URL := publishUrl
-        RCSH_LIVE_ROUTE := "public"
+        RCSH_LIVE_CANDIDATES := RCSH_BuildLiveCandidates(publishUrl, publishUrls)
+        RCSH_LIVE_CANDIDATE_INDEX := 1
     }
 
-    effectiveUrl := publishUrl
-    if (RCSH_LIVE_ROUTE = "loopback") {
-        loopbackUrl := RCSH_LoopbackSrtUrl(publishUrl)
-        if (loopbackUrl != "")
-            effectiveUrl := loopbackUrl
-        else
-            RCSH_LIVE_ROUTE := "public"
-    }
+    if (RCSH_LIVE_CANDIDATES.Length = 0)
+        RCSH_LIVE_CANDIDATES := RCSH_BuildLiveCandidates(publishUrl, publishUrls)
+    if (RCSH_LIVE_CANDIDATE_INDEX < 1
+        || RCSH_LIVE_CANDIDATE_INDEX > RCSH_LIVE_CANDIDATES.Length)
+        RCSH_LIVE_CANDIDATE_INDEX := 1
+    effectiveUrl := RCSH_LIVE_CANDIDATES[RCSH_LIVE_CANDIDATE_INDEX]
+    RCSH_LIVE_ROUTE := RCSH_DescribeLiveRoute(effectiveUrl,
+        RCSH_LIVE_CANDIDATE_INDEX, RCSH_LIVE_CANDIDATES.Length)
     ffmpegExe := ""
     try ffmpegExe := ResolveScreenRecordingFfmpegExePath("")
     if (ffmpegExe = "" || !FileExist(ffmpegExe)) {
@@ -483,15 +490,46 @@ RCSH_LoopbackSrtUrl(publishUrl) {
     return replaceCount = 1 ? loopbackUrl : ""
 }
 
+RCSH_BuildLiveCandidates(primaryUrl, publishUrls := "") {
+    candidates := []
+    seen := Map()
+    for rawUrl in StrSplit(publishUrls, "|")
+        RCSH_AddLiveCandidate(candidates, seen, rawUrl)
+    RCSH_AddLiveCandidate(candidates, seen, primaryUrl)
+    RCSH_AddLiveCandidate(candidates, seen, RCSH_LoopbackSrtUrl(primaryUrl))
+    return candidates
+}
+
+RCSH_AddLiveCandidate(candidates, seen, candidateUrl) {
+    candidateUrl := Trim(candidateUrl, " `t`r`n")
+    if (candidateUrl = "" || !RegExMatch(candidateUrl, "i)^srt://"))
+        return false
+    key := StrLower(candidateUrl)
+    if seen.Has(key)
+        return false
+    seen[key] := true
+    candidates.Push(candidateUrl)
+    return true
+}
+
+RCSH_DescribeLiveRoute(candidateUrl, index, total) {
+    if RegExMatch(candidateUrl, "i)^srt://(?:127\.0\.0\.1|localhost):")
+        return "loopback"
+    return index = 1 ? "preferred" : "fallback-" index "/" total
+}
+
 RCSH_StopLivePreview(reason := "") {
     global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
     global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE
+    global RCSH_LIVE_CANDIDATES, RCSH_LIVE_CANDIDATE_INDEX
     pid := RCSH_LIVE_PID
     RCSH_LIVE_PID := 0
     RCSH_LIVE_URL := ""
     RCSH_LIVE_SOURCE_URL := ""
     RCSH_LIVE_STARTED_AT := 0
     RCSH_LIVE_ROUTE := "public"
+    RCSH_LIVE_CANDIDATES := []
+    RCSH_LIVE_CANDIDATE_INDEX := 0
     if (pid <= 0)
         return true
     try {

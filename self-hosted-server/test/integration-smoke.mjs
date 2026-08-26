@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
@@ -230,6 +231,13 @@ async function main() {
   "heartbeat response lost the active live lease");
   const liveControl = await request("/api/v1/device/control", { device: true });
   assert(liveControl.live.active && liveControl.live.publishUrl.includes("passphrase="), "encrypted live URL missing");
+  assert(Array.isArray(liveControl.live.publishUrls)
+    && liveControl.live.publishUrls[0] === liveControl.live.publishUrl,
+  "ordered live publish candidates missing");
+  if (config.localSrtHost) {
+    assert(liveControl.live.publishUrl.startsWith(`srt://${config.localSrtHost}:`),
+      "LAN SRT address was not preferred");
+  }
   const rejectedSrtRead = await fetch(`${base}/internal/media-auth`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "read", protocol: "srt", path: uid }),
@@ -283,5 +291,19 @@ async function main() {
     videoRange: true, liveHls: true, liveHlsResources: true, invalidSrtRejected: true, serverLog: true }));
 }
 
+async function cleanup() {
+  await query("DELETE FROM devices WHERE uid=$1", [uid]).catch(() => {});
+  const token = decodeURIComponent(cookie.split("=", 2)[1] ?? "");
+  if (token) {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    await query("DELETE FROM browser_sessions WHERE token_hash=$1", [tokenHash]).catch(() => {});
+  }
+  await fs.rm(path.join(config.mediaRoot, uid), { recursive: true, force: true }).catch(() => {});
+  await fs.rm(path.join(config.snapshotRoot, uid), { recursive: true, force: true }).catch(() => {});
+}
+
 try { await main(); }
-finally { await closeDatabase(); }
+finally {
+  await cleanup();
+  await closeDatabase();
+}

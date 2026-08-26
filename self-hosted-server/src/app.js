@@ -132,6 +132,11 @@ function firestoreString(value) { return { stringValue: String(value ?? "") }; }
 function firestoreInteger(value) { return { integerValue: String(Math.max(0, Number(value) || 0)) }; }
 function firestoreBoolean(value) { return { booleanValue: Boolean(value) }; }
 
+function livePublishUrl(uid, token, host) {
+  return `srt://${host}:${config.publicSrtPort}?streamid=publish:${uid}:device:${token}`
+    + `&pkt_size=1316&latency=200000&passphrase=${encodeURIComponent(config.liveSrtPassphrase)}&pbkeylen=32`;
+}
+
 async function deviceControl(uid, firestoreFormat) {
   const [deviceResult, commandResult, ackResult, settingsResult, liveResult, migration] = await Promise.all([
     query("SELECT * FROM devices WHERE uid=$1", [uid]),
@@ -149,9 +154,12 @@ async function deviceControl(uid, firestoreFormat) {
   const liveExpiresAt = liveResult.rows[0]?.expires_at ?? null;
   const liveActive = Boolean(liveExpiresAt);
   const liveToken = liveActive ? hmac(config.liveSecret, `publish:${uid}`) : "";
-  const liveUrl = liveActive
-    ? `srt://${config.publicSrtHost}:${config.publicSrtPort}?streamid=publish:${uid}:device:${liveToken}&pkt_size=1316&latency=200000&passphrase=${encodeURIComponent(config.liveSrtPassphrase)}&pbkeylen=32`
-    : "";
+  // Most devices are on the same LAN as the always-on Docker host. Routers
+  // often support HTTPS NAT loopback but not UDP/SRT NAT loopback, so the LAN
+  // address must be preferred. New payloads retain the public URL as fallback.
+  const liveHosts = [...new Set([config.localSrtHost, config.publicSrtHost].filter(Boolean))];
+  const liveUrls = liveActive ? liveHosts.map((host) => livePublishUrl(uid, liveToken, host)) : [];
+  const liveUrl = liveUrls[0] ?? "";
   const desired = command?.command ?? (device.state === "PAUSE" ? "PAUSE" : "RUN");
   const payload = command?.payload ?? {};
   const settings = settingsRow?.settings ?? device.settings ?? {};
@@ -166,7 +174,7 @@ async function deviceControl(uid, firestoreFormat) {
       serverName: ack.ack_payload?.serverName ?? ack.payload?.serverName ?? "", at: ack.acked_at?.valueOf?.() ?? 0,
     } : null,
     settings: settingsRow ? { revision: Number(settingsRow.revision), ...settings } : null,
-    live: { active: liveActive, publishUrl: liveUrl, expiresAt: liveExpiresAt },
+    live: { active: liveActive, publishUrl: liveUrl, publishUrls: liveUrls, expiresAt: liveExpiresAt },
   };
   if (!firestoreFormat) return result;
   const fields = {
@@ -194,6 +202,7 @@ async function deviceControl(uid, firestoreFormat) {
     selfHostedFirestoreFallbackUntil: firestoreInteger(migration.fallbackUntil ? new Date(migration.fallbackUntil).valueOf() : 0),
     selfHostedLiveEnabled: firestoreBoolean(liveActive),
     selfHostedLivePublishUrl: firestoreString(liveUrl),
+    selfHostedLivePublishUrls: firestoreString(liveUrls.join("|")),
     selfHostedLiveExpiresAt: firestoreInteger(liveExpiresAt?.valueOf?.() ?? 0),
   };
   return { fields };

@@ -12,6 +12,9 @@ const state = {
   liveRetryTimer: 0,
   liveHls: null,
   liveActive: false,
+  liveStartedAt: 0,
+  liveHasPlayed: false,
+  liveMediaRecoveries: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -326,6 +329,9 @@ async function startLive() {
   if (!state.selectedUid || state.liveActive) return;
   const lease = await api(`/api/v1/live/${encodeURIComponent(state.selectedUid)}/lease`, { method: "POST" });
   state.liveActive = true;
+  state.liveStartedAt = Date.now();
+  state.liveHasPlayed = false;
+  state.liveMediaRecoveries = 0;
   $("startLiveButton").disabled = true; $("stopLiveButton").disabled = false;
   setText("liveBadge", "正在等待推流"); $("liveBadge").className = "badge warning";
   setText("liveMessage", "已通知執行端；通常約 10 秒開始，若桌面鎖定會維持不可用。");
@@ -349,31 +355,48 @@ function attachLive(url, attempt) {
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
     hls.on(window.Hls.Events.ERROR, (_, data) => {
       if (!data.fatal) return;
-      setText("liveMessage", `即時串流尚未就緒，正在重試（${attempt + 1}）…`);
-      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && attempt < 2) {
+      const httpCode = Number(data.response?.code || data.networkDetails?.status || 0);
+      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && state.liveMediaRecoveries < 1) {
+        state.liveMediaRecoveries += 1;
+        setText("liveMessage", "已收到串流但解碼暫停，正在恢復播放器…");
         hls.recoverMediaError();
         return;
       }
-      scheduleLiveRetry(url, attempt + 1);
+      scheduleLiveRetry(url, attempt + 1, httpCode ? `HTTP ${httpCode}` : data.details);
     });
   } else {
     setText("liveMessage", "這個瀏覽器不支援 HLS 播放，請改用最新版 Chrome、Edge 或 Safari。");
     return;
   }
-  video.onplaying = () => { clearTimeout(state.liveRetryTimer); setText("liveBadge", "直播中"); $("liveBadge").className = "badge ok"; setText("liveMessage", "近即時畫面已連線；保持此頁開啟會自動續期。"); };
-  video.onerror = () => scheduleLiveRetry(url, attempt + 1);
+  video.onplaying = () => {
+    state.liveHasPlayed = true;
+    state.liveMediaRecoveries = 0;
+    clearTimeout(state.liveRetryTimer);
+    setText("liveBadge", "直播中"); $("liveBadge").className = "badge ok";
+    setText("liveMessage", "近即時畫面已連線；保持此頁開啟會自動續期。");
+  };
+  video.onerror = () => scheduleLiveRetry(url, attempt + 1, "瀏覽器播放器錯誤");
 }
 
-function scheduleLiveRetry(url, attempt) {
+function scheduleLiveRetry(url, attempt, reason = "") {
   if (!state.liveActive) return;
   clearTimeout(state.liveRetryTimer);
-  setText("liveBadge", "正在重新連線"); $("liveBadge").className = "badge warning";
+  const elapsed = Math.max(0, Math.round((Date.now() - state.liveStartedAt) / 1000));
+  if (state.liveHasPlayed) {
+    setText("liveBadge", "正在重新連線");
+    setText("liveMessage", `串流中斷，正在重新連線（${reason || `第 ${attempt} 次`}）…`);
+  } else {
+    setText("liveBadge", "等待裝置推流");
+    setText("liveMessage", `已建立觀看租約，正在等待執行端連入（${elapsed} 秒${reason ? `，${reason}` : ""}）。`);
+  }
+  $("liveBadge").className = "badge warning";
   state.liveRetryTimer = setTimeout(() => attachLive(url, attempt), Math.min(5000, 2000 + attempt * 100));
 }
 
 async function stopLive() {
   if (!state.liveActive) return;
   state.liveActive = false; clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer);
+  state.liveStartedAt = 0; state.liveHasPlayed = false; state.liveMediaRecoveries = 0;
   try { await api(`/api/v1/live/${encodeURIComponent(state.selectedUid)}/lease`, { method: "DELETE" }); } catch {}
   if (state.liveHls) { state.liveHls.destroy(); state.liveHls = null; }
   const video = $("liveVideo"); video.pause(); video.removeAttribute("src"); video.load();
