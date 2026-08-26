@@ -26,6 +26,24 @@ function Read-Manifest([string]$Path) {
     return $value
 }
 
+function Set-ManifestArtifactCommit([string]$Path, [string]$ArtifactCommit) {
+    if ($ArtifactCommit -notmatch '^[0-9a-f]{40}$') { throw "無效的發布檔 commit：$ArtifactCommit" }
+    $value = Read-Manifest $Path
+    $prefix = 'https://raw.githubusercontent.com/derek3411888/-/'
+    foreach ($name in @('payload_url', 'launcher_url', 'server_bundle_url')) {
+        $url = [string]$value.$name
+        if (-not $url.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "manifest $name 不是預期的 GitHub raw 網址。"
+        }
+        $value.$name = $url -replace ([regex]::Escape($prefix) + '[^/]+/'), ($prefix + $ArtifactCommit + '/')
+        if ([string]$value.$name -notlike "$prefix$ArtifactCommit/*") {
+            throw "manifest $name 無法固定到 commit $ArtifactCommit。"
+        }
+    }
+    [IO.File]::WriteAllText($Path, ($value | ConvertTo-Json) + "`n", [Text.UTF8Encoding]::new($false))
+    return Read-Manifest $Path
+}
+
 function Wait-RemoteManifest($Expected, [string]$CommitSha, [int]$TimeoutSeconds = 180) {
     $releaseId = [string]$Expected.release_id
     if ([string]::IsNullOrWhiteSpace($CommitSha)) { throw '無法取得本次發布的 Git commit。' }
@@ -78,6 +96,19 @@ else {
     }
     & git commit -m $CommitMessage
     Assert-ExitCode '建立 Git 提交'
+}
+
+# 以「包含三份發布檔」的 commit 當作不變來源；再單獨提交
+# manifest。這樣沒有 commit hash 自我參照，也不會受 main 分支 raw CDN 快取影響。
+$artifactCommit = ([string](& git rev-parse HEAD)).Trim().ToLowerInvariant()
+$manifest = Set-ManifestArtifactCommit $manifestPath $artifactCommit
+& git add -- $manifestPath
+Assert-ExitCode '暫存固定發布檔來源的 manifest'
+if (@(& git diff --cached --name-only).Count -gt 0) {
+    & git diff --cached --check
+    Assert-ExitCode '固定發布檔 manifest 檢查'
+    & git commit -m "固定發布檔來源 $($manifest.release_id)"
+    Assert-ExitCode '建立固定發布檔 manifest 提交'
 }
 
 if (-not $SkipPush) {
