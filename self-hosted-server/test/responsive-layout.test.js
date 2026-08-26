@@ -16,4 +16,8 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.doesNotMatch(css, /\.key-values\s+div\s*\{/);
   assert.match(css, /\.recording-paths\s*>\s*span\s*\{[^}]*overflow-wrap:\s*anywhere/s);
   assert.match(css, /\.progress-summary\s+span\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(css, /\.card\s*\{[^}]*min-width:\s*0/s);
+  assert.match(css, /\.tab-panel\.active\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.match(css, /\.table-wrap\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*auto/s);
+  assert.match(css, /\.device-bar,\s*\.grid\.two,\s*\.video-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
 });
