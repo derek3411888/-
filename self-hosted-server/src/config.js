@@ -49,6 +49,7 @@ export const config = Object.freeze({
   sessionsPerDevice: integer("SESSIONS_PER_DEVICE", 5, 1, 100),
   browserSessionDays: integer("BROWSER_SESSION_DAYS", 180, 1, 730),
   liveLeaseSeconds: integer("LIVE_LEASE_SECONDS", 90, 30, 300),
+  livePublisherGraceSeconds: integer("LIVE_PUBLISHER_GRACE_SECONDS", 600, 30, 3600),
   liveTokenSeconds: integer("LIVE_TOKEN_SECONDS", 900, 120, 3600),
   maxJsonBytes: integer("MAX_JSON_BYTES", 2 * 1024 * 1024, 64 * 1024, 8 * 1024 * 1024),
   maxUploadChunkBytes: integer("MAX_UPLOAD_CHUNK_BYTES", 8 * 1024 * 1024, 256 * 1024, 32 * 1024 * 1024),

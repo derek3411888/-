@@ -345,13 +345,21 @@ function attachLive(url, attempt) {
   clearTimeout(state.liveRetryTimer);
   const video = $("liveVideo");
   if (state.liveHls) { state.liveHls.destroy(); state.liveHls = null; }
-  if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    video.src = `${url}?t=${Date.now()}`;
-    video.load();
-    video.play().catch(() => {});
-  } else if (window.Hls?.isSupported()) {
-    const hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
-    state.liveHls = hls; hls.attachMedia(video); hls.loadSource(`${url}?t=${Date.now()}`);
+  const sourceUrl = `${url}?t=${Date.now()}`;
+  // Prefer hls.js whenever Managed Media Source / MSE is available. Modern
+  // Safari can report native HLS support but defer the network request or stall
+  // on a low-latency startup playlist. hls.js performs the requests itself and
+  // gives us deterministic retry handling; older Safari still uses native HLS.
+  if (window.Hls?.isSupported()) {
+    const hls = new window.Hls({
+      lowLatencyMode: true,
+      liveSyncDurationCount: 3,
+      maxLiveSyncPlaybackRate: 1.5,
+      liveDurationInfinity: true,
+    });
+    state.liveHls = hls;
+    hls.loadSource(sourceUrl);
+    hls.attachMedia(video);
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
     hls.on(window.Hls.Events.ERROR, (_, data) => {
       if (!data.fatal) return;
@@ -364,6 +372,10 @@ function attachLive(url, attempt) {
       }
       scheduleLiveRetry(url, attempt + 1, httpCode ? `HTTP ${httpCode}` : data.details);
     });
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = sourceUrl;
+    video.load();
+    video.play().catch(() => {});
   } else {
     setText("liveMessage", "這個瀏覽器不支援 HLS 播放，請改用最新版 Chrome、Edge 或 Safari。");
     return;

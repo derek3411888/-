@@ -163,10 +163,17 @@ RCSH_ShouldWriteFirestore() {
 }
 
 RCSH_SelectControlResponse(firestoreResp := "") {
-    RCSH_ExpireLivePreviewIfNeeded()
-    if !RCSH_IsAvailable()
+    if !RCSH_IsAvailable() {
+        RCSH_ExpireLivePreviewIfNeeded()
         return firestoreResp
+    }
+    ; A busy AHK thread can delay the 10-second timer beyond the locally cached
+    ; deadline. Fetch current control first so a browser renewal extends the
+    ; deadline before the fail-safe is evaluated. Only use the stale deadline
+    ; when the self-hosted API cannot be reached.
     selfHostedResp := RCSH_GetControl()
+    if (selfHostedResp = "")
+        RCSH_ExpireLivePreviewIfNeeded()
     if RCSH_IsPrimary()
         return selfHostedResp
     ; Shadow/fallback only consume live leases and mirror status. Commands and
@@ -278,9 +285,10 @@ RCSH_SendHeartbeat(state) {
     global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
-    RCSH_ExpireLivePreviewIfNeeded()
-    if !RCSH_EnsureReady()
+    if !RCSH_EnsureReady() {
+        RCSH_ExpireLivePreviewIfNeeded()
         return false
+    }
 
     currentServer := Trim(CURRENT_SERVER_TARGET, " `t`r`n")
     serverIndex := SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_INDEX > 0 ? SERVER_SCHEDULE_INDEX : 0
@@ -340,6 +348,7 @@ RCSH_SendHeartbeat(state) {
         RCSH_HandleLiveControl(result.body)
         return true
     }
+    RCSH_ExpireLivePreviewIfNeeded()
     RCSH_SetError("heartbeat: " result.msg)
     return false
 }

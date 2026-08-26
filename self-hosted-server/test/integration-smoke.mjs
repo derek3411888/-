@@ -227,13 +227,17 @@ async function main() {
     method: "PUT", device: true, body: { state: "RUN", displayName: "整合測試裝置", lastNonce: Number(stop.nonce) },
   });
   assert(liveHeartbeat.fields?.selfHostedLiveEnabled?.booleanValue === true
-    && Number(liveHeartbeat.fields?.selfHostedLiveExpiresAt?.integerValue) > Date.now(),
+    && Number(liveHeartbeat.fields?.selfHostedLiveExpiresAt?.integerValue)
+      >= new Date(lease.expiresAt).valueOf() + config.livePublisherGraceSeconds * 1000,
   "heartbeat response lost the active live lease");
   const liveControl = await request("/api/v1/device/control", { device: true });
   assert(liveControl.live.active && liveControl.live.publishUrl.includes("passphrase="), "encrypted live URL missing");
   assert(Array.isArray(liveControl.live.publishUrls)
     && liveControl.live.publishUrls[0] === liveControl.live.publishUrl,
   "ordered live publish candidates missing");
+  assert(new Date(liveControl.live.publisherExpiresAt).valueOf()
+    >= new Date(liveControl.live.expiresAt).valueOf() + config.livePublisherGraceSeconds * 1000,
+  "publisher fail-safe deadline did not include heartbeat grace");
   if (config.localSrtHost) {
     assert(liveControl.live.publishUrl.startsWith(`srt://${config.localSrtHost}:`),
       "LAN SRT address was not preferred");

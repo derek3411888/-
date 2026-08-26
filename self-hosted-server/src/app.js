@@ -153,6 +153,12 @@ async function deviceControl(uid, firestoreFormat) {
   const settingsRow = settingsResult.rows[0];
   const liveExpiresAt = liveResult.rows[0]?.expires_at ?? null;
   const liveActive = Boolean(liveExpiresAt);
+  // The browser lease still expires 90 seconds after the final viewer leaves.
+  // Devices can report only every 90 seconds when a workflow is busy, so the
+  // local FFmpeg deadline needs extra margin. An explicit inactive response
+  // still stops it immediately and does not wait for this fail-safe deadline.
+  const livePublisherExpiresAt = liveExpiresAt
+    ? new Date(liveExpiresAt.valueOf() + config.livePublisherGraceSeconds * 1000) : null;
   const liveToken = liveActive ? hmac(config.liveSecret, `publish:${uid}`) : "";
   // Most devices are on the same LAN as the always-on Docker host. Routers
   // often support HTTPS NAT loopback but not UDP/SRT NAT loopback, so the LAN
@@ -174,7 +180,13 @@ async function deviceControl(uid, firestoreFormat) {
       serverName: ack.ack_payload?.serverName ?? ack.payload?.serverName ?? "", at: ack.acked_at?.valueOf?.() ?? 0,
     } : null,
     settings: settingsRow ? { revision: Number(settingsRow.revision), ...settings } : null,
-    live: { active: liveActive, publishUrl: liveUrl, publishUrls: liveUrls, expiresAt: liveExpiresAt },
+    live: {
+      active: liveActive,
+      publishUrl: liveUrl,
+      publishUrls: liveUrls,
+      expiresAt: liveExpiresAt,
+      publisherExpiresAt: livePublisherExpiresAt,
+    },
   };
   if (!firestoreFormat) return result;
   const fields = {
@@ -203,7 +215,7 @@ async function deviceControl(uid, firestoreFormat) {
     selfHostedLiveEnabled: firestoreBoolean(liveActive),
     selfHostedLivePublishUrl: firestoreString(liveUrl),
     selfHostedLivePublishUrls: firestoreString(liveUrls.join("|")),
-    selfHostedLiveExpiresAt: firestoreInteger(liveExpiresAt?.valueOf?.() ?? 0),
+    selfHostedLiveExpiresAt: firestoreInteger(livePublisherExpiresAt?.valueOf?.() ?? 0),
   };
   return { fields };
 }
