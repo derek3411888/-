@@ -479,7 +479,8 @@ async function serveSnapshot(res, uid) {
 async function listDevices() {
   const result = await query(
     `SELECT d.*,
-      (d.last_seen IS NOT NULL AND d.last_seen > now()-interval '5 minutes') AS online,
+      (d.state NOT IN ('STOP','OFFLINE') AND d.last_seen IS NOT NULL
+        AND d.last_seen > now()-interval '5 minutes') AS online,
       c.nonce AS pending_nonce,c.command AS pending_command,c.created_at AS pending_created_at,
       (SELECT row_to_json(x) FROM (
         SELECT nonce,command,status,ack_result,ack_detail,created_at,acked_at FROM commands h
@@ -494,7 +495,8 @@ async function listDevices() {
 async function deviceDetails(uid) {
   const [device, events, commands, settings] = await Promise.all([
     query(
-      `SELECT d.*,(d.last_seen>now()-interval '5 minutes') AS online,
+      `SELECT d.*,(d.state NOT IN ('STOP','OFFLINE')
+        AND d.last_seen>now()-interval '5 minutes') AS online,
         c.nonce AS pending_nonce,c.command AS pending_command,c.created_at AS pending_created_at,
         (SELECT row_to_json(x) FROM (
           SELECT nonce,command,status,ack_result,ack_detail,created_at,acked_at FROM commands h

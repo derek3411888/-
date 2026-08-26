@@ -120,6 +120,9 @@ async function main() {
     method: "POST", device: true,
     body: { nonce: Number(stop.nonce), state: "STOP", result: "APPLIED", detail: "smoke ACK" },
   });
+  const stoppedDevice = await request(`/api/v1/devices/${encodeURIComponent(uid)}`, { browser: true });
+  assert(stoppedDevice.device.online === false,
+    "STOP device remained online during the heartbeat grace window");
 
   const setting = await request(`/api/v1/devices/${encodeURIComponent(uid)}/settings`, {
     method: "PUT", browser: true,
