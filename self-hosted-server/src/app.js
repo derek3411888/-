@@ -178,8 +178,13 @@ async function deviceControl(uid, firestoreFormat) {
     ...settings,
     liveQualityProfile: normalizeLiveQualityProfile(settings.liveQualityProfile),
   };
+  const fallbackUntilMs = migration.fallbackUntil ? new Date(migration.fallbackUntil).valueOf() : 0;
   const result = {
     migrationMode: migration.mode ?? "shadow",
+    selfHostedServerUrl: config.publicUrl,
+    selfHostedMode: migration.mode ?? "shadow",
+    selfHostedEpoch: migration.epoch ?? "selfhost-v1",
+    selfHostedFirestoreFallbackUntil: fallbackUntilMs,
     command: command ? {
       nonce: Number(command.nonce), state: command.command, serverIndex: Number(payload.serverIndex ?? 0), serverName: payload.serverName ?? "",
     } : null,
@@ -220,8 +225,10 @@ async function deviceControl(uid, firestoreFormat) {
     desiredRuntimeDiagnosticsErrorKeepCount: firestoreInteger(normalizedSettings.runtimeDiagnosticsErrorKeepCount ?? 30),
     desiredMaxRestartCount: firestoreInteger(normalizedSettings.maxRestartCount ?? 10),
     desiredLiveQualityProfile: firestoreString(normalizedSettings.liveQualityProfile),
+    selfHostedServerUrl: firestoreString(config.publicUrl),
     selfHostedMode: firestoreString(migration.mode ?? "shadow"),
-    selfHostedFirestoreFallbackUntil: firestoreInteger(migration.fallbackUntil ? new Date(migration.fallbackUntil).valueOf() : 0),
+    selfHostedEpoch: firestoreString(migration.epoch ?? "selfhost-v1"),
+    selfHostedFirestoreFallbackUntil: firestoreInteger(fallbackUntilMs),
     selfHostedLiveEnabled: firestoreBoolean(liveActive),
     selfHostedLivePublishUrl: firestoreString(liveUrl),
     selfHostedLivePublishUrls: firestoreString(liveUrls.join("|")),

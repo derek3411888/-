@@ -104,6 +104,8 @@ async function main() {
   assert(Number(stop.nonce) > Number(pause.nonce), "STOP nonce did not advance");
   const control = await request("/api/v1/device/control?format=firestore", { device: true });
   assert(control.fields.desiredState.stringValue === "STOP", "device did not receive STOP");
+  assert(control.fields.selfHostedServerUrl.stringValue === config.publicUrl,
+    "primary device control did not publish the fixed API URL");
   await request("/api/v1/device/commands/ack", {
     method: "POST", device: true,
     body: { nonce: Number(stop.nonce), state: "STOP", result: "APPLIED", detail: "smoke ACK" },
@@ -238,6 +240,8 @@ async function main() {
       >= new Date(lease.expiresAt).valueOf() + config.livePublisherGraceSeconds * 1000,
   "heartbeat response lost the active live lease");
   const liveControl = await request("/api/v1/device/control", { device: true });
+  assert(liveControl.selfHostedServerUrl === config.publicUrl,
+    "JSON device control did not publish the fixed API URL");
   assert(liveControl.live.active && liveControl.live.publishUrl.includes("passphrase="), "encrypted live URL missing");
   assert(Array.isArray(liveControl.live.publishUrls)
     && liveControl.live.publishUrls[0] === liveControl.live.publishUrl,

@@ -227,6 +227,9 @@ RCSH_GetControl() {
         return ""
     }
     RCSH_LAST_CONTROL_OK := RC_UnixMs()
+    ; primary 模式已停止 Firestore 輪詢後，API 仍必須能把網址從舊 DDNS
+    ; 遷移到固定 IP。此欄位與 Firestore discovery 使用同一格式及驗證。
+    RCSH_ProcessDiscoveryResponse(result.body)
     ; 模式切換也由自架 API 自己回報。如此在 7 天緊急期結束、Firestore
     ; 輪詢完全停止後，主機端仍可把裝置切回 fallback，不會失去救援入口。
     serverModeRaw := RC_JsonGetString(result.body, "selfHostedMode")
