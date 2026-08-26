@@ -87,6 +87,15 @@ async function main() {
       status: { currentStep: "smoke", currentServerLabel: "1/2 | HMT", serverScheduleList: ["HMT", "Asia"] },
       events: [{ at: Date.now(), level: "INFO", name: "測試啟動", detail: "integration smoke" }] },
   });
+  const backgroundRecordingStatus = await request("/api/v1/device/recording/status", {
+    method: "PUT", device: true,
+    body: { state: "merging", detail: "本機無損合併 25%", active: false,
+      baseName: "wuthering_auto_recording_20260825_151700", progressCurrent: 25,
+      progressTotal: 100, progressUnit: "bytes" },
+  });
+  assert(backgroundRecordingStatus.progressPercent === 25
+    && backgroundRecordingStatus.source === "background-worker",
+  "background recording worker status was not accepted");
   await request("/api/v1/admin/migration/mode", { method: "PUT", body: { mode: "primary" }, browser: true });
 
   const pause = await request(`/api/v1/devices/${encodeURIComponent(uid)}/commands`, {
@@ -164,7 +173,8 @@ async function main() {
   const clientSessionId = `wuthering_auto_recording_20260825_151700_${Date.now()}`;
   const recording = await request("/api/v1/device/recordings/sessions", {
     method: "POST", device: true,
-    body: { clientSessionId, baseName: "wuthering_auto_recording_20260825_151700", startedAt: new Date().toISOString() },
+    body: { clientSessionId, baseName: "wuthering_auto_recording_20260825_151700",
+      startedAt: new Date().toISOString(), expectedSegments: 1, expectedBytes: media.length },
   });
   const segment = await request(`/api/v1/device/recordings/sessions/${recording.id}/segments`, {
     method: "POST", device: true,
@@ -217,10 +227,16 @@ async function main() {
   await waitFor(async () => (await request(`/api/v1/device/recordings/segments/${segment.id}`, { device: true })).state === "READY",
     "segment remux did not finish");
   await request(`/api/v1/device/recordings/sessions/${recording.id}/complete`, {
-    method: "POST", device: true, body: { expectedSegments: 1 },
+    method: "POST", device: true, body: { expectedSegments: 1, expectedBytes: media.length },
   });
   await waitFor(async () => (await request(`/api/v1/device/recordings/sessions/${recording.id}`, { device: true })).state === "COMPLETE",
     "recording merge did not finish");
+  const recordingList = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings`, { browser: true });
+  const completedRecording = recordingList.recordings.find((item) => item.id === recording.id);
+  assert(completedRecording?.progress_percent === 100
+    && Number(completedRecording.expected_bytes) === media.length
+    && Number(completedRecording.received_bytes) === media.length,
+  "recording list did not expose complete progress and byte totals");
   const video = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings/${recording.id}/video`, {
     browser: true, raw: true, headers: { Range: "bytes=0-99" },
   });
@@ -303,7 +319,8 @@ async function main() {
   assert(serverLog.isFile() && serverLog.size > 0, "mounted rotating server log was not written");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
     directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
-    videoRange: true, liveHls: true, liveHlsResources: true, invalidSrtRejected: true, serverLog: true }));
+    videoRange: true, recordingProgress: true, liveHls: true, liveHlsResources: true,
+    invalidSrtRejected: true, serverLog: true }));
 }
 
 async function cleanup() {

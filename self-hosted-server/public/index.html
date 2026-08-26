@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260826-server-select-v2">
+  <link rel="stylesheet" href="/styles.css?v=20260826-recording-progress-v1">
 </head>
 <body>
   <main id="appView" class="shell">
@@ -99,6 +99,7 @@
             <button id="stopLiveButton" type="button" disabled>停止觀看</button>
           </div>
           <p id="liveMessage" class="hint">啟動後約 10 秒開始；離開後 90 秒自動停止推流。</p>
+          <p id="liveDeviceStatus" class="transport-status muted">裝置尚未回報直播傳輸狀態。</p>
         </article>
         <article class="card">
           <div class="section-title"><div><h2>完整錄影與片段</h2><p>執行中可看已封口片段，結束後顯示單一 MP4。</p></div></div>
@@ -159,6 +160,6 @@
 
   <div id="toast" class="toast" hidden></div>
   <script src="/vendor/hls.min.js?v=1.6.13"></script>
-  <script type="module" src="/app.js?v=20260826-server-select-v2"></script>
+  <script type="module" src="/app.js?v=20260826-recording-progress-v1"></script>
 </body>
 </html>

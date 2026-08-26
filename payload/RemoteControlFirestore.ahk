@@ -1294,7 +1294,8 @@ RC_ReadRecordingStatus() {
             available: false, state: "", detail: "", updatedMs: 0,
             localSessionDir: "", destinationDir: "", destinationSegmentsDir: "",
             finalPath: "", resultPath: "", failureStorage: "", workerLogPath: stagingRoot "\recording_worker.log",
-            baseName: "", autoMerge: true, captureActive: false
+            baseName: "", autoMerge: true, captureActive: false,
+            progressCurrent: 0, progressTotal: 0, progressPercent: -1, progressUnit: ""
         }
     }
 
@@ -1312,7 +1313,11 @@ RC_ReadRecordingStatus() {
         workerLogPath: RC_IniReadSafe(statusPath, "recording", "worker_log_path", stagingRoot "\recording_worker.log"),
         baseName: RC_IniReadSafe(statusPath, "recording", "base_name", ""),
         autoMerge: RC_IniReadSafe(statusPath, "recording", "auto_merge", "1") = "1",
-        captureActive: RC_IniReadSafe(statusPath, "recording", "capture_active", "0") = "1"
+        captureActive: RC_IniReadSafe(statusPath, "recording", "capture_active", "0") = "1",
+        progressCurrent: RC_ToIntRange(RC_IniReadSafe(statusPath, "recording", "progress_current", "0"), 0, 0, 9999999999999),
+        progressTotal: RC_ToIntRange(RC_IniReadSafe(statusPath, "recording", "progress_total", "0"), 0, 0, 9999999999999),
+        progressPercent: RC_ToIntRange(RC_IniReadSafe(statusPath, "recording", "progress_percent", "-1"), -1, -1, 100),
+        progressUnit: RC_IniReadSafe(statusPath, "recording", "progress_unit", "")
     }
 }
 

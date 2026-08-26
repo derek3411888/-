@@ -76,6 +76,18 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
 .recording-item, .session-item, .alert-item { border: 1px solid var(--line); border-radius: 9px; padding: 10px; display: grid; gap: 4px; }
 .recording-item button { justify-self: start; }
 .recording-item small, .session-item small { color: var(--muted); }
+.progress-block { display: grid; gap: 5px; margin: 5px 0; }
+.progress-summary { display: flex; justify-content: space-between; gap: 10px; color: #496477; font-size: .86rem; }
+.progress-track { position: relative; height: 10px; overflow: hidden; border-radius: 999px; background: #e7eef3; }
+.progress-fill { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #2e89bb, #3cb28a); transition: width .25s ease; }
+.progress-track.indeterminate .progress-fill { width: 38%; animation: progress-sweep 1.4s ease-in-out infinite; }
+.recording-status-card { display: grid; gap: 8px; }
+.recording-status-card .state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.recording-paths { display: grid; gap: 4px; color: var(--muted); font-size: .84rem; overflow-wrap: anywhere; }
+.transport-status { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: #f5f8fa; color: #506a7b; }
+.transport-status.warning { color: var(--warn); background: #fff7eb; }
+.transport-status.danger { color: var(--danger); background: #fff1f2; }
+@keyframes progress-sweep { from { transform: translateX(-110%); } to { transform: translateX(290%); } }
 .segment-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .segment-list button.active { background: #e6f5fc; border-color: #69add2; color: var(--primary); font-weight: 700; }
 .playback-feedback { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; }

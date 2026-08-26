@@ -35,6 +35,61 @@ function duration(seconds) {
   const minutes = Math.floor((total % 3600) / 60);
   return `${hours ? `${hours} 小時 ` : ""}${minutes} 分`;
 }
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+function recordingStageLabel(value) {
+  return {
+    DEVICE_UPLOAD: "執行端續傳中央影片",
+    SEGMENT_PROCESSING: "中央轉換封口片段",
+    SERVER_MERGE: "中央無重編碼合併",
+    VERIFYING: "中央驗證完整影片",
+    COMPLETE: "完整影片已完成",
+    central_uploading: "執行端正在續傳中央影片",
+    central_processing: "中央正在轉換與合併",
+    copying_segments: "複製封口片段到設定位置",
+    merging: "本機無損合併",
+    copying_final: "複製完整影片到設定位置",
+    complete_upload_pending: "本機完成，中央仍待續傳",
+    finalize_waiting: "收尾等待中",
+    complete: "本機錄影收尾完成",
+  }[String(value ?? "")] || String(value || "等待錄影資料");
+}
+function centralRecordingProgress(item) {
+  if (item.state === "COMPLETE") return { percent: 100, stage: "COMPLETE" };
+  const expectedBytes = Number(item.expected_bytes) || 0;
+  const receivedBytes = Number(item.received_bytes) || 0;
+  const expectedSegments = Number(item.expected_segments) || 0;
+  const readySegments = Number(item.ready_segments) || 0;
+  if (expectedBytes > 0 && receivedBytes < expectedBytes) {
+    return { percent: Math.min(79, Math.floor(receivedBytes / expectedBytes * 80)), stage: "DEVICE_UPLOAD" };
+  }
+  if (expectedSegments > 0 && readySegments < expectedSegments) {
+    return { percent: Math.min(89, 80 + Math.floor(readySegments / expectedSegments * 10)), stage: "SEGMENT_PROCESSING" };
+  }
+  const stored = Number(item.progress_percent);
+  return {
+    percent: Number.isFinite(stored) && stored >= 0 ? Math.min(100, stored) : null,
+    stage: item.progress_stage || item.state,
+  };
+}
+function appendProgress(parent, percent, label, detail = "") {
+  const block = document.createElement("div"); block.className = "progress-block";
+  const summary = document.createElement("div"); summary.className = "progress-summary";
+  const stage = document.createElement("strong"); stage.textContent = label;
+  const value = document.createElement("span"); value.textContent = percent == null ? "處理中" : `${percent}%`;
+  summary.append(stage, value);
+  const track = document.createElement("div"); track.className = `progress-track${percent == null ? " indeterminate" : ""}`;
+  const fill = document.createElement("div"); fill.className = "progress-fill";
+  if (percent != null) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  track.append(fill); block.append(summary, track);
+  if (detail) { const text = document.createElement("small"); text.textContent = detail; block.append(text); }
+  parent.append(block);
+}
 function setText(id, value) { $(id).textContent = escapeText(value); }
 function normalizeLiveQualityProfile(value) {
   const profile = String(value ?? "").trim().toLowerCase();
@@ -243,15 +298,36 @@ function renderDetails() {
   snapshot.onerror = () => { snapshot.hidden = true; $("snapshotEmpty").hidden = false; setText("snapshotMeta", "尚無快照"); };
 
   const recording = status.recording || Object.fromEntries(Object.entries(status).filter(([key]) => key.toLowerCase().startsWith("recording")));
-  const recordingNode = $("recordingStatus");
-  recordingNode.replaceChildren();
-  const entries = Object.entries(recording).length ? Object.entries(recording) : [["狀態", "尚未收到錄影資料"]];
-  for (const [key, value] of entries) {
-    const row = document.createElement("div");
-    const label = document.createElement("strong"); label.textContent = key;
-    const content = document.createElement("span"); content.textContent = typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
-    row.append(label, content); recordingNode.append(row);
+  const recordingNode = $("recordingStatus"); recordingNode.replaceChildren();
+  const recordingCard = document.createElement("div"); recordingCard.className = "recording-status-card";
+  if (!Object.keys(recording).length) {
+    recordingCard.textContent = "尚未收到錄影資料。";
+  } else {
+    const stateLine = document.createElement("div"); stateLine.className = "state-line";
+    const badge = document.createElement("span"); badge.className = `badge ${String(recording.state).includes("error") || String(recording.state).includes("waiting") ? "warning" : recording.state === "complete" ? "ok" : "muted"}`;
+    badge.textContent = recordingStageLabel(recording.state);
+    const name = document.createElement("strong"); name.textContent = recording.baseName || "目前錄影工作";
+    stateLine.append(badge, name); recordingCard.append(stateLine);
+    const progressValue = Number(recording.progressPercent);
+    const progress = Number.isFinite(progressValue) && progressValue >= 0 ? progressValue : null;
+    let progressDetail = recording.detail || "等待背景工具回報";
+    if (Number(recording.progressTotal) > 0) {
+      const unitDetail = recording.progressUnit === "segments"
+        ? `${recording.progressCurrent}/${recording.progressTotal} 段`
+        : `${formatBytes(recording.progressCurrent)}/${formatBytes(recording.progressTotal)}`;
+      progressDetail = `${progressDetail}｜${unitDetail}`;
+    }
+    appendProgress(recordingCard, progress, recordingStageLabel(recording.state), progressDetail);
+    const paths = document.createElement("div"); paths.className = "recording-paths";
+    if (recording.resultPath) { const row = document.createElement("span"); row.textContent = `完成位置：${recording.resultPath}`; paths.append(row); }
+    if (recording.failureStorage && recording.state !== "complete") { const row = document.createElement("span"); row.textContent = `失敗保留：${recording.failureStorage}`; paths.append(row); }
+    recordingCard.append(paths);
   }
+  recordingNode.append(recordingCard);
+
+  const live = status.live || {};
+  setText("liveDeviceStatus", live.detail || "裝置尚未回報直播傳輸狀態。");
+  $("liveDeviceStatus").className = `transport-status ${["error"].includes(live.state) ? "danger" : ["retrying"].includes(live.state) ? "warning" : "muted"}`;
 
   const eventsBody = $("eventsBody"); eventsBody.replaceChildren();
   for (const item of wrapper.events || []) {
@@ -295,10 +371,18 @@ function renderRecordings() {
     const card = document.createElement("div"); card.className = "recording-item";
     const title = document.createElement("strong"); title.textContent = item.base_name;
     const meta = document.createElement("small"); meta.textContent = `${item.state}｜${formatTime(item.completed_at || item.created_at)}${item.duration_seconds ? `｜${duration(item.duration_seconds)}` : ""}`;
-    const detail = document.createElement("span"); detail.textContent = item.detail || `片段 ${item.expected_segments ?? "?"}`;
+    card.append(title, meta);
+    const progress = centralRecordingProgress(item);
+    const transfer = item.expected_bytes
+      ? `${formatBytes(item.received_bytes)}/${formatBytes(item.expected_bytes)}`
+      : item.expected_segments
+        ? `已收到 ${item.segment_count || 0}/${item.expected_segments} 段`
+        : `${item.ready_segments || 0}/${item.segment_count || 0} 段已可播放；尚待執行端回報總段數`;
+    appendProgress(card, progress.percent, recordingStageLabel(progress.stage),
+      `${item.detail || "中央錄影處理中"}｜${transfer}｜可播放 ${item.ready_segments || 0}/${item.expected_segments ?? "?"} 段`);
     const button = document.createElement("button"); button.type = "button"; button.textContent = item.playable ? "播放完整影片" : "查看已完成片段";
     button.addEventListener("click", () => openRecording(item));
-    card.append(title, meta, detail, button); list.append(card);
+    card.append(button); list.append(card);
   }
 }
 
@@ -485,7 +569,11 @@ function scheduleLiveRetry(url, attempt, reason = "") {
     setText("liveMessage", `串流中斷，正在重新連線（${reason || `第 ${attempt} 次`}）…`);
   } else {
     setText("liveBadge", "等待裝置推流");
-    setText("liveMessage", `已建立觀看租約，正在等待執行端連入（${elapsed} 秒${reason ? `，${reason}` : ""}）。`);
+    const deviceLive = state.details?.device?.status?.live || {};
+    const explicitFailure = ["retrying", "error"].includes(deviceLive.state) ? deviceLive.detail : "";
+    setText("liveMessage", explicitFailure
+      ? `${explicitFailure}（已等待 ${elapsed} 秒）`
+      : `已建立觀看租約，正在等待執行端連入（${elapsed} 秒${reason ? `，${reason}` : ""}）。`);
   }
   $("liveBadge").className = "badge warning";
   state.liveRetryTimer = setTimeout(() => attachLive(url, attempt), Math.min(5000, 2000 + attempt * 100));
@@ -545,7 +633,7 @@ async function boot() {
   clearInterval(state.periodicTimer);
   state.periodicTimer = setInterval(() => refresh().catch((error) => toast(error.message)), 30_000);
   const events = new EventSource("/api/v1/events"); state.eventSource = events;
-  ["device", "command", "settings", "snapshot", "live"].forEach((name) => events.addEventListener(name, scheduleRefresh));
+  ["device", "command", "settings", "snapshot", "live", "recording"].forEach((name) => events.addEventListener(name, scheduleRefresh));
   events.onerror = () => setText("deviceSummary", "即時連線暫時中斷，正在自動重連…");
 }
 

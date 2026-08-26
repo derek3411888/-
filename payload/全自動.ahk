@@ -109,7 +109,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.71"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.72"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -10835,6 +10835,16 @@ LaunchRecordingWorker(mode, sessionDir) {
         if (__SCREEN_RECORDING_SYNC_WORKER_PID > 0 && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID))
             return true
     } else if (normalizedMode = "finalize") {
+        ; 先留下持久收尾請求。即使 sync worker 是由上一個主程序啟動、目前
+        ; PID 不在記憶體裡，它的 HTTPS 上傳迴圈也會在下一個 1 MiB 區塊
+        ; 主動讓位，避免 finalize 因 mutex 被占數小時而退出。
+        finalizeMarker := sessionDir "\.finalize_requested"
+        try {
+            if !FileExist(finalizeMarker)
+                FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss"), finalizeMarker, "UTF-8")
+        } catch as e {
+            WriteLog("無法建立錄影收尾讓位標記: " e.Message, "WARN")
+        }
         ; 若剛好仍在補傳上一段，先給它完成；逾時就停止我們自己的 helper，
         ; 殘留 .partial 會由收尾 worker 覆寫，不會當成完成檔。
         if (__SCREEN_RECORDING_SYNC_WORKER_PID > 0 && ProcessExist(__SCREEN_RECORDING_SYNC_WORKER_PID)) {

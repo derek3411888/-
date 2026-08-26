@@ -68,6 +68,34 @@ function Get-LiveUploadRate([int]$ConfiguredMbps) {
     return $ConfiguredMbps
 }
 
+function Assert-SyncNotPreempted {
+    if ($Mode -eq 'sync' -and (Test-Path -LiteralPath (Join-Path $resolvedSession '.finalize_requested'))) {
+        throw [OperationCanceledException]::new('錄影已要求收尾，既有同步上傳主動讓位。')
+    }
+}
+
+function Send-WorkerStatus([string]$State, [string]$Detail, [long]$Current, [long]$Total, [switch]$Force) {
+    if ($Mode -ne 'finalize') { return }
+    $now = [Environment]::TickCount64
+    if (-not $Force -and $now - $script:LastStatusTick -lt 3000) { return }
+    $script:LastStatusTick = $now
+    try {
+        Invoke-Json 'PUT' '/api/v1/device/recording/status' @{
+            state = $State
+            detail = $Detail
+            active = $false
+            baseName = $baseName
+            resultPath = ''
+            failureStorage = $resolvedSession
+            progressCurrent = [Math]::Max(0, $Current)
+            progressTotal = [Math]::Max(0, $Total)
+            progressUnit = 'bytes'
+        } | Out-Null
+    } catch {
+        # 狀態回報只是可觀測性；上傳本身的回應才是權威結果。
+    }
+}
+
 function Send-Segment([IO.FileInfo]$File, [int]$Index, [string]$SessionId, [int]$ConfiguredMbps) {
     $hash = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     $segment = Invoke-Json 'POST' "/api/v1/device/recordings/sessions/$SessionId/segments" @{
@@ -97,6 +125,7 @@ function Send-Segment([IO.FileInfo]$File, [int]$Index, [string]$SessionId, [int]
         $stream.Position = $offset
         $buffer = New-Object byte[] $chunkBytes
         while ($offset -lt $File.Length) {
+            Assert-SyncNotPreempted
             $remaining = [long]$File.Length - $offset
             $wanted = [int][Math]::Min($buffer.Length, $remaining)
             $read = $stream.Read($buffer, 0, $wanted)
@@ -116,6 +145,9 @@ function Send-Segment([IO.FileInfo]$File, [int]$Index, [string]$SessionId, [int]
                 -UseBasicParsing -TimeoutSec 120 | Out-Null
             $offset += $read
             $uploadedThisRun += $read
+            Send-WorkerStatus 'central_uploading' `
+                "正在加密續傳第 $($Index + 1) 段" `
+                ($script:ProgressBaseBytes + $offset) $script:ExpectedBytes
 
             $bytesPerSecond = [Math]::Max(125000, $rateMbps * 125000)
             $targetMs = [double]$uploadedThisRun / $bytesPerSecond * 1000
@@ -165,23 +197,43 @@ if ($script:DeviceToken -notmatch '^[A-Za-z0-9_-]{40,180}$') { throw '解密後�
 $limitMbps = 8
 [void][int]::TryParse((Get-IniValue $config 'self_hosted' 'upload_limit_mbps' '8'), [ref]$limitMbps)
 $limitMbps = [Math]::Max(1, [Math]::Min(100, $limitMbps))
-$session = Invoke-Json 'POST' '/api/v1/device/recordings/sessions' @{
+$allSegments = @(Get-ChildItem -LiteralPath $resolvedSession -Filter 'segment_*.mkv' -File | Sort-Object Name)
+if (-not $allSegments.Count) { exit 0 }
+$expectedBytes = [long]0
+foreach ($segmentFile in $allSegments) { $expectedBytes += [long]$segmentFile.Length }
+$script:ExpectedBytes = $expectedBytes
+$script:ProgressBaseBytes = [long]0
+$script:LastStatusTick = [long]0
+
+$sessionBody = @{
     clientSessionId = $leaf
     baseName = $baseName
     startedAt = Get-IniValue $sessionIni 'recording' 'started_at'
 }
+if ($Mode -eq 'finalize') {
+    $sessionBody.expectedSegments = $allSegments.Count
+    $sessionBody.expectedBytes = $expectedBytes
+}
+$session = Invoke-Json 'POST' '/api/v1/device/recordings/sessions' $sessionBody
 $sessionId = [string]$session.id
 if (-not $sessionId) { throw '伺服器未回傳錄影工作階段 ID。' }
 
-$allSegments = @(Get-ChildItem -LiteralPath $resolvedSession -Filter 'segment_*.mkv' -File | Sort-Object Name)
-if (-not $allSegments.Count) { exit 0 }
 $uploadCount = if ($Mode -eq 'finalize') { $allSegments.Count } else { [Math]::Max(0, $allSegments.Count - 1) }
+Send-WorkerStatus 'central_uploading' "準備續傳 $uploadCount 個封口片段" 0 $expectedBytes -Force
 for ($index = 0; $index -lt $uploadCount; $index++) {
+    Assert-SyncNotPreempted
     Send-Segment $allSegments[$index] $index $sessionId $limitMbps
+    $script:ProgressBaseBytes += [long]$allSegments[$index].Length
+    Send-WorkerStatus 'central_uploading' `
+        "中央已接收第 $($index + 1)/$uploadCount 段" `
+        $script:ProgressBaseBytes $expectedBytes -Force
 }
 
 if ($Mode -eq 'finalize') {
+    Send-WorkerStatus 'central_processing' '全部片段已送達，中央正在轉換與合併' `
+        $expectedBytes $expectedBytes -Force
     Invoke-Json 'POST' "/api/v1/device/recordings/sessions/$sessionId/complete" @{
         expectedSegments = $allSegments.Count
+        expectedBytes = $expectedBytes
     } | Out-Null
 }

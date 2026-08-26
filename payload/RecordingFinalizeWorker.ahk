@@ -17,16 +17,16 @@ if (mutexHandle <= 0) {
     if (mode = "sync")
         ExitApp(0)
 
-    ; 上一個主程序若在補傳中意外退出，sync worker 可能仍短暫持有 mutex。
-    ; finalize 不可假裝成功後消失；等候最多 90 秒，再交給下次啟動恢復。
-    Loop 90 {
+    ; finalize_requested 會讓舊 sync uploader 在下一個上傳區塊主動讓位。
+    ; 網路目的端的單一檔案複製無法安全中止，因此最多等待 10 分鐘。
+    Loop 600 {
         Sleep 1000
         mutexHandle := WorkerAcquireSessionMutex(sessionDir)
         if (mutexHandle > 0)
             break
     }
     if (mutexHandle <= 0) {
-        detail := "收尾等待既有同步工具 90 秒仍未取得鎖；保留工作階段供下次恢復"
+        detail := "收尾等待既有同步工具 10 分鐘仍未取得鎖；保留工作階段供下次恢復"
         WorkerWriteState(sessionDir, "finalize_waiting", detail)
         WorkerLog(sessionDir, detail, "WARN")
         ExitApp(7)
@@ -139,7 +139,8 @@ WorkerIsSafeBaseName(baseName) {
     return RegExMatch(baseName, "^wuthering_auto_recording_\d{8}_\d{6}$") ? true : false
 }
 
-WorkerWriteState(sessionDir, state, detail := "") {
+WorkerWriteState(sessionDir, state, detail := "", progressCurrent := 0,
+    progressTotal := 0, progressUnit := "", publishLegacy := true) {
     ini := sessionDir "\session.ini"
     updatedAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     updatedMs := WorkerUnixMs()
@@ -148,9 +149,12 @@ WorkerWriteState(sessionDir, state, detail := "") {
     try IniWrite(updatedAt, ini, "recording", "state_updated_at")
     try IniWrite(updatedMs, ini, "recording", "state_updated_unix_ms")
 
-    status := WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs)
+    status := WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs,
+        progressCurrent, progressTotal, progressUnit)
     WorkerPersistRecordingStatus(status)
-    WorkerPublishRecordingStatus(status)
+    WorkerPublishSelfHostedStatus(status)
+    if publishLegacy
+        WorkerPublishRecordingStatus(status)
 }
 
 WorkerUnixMs() {
@@ -160,7 +164,8 @@ WorkerUnixMs() {
     return (t // 10000) - 11644473600000
 }
 
-WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs) {
+WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs,
+    progressCurrent := 0, progressTotal := 0, progressUnit := "") {
     cfg := WorkerReadSession(sessionDir)
     destinationSegments := ""
     finalPath := ""
@@ -175,6 +180,9 @@ WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs) {
     root := ""
     SplitPath(sessionDir, , &root)
     workerLogPath := root != "" ? root "\recording_worker.log" : ""
+    safeCurrent := Max(0, progressCurrent + 0)
+    safeTotal := Max(0, progressTotal + 0)
+    progressPercent := safeTotal > 0 ? Min(100, Floor(safeCurrent / safeTotal * 100)) : -1
     return {
         state: state,
         detail: detail,
@@ -190,6 +198,10 @@ WorkerBuildRecordingStatus(sessionDir, state, detail, updatedAt, updatedMs) {
         baseName: cfg.baseName,
         autoMerge: cfg.autoMerge,
         captureActive: cfg.captureActive,
+        progressCurrent: safeCurrent,
+        progressTotal: safeTotal,
+        progressPercent: progressPercent,
+        progressUnit: progressUnit,
         configPath: cfg.configPath,
         root: root
     }
@@ -214,6 +226,10 @@ WorkerPersistRecordingStatus(status) {
         IniWrite(status.baseName, statusPath, "recording", "base_name")
         IniWrite(status.autoMerge ? "1" : "0", statusPath, "recording", "auto_merge")
         IniWrite(status.captureActive ? "1" : "0", statusPath, "recording", "capture_active")
+        IniWrite(status.progressCurrent, statusPath, "recording", "progress_current")
+        IniWrite(status.progressTotal, statusPath, "recording", "progress_total")
+        IniWrite(status.progressPercent, statusPath, "recording", "progress_percent")
+        IniWrite(status.progressUnit, statusPath, "recording", "progress_unit")
         return true
     } catch {
         return false
@@ -295,6 +311,106 @@ WorkerPublishRecordingStatus(status) {
         ; 網路回報失敗不可影響本機錄影保全；狀態已先寫入 recording_status.ini。
         return false
     }
+}
+
+WorkerPublishSelfHostedStatus(status) {
+    cfgPath := status.configPath
+    if (cfgPath = "" || !FileExist(cfgPath))
+        return false
+    serverUrl := ""
+    protectedToken := ""
+    selfHostedMode := "disabled"
+    timeoutMs := 5000
+    try {
+        serverUrl := RTrim(Trim(IniRead(cfgPath, "self_hosted", "server_url",
+            "https://220.135.218.98"), " `t`r`n"), "/")
+        protectedToken := Trim(IniRead(cfgPath, "self_hosted", "device_token_dpapi", ""), " `t`r`n")
+        selfHostedMode := StrLower(Trim(IniRead(cfgPath, "self_hosted", "mode", "shadow"), " `t`r`n"))
+        timeoutMs := WorkerToIntRange(IniRead(cfgPath, "remote_control", "http_timeout_ms", "1200"),
+            1200, 800, 1500)
+    } catch {
+        return false
+    }
+    if (selfHostedMode = "disabled" || protectedToken = "")
+        return false
+    if !RegExMatch(serverUrl, "i)^https://[a-z0-9.-]+(?::\d+)?$")
+        return false
+
+    token := ""
+    try token := WorkerDpapiUnprotect(protectedToken)
+    catch
+        return false
+    if !RegExMatch(token, "^[A-Za-z0-9_-]{40,180}$")
+        return false
+
+    body := "{"
+    body .= '"state":"' WorkerJsonEsc(status.state) '",'
+    body .= '"detail":"' WorkerJsonEsc(SubStr(status.detail, 1, 1200)) '",'
+    body .= '"active":' (status.captureActive ? "true" : "false") ","
+    body .= '"baseName":"' WorkerJsonEsc(status.baseName) '",'
+    body .= '"resultPath":"' WorkerJsonEsc(status.resultPath) '",'
+    body .= '"failureStorage":"' WorkerJsonEsc(status.failureStorage) '",'
+    body .= '"progressCurrent":' status.progressCurrent ","
+    body .= '"progressTotal":' status.progressTotal ","
+    body .= '"progressUnit":"' WorkerJsonEsc(status.progressUnit) '"}'
+
+    try {
+        http := ComObject("WinHttp.WinHttpRequest.5.1")
+        http.SetTimeouts(timeoutMs, timeoutMs, timeoutMs, timeoutMs)
+        http.Open("PUT", serverUrl "/api/v1/device/recording/status", false)
+        http.SetRequestHeader("Content-Type", "application/json; charset=utf-8")
+        http.SetRequestHeader("Accept", "application/json")
+        http.SetRequestHeader("Authorization", "Bearer " token)
+        http.Send(body)
+        return http.Status >= 200 && http.Status < 300
+    } catch {
+        ; 中央狀態失聯不能阻塞或改變本機錄影收尾。
+        return false
+    }
+}
+
+WorkerDpapiUnprotect(base64Text) {
+    decodedBytes := WorkerBase64Decode(base64Text)
+    plainBytes := WorkerDpapiTransform(decodedBytes, decodedBytes.Size)
+    return StrGet(plainBytes.Ptr, plainBytes.Size, "UTF-8")
+}
+
+WorkerDpapiTransform(inputBytes, inputSize) {
+    pointerOffset := A_PtrSize = 8 ? 8 : 4
+    blobSize := A_PtrSize = 8 ? 16 : 8
+    inputBlob := Buffer(blobSize, 0)
+    outputBlob := Buffer(blobSize, 0)
+    NumPut("UInt", inputSize, inputBlob, 0)
+    NumPut("Ptr", inputBytes.Ptr, inputBlob, pointerOffset)
+    descriptionPointer := 0
+    ok := DllCall("crypt32\CryptUnprotectData", "ptr", inputBlob.Ptr,
+        "ptr*", &descriptionPointer, "ptr", 0, "ptr", 0, "ptr", 0,
+        "uint", 0x1, "ptr", outputBlob.Ptr, "int")
+    if !ok
+        throw OSError(A_LastError, "CryptUnprotectData")
+    outputSize := NumGet(outputBlob, 0, "UInt")
+    outputPointer := NumGet(outputBlob, pointerOffset, "Ptr")
+    resultBytes := Buffer(outputSize, 0)
+    if (outputSize > 0)
+        DllCall("kernel32\RtlMoveMemory", "ptr", resultBytes.Ptr,
+            "ptr", outputPointer, "uptr", outputSize)
+    if outputPointer
+        DllCall("kernel32\LocalFree", "ptr", outputPointer, "ptr")
+    if descriptionPointer
+        DllCall("kernel32\LocalFree", "ptr", descriptionPointer, "ptr")
+    return resultBytes
+}
+
+WorkerBase64Decode(textValue) {
+    byteCount := 0
+    if !DllCall("crypt32\CryptStringToBinaryW", "wstr", textValue, "uint", 0,
+        "uint", 0x1, "ptr", 0, "uint*", &byteCount, "ptr", 0, "ptr", 0)
+        throw OSError(A_LastError, "CryptStringToBinaryW(size)")
+    decodedBytes := Buffer(byteCount, 0)
+    if !DllCall("crypt32\CryptStringToBinaryW", "wstr", textValue, "uint", 0,
+        "uint", 0x1, "ptr", decodedBytes.Ptr, "uint*", &byteCount, "ptr", 0, "ptr", 0)
+        throw OSError(A_LastError, "CryptStringToBinaryW")
+    return decodedBytes
 }
 
 WorkerTrySelfHostedUpload(sessionDir, mode) {
@@ -451,7 +567,20 @@ WorkerSyncSession(sessionDir, includeNewest, skipCentral := false) {
     }
 
     copied := 0
+    copiedBytes := 0
+    totalCopyBytes := 0
+    lastCopyReportTick := 0
+    if includeNewest {
+        Loop copyCount
+            totalCopyBytes += files[A_Index].size
+        WorkerWriteState(sessionDir, "copying_segments",
+            "正在驗證並複製 " copyCount " 個封口分段", 0, totalCopyBytes, "bytes", false)
+    }
     Loop copyCount {
+        if (!includeNewest && FileExist(sessionDir "\.finalize_requested")) {
+            WorkerLog(sessionDir, "偵測到 finalize_requested；同步工具已讓位給收尾工具")
+            return true
+        }
         item := files[A_Index]
         target := destinationSegments "\" item.name
         if !WorkerCopyFileVerified(item.path, target) {
@@ -460,6 +589,14 @@ WorkerSyncSession(sessionDir, includeNewest, skipCentral := false) {
             return false
         }
         copied += 1
+        copiedBytes += item.size
+        if (includeNewest && (A_TickCount - lastCopyReportTick >= 3000 || copied = copyCount)) {
+            lastCopyReportTick := A_TickCount
+            WorkerWriteState(sessionDir, "copying_segments",
+                "目的端分段 " copied "/" copyCount "（" WorkerFormatBytes(copiedBytes)
+                    "/" WorkerFormatBytes(totalCopyBytes) "）",
+                copiedBytes, totalCopyBytes, "bytes", false)
+        }
     }
 
     WorkerWriteState(sessionDir, includeNewest ? "segments_synced" : "recording",
@@ -484,6 +621,60 @@ WorkerHasMergeSpace(sessionDir, requiredBytes) {
         return true ; 無法查詢時交由 ffmpeg 的實際寫入結果判斷。
     requiredMb := Ceil(requiredBytes / 1048576) + 256
     return freeMb >= requiredMb
+}
+
+WorkerFormatBytes(value) {
+    bytes := Max(0, value + 0)
+    if (bytes >= 1073741824)
+        return Round(bytes / 1073741824, 2) " GB"
+    if (bytes >= 1048576)
+        return Round(bytes / 1048576, 1) " MB"
+    if (bytes >= 1024)
+        return Round(bytes / 1024, 1) " KB"
+    return bytes " B"
+}
+
+WorkerRunMergeWithProgress(cmd, workingDir, sessionDir, temporaryPath, totalBytes) {
+    workerPid := 0
+    try Run(cmd, workingDir, "Hide", &workerPid)
+    catch as e {
+        WorkerLog(sessionDir, "啟動 ffmpeg 合併失敗: " e.Message, "ERROR")
+        return -1
+    }
+    if (workerPid <= 0)
+        return -1
+
+    processHandle := DllCall("OpenProcess", "uint", 0x101000, "int", false,
+        "uint", workerPid, "ptr")
+    lastPercent := -1
+    lastReportTick := 0
+    while ProcessExist(workerPid) {
+        currentBytes := 0
+        try currentBytes := FileExist(temporaryPath) ? FileGetSize(temporaryPath) : 0
+        currentBytes := Min(totalBytes, Max(0, currentBytes))
+        percent := totalBytes > 0 ? Floor(currentBytes / totalBytes * 100) : 0
+        nowTick := A_TickCount
+        if ((percent != lastPercent && nowTick - lastReportTick >= 3000)
+            || nowTick - lastReportTick >= 5000) {
+            lastPercent := percent
+            lastReportTick := nowTick
+            WorkerWriteState(sessionDir, "merging",
+                "本機無損合併 " percent "%（" WorkerFormatBytes(currentBytes)
+                    "/" WorkerFormatBytes(totalBytes) "）",
+                currentBytes, totalBytes, "bytes", false)
+        }
+        Sleep 1000
+    }
+
+    exitCode := -1
+    if processHandle {
+        DllCall("WaitForSingleObject", "ptr", processHandle, "uint", 5000, "uint")
+        nativeExitCode := 0
+        if DllCall("GetExitCodeProcess", "ptr", processHandle, "uint*", &nativeExitCode, "int")
+            exitCode := nativeExitCode
+        DllCall("CloseHandle", "ptr", processHandle)
+    }
+    return exitCode
 }
 
 WorkerMergeSegments(sessionDir, cfg, files, &mergedPath) {
@@ -527,15 +718,12 @@ WorkerMergeSegments(sessionDir, cfg, files, &mergedPath) {
     listPath := WorkerBuildConcatList(sessionDir, files)
     tempMerged := mergedPath ".merging"
     try FileDelete(tempMerged)
-    WorkerWriteState(sessionDir, "merging", "正在無損合併 " files.Length " 個分段")
+    WorkerWriteState(sessionDir, "merging", "正在無損合併 " files.Length " 個分段",
+        0, totalBytes, "bytes", false)
 
     cmd := '"' cfg.ffmpegExe '" -hide_banner -loglevel warning -y -f concat -safe 0 -i "' listPath
         . '" -map 0 -c copy -f matroska "' tempMerged '"'
-    exitCode := -1
-    try exitCode := RunWait(cmd, sessionDir, "Hide")
-    catch as e {
-        WorkerLog(sessionDir, "啟動 ffmpeg 合併失敗: " e.Message, "ERROR")
-    }
+    exitCode := WorkerRunMergeWithProgress(cmd, sessionDir, sessionDir, tempMerged, totalBytes)
 
     minExpected := Max(1024, Floor(totalBytes * 0.5))
     if (exitCode != 0 || !FileExist(tempMerged) || FileGetSize(tempMerged) < minExpected) {
@@ -609,8 +797,17 @@ WorkerFinalizeSession(sessionDir) {
         return false
     }
 
+    ; 收尾 worker 已取得專屬 mutex，清除讓位標記；之後若重試仍由本 worker
+    ; 完成，不再讓自己的 finalize 上傳被誤認為舊 sync 工作。
+    try FileDelete(sessionDir "\.finalize_requested")
+
     ; 封口後立即補齊中央分段並送出 expectedSegments。失敗時後面的本機
     ; 合併仍照常進行，但最後不清除 staging，讓同一 worker／下次啟動續傳。
+    totalSourceBytes := 0
+    for _, sourceItem in files
+        totalSourceBytes += sourceItem.size
+    WorkerWriteState(sessionDir, "central_uploading",
+        "正在檢查並續傳 " files.Length " 個中央片段", 0, totalSourceBytes, "bytes", false)
     centralComplete := WorkerTrySelfHostedUpload(sessionDir, "finalize")
 
     ; 先把所有可播放分段補到目的端；即使稍後合併失敗仍能逐段回看。

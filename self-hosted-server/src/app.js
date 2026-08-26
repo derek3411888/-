@@ -268,6 +268,43 @@ async function updateHeartbeat(uid, body) {
   eventHub.emit("device", { uid, state, at: Date.now() });
 }
 
+async function updateRecordingWorkerStatus(uid, body) {
+  const state = boundedText(body.state, 80) || "unknown";
+  const detail = boundedText(body.detail, 1200);
+  const baseName = boundedText(body.baseName, 160);
+  const resultPath = boundedText(body.resultPath, 1200);
+  const failureStorage = boundedText(body.failureStorage, 1200);
+  const progressCurrent = integer(body.progressCurrent, 0, 0, Number.MAX_SAFE_INTEGER);
+  const progressTotal = integer(body.progressTotal, 0, 0, Number.MAX_SAFE_INTEGER);
+  const progressPercent = progressTotal > 0
+    ? Math.min(100, Math.floor(progressCurrent / progressTotal * 100)) : null;
+  const progressUnit = ["bytes", "segments"].includes(String(body.progressUnit))
+    ? String(body.progressUnit) : "";
+  const recording = {
+    enabled: true,
+    active: Boolean(body.active),
+    state,
+    detail,
+    baseName,
+    resultPath,
+    failureStorage,
+    progressCurrent,
+    progressTotal,
+    progressPercent,
+    progressUnit,
+    updatedAt: Date.now(),
+    source: "background-worker",
+  };
+  const result = await query(
+    `UPDATE devices SET status=jsonb_set(COALESCE(status,'{}'::jsonb),'{recording}',$2::jsonb,true),
+      updated_at=now() WHERE uid=$1 RETURNING uid`,
+    [uid, JSON.stringify(recording)],
+  );
+  if (!result.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+  eventHub.emit("recording", { uid, state, progressPercent, at: Date.now() });
+  return recording;
+}
+
 async function ackCommand(uid, body) {
   const nonce = integer(body.nonce, 0, 1, Number.MAX_SAFE_INTEGER);
   const state = String(body.state ?? "").toUpperCase();
@@ -653,6 +690,10 @@ async function handleRequest(req, res) {
       const body = await readJson(req, config.maxJsonBytes);
       await updateHeartbeat(uid, body);
       sendJson(res, 200, await deviceControl(uid, true));
+      return;
+    }
+    if (pathname === "/api/v1/device/recording/status" && req.method === "PUT") {
+      sendJson(res, 200, await updateRecordingWorkerStatus(uid, await readJson(req, config.maxJsonBytes)));
       return;
     }
     if (pathname === "/api/v1/device/commands/ack" && req.method === "POST") {

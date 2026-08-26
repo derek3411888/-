@@ -25,21 +25,25 @@ global RCSH_LIVE_CANDIDATE_INDEX := 0
 global RCSH_LIVE_EXPIRES_AT := 0
 global RCSH_LIVE_PROFILE := ""
 global RCSH_LIVE_ENCODER := ""
+global RCSH_LIVE_STATE := "idle"
+global RCSH_LIVE_DETAIL := "尚無觀看者"
 global RCSH_LIVE_HARDWARE_ENCODER := ""
 global RCSH_LIVE_HARDWARE_ENCODER_CHECKED := false
 global RCSH_PREVIEW_MARKER := "WUTHERING_RUNTIME_PREVIEW_V1"
 global RCSH_HTTP_FAILURE_COUNT := 0
 global RCSH_HTTP_RETRY_AFTER := 0
 global RCSH_LAST_ERROR_LOG_AT := 0
+global RCSH_DEFAULT_SERVER_URL := "https://220.135.218.98"
 
 RCSH_Init(cfgPath) {
     global RCSH_CFG_PATH, RCSH_SERVER_URL, RCSH_MODE, RCSH_EPOCH
     global RCSH_FIRESTORE_FALLBACK_UNTIL, RCSH_DEVICE_TOKEN
+    global RCSH_DEFAULT_SERVER_URL
 
     RCSH_CFG_PATH := cfgPath
     RCSH_EnsureDefaults(cfgPath)
     RCSH_SERVER_URL := RCSH_NormalizeServerUrl(
-        RC_IniReadSafe(cfgPath, "self_hosted", "server_url", ""))
+        RC_IniReadSafe(cfgPath, "self_hosted", "server_url", RCSH_DEFAULT_SERVER_URL))
     RCSH_MODE := RCSH_NormalizeMode(
         RC_IniReadSafe(cfgPath, "self_hosted", "mode", "shadow"))
     RCSH_EPOCH := Trim(RC_IniReadSafe(cfgPath, "self_hosted", "epoch", ""), " `t`r`n")
@@ -61,8 +65,11 @@ RCSH_Init(cfgPath) {
 }
 
 RCSH_EnsureDefaults(cfgPath) {
+    global RCSH_DEFAULT_SERVER_URL
     defaults := Map(
-        "server_url", "",
+        ; 固定公網 HTTPS 是全新電腦的零設定入口。同網域直播仍由伺服器
+        ; 下發內網 SRT 候選；外網電腦會自動輪替到固定公網位址。
+        "server_url", RCSH_DEFAULT_SERVER_URL,
         "mode", "shadow",
         "epoch", "",
         "firestore_fallback_until", "0",
@@ -293,6 +300,8 @@ RCSH_SendHeartbeat(state) {
     global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
+    global RCSH_LIVE_PID, RCSH_LIVE_STATE, RCSH_LIVE_DETAIL, RCSH_LIVE_ROUTE
+    global RCSH_LIVE_PROFILE, RCSH_LIVE_ENCODER
     if !RCSH_EnsureReady() {
         RCSH_ExpireLivePreviewIfNeeded()
         return false
@@ -338,7 +347,19 @@ RCSH_SendHeartbeat(state) {
     status .= '"detail":"' RC_JsonEsc(SubStr(recording.detail, 1, 1000)) '",'
     status .= '"baseName":"' RC_JsonEsc(recording.baseName) '",'
     status .= '"resultPath":"' RC_JsonEsc(recording.resultPath) '",'
-    status .= '"failureStorage":"' RC_JsonEsc(recording.failureStorage) '"'
+    status .= '"failureStorage":"' RC_JsonEsc(recording.failureStorage) '",'
+    status .= '"progressCurrent":' recording.progressCurrent ","
+    status .= '"progressTotal":' recording.progressTotal ","
+    status .= '"progressPercent":' recording.progressPercent ","
+    status .= '"progressUnit":"' RC_JsonEsc(recording.progressUnit) '"'
+    status .= "},"
+    status .= '"live":{'
+    status .= '"active":' (RCSH_LIVE_PID > 0 && ProcessExist(RCSH_LIVE_PID) ? "true" : "false") ","
+    status .= '"state":"' RC_JsonEsc(RCSH_LIVE_STATE) '",'
+    status .= '"detail":"' RC_JsonEsc(RCSH_LIVE_DETAIL) '",'
+    status .= '"route":"' RC_JsonEsc(RCSH_LIVE_ROUTE) '",'
+    status .= '"profile":"' RC_JsonEsc(RCSH_LIVE_PROFILE) '",'
+    status .= '"encoder":"' RC_JsonEsc(RCSH_LIVE_ENCODER) '"'
     status .= "}}"
 
     body := "{"
@@ -382,7 +403,7 @@ RCSH_PublishRuntimeSnapshot(dataUri, capturedAt, reason := "", width := 0, heigh
 }
 
 RCSH_HandleLiveControl(resp) {
-    global RCSH_LIVE_EXPIRES_AT
+    global RCSH_LIVE_EXPIRES_AT, RCSH_LIVE_STATE, RCSH_LIVE_DETAIL
     ; Heartbeat/control responses from older servers did not always contain
     ; the flattened live fields.  Missing fields mean "no live update", not
     ; "lease expired"; otherwise every heartbeat can stop a healthy preview.
@@ -392,9 +413,13 @@ RCSH_HandleLiveControl(resp) {
     publishUrl := RC_JsonGetString(resp, "selfHostedLivePublishUrl")
     publishUrls := RC_JsonGetString(resp, "selfHostedLivePublishUrls")
     RCSH_LIVE_EXPIRES_AT := RC_JsonGetInteger(resp, "selfHostedLiveExpiresAt", 0)
-    if (enabled && publishUrl != "")
+    if (enabled && publishUrl != "") {
+        if (RCSH_LIVE_STATE = "idle") {
+            RCSH_LIVE_STATE := "requested"
+            RCSH_LIVE_DETAIL := "網站已要求觀看，正在建立推流"
+        }
         RCSH_StartLivePreview(publishUrl, publishUrls)
-    else
+    } else
         RCSH_StopLivePreview("lease expired")
     return true
 }
@@ -415,6 +440,7 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
     global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE, RCSH_PREVIEW_MARKER
     global RCSH_LIVE_CANDIDATES, RCSH_LIVE_CANDIDATE_INDEX
     global RCSH_LIVE_PROFILE, RCSH_LIVE_ENCODER
+    global RCSH_LIVE_STATE, RCSH_LIVE_DETAIL
     publishUrl := Trim(publishUrl, " `t`r`n")
     if (publishUrl = "")
         return false
@@ -441,6 +467,10 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         RC_Log("Self-hosted live preview exited early. route=" previousRoute
             " elapsedMs=" elapsedMs " retryCandidate=" RCSH_LIVE_CANDIDATE_INDEX
             "/" RCSH_LIVE_CANDIDATES.Length, "WARN")
+        RCSH_LIVE_STATE := "retrying"
+        RCSH_LIVE_DETAIL := InStr(previousRoute, "fallback")
+            ? "公網 UDP 8890 推流未建立，正在重試；該外部網路可能封鎖 UDP"
+            : "內網推流未建立，正在改試公網路徑"
         RCSH_LIVE_PID := 0
         RCSH_LIVE_URL := ""
         RCSH_LIVE_STARTED_AT := 0
@@ -460,6 +490,8 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
     effectiveUrl := RCSH_LIVE_CANDIDATES[RCSH_LIVE_CANDIDATE_INDEX]
     RCSH_LIVE_ROUTE := RCSH_DescribeLiveRoute(effectiveUrl,
         RCSH_LIVE_CANDIDATE_INDEX, RCSH_LIVE_CANDIDATES.Length)
+    RCSH_LIVE_STATE := "connecting"
+    RCSH_LIVE_DETAIL := "正在透過 " RCSH_LIVE_ROUTE " 建立 720p 推流"
     ffmpegExe := ""
     try ffmpegExe := ResolveScreenRecordingFfmpegExePath("")
     if (ffmpegExe = "" || !FileExist(ffmpegExe)) {
@@ -477,6 +509,8 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         pid := 0
         Run(cmd, , "Hide", &pid)
         if (pid <= 0) {
+            RCSH_LIVE_STATE := "error"
+            RCSH_LIVE_DETAIL := "FFmpeg 未能啟動直播程序"
             RCSH_SetError("live preview: FFmpeg returned no PID")
             return false
         }
@@ -493,6 +527,8 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         SetTimer(RCSH_LiveStartupWatchdog.Bind(publishUrl, pid), -12000)
         return true
     } catch as e {
+        RCSH_LIVE_STATE := "error"
+        RCSH_LIVE_DETAIL := "直播啟動失敗: " SubStr(e.Message, 1, 500)
         RCSH_SetError("live preview start: " e.Message)
         return false
     }
@@ -564,6 +600,7 @@ RCSH_TestLiveHardwareEncoder(ffmpegExe, encoder) {
 
 RCSH_LiveStartupWatchdog(publishUrl, expectedPid) {
     global RCSH_LIVE_PID, RCSH_LIVE_SOURCE_URL, RCSH_LIVE_EXPIRES_AT
+    global RCSH_LIVE_STATE, RCSH_LIVE_DETAIL, RCSH_LIVE_ROUTE
     if (RCSH_LIVE_PID != expectedPid || RCSH_LIVE_SOURCE_URL != publishUrl)
         return
     if (RCSH_LIVE_EXPIRES_AT > 0 && RC_UnixMs() >= RCSH_LIVE_EXPIRES_AT) {
@@ -572,6 +609,10 @@ RCSH_LiveStartupWatchdog(publishUrl, expectedPid) {
     }
     if !ProcessExist(expectedPid)
         RCSH_StartLivePreview(publishUrl)
+    else {
+        RCSH_LIVE_STATE := "streaming"
+        RCSH_LIVE_DETAIL := "即時影像已透過 " RCSH_LIVE_ROUTE " 穩定推送"
+    }
 }
 
 RCSH_LoopbackSrtUrl(publishUrl) {
@@ -612,6 +653,7 @@ RCSH_StopLivePreview(reason := "") {
     global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
     global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE, RCSH_LIVE_PROFILE, RCSH_LIVE_ENCODER
     global RCSH_LIVE_CANDIDATES, RCSH_LIVE_CANDIDATE_INDEX
+    global RCSH_LIVE_STATE, RCSH_LIVE_DETAIL
     pid := RCSH_LIVE_PID
     RCSH_LIVE_PID := 0
     RCSH_LIVE_URL := ""
@@ -622,6 +664,8 @@ RCSH_StopLivePreview(reason := "") {
     RCSH_LIVE_ENCODER := ""
     RCSH_LIVE_CANDIDATES := []
     RCSH_LIVE_CANDIDATE_INDEX := 0
+    RCSH_LIVE_STATE := "idle"
+    RCSH_LIVE_DETAIL := reason != "" ? reason : "尚無觀看者"
     if (pid <= 0)
         return true
     try {

@@ -45,9 +45,9 @@ last_settings_ack_applied=0
 last_settings_ack_at=0
 
 [self_hosted]
-; 由 Firestore migration discovery 自動填入，不需要在執行端手動配對。
+; 全新電腦直接使用固定公網 HTTPS 自動註冊；伺服器仍可透過 discovery 更新。
 ; 正式環境只接受 HTTPS；localhost 測試可使用 HTTP。
-server_url=
+server_url=https://220.135.218.98
 mode=shadow
 epoch=
 firestore_fallback_until=0

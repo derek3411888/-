@@ -40,6 +40,40 @@ function runTool(command, args) {
   });
 }
 
+function parseFfmpegTimestamp(value) {
+  const match = /^(\d+):(\d+):(\d+(?:\.\d+)?)$/.exec(String(value ?? "").trim());
+  if (!match) return 0;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+function runToolWithProgress(command, args, onProgress) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, ["-progress", "pipe:1", "-nostats", ...args], {
+      windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    let stdout = "";
+    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-16_000); });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      const lines = stdout.split(/\r?\n/);
+      stdout = lines.pop() ?? "";
+      for (const line of lines) {
+        const separator = line.indexOf("=");
+        if (separator < 1) continue;
+        if (line.slice(0, separator) === "out_time") onProgress(parseFfmpegTimestamp(line.slice(separator + 1)));
+      }
+    });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve(stderr) : reject(new Error(`${command} exit=${code}: ${stderr}`)));
+  });
+}
+
+function safeExpectedBytes(value) {
+  const bytes = Number(value);
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : null;
+}
+
 async function probeVideo(filePath) {
   const child = spawn("ffprobe", [
     "-v", "error", "-print_format", "json", "-show_format", "-show_streams", filePath,
@@ -87,12 +121,31 @@ export async function upsertRecordingSession(uid, body) {
     throw new HttpError(400, "錄影檔名無效", "INVALID_RECORDING_NAME");
   }
   const startedAt = body.startedAt ? new Date(body.startedAt) : null;
+  const expectedSegments = body.expectedSegments == null
+    ? null : integer(body.expectedSegments, -1, 1, 100_000);
+  const expectedBytes = safeExpectedBytes(body.expectedBytes);
+  if (body.expectedSegments != null && expectedSegments < 1) {
+    throw new HttpError(400, "完整片段數量無效", "INVALID_SEGMENT_COUNT");
+  }
+  if (body.expectedBytes != null && expectedBytes == null) {
+    throw new HttpError(400, "完整影片位元組數無效", "INVALID_EXPECTED_BYTES");
+  }
   const result = await query(
-    `INSERT INTO recording_sessions(uid,client_session_id,base_name,started_at,state)
-     VALUES($1,$2,$3,$4,'UPLOADING')
-     ON CONFLICT(uid,client_session_id) DO UPDATE SET updated_at=now()
-     RETURNING id,uid,client_session_id,base_name,state,expected_segments,created_at,updated_at`,
-    [uid, clientSessionId, baseName, startedAt && !Number.isNaN(startedAt.valueOf()) ? startedAt : null],
+    `INSERT INTO recording_sessions(uid,client_session_id,base_name,started_at,state,
+       expected_segments,expected_bytes,progress_stage,progress_percent,progress_total,progress_updated_at)
+     VALUES($1,$2,$3,$4,'UPLOADING',$5,$6::bigint,'DEVICE_UPLOAD',
+       CASE WHEN $6::bigint IS NULL THEN NULL ELSE 0 END,COALESCE($6::bigint,0),now())
+     ON CONFLICT(uid,client_session_id) DO UPDATE SET
+       expected_segments=COALESCE(EXCLUDED.expected_segments,recording_sessions.expected_segments),
+       expected_bytes=COALESCE(EXCLUDED.expected_bytes,recording_sessions.expected_bytes),
+       progress_stage=CASE WHEN EXCLUDED.expected_segments IS NULL
+         THEN recording_sessions.progress_stage ELSE 'DEVICE_UPLOAD' END,
+       progress_total=GREATEST(recording_sessions.progress_total,COALESCE(EXCLUDED.expected_bytes,0)),
+       progress_updated_at=now(),updated_at=now()
+     RETURNING id,uid,client_session_id,base_name,state,expected_segments,expected_bytes,
+       progress_stage,progress_percent,created_at,updated_at`,
+    [uid, clientSessionId, baseName, startedAt && !Number.isNaN(startedAt.valueOf()) ? startedAt : null,
+      expectedSegments, expectedBytes],
   );
   await fsp.mkdir(safeSessionDirectory(uid, result.rows[0].id), { recursive: true });
   return result.rows[0];
@@ -270,11 +323,16 @@ async function remuxSegment(segmentId) {
 
 export async function requestSessionFinalize(uid, sessionId, body) {
   const expected = integer(body.expectedSegments, -1, 1, 100_000);
+  const expectedBytes = safeExpectedBytes(body.expectedBytes);
   if (expected < 1) throw new HttpError(400, "完整片段數量無效", "INVALID_SEGMENT_COUNT");
+  if (body.expectedBytes != null && expectedBytes == null) {
+    throw new HttpError(400, "完整影片位元組數無效", "INVALID_EXPECTED_BYTES");
+  }
   const result = await query(
-    `UPDATE recording_sessions SET expected_segments=$3,state='FINALIZE_PENDING',updated_at=now()
+    `UPDATE recording_sessions SET expected_segments=$3,expected_bytes=COALESCE($4,expected_bytes),
+       state='FINALIZE_PENDING',progress_stage='SEGMENT_PROCESSING',progress_updated_at=now(),updated_at=now()
      WHERE id=$1 AND uid=$2 RETURNING id,state`,
-    [sessionId, uid, expected],
+    [sessionId, uid, expected, expectedBytes],
   );
   if (!result.rowCount) throw new HttpError(404, "找不到錄影工作階段", "SESSION_NOT_FOUND");
   queueSessionFinalize(sessionId);
@@ -307,9 +365,14 @@ async function finalizeSession(sessionId) {
   );
   const segments = segmentsResult.rows;
   if (!session.expected_segments || segments.length !== session.expected_segments || segments.some((row) => row.state !== "READY")) {
+    const readyCount = segments.filter((row) => row.state === "READY").length;
+    const expectedCount = Number(session.expected_segments) || 0;
+    const percent = expectedCount ? Math.min(89, 80 + Math.floor(readyCount / expectedCount * 10)) : null;
     await query(
-      "UPDATE recording_sessions SET state='FINALIZE_PENDING',detail=$2,updated_at=now() WHERE id=$1",
-      [sessionId, `等待片段完成 ${segments.filter((row) => row.state === "READY").length}/${session.expected_segments ?? "?"}`],
+      `UPDATE recording_sessions SET state='FINALIZE_PENDING',detail=$2,progress_stage='SEGMENT_PROCESSING',
+       progress_percent=$3,progress_current=$4,progress_total=COALESCE(expected_segments,0),
+       progress_updated_at=now(),updated_at=now() WHERE id=$1`,
+      [sessionId, `等待片段完成 ${readyCount}/${session.expected_segments ?? "?"}`, percent, readyCount],
     );
     return;
   }
@@ -320,14 +383,39 @@ async function finalizeSession(sessionId) {
   const concat = ["ffconcat version 1.0", ...segments.map((row) => `file '${path.basename(absoluteFromMedia(row.mp4_relative_path)).replaceAll("'", "'\\''")}'`), ""].join("\n");
   await fsp.writeFile(concatPath, concat, "utf8");
   await fsp.rm(temporary, { force: true });
-  await query("UPDATE recording_sessions SET state='MERGING',detail='正在無重編碼合成 MP4',updated_at=now() WHERE id=$1", [sessionId]);
-  await runTool("ffmpeg", ["-hide_banner", "-loglevel", "warning", "-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4", temporary]);
+  const expectedDuration = segments.reduce((total, row) => total + Math.max(0, Number(row.duration_seconds) || 0), 0);
+  await query(
+    `UPDATE recording_sessions SET state='MERGING',detail='正在無重編碼合成 MP4',
+     progress_stage='SERVER_MERGE',progress_percent=90,progress_current=0,progress_total=$2,
+     progress_updated_at=now(),updated_at=now() WHERE id=$1`,
+    [sessionId, Math.max(0, Math.round(expectedDuration * 1000))],
+  );
+  let lastProgressAt = 0;
+  let lastProgressPercent = 90;
+  await runToolWithProgress("ffmpeg", ["-hide_banner", "-loglevel", "warning", "-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4", temporary], (seconds) => {
+    if (!(expectedDuration > 0)) return;
+    const percent = Math.min(98, 90 + Math.floor(seconds / expectedDuration * 9));
+    const now = Date.now();
+    if (percent === lastProgressPercent && now - lastProgressAt < 2000) return;
+    lastProgressPercent = percent;
+    lastProgressAt = now;
+    query(
+      `UPDATE recording_sessions SET progress_percent=$2,progress_current=$3,
+       progress_updated_at=now(),updated_at=now() WHERE id=$1 AND state='MERGING'`,
+      [sessionId, percent, Math.max(0, Math.round(seconds * 1000))],
+    ).catch(() => {});
+  });
+  await query(
+    `UPDATE recording_sessions SET detail='中央合併完成，正在驗證影片',progress_stage='VERIFYING',
+     progress_percent=99,progress_updated_at=now(),updated_at=now() WHERE id=$1`, [sessionId],
+  );
   const probe = await probeVideo(temporary);
   const stat = await fsp.stat(temporary);
   await fsp.rename(temporary, finalPath);
   await query(
     `UPDATE recording_sessions SET state='COMPLETE',detail='中央完整影片已驗證',completed_at=now(),
-      final_relative_path=$2,final_size=$3,duration_seconds=$4,updated_at=now() WHERE id=$1`,
+      final_relative_path=$2,final_size=$3,duration_seconds=$4,progress_stage='COMPLETE',
+      progress_percent=100,progress_current=progress_total,progress_updated_at=now(),updated_at=now() WHERE id=$1`,
     [sessionId, relativeToMedia(finalPath), stat.size, probe.duration],
   );
   for (const segment of segments) {
@@ -342,7 +430,9 @@ export async function recordingSessionState(uid, sessionId) {
     `SELECT rs.*,
       count(seg.id)::int AS segment_count,
       count(seg.id) FILTER (WHERE seg.state='READY')::int AS ready_segments,
-      COALESCE(sum(seg.received_bytes),0)::bigint AS received_bytes
+      COALESCE(sum(seg.received_bytes),0)::bigint AS received_bytes,
+      COALESCE(sum(seg.size_bytes),0)::bigint AS registered_bytes,
+      GREATEST(rs.updated_at,COALESCE(max(seg.updated_at),rs.updated_at)) AS effective_updated_at
      FROM recording_sessions rs LEFT JOIN recording_segments seg ON seg.session_id=rs.id
      WHERE rs.id=$1 AND rs.uid=$2 GROUP BY rs.id`,
     [sessionId, uid],
@@ -353,10 +443,17 @@ export async function recordingSessionState(uid, sessionId) {
 
 export async function listRecordings(uid) {
   const result = await query(
-    `SELECT id,uid,client_session_id,base_name,state,detail,expected_segments,started_at,completed_at,
-      final_size,duration_seconds,created_at,updated_at,
-      (final_relative_path IS NOT NULL) AS playable
-     FROM recording_sessions WHERE uid=$1 ORDER BY created_at DESC LIMIT 50`,
+    `SELECT rs.id,rs.uid,rs.client_session_id,rs.base_name,rs.state,rs.detail,rs.expected_segments,
+      rs.expected_bytes,rs.progress_stage,rs.progress_percent,rs.progress_current,rs.progress_total,
+      rs.started_at,rs.completed_at,rs.final_size,rs.duration_seconds,rs.created_at,
+      GREATEST(rs.updated_at,COALESCE(max(seg.updated_at),rs.updated_at)) AS updated_at,
+      count(seg.id)::int AS segment_count,
+      count(seg.id) FILTER (WHERE seg.state='READY')::int AS ready_segments,
+      COALESCE(sum(seg.received_bytes),0)::bigint AS received_bytes,
+      COALESCE(sum(seg.size_bytes),0)::bigint AS registered_bytes,
+      (rs.final_relative_path IS NOT NULL) AS playable
+     FROM recording_sessions rs LEFT JOIN recording_segments seg ON seg.session_id=rs.id
+     WHERE rs.uid=$1 GROUP BY rs.id ORDER BY rs.created_at DESC LIMIT 50`,
     [uid],
   );
   return result.rows;
