@@ -145,7 +145,7 @@ if (-not $envValues.ContainsKey('LIVE_TOKEN_SECRET')) { $envValues.LIVE_TOKEN_SE
 if (-not $envValues.ContainsKey('LIVE_SRT_PASSPHRASE')) { $envValues.LIVE_SRT_PASSPHRASE = New-RandomSecret 24 }
 $envValues.PUBLIC_HOSTNAME = $PublicHostname.ToLowerInvariant()
 $envValues.PUBLIC_IP_ADDRESS = $parsedPublicIp.IPAddressToString
-$envValues.PUBLIC_SRT_HOST = $PublicHostname.ToLowerInvariant()
+$envValues.PUBLIC_SRT_HOST = $parsedPublicIp.IPAddressToString
 $envValues.LOCAL_SRT_HOST = $LocalSrtHost.ToLowerInvariant()
 $envValues.PUBLIC_SRT_PORT = '8890'
 $envValues.DATA_ROOT_HOST = Normalize-DockerPath $dataFull

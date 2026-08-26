@@ -108,7 +108,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.68"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.69"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2067,10 +2067,18 @@ OnRemoteControlSettingsChanged(settings) {
     if (maxRestartCount < 1 || maxRestartCount > 50)
         return { code: "INVALID_RESTART_LIMIT", detail: "最大重啟次數必須介於 1～50", applied: false }
 
+    liveQualityProfile := StrLower(Trim(settings.liveQualityProfile, " `t`r`n"))
+    if (liveQualityProfile != "economy" && liveQualityProfile != "balanced"
+        && liveQualityProfile != "smooth")
+        return { code: "INVALID_LIVE_QUALITY", detail: "直播畫質必須是省流量、平衡或流暢模式", applied: false }
+
     oldServerEnabled := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0)
     oldServerList := RemoteSettingsJoinServerList(ParseServerScheduleList(
         IniReadSafe(CFG_FILE, "server_schedule", "list", "")))
     serverChanged := (oldServerEnabled != serverEnabled || oldServerList != canonicalServerList)
+    oldLiveQualityProfile := RCSH_NormalizeLiveQualityProfile(
+        IniReadSafe(CFG_FILE, "self_hosted", "live_quality_profile", "balanced"))
+    liveQualityChanged := oldLiveQualityProfile != liveQualityProfile
 
     nextIndex := 1
     if (serverItems.Length > 0) {
@@ -2097,7 +2105,8 @@ OnRemoteControlSettingsChanged(settings) {
         runtimeDiagnosticsEnabled: diagnosticsEnabled,
         runtimeDiagnosticsIntervalSec: diagnosticsInterval,
         runtimeDiagnosticsErrorKeepCount: diagnosticsKeep,
-        maxRestartCount: maxRestartCount
+        maxRestartCount: maxRestartCount,
+        liveQualityProfile: liveQualityProfile
     }
     commit := RemoteSettingsCommitConfig(values)
     if !commit.ok
@@ -2111,6 +2120,8 @@ OnRemoteControlSettingsChanged(settings) {
     if REMOTE_SETTINGS_RUNTIME_READY {
         LoadRuntimeDiagnosticsSettings()
         StartRuntimeDiagnostics()
+        if liveQualityChanged
+            RCSH_StopLivePreview("remote quality setting changed")
     }
 
     if (serverChanged && REMOTE_SETTINGS_RUNTIME_READY) {
@@ -2192,6 +2203,7 @@ RemoteSettingsCommitConfig(values) {
         IniWrite(values.runtimeDiagnosticsIntervalSec, tempPath, "runtime_diagnostics", "snapshot_interval_sec")
         IniWrite(values.runtimeDiagnosticsErrorKeepCount, tempPath, "runtime_diagnostics", "error_keep_count")
         IniWrite(values.maxRestartCount, tempPath, "restart_tracking", "max_restart_count")
+        IniWrite(values.liveQualityProfile, tempPath, "self_hosted", "live_quality_profile")
         IniWrite(values.revision, tempPath, "remote_control", "applied_settings_revision")
 
         verifyList := RemoteSettingsJoinServerList(ParseServerScheduleList(
@@ -2201,6 +2213,9 @@ RemoteSettingsCommitConfig(values) {
         if (ToIntRange(IniReadSafe(tempPath, "restart_tracking", "max_restart_count", "0"), 0, 0, 50)
             != values.maxRestartCount)
             throw Error("暫存設定的最大重啟次數驗證失敗")
+        if (RCSH_NormalizeLiveQualityProfile(
+            IniReadSafe(tempPath, "self_hosted", "live_quality_profile", "")) != values.liveQualityProfile)
+            throw Error("暫存設定的直播畫質驗證失敗")
 
         FileCopy(CFG_FILE, backupPath, 1)
         replacementAttempted := true

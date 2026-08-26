@@ -28,7 +28,8 @@ const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const MAX_REMOTE_SERVERS = 10;
-const WEB_BUILD = "20260826-selfhost-redirect";
+const WEB_BUILD = "20260826-fixed-ip-redirect";
+const SELF_HOSTED_CONTROL_URL = "https://220.135.218.98";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -2182,19 +2183,9 @@ btnReloadSettings.addEventListener("click", () => {
 
 async function redirectToSelfHostedControl() {
   if (new URLSearchParams(location.search).get("legacy") === "1") return false;
-  try {
-    const migration = await getDoc(doc(db, COLLECTION, "__selfhost_migration"));
-    const data = migration.exists() ? migration.data() : {};
-    const destination = String(data.selfHostedServerUrl || "").replace(/\/+$/, "");
-    if (/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/.test(destination)) {
-      statusMsg.textContent = "控制平台已搬遷，正在前往新的私人 HTTPS 網站…";
-      location.replace(destination);
-      return true;
-    }
-  } catch (error) {
-    console.warn("Self-hosted migration lookup failed; keeping the legacy console available.", error);
-  }
-  return false;
+  statusMsg.textContent = "正在前往固定 IP HTTPS 控制台…";
+  location.replace(SELF_HOSTED_CONTROL_URL);
+  return true;
 }
 
 if (!(await redirectToSelfHostedControl())) {

@@ -174,8 +174,8 @@
 - `self-hosted-server/` 包含 PostgreSQL、Node API/網站、Caddy、MediaMTX、備份與一鍵安裝／更新工具。
 - `payload/RemoteControlSelfHost.ahk` 沿用既有 durable nonce／claim／ACK 狀態機；shadow 期間 Firestore 是唯一命令來源，primary 才切換到 PostgreSQL。裝置 token 只存伺服器雜湊，本機以 Windows DPAPI 保存。
 - `payload/SelfHostMediaUpload.ps1` 由錄影 worker 呼叫，以 SHA-256、Content-Range 續傳封口 MKV；中央故障不阻塞本機錄影，未完成前不得清除 staging。
-- 直播使用獨立 `WUTHERING_RUNTIME_PREVIEW_V1` FFmpeg marker、720p/12fps、加密 SRT；正式錄影掃描會排除它，啟動時只清理由該 marker 識別的孤兒預覽程序。
-- 切換門檻會核對 Firestore 命令與設定 ACK、兩端 nonce、一致性錯誤、7 天時間及每台完整錄影。切換後 GitHub Pages 會導向自架 HTTPS；`?legacy=1` 保留緊急檢查入口。
+- 直播使用獨立 `WUTHERING_RUNTIME_PREVIEW_V1` FFmpeg marker 與加密 SRT；正式錄影掃描會排除它，啟動時只清理由該 marker 識別的孤兒預覽程序。每台可由自架網站選擇 `economy=720p12/1.5Mbps`、預設 `balanced=720p30/3.5Mbps` 或 `smooth=720p60/6Mbps`；60fps 會依序實測 NVENC、QSV、AMF，無可用硬體才回退 libx264。關鍵影格均為 2 秒。
+- 切換門檻會核對 Firestore 命令與設定 ACK、兩端 nonce、一致性錯誤、7 天時間及每台完整錄影。GitHub Pages 固定入口 `https://derek3411888.github.io/-/` 會立即導向 `https://220.135.218.98/`；裝置 API 與外網 SRT 也使用固定 IP，不依賴 DDNS。`?legacy=1` 保留緊急檢查入口。
 - 完整部署、網路埠、備份／還原與維運指令見 `self-hosted-server/README.md`。
 
 ## 4) 伺服器排程與完成判定（高風險區）

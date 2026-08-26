@@ -35,32 +35,41 @@ function Get-ServerVersion([string]$Root) {
     return [string]$package.version
 }
 
-function Ensure-PublicIpAddress {
+function Ensure-FixedIpRouting {
     $lines = @(Get-Content -LiteralPath $script:envPath -Encoding UTF8)
     $existing = $lines | Where-Object { $_ -match '^PUBLIC_IP_ADDRESS=\S+' } | Select-Object -First 1
-    if ($existing) { return }
-
-    $hostnameLine = $lines | Where-Object { $_ -match '^PUBLIC_HOSTNAME=\S+' } | Select-Object -First 1
-    if (-not $hostnameLine) { throw '.env 缺少 PUBLIC_HOSTNAME，無法建立固定 IP HTTPS 備援。' }
-    $hostname = ($hostnameLine -split '=', 2)[1].Trim()
-    try {
-        $publicIp = [Net.Dns]::GetHostAddresses($hostname) |
-            Where-Object { $_.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork } |
-            Select-Object -First 1 -ExpandProperty IPAddressToString
-    } catch {
-        throw "無法由 $hostname 解析固定公網 IPv4：$($_.Exception.Message)"
-    }
-    if ([string]::IsNullOrWhiteSpace($publicIp)) {
-        throw "無法由 $hostname 解析固定公網 IPv4；請在 .env 手動加入 PUBLIC_IP_ADDRESS。"
+    if ($existing) {
+        $publicIp = ($existing -split '=', 2)[1].Trim()
+    } else {
+        $hostnameLine = $lines | Where-Object { $_ -match '^PUBLIC_HOSTNAME=\S+' } | Select-Object -First 1
+        if (-not $hostnameLine) { throw '.env 缺少 PUBLIC_HOSTNAME 與 PUBLIC_IP_ADDRESS。' }
+        $hostname = ($hostnameLine -split '=', 2)[1].Trim()
+        try {
+            $publicIp = [Net.Dns]::GetHostAddresses($hostname) |
+                Where-Object { $_.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork } |
+                Select-Object -First 1 -ExpandProperty IPAddressToString
+        } catch {
+            throw "無法由 $hostname 解析固定公網 IPv4：$($_.Exception.Message)"
+        }
+        if ([string]::IsNullOrWhiteSpace($publicIp)) {
+            throw "無法由 $hostname 解析固定公網 IPv4；請在 .env 手動加入 PUBLIC_IP_ADDRESS。"
+        }
     }
 
     $updated = New-Object System.Collections.Generic.List[string]
+    $srtUpdated = $false
     foreach ($line in $lines) {
-        $updated.Add($line)
-        if ($line -eq $hostnameLine) { $updated.Add("PUBLIC_IP_ADDRESS=$publicIp") }
+        if ($line -match '^PUBLIC_SRT_HOST=') {
+            $updated.Add("PUBLIC_SRT_HOST=$publicIp")
+            $srtUpdated = $true
+        } else {
+            $updated.Add($line)
+        }
+        if (-not $existing -and $line -eq $hostnameLine) { $updated.Add("PUBLIC_IP_ADDRESS=$publicIp") }
     }
+    if (-not $srtUpdated) { $updated.Add("PUBLIC_SRT_HOST=$publicIp") }
     [IO.File]::WriteAllLines($script:envPath, $updated, [Text.UTF8Encoding]::new($false))
-    Write-Host "已由 $hostname 建立固定 IP HTTPS 備援：https://$publicIp/"
+    Write-Host "控制 API 與外網 SRT 已固定使用公網 IP：https://$publicIp/"
 }
 
 function Copy-Tree([string]$Source, [string]$Destination, [string[]]$ExcludedTopLevel = @()) {
@@ -188,7 +197,7 @@ try {
         $sourceChanged = $true
     }
 
-    Ensure-PublicIpAddress
+    Ensure-FixedIpRouting
     Invoke-Compose -ComposeArguments @('config', '-q')
     Write-Host '建立新伺服器映像並執行資料庫 migration…'
     Invoke-Compose -ComposeArguments @('build', '--pull', 'api', 'backup')

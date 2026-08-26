@@ -1,6 +1,6 @@
 # AHK 遠端控制台
 
-這是遷移期間保留的 Firestore 舊控制台。只要 `__selfhost_migration` 已發布有效的私人 HTTPS 網址，頁面就會導向新站；只有在網址加上 `?legacy=1` 時才保留舊頁供緊急查核。
+這是遷移期間保留的 Firestore 舊控制台。GitHub Pages 首頁會立即導向固定 IP HTTPS 控制台 `https://220.135.218.98/`，不查詢或使用 DDNS；只有在網址加上 `?legacy=1` 時才保留舊頁供緊急查核。
 
 ## Firebase 設定
 

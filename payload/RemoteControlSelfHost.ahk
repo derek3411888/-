@@ -23,6 +23,10 @@ global RCSH_LIVE_ROUTE := "public"
 global RCSH_LIVE_CANDIDATES := []
 global RCSH_LIVE_CANDIDATE_INDEX := 0
 global RCSH_LIVE_EXPIRES_AT := 0
+global RCSH_LIVE_PROFILE := ""
+global RCSH_LIVE_ENCODER := ""
+global RCSH_LIVE_HARDWARE_ENCODER := ""
+global RCSH_LIVE_HARDWARE_ENCODER_CHECKED := false
 global RCSH_PREVIEW_MARKER := "WUTHERING_RUNTIME_PREVIEW_V1"
 global RCSH_HTTP_FAILURE_COUNT := 0
 global RCSH_HTTP_RETRY_AFTER := 0
@@ -63,7 +67,8 @@ RCSH_EnsureDefaults(cfgPath) {
         "epoch", "",
         "firestore_fallback_until", "0",
         "device_token_dpapi", "",
-        "upload_limit_mbps", "8"
+        "upload_limit_mbps", "8",
+        "live_quality_profile", "balanced"
     )
     sentinel := "__RCSH_MISSING__"
     for key, value in defaults {
@@ -406,16 +411,18 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
     global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
     global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE, RCSH_PREVIEW_MARKER
     global RCSH_LIVE_CANDIDATES, RCSH_LIVE_CANDIDATE_INDEX
+    global RCSH_LIVE_PROFILE, RCSH_LIVE_ENCODER
     publishUrl := Trim(publishUrl, " `t`r`n")
     if (publishUrl = "")
         return false
 
     nowMs := RC_UnixMs()
+    profile := RCSH_ReadLiveQualityProfile()
     sameLease := RCSH_LIVE_SOURCE_URL = publishUrl
     if (RCSH_LIVE_PID > 0 && ProcessExist(RCSH_LIVE_PID)) {
-        if sameLease
+        if (sameLease && RCSH_LIVE_PROFILE = profile)
             return true
-        RCSH_StopLivePreview("lease changed")
+        RCSH_StopLivePreview(sameLease ? "quality profile changed" : "lease changed")
         sameLease := false
     } else if (sameLease && RCSH_LIVE_PID > 0) {
         elapsedMs := RCSH_LIVE_STARTED_AT > 0 ? Max(0, nowMs - RCSH_LIVE_STARTED_AT) : 0
@@ -456,9 +463,12 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         RCSH_SetError("live preview: ffmpeg.exe not found")
         return false
     }
-    cmd := '"' ffmpegExe '" -hide_banner -loglevel warning -f gdigrab -framerate 12 -i desktop '
-        . '-vf "scale=-2:720" -an -c:v libx264 -preset ultrafast -tune zerolatency '
-        . '-pix_fmt yuv420p -b:v 1500k -maxrate 1500k -bufsize 3000k -g 24 '
+    quality := RCSH_LiveQualityConfig(profile)
+    encoder := RCSH_LiveEncoderConfig(ffmpegExe, profile)
+    cmd := '"' ffmpegExe '" -hide_banner -loglevel warning -f gdigrab -framerate ' quality.fps ' -i desktop '
+        . '-vf "scale=-2:720" -an -c:v ' encoder.name ' ' encoder.arguments
+        . '-pix_fmt yuv420p -b:v ' quality.bitrateKbps 'k -maxrate ' quality.bitrateKbps
+        . 'k -bufsize ' quality.bufferKbps 'k -g ' quality.gop ' -bf 0 '
         . '-metadata comment=' RCSH_PREVIEW_MARKER ' -f mpegts "' effectiveUrl '"'
     try {
         pid := 0
@@ -470,7 +480,11 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         RCSH_LIVE_PID := pid
         RCSH_LIVE_URL := effectiveUrl
         RCSH_LIVE_STARTED_AT := nowMs
-        RC_Log("Self-hosted live preview started. pid=" pid " route=" RCSH_LIVE_ROUTE)
+        RCSH_LIVE_PROFILE := profile
+        RCSH_LIVE_ENCODER := encoder.name
+        RC_Log("Self-hosted live preview started. pid=" pid " route=" RCSH_LIVE_ROUTE
+            " profile=" profile " format=720p/" quality.fps "fps/" quality.bitrateKbps
+            "kbps encoder=" encoder.name)
         ; Re-check independently from the 10-second control poll so localhost
         ; fallback starts promptly without blocking the farming workflow.
         SetTimer(RCSH_LiveStartupWatchdog.Bind(publishUrl, pid), -12000)
@@ -479,6 +493,70 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         RCSH_SetError("live preview start: " e.Message)
         return false
     }
+}
+
+RCSH_NormalizeLiveQualityProfile(value) {
+    profile := StrLower(Trim(value, " `t`r`n"))
+    return (profile = "economy" || profile = "balanced" || profile = "smooth")
+        ? profile : "balanced"
+}
+
+RCSH_ReadLiveQualityProfile() {
+    global RCSH_CFG_PATH
+    if (RCSH_CFG_PATH = "")
+        return "balanced"
+    return RCSH_NormalizeLiveQualityProfile(
+        RC_IniReadSafe(RCSH_CFG_PATH, "self_hosted", "live_quality_profile", "balanced"))
+}
+
+RCSH_LiveQualityConfig(profile) {
+    profile := RCSH_NormalizeLiveQualityProfile(profile)
+    if (profile = "economy")
+        return { name: profile, fps: 12, bitrateKbps: 1500, bufferKbps: 3000, gop: 24 }
+    if (profile = "smooth")
+        return { name: profile, fps: 60, bitrateKbps: 6000, bufferKbps: 12000, gop: 120 }
+    return { name: "balanced", fps: 30, bitrateKbps: 3500, bufferKbps: 7000, gop: 60 }
+}
+
+RCSH_LiveEncoderConfig(ffmpegExe, profile) {
+    profile := RCSH_NormalizeLiveQualityProfile(profile)
+    if (profile != "smooth")
+        return { name: "libx264", arguments: '-preset ultrafast -tune zerolatency ' }
+
+    encoder := RCSH_DetectLiveHardwareEncoder(ffmpegExe)
+    if (encoder = "h264_nvenc")
+        return { name: encoder, arguments: '-preset p1 -tune ll -rc cbr ' }
+    if (encoder = "h264_qsv")
+        return { name: encoder, arguments: '-preset veryfast -look_ahead 0 ' }
+    if (encoder = "h264_amf")
+        return { name: encoder, arguments: '-usage lowlatency -quality speed -rc cbr ' }
+    return { name: "libx264", arguments: '-preset ultrafast -tune zerolatency ' }
+}
+
+RCSH_DetectLiveHardwareEncoder(ffmpegExe) {
+    global RCSH_LIVE_HARDWARE_ENCODER, RCSH_LIVE_HARDWARE_ENCODER_CHECKED
+    if RCSH_LIVE_HARDWARE_ENCODER_CHECKED
+        return RCSH_LIVE_HARDWARE_ENCODER
+
+    RCSH_LIVE_HARDWARE_ENCODER_CHECKED := true
+    for encoder in ["h264_nvenc", "h264_qsv", "h264_amf"] {
+        if RCSH_TestLiveHardwareEncoder(ffmpegExe, encoder) {
+            RCSH_LIVE_HARDWARE_ENCODER := encoder
+            return encoder
+        }
+    }
+    RCSH_LIVE_HARDWARE_ENCODER := "libx264"
+    RC_Log("Self-hosted 720p60 hardware encoder unavailable; using libx264 fallback", "WARN")
+    return RCSH_LIVE_HARDWARE_ENCODER
+}
+
+RCSH_TestLiveHardwareEncoder(ffmpegExe, encoder) {
+    testCmd := '"' ffmpegExe '" -hide_banner -loglevel error -f lavfi '
+        . '-i "color=c=black:s=640x360:r=1" -frames:v 1 -an -c:v ' encoder
+        . ' -pix_fmt yuv420p -f null NUL'
+    try return RunWait(testCmd, , "Hide") = 0
+    catch
+        return false
 }
 
 RCSH_LiveStartupWatchdog(publishUrl, expectedPid) {
@@ -529,7 +607,7 @@ RCSH_DescribeLiveRoute(candidateUrl, index, total) {
 
 RCSH_StopLivePreview(reason := "") {
     global RCSH_LIVE_PID, RCSH_LIVE_URL, RCSH_LIVE_SOURCE_URL
-    global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE
+    global RCSH_LIVE_STARTED_AT, RCSH_LIVE_ROUTE, RCSH_LIVE_PROFILE, RCSH_LIVE_ENCODER
     global RCSH_LIVE_CANDIDATES, RCSH_LIVE_CANDIDATE_INDEX
     pid := RCSH_LIVE_PID
     RCSH_LIVE_PID := 0
@@ -537,6 +615,8 @@ RCSH_StopLivePreview(reason := "") {
     RCSH_LIVE_SOURCE_URL := ""
     RCSH_LIVE_STARTED_AT := 0
     RCSH_LIVE_ROUTE := "public"
+    RCSH_LIVE_PROFILE := ""
+    RCSH_LIVE_ENCODER := ""
     RCSH_LIVE_CANDIDATES := []
     RCSH_LIVE_CANDIDATE_INDEX := 0
     if (pid <= 0)

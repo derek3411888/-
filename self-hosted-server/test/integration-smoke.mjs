@@ -113,17 +113,22 @@ async function main() {
     method: "PUT", browser: true,
     body: { serverScheduleEnabled: true, serverScheduleList: "HMT,Asia", maxRestartCount: 10,
       runtimeDiagnosticsEnabled: true, runtimeDiagnosticsIntervalSec: 60,
-      runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false },
+      runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false,
+      liveQualityProfile: "smooth" },
   });
   await request("/api/v1/device/settings/ack", {
     method: "POST", device: true,
     body: { revision: Number(setting.revision), applied: true, result: "APPLIED", detail: "smoke settings" },
   });
+  const appliedLiveSettings = await request("/api/v1/device/control", { device: true });
+  assert(appliedLiveSettings.settings.liveQualityProfile === "smooth",
+    "device control lost the ACKed live quality profile");
   const rejectedSetting = await request(`/api/v1/devices/${encodeURIComponent(uid)}/settings`, {
     method: "PUT", browser: true,
     body: { serverScheduleEnabled: false, serverScheduleList: "Asia", maxRestartCount: 9,
       runtimeDiagnosticsEnabled: true, runtimeDiagnosticsIntervalSec: 60,
-      runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false },
+      runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false,
+      liveQualityProfile: "economy" },
   });
   const rejectedAck = {
     revision: Number(rejectedSetting.revision), applied: false, result: "REJECTED", detail: "smoke rejection",
@@ -138,6 +143,8 @@ async function main() {
   const effectiveAfterReject = await request(`/api/v1/devices/${encodeURIComponent(uid)}`, { browser: true });
   assert(Number(effectiveAfterReject.device.settings.maxRestartCount) === 10,
     "rejected setting replaced the last ACKed effective setting");
+  assert(effectiveAfterReject.device.settings.liveQualityProfile === "smooth",
+    "live quality profile was not preserved by exact settings ACK semantics");
 
   const jpeg = Buffer.alloc(200, 0x22); jpeg[0] = 0xff; jpeg[1] = 0xd8;
   await request(`/api/v1/device/snapshot?capturedAt=${Date.now()}&width=1&height=1&reason=smoke`, {

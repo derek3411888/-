@@ -132,6 +132,11 @@ function firestoreString(value) { return { stringValue: String(value ?? "") }; }
 function firestoreInteger(value) { return { integerValue: String(Math.max(0, Number(value) || 0)) }; }
 function firestoreBoolean(value) { return { booleanValue: Boolean(value) }; }
 
+function normalizeLiveQualityProfile(value) {
+  const profile = String(value ?? "").trim().toLowerCase();
+  return ["economy", "balanced", "smooth"].includes(profile) ? profile : "balanced";
+}
+
 function livePublishUrl(uid, token, host) {
   return `srt://${host}:${config.publicSrtPort}?streamid=publish:${uid}:device:${token}`
     + `&pkt_size=1316&latency=200000&passphrase=${encodeURIComponent(config.liveSrtPassphrase)}&pbkeylen=32`;
@@ -169,6 +174,10 @@ async function deviceControl(uid, firestoreFormat) {
   const desired = command?.command ?? (device.state === "PAUSE" ? "PAUSE" : "RUN");
   const payload = command?.payload ?? {};
   const settings = settingsRow?.settings ?? device.settings ?? {};
+  const normalizedSettings = {
+    ...settings,
+    liveQualityProfile: normalizeLiveQualityProfile(settings.liveQualityProfile),
+  };
   const result = {
     migrationMode: migration.mode ?? "shadow",
     command: command ? {
@@ -179,7 +188,7 @@ async function deviceControl(uid, firestoreFormat) {
       serverIndex: Number(ack.ack_payload?.serverIndex ?? ack.payload?.serverIndex ?? 0),
       serverName: ack.ack_payload?.serverName ?? ack.payload?.serverName ?? "", at: ack.acked_at?.valueOf?.() ?? 0,
     } : null,
-    settings: settingsRow ? { revision: Number(settingsRow.revision), ...settings } : null,
+    settings: settingsRow ? { revision: Number(settingsRow.revision), ...normalizedSettings } : null,
     live: {
       active: liveActive,
       publishUrl: liveUrl,
@@ -202,14 +211,15 @@ async function deviceControl(uid, firestoreFormat) {
     lastAckServerName: firestoreString(ack?.ack_payload?.serverName ?? ack?.payload?.serverName ?? ""),
     lastAckAt: firestoreInteger(ack?.acked_at?.valueOf?.() ?? 0),
     desiredSettingsRevision: firestoreInteger(settingsRow?.revision ?? 0),
-    desiredSettingsSchemaVersion: firestoreInteger(settings.schemaVersion ?? 1),
-    desiredServerScheduleEnabled: firestoreBoolean(settings.serverScheduleEnabled ?? false),
-    desiredServerScheduleList: firestoreString(settings.serverScheduleList ?? ""),
-    desiredMailNotifyEnabled: firestoreBoolean(settings.mailNotifyEnabled ?? false),
-    desiredRuntimeDiagnosticsEnabled: firestoreBoolean(settings.runtimeDiagnosticsEnabled ?? true),
-    desiredRuntimeDiagnosticsIntervalSec: firestoreInteger(settings.runtimeDiagnosticsIntervalSec ?? 60),
-    desiredRuntimeDiagnosticsErrorKeepCount: firestoreInteger(settings.runtimeDiagnosticsErrorKeepCount ?? 30),
-    desiredMaxRestartCount: firestoreInteger(settings.maxRestartCount ?? 10),
+    desiredSettingsSchemaVersion: firestoreInteger(normalizedSettings.schemaVersion ?? 1),
+    desiredServerScheduleEnabled: firestoreBoolean(normalizedSettings.serverScheduleEnabled ?? false),
+    desiredServerScheduleList: firestoreString(normalizedSettings.serverScheduleList ?? ""),
+    desiredMailNotifyEnabled: firestoreBoolean(normalizedSettings.mailNotifyEnabled ?? false),
+    desiredRuntimeDiagnosticsEnabled: firestoreBoolean(normalizedSettings.runtimeDiagnosticsEnabled ?? true),
+    desiredRuntimeDiagnosticsIntervalSec: firestoreInteger(normalizedSettings.runtimeDiagnosticsIntervalSec ?? 60),
+    desiredRuntimeDiagnosticsErrorKeepCount: firestoreInteger(normalizedSettings.runtimeDiagnosticsErrorKeepCount ?? 30),
+    desiredMaxRestartCount: firestoreInteger(normalizedSettings.maxRestartCount ?? 10),
+    desiredLiveQualityProfile: firestoreString(normalizedSettings.liveQualityProfile),
     selfHostedMode: firestoreString(migration.mode ?? "shadow"),
     selfHostedFirestoreFallbackUntil: firestoreInteger(migration.fallbackUntil ? new Date(migration.fallbackUntil).valueOf() : 0),
     selfHostedLiveEnabled: firestoreBoolean(liveActive),
@@ -294,6 +304,7 @@ async function saveSettings(uid, body) {
     runtimeDiagnosticsIntervalSec: integer(body.runtimeDiagnosticsIntervalSec, 60, 60, 600),
     runtimeDiagnosticsErrorKeepCount: integer(body.runtimeDiagnosticsErrorKeepCount, 30, 5, 200),
     maxRestartCount: integer(body.maxRestartCount, 10, 1, 50),
+    liveQualityProfile: normalizeLiveQualityProfile(body.liveQualityProfile),
   };
   return withTransaction(async (client) => {
     const device = await client.query("SELECT settings_revision FROM devices WHERE uid=$1 FOR UPDATE", [uid]);

@@ -71,6 +71,9 @@ export async function importFirestoreDevices() {
         runtimeDiagnosticsIntervalSec: integer(field(document, "effectiveRuntimeDiagnosticsIntervalSec", 60), 60, 60, 600),
         runtimeDiagnosticsErrorKeepCount: integer(field(document, "effectiveRuntimeDiagnosticsErrorKeepCount", 30), 30, 5, 200),
         maxRestartCount: integer(field(document, "effectiveMaxRestartCount", 10), 10, 1, 50),
+        liveQualityProfile: ["economy", "balanced", "smooth"].includes(
+          String(field(document, "effectiveLiveQualityProfile", "balanced")).trim().toLowerCase(),
+        ) ? String(field(document, "effectiveLiveQualityProfile", "balanced")).trim().toLowerCase() : "balanced",
       };
       await withTransaction(async (client) => {
         await client.query(

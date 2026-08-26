@@ -34,6 +34,17 @@ function duration(seconds) {
   return `${hours ? `${hours} 小時 ` : ""}${minutes} 分`;
 }
 function setText(id, value) { $(id).textContent = escapeText(value); }
+function normalizeLiveQualityProfile(value) {
+  const profile = String(value ?? "").trim().toLowerCase();
+  return ["economy", "balanced", "smooth"].includes(profile) ? profile : "balanced";
+}
+function liveQualityLabel(value) {
+  return {
+    economy: "省流量｜720p／12fps／1.5 Mbps",
+    balanced: "平衡｜720p／30fps／3.5 Mbps",
+    smooth: "流暢｜720p／60fps／6 Mbps",
+  }[normalizeLiveQualityProfile(value)];
+}
 function toast(message) {
   const node = $("toast");
   node.textContent = message;
@@ -186,6 +197,7 @@ function renderDetails() {
   const displayedSettings = wrapper.settings?.status === "PENDING"
     ? wrapper.settings.settings : (device.settings || {});
   renderSettings(displayedSettings);
+  setText("liveProfileSummary", `${liveQualityLabel(displayedSettings.liveQualityProfile)}；有人觀看時才推流。`);
 }
 
 function renderSettings(settings) {
@@ -196,6 +208,7 @@ function renderSettings(settings) {
   $("snapshotKeep").value = settings.runtimeDiagnosticsErrorKeepCount ?? 30;
   $("diagnosticsEnabled").checked = settings.runtimeDiagnosticsEnabled !== false;
   $("mailEnabled").checked = Boolean(settings.mailNotifyEnabled);
+  $("liveQualityProfile").value = normalizeLiveQualityProfile(settings.liveQualityProfile);
   $("saveSettingsButton").disabled = state.migration?.mode !== "primary" || !state.selectedUid;
   setText("settingsMessage", state.migration?.mode === "primary" ? "儲存後等待裝置回報套用結果。" : "並行驗證期間設定仍由原 Firestore 控制台管理。");
 }
@@ -438,6 +451,7 @@ function bindEvents() {
         maxRestartCount: Number($("maxRestart").value), runtimeDiagnosticsEnabled: $("diagnosticsEnabled").checked,
         runtimeDiagnosticsIntervalSec: Number($("snapshotInterval").value), runtimeDiagnosticsErrorKeepCount: Number($("snapshotKeep").value),
         mailNotifyEnabled: $("mailEnabled").checked,
+        liveQualityProfile: normalizeLiveQualityProfile($("liveQualityProfile").value),
       }});
       toast("設定已儲存，等待裝置 ACK"); await refresh();
     } catch (error) { toast(error.message); }

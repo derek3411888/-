@@ -982,7 +982,9 @@ RC_ProcessRemoteSettings(resp) {
         runtimeDiagnosticsEnabled: RC_JsonGetBoolean(resp, "desiredRuntimeDiagnosticsEnabled", true),
         runtimeDiagnosticsIntervalSec: RC_JsonGetInteger(resp, "desiredRuntimeDiagnosticsIntervalSec", 60),
         runtimeDiagnosticsErrorKeepCount: RC_JsonGetInteger(resp, "desiredRuntimeDiagnosticsErrorKeepCount", 30),
-        maxRestartCount: RC_JsonGetInteger(resp, "desiredMaxRestartCount", 10)
+        maxRestartCount: RC_JsonGetInteger(resp, "desiredMaxRestartCount", 10),
+        liveQualityProfile: RCSH_NormalizeLiveQualityProfile(
+            RC_JsonGetString(resp, "desiredLiveQualityProfile"))
     }
 
     resultCode := "REJECTED"
@@ -1346,6 +1348,8 @@ RC_ReadEffectiveRemoteSettings() {
             RC_IniReadSafe(RC_CFG_PATH, "runtime_diagnostics", "error_keep_count", "30"), 30, 5, 200),
         maxRestartCount: RC_ToIntRange(
             RC_IniReadSafe(RC_CFG_PATH, "restart_tracking", "max_restart_count", "10"), 10, 1, 50),
+        liveQualityProfile: RCSH_NormalizeLiveQualityProfile(
+            RC_IniReadSafe(RC_CFG_PATH, "self_hosted", "live_quality_profile", "balanced")),
         lastAckRevision: RC_ToIntRange(
             RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_revision", "0"), 0, 0, 2147483647),
         lastAckResult: Trim(
@@ -1468,6 +1472,7 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"effectiveRuntimeDiagnosticsIntervalSec":{"integerValue":"' effectiveSettings.runtimeDiagnosticsIntervalSec '"},'
     body .= '"effectiveRuntimeDiagnosticsErrorKeepCount":{"integerValue":"' effectiveSettings.runtimeDiagnosticsErrorKeepCount '"},'
     body .= '"effectiveMaxRestartCount":{"integerValue":"' effectiveSettings.maxRestartCount '"},'
+    body .= '"effectiveLiveQualityProfile":{"stringValue":"' RC_JsonEsc(effectiveSettings.liveQualityProfile) '"},'
     body .= '"lastSettingsAckRevision":{"integerValue":"' effectiveSettings.lastAckRevision '"},'
     body .= '"lastSettingsAckResult":{"stringValue":"' RC_JsonEsc(effectiveSettings.lastAckResult) '"},'
     body .= '"lastSettingsAckDetail":{"stringValue":"' RC_JsonEsc(effectiveSettings.lastAckDetail) '"},'
@@ -1538,6 +1543,7 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsIntervalSec"
     url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsErrorKeepCount"
     url .= "&updateMask.fieldPaths=effectiveMaxRestartCount"
+    url .= "&updateMask.fieldPaths=effectiveLiveQualityProfile"
     url .= "&updateMask.fieldPaths=lastSettingsAckRevision"
     url .= "&updateMask.fieldPaths=lastSettingsAckResult"
     url .= "&updateMask.fieldPaths=lastSettingsAckDetail"
@@ -2242,6 +2248,7 @@ RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
     body .= '"effectiveRuntimeDiagnosticsIntervalSec":{"integerValue":"' effectiveSettings.runtimeDiagnosticsIntervalSec '"},'
     body .= '"effectiveRuntimeDiagnosticsErrorKeepCount":{"integerValue":"' effectiveSettings.runtimeDiagnosticsErrorKeepCount '"},'
     body .= '"effectiveMaxRestartCount":{"integerValue":"' effectiveSettings.maxRestartCount '"},'
+    body .= '"effectiveLiveQualityProfile":{"stringValue":"' RC_JsonEsc(effectiveSettings.liveQualityProfile) '"},'
     body .= '"serverScheduleEnabled":{"booleanValue":' (SERVER_SCHEDULE_ENABLED ? "true" : "false") '},'
     body .= '"serverScheduleJson":{"stringValue":"' RC_JsonEsc(serverScheduleJson) '"},'
     body .= '"currentServerIndex":{"integerValue":"' serverIndex '"},'
@@ -2265,6 +2272,7 @@ RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
     url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsIntervalSec"
     url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsErrorKeepCount"
     url .= "&updateMask.fieldPaths=effectiveMaxRestartCount"
+    url .= "&updateMask.fieldPaths=effectiveLiveQualityProfile"
     url .= "&updateMask.fieldPaths=serverScheduleEnabled"
     url .= "&updateMask.fieldPaths=serverScheduleJson"
     url .= "&updateMask.fieldPaths=currentServerIndex"
@@ -2300,6 +2308,7 @@ RC_FirestoreGetClientDoc() {
     url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsIntervalSec"
     url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsErrorKeepCount"
     url .= "&mask.fieldPaths=desiredMaxRestartCount"
+    url .= "&mask.fieldPaths=desiredLiveQualityProfile"
     url .= "&mask.fieldPaths=selfHostedServerUrl"
     url .= "&mask.fieldPaths=selfHostedMode"
     url .= "&mask.fieldPaths=selfHostedEpoch"

@@ -1,11 +1,11 @@
 {
-  "version": "4.57",
+  "version": "4.58",
   "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip",
-  "payload_sha256": "280070F33D7C64372522CA80FBCE4B96509F905A7BDA5A654307D3DE24202E7B",
-  "launcher_version": "4.68",
+  "payload_sha256": "207FD3B3B60AA714DE7FA378B838B37C7CF8A4FCB42B7AADDF27965C63D7EABA",
+  "launcher_version": "4.69",
   "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe",
-  "launcher_sha256": "5D67CC4CDC8870690D0B3E7D2868ED2759EA71AD62C12D1C767F7ADAA7D82CB7",
-  "server_version": "1.0.14",
+  "launcher_sha256": "E6D496F838A85304603660168E64F977642D7D8FBE50CB7EED389B8543A8DB4A",
+  "server_version": "1.0.15",
   "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip",
-  "server_sha256": "71DB3748B04723BFDAADD90B2AA2EF8F1AA8538BEBB0AE5E0C46CC1513C02B68"
+  "server_sha256": "2E7147FCD08FF503CCA904A5205AB748CE8BFE2FAF76378E00E3BA5D6F8528FD"
 }

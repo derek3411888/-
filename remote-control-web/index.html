@@ -4,6 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
+  <script>
+    if (new URLSearchParams(location.search).get("legacy") !== "1") {
+      location.replace("https://220.135.218.98/");
+    }
+  </script>
   <link rel="stylesheet" href="styles.css?v=20260824-6" />
 </head>
 <body>
@@ -242,6 +247,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260826-selfhost-redirect"></script>
+  <script type="module" src="app.js?v=20260826-fixed-ip-redirect"></script>
 </body>
 </html>

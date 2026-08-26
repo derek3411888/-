@@ -55,6 +55,8 @@ firestore_fallback_until=0
 device_token_dpapi=
 ; 每段 HTTPS 續傳上限；直播期間會自動降到 2 Mbps。
 upload_limit_mbps=8
+; economy=720p12/1.5Mbps、balanced=720p30/3.5Mbps、smooth=720p60/6Mbps。
+live_quality_profile=balanced
 
 [restart_tracking]
 ; 可由新版控制網站調整，允許 1～50

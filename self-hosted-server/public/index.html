@@ -92,7 +92,7 @@
     <section class="tab-panel" data-panel="videos">
       <div class="grid video-grid">
         <article class="card">
-          <div class="section-title"><div><h2>近即時畫面</h2><p>720p／12fps；有人觀看時才推流。</p></div><span id="liveBadge" class="badge muted">未啟動</span></div>
+          <div class="section-title"><div><h2>近即時畫面</h2><p id="liveProfileSummary">720p／30fps／3.5 Mbps；有人觀看時才推流。</p></div><span id="liveBadge" class="badge muted">未啟動</span></div>
           <video id="liveVideo" controls muted playsinline></video>
           <div class="button-row">
             <button id="startLiveButton" class="ok" type="button">開啟即時畫面</button>
@@ -126,9 +126,17 @@
             <label class="field">最大重啟次數<input id="maxRestart" type="number" min="1" max="50"></label>
             <label class="field">快照間隔（秒）<input id="snapshotInterval" type="number" min="60" max="600"></label>
             <label class="field">錯誤圖保留<input id="snapshotKeep" type="number" min="5" max="200"></label>
+            <label class="field">直播畫質
+              <select id="liveQualityProfile">
+                <option value="economy">省流量｜720p 12fps／1.5 Mbps</option>
+                <option value="balanced">平衡｜720p 30fps／3.5 Mbps（建議）</option>
+                <option value="smooth">流暢｜720p 60fps／6 Mbps</option>
+              </select>
+            </label>
           </div>
           <label class="toggle"><input id="diagnosticsEnabled" type="checkbox">啟用即時診斷</label>
           <label class="toggle"><input id="mailEnabled" type="checkbox">啟用郵件通知</label>
+          <p class="hint">60fps 會優先使用 NVIDIA、Intel 或 AMD 硬體編碼；無法使用時會以軟體編碼降級，CPU 負載較高。</p>
           <button id="saveSettingsButton" class="ok" type="submit">儲存設定</button>
           <p id="settingsMessage" class="hint"></p>
         </form>

@@ -17,7 +17,7 @@
 
 不要公開 PostgreSQL、API 的 3000、MediaMTX 的 8888 或任何管理介面。
 
-固定公網 IPv4 可另外填入 `.env` 的 `PUBLIC_IP_ADDRESS`。Caddy 會使用 Let's Encrypt 的短效公開 IP 憑證提供第二個 HTTPS 入口，例如 `https://203.0.113.10/`；原網域仍保留，裝置 API 與 SRT 位址不會因此改變。這適合公司網路只封鎖 DDNS 分類的情況；若公司同時禁止直接 IP 網站，則需改用一般註冊網域。
+固定公網 IPv4 填入 `.env` 的 `PUBLIC_IP_ADDRESS`。Caddy 會使用 Let's Encrypt 的短效公開 IP 憑證提供主要 HTTPS 入口，例如 `https://203.0.113.10/`；控制 API、GitHub Pages 導向及外網 SRT 都使用這個固定 IP，不依賴 DDNS。`PUBLIC_HOSTNAME` 只保留舊網址相容與憑證入口，不會發布給執行端。
 
 `.env` 的 `LOCAL_SRT_HOST` 應設為 Docker 主機的固定內網 IPv4（目前主機為 `192.168.0.194`）。裝置會優先走內網 SRT，再退回 DDNS，避開許多家用路由器只支援 HTTPS、卻不支援 UDP NAT loopback 的情況。安裝工具會自動偵測預設路由所在的 IPv4，也可用 `-LocalSrtHost` 明確指定。
 
@@ -56,6 +56,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - 執行端仍以每 5 分鐘 MKV 安全封口，本機／網路目的地流程不變。
 - 封口片段以 HTTPS、SHA-256 與 1 MiB 可續傳區塊上傳，預設每台 8 Mbps；直播期間降為 2 Mbps。
+- 直播畫質可逐台設定：省流量 `720p/12fps/1.5 Mbps`、預設平衡 `720p/30fps/3.5 Mbps`、流暢 `720p/60fps/6 Mbps`。60fps 優先自動選用 NVENC、QSV 或 AMF，無可用硬體編碼器才回退 libx264。
 - 中央以 `-c copy` 轉為 MP4；流程中可以逐段觀看，結束後原子發布單一 MP4。
 - 每台保留最近 5 場。中央可用空間低於 20 GB 時，先刪最舊的中央完整副本並產生警示，絕不刪執行端原檔。
 - 中央失聯、上傳中斷或轉檔失敗不會阻塞鋤地。本機 staging 會保留並在背景或下次啟動續傳。

@@ -37,9 +37,11 @@ publishUrl := ""
 if (replaceCount != 1)
     throw Error("Unable to replace SRT host")
 
-cmd := '"' ffmpegExe '" -hide_banner -loglevel error -f gdigrab -framerate 12 -i desktop '
+quality := RCSH_LiveQualityConfig(RCSH_ReadLiveQualityProfile())
+cmd := '"' ffmpegExe '" -hide_banner -loglevel error -f gdigrab -framerate ' quality.fps ' -i desktop '
     . '-t 15 -vf "scale=-2:720" -an -c:v libx264 -preset ultrafast -tune zerolatency '
-    . '-pix_fmt yuv420p -b:v 1500k -maxrate 1500k -bufsize 3000k -g 24 '
+    . '-pix_fmt yuv420p -b:v ' quality.bitrateKbps 'k -maxrate ' quality.bitrateKbps
+    . 'k -bufsize ' quality.bufferKbps 'k -g ' quality.gop ' -bf 0 '
     . '-metadata comment=WUTHERING_RUNTIME_PREVIEW_LOOPBACK_TEST -f mpegts "' localUrl '"'
 pid := 0
 Run(cmd, , "Hide", &pid)
