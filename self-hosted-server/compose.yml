@@ -87,6 +87,7 @@ services:
         condition: service_started
     environment:
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+      PUBLIC_IP_ADDRESS: ${PUBLIC_IP_ADDRESS}
     ports:
       - "80:80"
       - "443:443"

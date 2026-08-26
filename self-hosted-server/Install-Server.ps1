@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$PublicHostname,
+    [string]$PublicIpAddress,
     [string]$LocalSrtHost,
     [string]$DataRoot,
     [string]$BackupRoot,
@@ -64,11 +65,30 @@ function Get-PreferredLanIPv4 {
     return ''
 }
 
+function Get-PublicIPv4FromHostname([string]$Hostname) {
+    try {
+        return [Net.Dns]::GetHostAddresses($Hostname) |
+            Where-Object { $_.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork } |
+            Select-Object -First 1 -ExpandProperty IPAddressToString
+    } catch {
+        Write-Warning "無法由公開主機名稱解析固定 IPv4：$($_.Exception.Message)"
+        return ''
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($PublicHostname)) {
     $PublicHostname = Read-Host '請輸入路由器 DDNS 主機名稱（例如 example.asuscomm.com）'
 }
 if ($PublicHostname -notmatch '^[A-Za-z0-9.-]+$' -or $PublicHostname -notmatch '\.') {
     throw 'DDNS 主機名稱格式無效，請勿包含 https:// 或路徑。'
+}
+if ([string]::IsNullOrWhiteSpace($PublicIpAddress)) {
+    $PublicIpAddress = Get-PublicIPv4FromHostname $PublicHostname
+}
+$parsedPublicIp = $null
+if (-not [Net.IPAddress]::TryParse($PublicIpAddress, [ref]$parsedPublicIp) -or
+    $parsedPublicIp.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+    throw '固定公網 IP 格式無效；必須是可由外網連入的 IPv4。'
 }
 if ([string]::IsNullOrWhiteSpace($LocalSrtHost)) {
     $LocalSrtHost = Get-PreferredLanIPv4
@@ -124,6 +144,7 @@ if (-not $envValues.ContainsKey('SESSION_SECRET')) { $envValues.SESSION_SECRET =
 if (-not $envValues.ContainsKey('LIVE_TOKEN_SECRET')) { $envValues.LIVE_TOKEN_SECRET = New-RandomSecret 48 }
 if (-not $envValues.ContainsKey('LIVE_SRT_PASSPHRASE')) { $envValues.LIVE_SRT_PASSPHRASE = New-RandomSecret 24 }
 $envValues.PUBLIC_HOSTNAME = $PublicHostname.ToLowerInvariant()
+$envValues.PUBLIC_IP_ADDRESS = $parsedPublicIp.IPAddressToString
 $envValues.PUBLIC_SRT_HOST = $PublicHostname.ToLowerInvariant()
 $envValues.LOCAL_SRT_HOST = $LocalSrtHost.ToLowerInvariant()
 $envValues.PUBLIC_SRT_PORT = '8890'
@@ -138,7 +159,7 @@ $envValues.FIRESTORE_COLLECTION = 'ahk_clients'
 $envValues.SERVER_IMAGE_TAG = 'current'
 
 $orderedNames = @(
-    'PUBLIC_HOSTNAME', 'PUBLIC_SRT_HOST', 'LOCAL_SRT_HOST', 'PUBLIC_SRT_PORT', 'DATA_ROOT_HOST', 'BACKUP_ROOT_HOST',
+    'PUBLIC_HOSTNAME', 'PUBLIC_IP_ADDRESS', 'PUBLIC_SRT_HOST', 'LOCAL_SRT_HOST', 'PUBLIC_SRT_PORT', 'DATA_ROOT_HOST', 'BACKUP_ROOT_HOST',
     'POSTGRES_PASSWORD', 'SESSION_SECRET', 'LIVE_TOKEN_SECRET', 'LIVE_SRT_PASSPHRASE', 'MIN_FREE_GB', 'SESSIONS_PER_DEVICE',
     'FIRESTORE_IMPORT_ENABLED', 'FIRESTORE_PROJECT_ID', 'FIRESTORE_API_KEY', 'FIRESTORE_COLLECTION', 'SERVER_IMAGE_TAG'
 )
@@ -169,6 +190,7 @@ Write-Host ''
 Write-Host '安裝完成。請在路由器與 Windows 防火牆開放：'
 Write-Host '  TCP 80、TCP 443、UDP 8890'
 Write-Host "控制網站：https://$PublicHostname"
+Write-Host "公司用固定 IP 備援：https://$($parsedPublicIp.IPAddressToString)/"
 Write-Host "內網 SRT 主機：$LocalSrtHost"
 Write-Host '網站可直接開啟使用，不需要帳號、密碼或啟用連結。'
 Write-Host '新裝置第一次啟動會自動加入，不需要開放註冊窗口。'

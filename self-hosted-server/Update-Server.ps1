@@ -35,6 +35,34 @@ function Get-ServerVersion([string]$Root) {
     return [string]$package.version
 }
 
+function Ensure-PublicIpAddress {
+    $lines = @(Get-Content -LiteralPath $script:envPath -Encoding UTF8)
+    $existing = $lines | Where-Object { $_ -match '^PUBLIC_IP_ADDRESS=\S+' } | Select-Object -First 1
+    if ($existing) { return }
+
+    $hostnameLine = $lines | Where-Object { $_ -match '^PUBLIC_HOSTNAME=\S+' } | Select-Object -First 1
+    if (-not $hostnameLine) { throw '.env 缺少 PUBLIC_HOSTNAME，無法建立固定 IP HTTPS 備援。' }
+    $hostname = ($hostnameLine -split '=', 2)[1].Trim()
+    try {
+        $publicIp = [Net.Dns]::GetHostAddresses($hostname) |
+            Where-Object { $_.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork } |
+            Select-Object -First 1 -ExpandProperty IPAddressToString
+    } catch {
+        throw "無法由 $hostname 解析固定公網 IPv4：$($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($publicIp)) {
+        throw "無法由 $hostname 解析固定公網 IPv4；請在 .env 手動加入 PUBLIC_IP_ADDRESS。"
+    }
+
+    $updated = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        $updated.Add($line)
+        if ($line -eq $hostnameLine) { $updated.Add("PUBLIC_IP_ADDRESS=$publicIp") }
+    }
+    [IO.File]::WriteAllLines($script:envPath, $updated, [Text.UTF8Encoding]::new($false))
+    Write-Host "已由 $hostname 建立固定 IP HTTPS 備援：https://$publicIp/"
+}
+
 function Copy-Tree([string]$Source, [string]$Destination, [string[]]$ExcludedTopLevel = @()) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $sourceFull = [IO.Path]::GetFullPath($Source).TrimEnd('\', '/')
@@ -160,6 +188,7 @@ try {
         $sourceChanged = $true
     }
 
+    Ensure-PublicIpAddress
     Invoke-Compose -ComposeArguments @('config', '-q')
     Write-Host '建立新伺服器映像並執行資料庫 migration…'
     Invoke-Compose -ComposeArguments @('build', '--pull', 'api', 'backup')

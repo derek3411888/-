@@ -1,4 +1,11 @@
-{$PUBLIC_HOSTNAME} {
+{
+	# Browsers do not send an SNI host name for a literal IP address. Use the
+	# public IP certificate only as the no-SNI default; named hosts still select
+	# their own certificate normally.
+	default_sni {$PUBLIC_IP_ADDRESS}
+}
+
+(control_site) {
 	encode zstd gzip
 
 	@internal path /internal/*
@@ -15,4 +22,21 @@
 	}
 
 	reverse_proxy api:3000
+}
+
+{$PUBLIC_HOSTNAME} {
+	import control_site
+}
+
+# Company networks often block dynamic-DNS categories. A static public IPv4
+# can use Let's Encrypt's short-lived public IP certificate as an independent
+# HTTPS entry point without changing the device API or SRT addresses.
+{$PUBLIC_IP_ADDRESS} {
+	tls {
+		issuer acme {
+			profile shortlived
+			disable_tlsalpn_challenge
+		}
+	}
+	import control_site
 }
