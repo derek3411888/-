@@ -100,7 +100,9 @@ if (-not $SkipDocker) {
         throw "公開網站版本驗證失敗：server=$($health.version) web=$($health.webSha256)"
     }
     if (-not $SkipIntegrationSmoke) {
-        & docker compose --env-file 'self-hosted-server/.env' -f 'self-hosted-server/compose.yml' `
+        $composeEnvPath = Join-Path $projectRoot 'self-hosted-server\.env'
+        $composeFilePath = Join-Path $projectRoot 'self-hosted-server\compose.yml'
+        & docker compose --env-file $composeEnvPath -f $composeFilePath `
             exec -T api node test/integration-smoke.mjs
         Assert-ExitCode 'Docker 控制、錄影、Range 播放與直播整合測試'
     }

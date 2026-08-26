@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$originalLocation = (Get-Location).Path
 $serverRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $envPath = Join-Path $serverRoot '.env'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("wuthering-control-update-" + [Guid]::NewGuid().ToString('N'))
@@ -262,6 +263,6 @@ try {
         throw "更新失敗，且自動回復未完成：$failure；回復錯誤：$($_.Exception.Message)"
     }
 } finally {
-    Set-Location -LiteralPath $serverRoot
+    Set-Location -LiteralPath $originalLocation
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 }
