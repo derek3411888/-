@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.59',
-    [string]$LauncherVersion = '4.70',
-    [string]$ServerVersion = '1.0.16'
+    [string]$PayloadVersion = '4.60',
+    [string]$LauncherVersion = '4.71',
+    [string]$ServerVersion = '1.0.17'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,8 +94,11 @@ if ([string]$package.version -ne $ServerVersion) { throw "server package 版本�
 
 Write-Host '執行語法與單元測試…'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
+Invoke-AhkValidate $payloadRuntime 'payload\自動開啟OKWW.ahk' 'OKWW manager AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\伺服器名稱與切服判斷測試.ahk' '伺服器名稱回歸測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\伺服器名稱與切服判斷測試.ahk' '伺服器名稱與切服回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\RecordingFinalizeWorker.ahk' '錄影 worker AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveLoopbackTest.ahk' '直播 loopback 測試語法 validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveAutomaticFallbackTest.ahk' '直播自動回退測試語法 validate'
@@ -118,6 +121,8 @@ if (-not ('System.Security.Cryptography.ProtectedData' -as [type])) {
 Assert-ExitCode 'Server 靜態檢查'
 & npm.cmd --prefix self-hosted-server test
 Assert-ExitCode 'Server 單元測試'
+& node.exe --check 'remote-control-web\app.js'
+Assert-ExitCode '舊控制台靜態檢查'
 
 Write-Host '編譯 Payload EXE…'
 $payloadTemp = Join-Path $projectRoot 'payload\全自動鋤地.new.exe'

@@ -17,6 +17,8 @@ const state = {
   liveMediaRecoveries: 0,
 };
 
+const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
+
 const $ = (id) => document.getElementById(id);
 const appView = $("appView");
 const deviceSelect = $("deviceSelect");
@@ -37,6 +39,77 @@ function setText(id, value) { $(id).textContent = escapeText(value); }
 function normalizeLiveQualityProfile(value) {
   const profile = String(value ?? "").trim().toLowerCase();
   return ["economy", "balanced", "smooth"].includes(profile) ? profile : "balanced";
+}
+
+function canonicalServerName(value) {
+  const key = String(value ?? "").trim().toLocaleLowerCase("zh-TW")
+    .replaceAll("（", "(").replaceAll("）", ")").replaceAll("，", ",")
+    .replace(/[\s　_\-－—]/gu, "");
+  if (["america", "美洲", "美服", "美洲服"].includes(key)) return "America";
+  if (["europe", "歐洲", "欧洲", "歐服", "欧服", "歐洲服", "欧洲服"].includes(key)) return "Europe";
+  if (["asia", "亞洲", "亚洲", "亞服", "亚服", "亞洲服", "亚洲服"].includes(key)) return "Asia";
+  if (["sea", "東南亞", "东南亚", "東南亞服", "东南亚服"].includes(key)) return "SEA";
+  if (["hmt", "hmt(hk,mo,tw)", "hmt(hkmotw)", "hmt(hk/mo/tw)", "港澳台", "港澳台服"].includes(key)) return "HMT(HK,MO,TW)";
+  return "";
+}
+
+function splitServerSchedule(value) {
+  const text = String(value ?? "").replaceAll("\r", "\n");
+  const result = [];
+  let token = "";
+  let depth = 0;
+  for (const character of text) {
+    if (["(", "（"].includes(character)) depth += 1;
+    if ([")", "）"].includes(character) && depth > 0) depth -= 1;
+    if ([",", ";", "；", "|", "\n"].includes(character) && depth === 0) {
+      if (token.trim()) result.push(token.trim());
+      token = "";
+    } else token += character;
+  }
+  if (token.trim()) result.push(token.trim());
+  return result;
+}
+
+function configuredServers(value) {
+  const result = [];
+  for (const item of splitServerSchedule(value)) {
+    const canonical = canonicalServerName(item);
+    if (canonical && !result.includes(canonical)) result.push(canonical);
+  }
+  return result.slice(0, SUPPORTED_SERVERS.length);
+}
+
+function renderServerChoices(value) {
+  const selected = configuredServers(value);
+  const grid = $("serverChoiceGrid");
+  grid.replaceChildren();
+  for (let index = 0; index < SUPPORTED_SERVERS.length; index += 1) {
+    const label = document.createElement("label");
+    label.textContent = `${index + 1}.`;
+    const select = document.createElement("select");
+    select.dataset.serverChoice = "true";
+    select.setAttribute("aria-label", `第 ${index + 1} 個伺服器`);
+    select.append(new Option("未設定", ""));
+    SUPPORTED_SERVERS.forEach((server) => select.append(new Option(server, server)));
+    select.value = selected[index] ?? "";
+    label.append(select);
+    grid.append(label);
+  }
+  refreshServerChoicesEnabled();
+}
+
+function refreshServerChoicesEnabled() {
+  const enabled = $("scheduleEnabled").checked;
+  document.querySelectorAll("select[data-server-choice]").forEach((select) => { select.disabled = !enabled; });
+}
+
+function selectedServerChoices() {
+  const servers = [...document.querySelectorAll("select[data-server-choice]")]
+    .map((select) => select.value).filter(Boolean);
+  const duplicates = servers.filter((server, index) => servers.indexOf(server) !== index);
+  if (duplicates.length) throw new Error(`同一個伺服器不可重複：${[...new Set(duplicates)].join("、")}`);
+  if ($("scheduleEnabled").checked && !servers.length) throw new Error("啟用排程時至少要選擇一個伺服器");
+  return servers;
 }
 function liveQualityLabel(value) {
   return {
@@ -202,7 +275,7 @@ function renderDetails() {
 
 function renderSettings(settings) {
   $("scheduleEnabled").checked = Boolean(settings.serverScheduleEnabled);
-  $("serverList").value = String(settings.serverScheduleList || "").replace(/\s*[;,|]\s*/g, "\n");
+  renderServerChoices(settings.serverScheduleList || "");
   $("maxRestart").value = settings.maxRestartCount ?? 10;
   $("snapshotInterval").value = settings.runtimeDiagnosticsIntervalSec ?? 60;
   $("snapshotKeep").value = settings.runtimeDiagnosticsErrorKeepCount ?? 30;
@@ -447,7 +520,7 @@ function bindEvents() {
     try {
       await api(`/api/v1/devices/${encodeURIComponent(state.selectedUid)}/settings`, { method: "PUT", body: {
         serverScheduleEnabled: $("scheduleEnabled").checked,
-        serverScheduleList: $("serverList").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean).join(","),
+        serverScheduleList: selectedServerChoices().join(" | "),
         maxRestartCount: Number($("maxRestart").value), runtimeDiagnosticsEnabled: $("diagnosticsEnabled").checked,
         runtimeDiagnosticsIntervalSec: Number($("snapshotInterval").value), runtimeDiagnosticsErrorKeepCount: Number($("snapshotKeep").value),
         mailNotifyEnabled: $("mailEnabled").checked,
@@ -456,6 +529,7 @@ function bindEvents() {
       toast("設定已儲存，等待裝置 ACK"); await refresh();
     } catch (error) { toast(error.message); }
   });
+  $("scheduleEnabled").addEventListener("change", refreshServerChoicesEnabled);
   $("startLiveButton").addEventListener("click", () => startLive().catch((error) => toast(error.message)));
   $("stopLiveButton").addEventListener("click", () => stopLive());
   $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與影片均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
@@ -463,9 +537,10 @@ function bindEvents() {
 }
 
 async function boot() {
-  state.me = await api("/api/v1/auth/me");
+  renderServerChoices("");
   appView.hidden = false;
   bindEvents();
+  state.me = await api("/api/v1/auth/me");
   await refresh();
   clearInterval(state.periodicTimer);
   state.periodicTimer = setInterval(() => refresh().catch((error) => toast(error.message)), 30_000);

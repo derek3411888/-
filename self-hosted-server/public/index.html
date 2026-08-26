@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260826-live-proxy">
+  <link rel="stylesheet" href="/styles.css?v=20260826-server-select-v2">
 </head>
 <body>
   <main id="appView" class="shell">
@@ -121,7 +121,11 @@
         <form id="settingsForm" class="card">
           <div class="section-title"><div><h2>執行端設定</h2><p>並行驗證結束前由 Firestore 保存。</p></div></div>
           <label class="toggle"><input id="scheduleEnabled" type="checkbox">啟用伺服器排程</label>
-          <label class="field">伺服器清單（每行一個）<textarea id="serverList" rows="5"></textarea></label>
+          <div class="field">
+            <span>伺服器執行順序</span>
+            <div id="serverChoiceGrid" class="server-choice-grid"></div>
+            <small class="hint">只提供 Global 正式區服；未設定的順位會略過，同一伺服器不可重複。</small>
+          </div>
           <div class="form-grid">
             <label class="field">最大重啟次數<input id="maxRestart" type="number" min="1" max="50"></label>
             <label class="field">快照間隔（秒）<input id="snapshotInterval" type="number" min="60" max="600"></label>
@@ -155,6 +159,6 @@
 
   <div id="toast" class="toast" hidden></div>
   <script src="/vendor/hls.min.js?v=1.6.13"></script>
-  <script type="module" src="/app.js?v=20260826-live-safari-v3"></script>
+  <script type="module" src="/app.js?v=20260826-server-select-v2"></script>
 </body>
 </html>

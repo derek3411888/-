@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { config, assertChildPath } from "./config.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
+import { analyzeServerSchedule } from "./server-names.js";
 import {
   browserCookie,
   ensureBrowser,
@@ -302,10 +303,20 @@ async function ackCommand(uid, body) {
 
 async function saveSettings(uid, body) {
   if ((await migrationMode()) !== "primary") throw new HttpError(423, "並行驗證期間設定仍由 Firestore 控制", "SHADOW_MODE");
+  const serverSchedule = analyzeServerSchedule(body.serverScheduleList);
+  if (serverSchedule.invalid.length) {
+    throw new HttpError(400, `只允許 America、Europe、Asia、HMT(HK,MO,TW)、SEA；無效項目：${serverSchedule.invalid.join("、")}`, "INVALID_SERVER_LIST");
+  }
+  if (serverSchedule.duplicates.length) {
+    throw new HttpError(400, `伺服器不可重複：${serverSchedule.duplicates.join("、")}`, "DUPLICATE_SERVER");
+  }
+  if (Boolean(body.serverScheduleEnabled) && !serverSchedule.servers.length) {
+    throw new HttpError(400, "啟用排程時至少要選擇一個伺服器", "EMPTY_SERVER_LIST");
+  }
   const settings = {
     schemaVersion: 1,
     serverScheduleEnabled: Boolean(body.serverScheduleEnabled),
-    serverScheduleList: boundedText(body.serverScheduleList, 1200),
+    serverScheduleList: boundedText(serverSchedule.servers.join(" | "), 1200),
     mailNotifyEnabled: Boolean(body.mailNotifyEnabled),
     runtimeDiagnosticsEnabled: body.runtimeDiagnosticsEnabled !== false,
     runtimeDiagnosticsIntervalSec: integer(body.runtimeDiagnosticsIntervalSec, 60, 60, 600),

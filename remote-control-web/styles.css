@@ -624,6 +624,11 @@ tbody tr:last-child td {
   background: #fbfcfd;
 }
 
+.server-order-row select {
+  width: 100%;
+  min-width: 0;
+}
+
 .server-order-index {
   display: grid;
   width: 30px;

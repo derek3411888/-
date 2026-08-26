@@ -31,6 +31,7 @@ catch
 #Include RemoteControlFirestore.ahk
 #Include RemoteControlSelfHost.ahk
 #Include OkwwOcrTextMatchers.ahk
+#Include WutheringServerNames.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -108,11 +109,12 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.70"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.71"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
 global LAST_OKWW_F11_FAILURE_DETAIL := ""
+global __OKWW_MAIN_UI_PROBE_CACHE := Map()
 global LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
 global LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
 global SERVER_SCHEDULE_ENABLED := false
@@ -2031,11 +2033,19 @@ OnRemoteControlSettingsChanged(settings) {
     rawServerList := Trim(settings.serverScheduleList, " `t`r`n")
     if (StrLen(rawServerList) > 1200)
         return { code: "INVALID_SERVER_LIST", detail: "伺服器清單過長", applied: false }
-    serverItems := ParseServerScheduleList(rawServerList)
+    serverAnalysis := AnalyzeServerScheduleList(rawServerList)
+    if (serverAnalysis.invalid.Length > 0)
+        return { code: "INVALID_SERVER_LIST",
+            detail: "只允許 America、Europe、Asia、HMT(HK,MO,TW)、SEA；無效項目："
+                JoinServerList(serverAnalysis.invalid), applied: false }
+    if (serverAnalysis.duplicates.Length > 0)
+        return { code: "INVALID_SERVER_LIST",
+            detail: "伺服器不可重複：" JoinServerList(serverAnalysis.duplicates), applied: false }
+    serverItems := serverAnalysis.servers
     if (serverEnabled && serverItems.Length = 0)
         return { code: "INVALID_SERVER_LIST", detail: "啟用排程時至少要設定 1 個伺服器", applied: false }
-    if (serverItems.Length > 10)
-        return { code: "INVALID_SERVER_LIST", detail: "伺服器清單最多 10 個項目", applied: false }
+    if (serverItems.Length > 5)
+        return { code: "INVALID_SERVER_LIST", detail: "Global 伺服器清單最多 5 個項目", applied: false }
     for _, serverName in serverItems {
         if (StrLen(serverName) > 80)
             return { code: "INVALID_SERVER_LIST", detail: "單一伺服器名稱不可超過 80 個字元", applied: false }
@@ -2633,8 +2643,12 @@ if (loginDetected) {
     }
 
     if !serverSwitchOk {
-        WriteLog("伺服器切換失敗（重試後仍未成功），改由 OKWW 繼續後續流程", "WARN")
-        ShowTip("⚠️ 切服失敗，交由 OKWW 繼續", 1200)
+        WriteLog("伺服器切換失敗（重試後仍未由登入頁 OCR 證明成功），停止本輪，禁止 OKWW 進入錯服", "ERROR")
+        ShowTip("❌ 切服驗證失敗，停止避免進錯服", 2200)
+        RequestRestart(
+            "目標伺服器=" CURRENT_SERVER_TARGET "；三次切換後仍無法由登入頁區服標籤連續兩次確認，已禁止 OKWW 接手登入",
+            "ERROR", CRASH_RESTART_MODE, "SERVER_SWITCH_VERIFY_FAILED", "伺服器切換後置驗證")
+        return
     }
 
     WriteLog("登入畫面階段啟動 OKWW；一般「点击连接」交由 OKWW F11 接手，登入.png 僅保留作帳號異地登入後的重新登入備援")
@@ -2913,7 +2927,9 @@ StartOKWWFlow(isRestart) {
     ; 啟動前先記錄所有既有最終視窗。既有視窗只能由本次 manager 以 nonce
     ; handoff 明確回報；無 handoff 時仍允許唯一的 snapshot 外新 final 視窗。
     okwwBaseline := CaptureOkwwFinalWindowSignatures()
-    maxAttempts := 90
+    ; MyTUF 實機從啟動器到完整 pythonw 主程式曾花約 70 秒。管理器本身可等
+    ; 180 秒，主流程再多保留啟動前置與 handoff 餘裕，總上限 210 秒。
+    maxAttempts := 210
     handoffRequest := CreateOkwwManagerHandoffRequest(maxAttempts + 2)
     ahkCommand := '"' AhkExe '" "' A_ScriptDir '\自動開啟OKWW.ahk"'
         . ' --handoff-nonce "' handoffRequest.nonce '"'
@@ -3257,29 +3273,40 @@ EnsureOkwwAutoBattleEnabled(okwwHwnd) {
         ocr := RapidOcr()
         navResult := CaptureOkwwOcr(okwwHwnd, ocr, "尋找實時／即時觸發")
         navMatch := FindOkwwRealtimeTriggerOcrBlock(navResult, scale)
+        navX := 0
+        navY := 0
+        navSource := "ocr-text"
         if !navMatch {
             navCandidates := SummarizeOkwwOcrBlocks(
                 navResult, Round(320 * scale), 30)
-            WriteLog("OKWW 自動戰鬥檢查失敗：OCR 找不到左側「實時／即時觸發」"
-                "（含受限一字容錯）"
-                " | 左側候選=" navCandidates, "ERROR")
-            return false
+            ; MyTUF 的 1080p 實機畫面會把左側導覽收合成只有圖示，OCR 不可能
+            ; 讀到文字。碼表圖示仍固定在第二個功能列（客戶區約 25,112）。
+            navX := Round(25 * scale)
+            navY := Round(112 * scale)
+            navSource := "collapsed-sidebar-stopwatch"
+            if (navX <= 0 || navX >= clientW || navY <= 0 || navY >= clientH) {
+                WriteLog("OKWW 自動戰鬥檢查失敗：左側文字未命中且圖示備援座標無效"
+                    " | client=" clientW "x" clientH " dpi=" dpi
+                    " | 左側候選=" navCandidates, "ERROR")
+                return false
+            }
+            WriteLog("OKWW 左側導覽為收合圖示模式；改點碼表圖示進入實時觸發"
+                " | nav=" navX "," navY " | 左側候選=" navCandidates, "WARN")
+        } else {
+            if (navMatch.matchType = "bounded_fuzzy") {
+                WriteLog("OKWW 左側導覽 OCR 受限容錯命中：raw=" navMatch.rawText
+                    " normalized=" navMatch.text
+                    " target=" navMatch.targetText
+                    " distance=" navMatch.distance
+                    " rectRight=" Round(navMatch.rect.right), "WARN")
+            }
+            navX := navMatch.rect.centerX
+            navY := navMatch.rect.centerY
         }
 
-        if (navMatch.matchType = "bounded_fuzzy") {
-            WriteLog("OKWW 左側導覽 OCR 受限容錯命中：raw=" navMatch.rawText
-                " normalized=" navMatch.text
-                " target=" navMatch.targetText
-                " distance=" navMatch.distance
-                " rectRight=" Round(navMatch.rect.right), "WARN")
-        }
-
-        navX := navMatch.rect.centerX
-        navY := navMatch.rect.centerY
         toggleX := Round(clientW - 155 * scale)
 
-        WriteLog("OKWW 自動戰鬥檢查：OCR 命中「" navMatch.text
-            "」，前往實時觸發 | client="
+        WriteLog("OKWW 自動戰鬥檢查：前往實時觸發 | source=" navSource " client="
             clientW "x" clientH " dpi=" dpi " nav=" navX "," navY
             " toggleX=" toggleX)
 
@@ -3287,7 +3314,7 @@ EnsureOkwwAutoBattleEnabled(okwwHwnd) {
             WriteLog("OKWW 自動戰鬥檢查失敗：無法點擊實時觸發", "ERROR")
             return false
         }
-        Sleep 1200
+        Sleep 1800
 
         stateInfo := ReadOkwwAutoBattleOcrState(okwwHwnd, ocr, scale)
         Sleep 300
@@ -4676,7 +4703,7 @@ SendF11ToOkww(okwwHwnd) {
             finalReason := ""
             currentPid := 0
             try currentPid := WinGetPID("ahk_id " okwwHwnd)
-            if (currentPid != pid || !IsUsableOkwwFinalWindow(okwwHwnd, &finalReason)) {
+            if (currentPid != pid || !IsUsableOkwwFinalWindow(okwwHwnd, &finalReason, false, true)) {
                 LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_TARGET_CHANGED"
                 LAST_OKWW_F11_FAILURE_DETAIL := "送鍵前目標身分已改變；originalPid=" pid
                     . "；currentPid=" currentPid "；reason=" finalReason
@@ -5794,7 +5821,7 @@ CountUsableOkwwFinalWindows(&selectedIncluded := false, selectedHwnd := 0) {
     try {
         for candidateHwnd in WinGetList() {
             candidateReason := ""
-            if !IsUsableOkwwFinalWindow(candidateHwnd, &candidateReason, true)
+            if !IsUsableOkwwFinalWindow(candidateHwnd, &candidateReason, true, true)
                 continue
             count += 1
             if (selectedHwnd && candidateHwnd = selectedHwnd)
@@ -5826,7 +5853,7 @@ ValidateOkwwManagerHandoffTarget(report, &currentTitle := "", &reason := "",
             return false
         }
         identityReason := ""
-        if !IsUsableOkwwFinalWindow(hwnd, &identityReason, true) {
+        if !IsUsableOkwwFinalWindow(hwnd, &identityReason, true, true) {
             reason := "identity_or_health_invalid:" identityReason
             return false
         }
@@ -5947,7 +5974,7 @@ FindBestOkwwFinalWindow(&selectedTitle := "", excludePid := 0,
             }
 
             reason := ""
-            if !IsUsableOkwwFinalWindow(hwnd, &reason, true)
+            if !IsUsableOkwwFinalWindow(hwnd, &reason, true, true)
                 continue
             eligibleCount += 1
 
@@ -6004,6 +6031,62 @@ IsOkwwFinalWindowIdentity(hwnd, &reason := "") {
     }
 }
 
+ProbeOkwwMainUiReady(hwnd, &reason := "", maxCacheAgeMs := 1200) {
+    global __OKWW_MAIN_UI_PROBE_CACHE
+    reason := ""
+    if !IsOkwwFinalWindowIdentity(hwnd, &reason)
+        return false
+
+    cacheKey := String(hwnd)
+    nowTick := MonotonicTickMs()
+    if (__OKWW_MAIN_UI_PROBE_CACHE.Has(cacheKey)) {
+        cached := __OKWW_MAIN_UI_PROBE_CACHE[cacheKey]
+        if (nowTick - cached.tick <= maxCacheAgeMs) {
+            reason := cached.reason
+            return cached.ready
+        }
+    }
+
+    ready := false
+    kind := "unknown"
+    summary := ""
+    probeReason := "main_ui_ocr_unknown"
+    try {
+        ocr := RapidOcr()
+        blocks := CaptureOkwwOcr(hwnd, ocr, "主程式內容守門")
+        kind := OKWW_ClassifyWindowOcrBlocks(blocks)
+        summary := SummarizeOkwwOcrBlocks(blocks, 0, 24)
+        ready := OKWW_IsOperationalContentKind(kind)
+        probeReason := ready ? "" : (kind = "update"
+            ? "okww_shell_not_fully_loaded" : "main_ui_markers_not_ready")
+    } catch as e {
+        probeReason := "main_ui_probe_failed:" e.Message
+    }
+
+    previousKind := ""
+    previousLogTick := 0
+    if __OKWW_MAIN_UI_PROBE_CACHE.Has(cacheKey) {
+        previous := __OKWW_MAIN_UI_PROBE_CACHE[cacheKey]
+        previousKind := previous.kind
+        previousLogTick := previous.logTick
+    }
+    shouldLog := (kind != previousKind || nowTick - previousLogTick >= 10000)
+    __OKWW_MAIN_UI_PROBE_CACHE[cacheKey] := {
+        tick: nowTick,
+        ready: ready,
+        kind: kind,
+        reason: probeReason,
+        logTick: shouldLog ? nowTick : previousLogTick
+    }
+    if shouldLog {
+        WriteLog("OKWW 主程式內容守門 | hwnd=" hwnd " kind=" kind
+            " ready=" (ready ? 1 : 0) " | OCR=" summary,
+            "INFO")
+    }
+    reason := probeReason
+    return ready
+}
+
 PrepareOkwwWindowForInput(hwnd, &reason := "") {
     reason := ""
     if !IsOkwwFinalWindowIdentity(hwnd, &reason)
@@ -6014,10 +6097,11 @@ PrepareOkwwWindowForInput(hwnd, &reason := "") {
         reason := "restore_failed:" restoreReason
         return false
     }
-    return IsUsableOkwwFinalWindow(hwnd, &reason)
+    return IsUsableOkwwFinalWindow(hwnd, &reason, false, true)
 }
 
-IsUsableOkwwFinalWindow(hwnd, &reason := "", allowMinimized := false) {
+IsUsableOkwwFinalWindow(hwnd, &reason := "", allowMinimized := false,
+    requireMainUiReady := false) {
     if !IsOkwwFinalWindowIdentity(hwnd, &reason)
         return false
 
@@ -6053,8 +6137,11 @@ IsUsableOkwwFinalWindow(hwnd, &reason := "", allowMinimized := false) {
         }
 
         minMax := WinGetMinMax("ahk_id " hwnd)
-        if (allowMinimized && minMax = -1)
+        if (allowMinimized && minMax = -1) {
+            if requireMainUiReady && !ProbeOkwwMainUiReady(hwnd, &reason)
+                return false
             return true
+        }
 
         width := 0
         height := 0
@@ -6063,6 +6150,8 @@ IsUsableOkwwFinalWindow(hwnd, &reason := "", allowMinimized := false) {
             reason := "window_too_small"
             return false
         }
+        if requireMainUiReady && !ProbeOkwwMainUiReady(hwnd, &reason)
+            return false
         return true
     } catch as e {
         reason := "inspect_failed:" e.Message
@@ -7146,7 +7235,7 @@ ProbeForegroundAccessForRecovery(preferredKind, &detail := "", &recreateRecommen
         if hwnd {
             detail := "target=okww hwnd=" hwnd " title=" title
             usableReason := ""
-            if !IsUsableOkwwFinalWindow(hwnd, &usableReason, true) {
+            if !IsUsableOkwwFinalWindow(hwnd, &usableReason, true, true) {
                 recreateRecommended := true
                 detail .= " structural_failure=" usableReason
                 return false
@@ -8214,6 +8303,11 @@ QueueServerSwitchCompletionNotification(sourceCode := "AUTO_SCHEDULE") {
         IniWrite sourceCode, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_source"
         IniWrite cycleKey, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_cycle_key"
         IniWrite requestedAt, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_requested_at"
+        IniWrite "", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_target"
+        IniWrite "", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_cycle_key"
+        IniWrite "", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_at"
+        IniWrite "", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_observed_text"
+        IniWrite "", CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_source"
         WriteLog("已排定伺服器切換完成提醒：" SERVER_SCHEDULE_INDEX "/" SERVER_SCHEDULE_LIST.Length
             " | " CURRENT_SERVER_TARGET " | source=" sourceCode)
         SyncRemoteControlRuntimeState()
@@ -8240,8 +8334,46 @@ PendingServerSwitchCompletionTick() {
     }
     if !IsLrmcRunResumeReady()
         return
+    pendingTarget := IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_target", "")
+    pendingCycle := IniReadSafe(CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "pending_cycle_key", "")
+    if !IsServerSwitchTargetVerified(pendingTarget, pendingCycle)
+        return
     SetTimer(PendingServerSwitchCompletionTick, 0)
     CompletePendingServerSwitchNotification()
+}
+
+RecordVerifiedServerSwitch(target, observedText := "", source := "") {
+    global CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION
+    canonical := CanonicalizeWutheringServerName(target)
+    if (canonical = "")
+        return false
+    try {
+        IniWrite canonical, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_target"
+        IniWrite GetCurrentServerCycleKey(), CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_cycle_key"
+        IniWrite FormatTime(, "yyyy-MM-dd HH:mm:ss"), CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_at"
+        IniWrite observedText, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_observed_text"
+        IniWrite source, CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_source"
+        WriteLog("伺服器切換已由登入畫面 OCR 後置驗證：target=" canonical
+            " | source=" source " | observed=" observedText)
+        return true
+    } catch as e {
+        WriteLog("保存伺服器切換 OCR 驗證結果失敗：" e.Message, "ERROR")
+        return false
+    }
+}
+
+IsServerSwitchTargetVerified(target, cycleKey := "") {
+    global CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION
+    expected := CanonicalizeWutheringServerName(target)
+    if (expected = "")
+        return false
+    verified := CanonicalizeWutheringServerName(IniReadSafe(
+        CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_target", ""))
+    verifiedCycle := Trim(IniReadSafe(
+        CFG_FILE, SERVER_SWITCH_NOTIFY_SECTION, "verified_cycle_key", ""), " `t`r`n")
+    if (cycleKey = "")
+        cycleKey := GetCurrentServerCycleKey()
+    return verified = expected && verifiedCycle != "" && verifiedCycle = cycleKey
 }
 
 CompletePendingServerSwitchNotification() {
@@ -8266,6 +8398,7 @@ CompletePendingServerSwitchNotification() {
         && targetIndex = SERVER_SCHEDULE_INDEX
         && pendingCycleKey != ""
         && pendingCycleKey = currentCycleKey
+        && IsServerSwitchTargetVerified(target, pendingCycleKey)
     )
     if !validTarget {
         detail := "待寄提醒已失效：pending=" targetIndex "/" targetTotal " " target
@@ -8641,6 +8774,60 @@ EnsureAllConfigAtStartup(force := false, reason := "") {
     return true
 }
 
+GetServerSettingsDropdownOptions() {
+    options := ["未設定"]
+    for server in GetSupportedWutheringServers()
+        options.Push(server)
+    return options
+}
+
+ChooseServerSettingsDropdown(control, serverName := "") {
+    canonical := CanonicalizeWutheringServerName(serverName)
+    selectedIndex := 1
+    for index, supported in GetSupportedWutheringServers() {
+        if (supported = canonical) {
+            selectedIndex := index + 1
+            break
+        }
+    }
+    control.Choose(selectedIndex)
+}
+
+GetServerSettingsDropdownValues(controls) {
+    values := []
+    if !IsObject(controls)
+        return values
+    for control in controls {
+        canonical := CanonicalizeWutheringServerName(control.Text)
+        if (canonical != "")
+            values.Push(canonical)
+    }
+    return values
+}
+
+FindDuplicateServerNames(items) {
+    duplicates := []
+    seen := Map()
+    duplicateSeen := Map()
+    if !IsObject(items)
+        return duplicates
+    for item in items {
+        canonical := CanonicalizeWutheringServerName(item)
+        if (canonical = "")
+            continue
+        key := StrLower(canonical)
+        if seen.Has(key) {
+            if !duplicateSeen.Has(key) {
+                duplicateSeen[key] := true
+                duplicates.Push(canonical)
+            }
+        } else {
+            seen[key] := true
+        }
+    }
+    return duplicates
+}
+
 ReadCombinedConfigState() {
     global CFG_FILE, MAIL_NOTIFY_ENABLED, MAIL_SECTION, REWARD_LOG_FILE, SCREEN_RECORDING_ENABLED, SCREEN_RECORDING_SECTION
     global SCREEN_RECORDING_ENGINE, SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OUTPUT_DIR, SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK, SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG
@@ -8765,9 +8952,13 @@ ReadCombinedConfigState() {
     }
 
     if (state.serverScheduleEnabled) {
-        listParsed := ParseServerScheduleList(state.serverScheduleList)
-        if (listParsed.Length = 0)
+        scheduleAnalysis := AnalyzeServerScheduleList(state.serverScheduleList)
+        if (scheduleAnalysis.servers.Length = 0)
             err.Push("server_schedule.list 為空（啟用排程時必填）")
+        if (scheduleAnalysis.invalid.Length > 0)
+            err.Push("server_schedule.list 含非官方伺服器：" JoinServerList(scheduleAnalysis.invalid))
+        if (scheduleAnalysis.duplicates.Length > 0)
+            err.Push("server_schedule.list 含重複伺服器：" JoinServerList(scheduleAnalysis.duplicates))
         if !(state.serverSwitchX ~= "^\d+$")
             err.Push("server_schedule.switch_x 不是數字")
         if !(state.serverSwitchY ~= "^\d+$")
@@ -8866,9 +9057,23 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbServerScheduleEnabled.Value := state.serverScheduleEnabled ? 1 : 0
     txtServerHint := g.AddText("xs y+4 w440 c666666", state.serverScheduleEnabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程")
 
-    g.AddText("xs y+8 w80", "伺服器清單")
-    edServerList := g.AddEdit("x+5 w280", state.serverScheduleList)
-    btnServerPreview := g.AddButton("x+5 w70", "預覽")
+    configuredServers := ParseServerScheduleList(state.serverScheduleList)
+    serverOptions := GetServerSettingsDropdownOptions()
+    g.AddText("xs y+8 w80", "執行順序 1/2")
+    ddServer1 := g.AddDropDownList("x+5 w165", serverOptions)
+    ddServer2 := g.AddDropDownList("x+8 w165", serverOptions)
+    ChooseServerSettingsDropdown(ddServer1, configuredServers.Length >= 1 ? configuredServers[1] : "")
+    ChooseServerSettingsDropdown(ddServer2, configuredServers.Length >= 2 ? configuredServers[2] : "")
+
+    g.AddText("xs y+7 w80", "執行順序 3/4")
+    ddServer3 := g.AddDropDownList("x+5 w165", serverOptions)
+    ddServer4 := g.AddDropDownList("x+8 w165", serverOptions)
+    ChooseServerSettingsDropdown(ddServer3, configuredServers.Length >= 3 ? configuredServers[3] : "")
+    ChooseServerSettingsDropdown(ddServer4, configuredServers.Length >= 4 ? configuredServers[4] : "")
+
+    g.AddText("xs y+7 w80", "執行順序 5")
+    ddServer5 := g.AddDropDownList("x+5 w165", serverOptions)
+    ChooseServerSettingsDropdown(ddServer5, configuredServers.Length >= 5 ? configuredServers[5] : "")
 
     g.AddText("xs y+8 w80", "切服座標")
     edServerSwitchX := g.AddEdit("x+5 w50", state.serverSwitchX)
@@ -9036,8 +9241,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         txtFallbackHint: txtFallbackHint,
         cbServerScheduleEnabled: cbServerScheduleEnabled,
         txtServerHint: txtServerHint,
-        edServerList: edServerList,
-        btnServerPreview: btnServerPreview,
+        serverDropdowns: [ddServer1, ddServer2, ddServer3, ddServer4, ddServer5],
         edServerSwitchX: edServerSwitchX,
         edServerSwitchY: edServerSwitchY,
         edHost: edHost,
@@ -9087,7 +9291,6 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnLrmc.OnEvent("Click", OnCombinedBrowseLrmc)
     btnWu.OnEvent("Click", OnCombinedBrowseWu)
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
-    btnServerPreview.OnEvent("Click", OnServerSchedulePreview)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
     cbServerScheduleEnabled.OnEvent("Click", OnServerScheduleEnabledChanged)
     cbSendEnabled.OnEvent("Click", OnSendEnabledChanged)
@@ -9284,7 +9487,8 @@ OnCombinedSetupSave(*) {
     toVal := Trim(st.edTo.Value, " `t`r`n")
     prefixVal := Trim(st.edPrefix.Value, " `t`r`n")
     serverScheduleEnabledVal := st.cbServerScheduleEnabled.Value ? 1 : 0
-    serverListVal := Trim(st.edServerList.Value, " `t`r`n")
+    selectedServerItems := GetServerSettingsDropdownValues(st.serverDropdowns)
+    serverListVal := JoinServerList(selectedServerItems)
     serverSwitchXVal := Trim(st.edServerSwitchX.Value, " `t`r`n")
     serverSwitchYVal := Trim(st.edServerSwitchY.Value, " `t`r`n")
     sslVal := st.ddSsl.Text
@@ -9334,9 +9538,14 @@ OnCombinedSetupSave(*) {
     }
 
     if serverScheduleEnabledVal {
-        parsed := ParseServerScheduleList(serverListVal)
-        if (parsed.Length = 0) {
+        if (selectedServerItems.Length = 0) {
             MsgBox "啟用伺服器排程時，伺服器清單不可空白", "整合設定", "Iconx"
+            return
+        }
+        duplicateServers := FindDuplicateServerNames(selectedServerItems)
+        if (duplicateServers.Length > 0) {
+            MsgBox "同一個伺服器不可重複選擇：`n" JoinServerList(duplicateServers),
+                "整合設定", "Iconx"
             return
         }
         if !(serverSwitchXVal ~= "^\d+$") || !(serverSwitchYVal ~= "^\d+$") {
@@ -9998,8 +10207,8 @@ RefreshServerScheduleInputsEnabled() {
         return
 
     enabled := __MAIL_SETUP.cbServerScheduleEnabled.Value ? true : false
-    __MAIL_SETUP.edServerList.Enabled := enabled
-    __MAIL_SETUP.btnServerPreview.Enabled := enabled
+    for control in __MAIL_SETUP.serverDropdowns
+        control.Enabled := enabled
     __MAIL_SETUP.edServerSwitchX.Enabled := enabled
     __MAIL_SETUP.edServerSwitchY.Enabled := enabled
     __MAIL_SETUP.txtServerHint.Value := enabled ? "目前啟用：會依清單逐一切服並續跑" : "目前停用：維持單伺服器流程"
@@ -11247,116 +11456,6 @@ ParseBool01(val, defaultVal := 1) {
     return defaultVal
 }
 
-ParseServerScheduleList(raw) {
-    out := []
-    seen := Map()
-    if !IsSet(raw)
-        return out
-
-    txt := StrReplace(raw, "`r", "`n")
-    token := ""
-    depth := 0
-
-    Loop Parse, txt {
-        ch := A_LoopField
-
-        if (ch = "(" || ch = "（") {
-            depth += 1
-            token .= ch
-            continue
-        }
-
-        if (ch = ")" || ch = "）") {
-            if (depth > 0)
-                depth -= 1
-            token .= ch
-            continue
-        }
-
-        isSeparator := (ch = "," || ch = ";" || ch = "|" || ch = "`n")
-        if (isSeparator && depth = 0) {
-            name := Trim(token, " `t`r`n")
-            if (name != "") {
-                key := StrLower(name)
-                if !seen.Has(key) {
-                    seen[key] := 1
-                    out.Push(name)
-                }
-            }
-            token := ""
-            continue
-        }
-
-        token .= ch
-    }
-
-    name := Trim(token, " `t`r`n")
-    if (name != "") {
-        key := StrLower(name)
-        if !seen.Has(key) {
-            seen[key] := 1
-            out.Push(name)
-        }
-    }
-    return out
-}
-
-NormalizeServerMatchText(s) {
-    t := StrLower(Trim(s, " `t`r`n"))
-    if (t = "")
-        return ""
-
-    ; 常見伺服器名稱別名正規化（中英互通）
-    t := StrReplace(t, "亞洲", "asia")
-    t := StrReplace(t, "亚服", "asia")
-    t := StrReplace(t, "亞服", "asia")
-    t := StrReplace(t, "東南亞", "sea")
-    t := StrReplace(t, "东南亚", "sea")
-    t := StrReplace(t, "美洲", "america")
-    t := StrReplace(t, "美服", "america")
-    t := StrReplace(t, "歐洲", "europe")
-    t := StrReplace(t, "欧洲", "europe")
-    t := StrReplace(t, "歐服", "europe")
-    t := StrReplace(t, "欧服", "europe")
-    t := StrReplace(t, "港澳台", "hmt")
-
-    ; 去除括號內容，讓「HMT(HK, MO, TW)」與「HMT」可以互相命中
-    t := RegExReplace(t, "\([^)]*\)", "")
-    t := RegExReplace(t, "（[^）]*）", "")
-
-    ; 去除常見空白與分隔符，降低 OCR 標點差異影響
-    t := RegExReplace(t, "[\s,，;；|]", "")
-    return t
-}
-
-IsServerTargetMatch(ocrText, targetText) {
-    a := NormalizeServerMatchText(ocrText)
-    b := NormalizeServerMatchText(targetText)
-    if (a = "" || b = "")
-        return false
-
-    ; 先做雙向包含，再回退到原字串包含
-    if (InStr(a, b) || InStr(b, a))
-        return true
-    return InStr(StrLower(ocrText), StrLower(targetText)) ? true : false
-}
-
-IsLikelyServerNameText(ocrText) {
-    t := NormalizeServerMatchText(ocrText)
-    if (t = "")
-        return false
-
-    ; 常見伺服器名稱或縮寫（含 OCR 常見變形）
-    if (InStr(t, "hmt") || InStr(t, "asia") || InStr(t, "sea") || InStr(t, "america") || InStr(t, "europe"))
-        return true
-
-    ; 例如 HMT(HK, MO, TW) 去括號後可能殘留 hk/mo/tw
-    if (InStr(t, "hk") || InStr(t, "mo") || InStr(t, "tw"))
-        return true
-
-    return false
-}
-
 IsServerConfirmText(ocrText) {
     t := Trim(StrReplace(StrReplace(ocrText, "`r", ""), "`n", ""), " `t")
     if (t = "")
@@ -11594,6 +11693,122 @@ MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
     return [px, py, cw, ch]
 }
 
+ReadLoginServerLabel(hwnd, purpose := "") {
+    result := {
+        server: "",
+        rawText: "",
+        center: "",
+        summary: "",
+        reason: ""
+    }
+    if !hwnd || !WinExist("ahk_id " hwnd) {
+        result.reason := "window_missing"
+        return result
+    }
+
+    clientW := 0
+    clientH := 0
+    try WinGetClientPos(, , &clientW, &clientH, "ahk_id " hwnd)
+    catch as e {
+        result.reason := "client_rect_failed:" e.Message
+        return result
+    }
+    if (clientW <= 0 || clientH <= 0) {
+        result.reason := "invalid_client_rect"
+        return result
+    }
+
+    ; 1280x720 實機登入頁的區服標籤約在 (640,550)。只讀畫面中央下方的
+    ; 這一小段，避免左下角版本字串或 OCR 單字母「a」混進判斷。
+    minX := clientW * 0.25
+    maxX := clientW * 0.75
+    minY := clientH * 0.68
+    maxY := clientH * 0.84
+    tempFile := RuntimeFiles_NewImagePath("server_label")
+    detected := Map()
+    try {
+        ImagePutFile(hwnd, tempFile)
+        ocr := RapidOcr()
+        blocks := ocr.ocr_from_file(tempFile, , true)
+        if !IsObject(blocks) {
+            result.reason := "ocr_no_object"
+            return result
+        }
+
+        for block in blocks {
+            if !block.HasOwnProp("text")
+                continue
+            center := GetOcrBlockCenter(block)
+            if !IsObject(center)
+                continue
+            if (center[1] < minX || center[1] > maxX || center[2] < minY || center[2] > maxY)
+                continue
+            rawText := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+            if (rawText = "")
+                continue
+            result.summary .= (result.summary = "" ? "" : " | ") rawText
+                . "@" Round(center[1]) "," Round(center[2])
+            canonical := DetectWutheringServerFromOcrText(rawText)
+            if (canonical != "")
+                detected[canonical] := {rawText: rawText, center: center}
+        }
+
+        if (detected.Count = 1) {
+            for canonical, match in detected {
+                result.server := canonical
+                result.rawText := match.rawText
+                result.center := match.center
+            }
+            result.reason := "ok"
+        } else if (detected.Count > 1) {
+            result.reason := "ambiguous_servers"
+        } else {
+            result.reason := "server_not_found_in_login_roi"
+        }
+        WriteLog("伺服器排程：登入頁區服標籤 OCR"
+            . (purpose != "" ? "（" purpose "）" : "")
+            . " | result=" (result.server != "" ? result.server : result.reason)
+            . " | roi=" Round(minX) "," Round(minY) "-" Round(maxX) "," Round(maxY)
+            . " | candidates=" (result.summary != "" ? result.summary : "(無)"))
+        return result
+    } catch as e {
+        result.reason := "capture_or_ocr_failed:" e.Message
+        WriteLog("伺服器排程：登入頁區服標籤 OCR 失敗：" e.Message, "WARN")
+        return result
+    } finally {
+        try FileDelete(tempFile)
+    }
+}
+
+VerifyLoginServerTarget(hwnd, target, timeoutMs := 1800, stableNeeded := 2,
+    purpose := "") {
+    expected := CanonicalizeWutheringServerName(target)
+    if (expected = "")
+        return {ok: false, observed: "", rawText: "", reason: "invalid_target"}
+
+    deadline := MonotonicTickMs() + Max(500, timeoutMs)
+    stable := 0
+    lastObserved := ""
+    lastRaw := ""
+    lastReason := ""
+    while (MonotonicTickMs() <= deadline) {
+        sample := ReadLoginServerLabel(hwnd, purpose)
+        lastObserved := sample.server
+        lastRaw := sample.rawText
+        lastReason := sample.reason
+        if (sample.server = expected)
+            stable += 1
+        else
+            stable := 0
+        if (stable >= stableNeeded)
+            return {ok: true, observed: sample.server, rawText: sample.rawText,
+                reason: "stable_match", stable: stable}
+        Sleep 400
+    }
+    return {ok: false, observed: lastObserved, rawText: lastRaw,
+        reason: lastReason != "" ? lastReason : "timeout", stable: stable}
+}
+
 TrySelectScheduledServer(hwnd, attempt := 1) {
     global CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
 
@@ -11613,40 +11828,18 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     }
 
     WriteLog("伺服器排程：準備選擇伺服器 -> " CURRENT_SERVER_TARGET "（嘗試 " attempt "/" maxAttempts "）")
-    ; 先在登入畫面做一次 OCR：若已是目標伺服器，直接略過切換，不做任何點擊
-    preMatched := false
-    preTempFile := RuntimeFiles_NewImagePath("server_precheck")
-    WriteLog("伺服器排程：開始預檢登入畫面是否已是目標伺服器 (" CURRENT_SERVER_TARGET ")")
-    try {
-        ImagePutFile(hwnd, preTempFile)
-        preOcr := RapidOcr()
-        preRes := preOcr.ocr_from_file(preTempFile, , true)
-        ocrRecognized := ""
-        if IsObject(preRes) {
-            for block in preRes {
-                txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
-                if (txt = "")
-                    continue
-                ocrRecognized .= (ocrRecognized = "" ? "" : " | ") txt
-                if IsServerTargetMatch(txt, CURRENT_SERVER_TARGET) {
-                    preMatched := true
-                    break
-                }
-            }
-            WriteLog("伺服器排程：預檢 OCR 辨識結果：" ocrRecognized)
-        } else {
-            WriteLog("伺服器排程：預檢 OCR 無結果（res 不是物件）", "WARN")
-        }
-    } catch as e {
-        WriteLog("伺服器排程：預檢 OCR 失敗，改走切服流程: " e.Message, "WARN")
-    }
-    try FileDelete(preTempFile)
-
-    if preMatched {
-        WriteLog("伺服器排程：登入畫面已是目標伺服器 " CURRENT_SERVER_TARGET "，略過切換動作")
-        WriteStepResult("伺服器切換", true, "已是目標伺服器")
+    ; 登入頁區服標籤必須連續兩次精確等於目標，才可宣告「已是目標」。
+    WriteLog("伺服器排程：開始精確預檢登入畫面區服標籤 (" CURRENT_SERVER_TARGET ")")
+    precheck := VerifyLoginServerTarget(hwnd, CURRENT_SERVER_TARGET, 1800, 2, "切服前預檢")
+    if precheck.ok {
+        RecordVerifiedServerSwitch(CURRENT_SERVER_TARGET, precheck.rawText, "precheck")
+        WriteLog("伺服器排程：登入畫面已連續確認為目標伺服器 " CURRENT_SERVER_TARGET "，略過切換動作")
+        WriteStepResult("伺服器切換", true, "已是目標伺服器（OCR 連續 2 次）")
         return true
     }
+    WriteLog("伺服器排程：預檢未通過 | target=" CURRENT_SERVER_TARGET
+        " observed=" (precheck.observed != "" ? precheck.observed : "unknown")
+        " reason=" precheck.reason, "WARN")
 
     if (CURRENT_SERVER_TARGET = "") {
         WriteLog("伺服器排程：目標伺服器為空，略過切換")
@@ -11658,35 +11851,17 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
 
     WriteLog("伺服器排程：準備用 OCR 找伺服器名稱區塊並點擊開選單")
 
-    tempFile := RuntimeFiles_NewImagePath("server_menu")
     serverMenuOpened := false
     menuOpenBy := ""
-    try {
-        ImagePutFile(hwnd, tempFile)
-        ocr := RapidOcr()
-        res := ocr.ocr_from_file(tempFile, , true)
-        if IsObject(res) {
-            for block in res {
-                txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
-                if (txt = "")
-                    continue
-
-                c := GetOcrBlockCenter(block)
-                if (IsObject(c) && IsLikelyServerNameText(txt)) {
-                    if ServerClickClient(hwnd, c[1], c[2],
-                        "伺服器排程：找到伺服器名稱區塊（" txt "）") {
-                        serverMenuOpened := true
-                        menuOpenBy := "server-name"
-                        Sleep 1600
-                        break
-                    }
-                }
-            }
+    label := ReadLoginServerLabel(hwnd, "開啟區服選單")
+    if (label.server != "" && IsObject(label.center)) {
+        if ServerClickClient(hwnd, label.center[1], label.center[2],
+            "伺服器排程：點擊登入頁區服標籤（" label.rawText "）") {
+            serverMenuOpened := true
+            menuOpenBy := "login-server-roi"
+            Sleep 1600
         }
-    } catch as e {
-        WriteLog("伺服器排程：OCR 掃伺服器名稱區塊失敗: " e.Message, "WARN")
     }
-    try FileDelete(tempFile)
 
     ; 若 OCR 沒找到伺服器名稱區塊，直接用客戶區內固定座標（例如 640,549）
     if !serverMenuOpened {
@@ -11786,9 +11961,22 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     }
 
     if confirmClicked {
-        WriteLog("伺服器排程：伺服器切換完成 -> " CURRENT_SERVER_TARGET)
-        WriteStepResult("伺服器切換", true, "target=" CURRENT_SERVER_TARGET)
-        return true
+        postcheck := VerifyLoginServerTarget(hwnd, CURRENT_SERVER_TARGET, 8000, 2,
+            "切服後驗證")
+        if postcheck.ok {
+            RecordVerifiedServerSwitch(CURRENT_SERVER_TARGET, postcheck.rawText, "postcheck")
+            WriteLog("伺服器排程：伺服器切換完成且後置 OCR 已確認 -> " CURRENT_SERVER_TARGET)
+            WriteStepResult("伺服器切換", true,
+                "target=" CURRENT_SERVER_TARGET "；OCR 連續 2 次後置確認")
+            return true
+        }
+        WriteLog("伺服器排程：已點確認但後置 OCR 未證明切換成功"
+            " | target=" CURRENT_SERVER_TARGET
+            " observed=" (postcheck.observed != "" ? postcheck.observed : "unknown")
+            " reason=" postcheck.reason, "ERROR")
+        WriteStepResult("伺服器切換", false, "確認後仍未驗證為目標伺服器")
+        Sleep 800
+        return TrySelectScheduledServer(hwnd, attempt + 1)
     }
 
     WriteLog("伺服器排程：確認按鈕點擊失敗，準備重試", "WARN")

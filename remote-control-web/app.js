@@ -27,8 +27,9 @@ const STALE_CLEANUP_RETRY_MS = 60 * 60_000;
 const ACK_TIMEOUT_MS = 30_000;
 const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
-const MAX_REMOTE_SERVERS = 10;
-const WEB_BUILD = "20260826-fixed-ip-redirect";
+const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
+const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
+const WEB_BUILD = "20260826-server-select-v2";
 const SELF_HOSTED_CONTROL_URL = "https://220.135.218.98";
 
 const app = initializeApp(FIREBASE_CONFIG);
@@ -351,6 +352,27 @@ function parseServerScheduleText(value) {
   return result;
 }
 
+function canonicalServerName(value) {
+  const key = String(value || "").trim().toLocaleLowerCase("zh-TW")
+    .replaceAll("（", "(").replaceAll("）", ")").replaceAll("，", ",")
+    .replace(/[\s　_\-－—]/gu, "");
+  if (["america", "美洲", "美服", "美洲服"].includes(key)) return "America";
+  if (["europe", "歐洲", "欧洲", "歐服", "欧服", "歐洲服", "欧洲服"].includes(key)) return "Europe";
+  if (["asia", "亞洲", "亚洲", "亞服", "亚服", "亞洲服", "亚洲服"].includes(key)) return "Asia";
+  if (["sea", "東南亞", "东南亚", "東南亞服", "东南亚服"].includes(key)) return "SEA";
+  if (["hmt", "hmt(hk,mo,tw)", "hmt(hkmotw)", "hmt(hk/mo/tw)", "港澳台", "港澳台服"].includes(key)) return "HMT(HK,MO,TW)";
+  return "";
+}
+
+function canonicalServerSchedule(value) {
+  const result = [];
+  for (const item of parseServerScheduleText(value)) {
+    const canonical = canonicalServerName(item);
+    if (canonical && !result.includes(canonical)) result.push(canonical);
+  }
+  return result;
+}
+
 function isClientOnline(data, nowMs = Date.now()) {
   if (!data) return false;
   const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
@@ -380,7 +402,7 @@ function readRemoteSettings(data, preferDesired = true) {
       useDesired ? "desiredServerScheduleEnabled" : "effectiveServerScheduleEnabled",
       false,
     )),
-    serverScheduleList: parseServerScheduleText(serverListText).slice(0, MAX_REMOTE_SERVERS),
+    serverScheduleList: canonicalServerSchedule(serverListText).slice(0, MAX_REMOTE_SERVERS),
     mailNotifyEnabled: toBoolean(readField(
       source,
       useDesired ? "desiredMailNotifyEnabled" : "effectiveMailNotifyEnabled",
@@ -1456,8 +1478,8 @@ function settingsSourceKey(clientId, settings) {
 }
 
 function currentServerOrderValues() {
-  return [...settingsServerList.querySelectorAll("input[data-server-name]")]
-    .map((input) => input.value.trim());
+  return [...settingsServerList.querySelectorAll("select[data-server-name]")]
+    .map((select) => select.value.trim());
 }
 
 function renderSettingsServerRows(values) {
@@ -1479,13 +1501,12 @@ function renderSettingsServerRows(values) {
     order.className = "server-order-index";
     order.textContent = String(index + 1);
 
-    const input = document.createElement("input");
-    input.type = "text";
-    input.value = name;
-    input.maxLength = 80;
+    const input = document.createElement("select");
     input.dataset.serverName = "true";
     input.setAttribute("aria-label", `第 ${index + 1} 個伺服器名稱`);
-    input.addEventListener("input", markSettingsDirty);
+    SUPPORTED_SERVERS.forEach((server) => input.append(new Option(server, server)));
+    input.value = canonicalServerName(name) || SUPPORTED_SERVERS.find((server) => !list.includes(server)) || SUPPORTED_SERVERS[0];
+    input.addEventListener("change", markSettingsDirty);
 
     const up = document.createElement("button");
     up.type = "button";
@@ -1532,7 +1553,7 @@ function renderSettingsServerRows(values) {
 function setSettingsFormDisabled(disabled) {
   const value = Boolean(disabled);
   settingsForm.dataset.disabled = value ? "true" : "false";
-  for (const control of settingsForm.querySelectorAll("input, button")) {
+  for (const control of settingsForm.querySelectorAll("input, button, select")) {
     control.disabled = value;
   }
   if (!value) {
@@ -1683,18 +1704,10 @@ function validateSettingsForm(data) {
   if (settingsServerEnabled.checked && serverScheduleList.length === 0) {
     throw new Error("啟用伺服器排程時，至少要設定 1 個伺服器");
   }
-  if (serverScheduleList.some((name) => !name)) {
-    throw new Error("伺服器名稱不可空白；請填寫或移除該項目");
-  }
-
   const seen = new Set();
   for (const name of serverScheduleList) {
-    if (name.length > 80) throw new Error(`伺服器名稱過長：${name.slice(0, 20)}…`);
-    const parsed = parseServerScheduleText(name);
-    if (parsed.length !== 1 || parsed[0] !== name) {
-      throw new Error(`伺服器名稱不可含清單分隔符號：${name}`);
-    }
-    const key = name.toLocaleLowerCase("zh-TW");
+    if (!SUPPORTED_SERVERS.includes(name)) throw new Error(`不支援的伺服器：${name}`);
+    const key = name;
     if (seen.has(key)) throw new Error(`伺服器名稱重複：${name}`);
     seen.add(key);
   }
@@ -2168,10 +2181,16 @@ btnAddServer.addEventListener("click", () => {
     renderSettingsPage();
     return;
   }
-  values.push("");
+  const available = SUPPORTED_SERVERS.find((server) => !values.includes(server));
+  if (!available) {
+    settingsError = "五個正式伺服器都已加入";
+    renderSettingsPage();
+    return;
+  }
+  values.push(available);
   renderSettingsServerRows(values);
   markSettingsDirty();
-  settingsServerList.querySelector(".server-order-row:last-child input")?.focus();
+  settingsServerList.querySelector(".server-order-row:last-child select")?.focus();
 });
 btnReloadSettings.addEventListener("click", () => {
   settingsPreferEffective = true;

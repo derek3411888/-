@@ -9,6 +9,7 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
+#Include OkwwOcrTextMatchers.ahk
 
 global OKWW_HANDOFF_NONCE := ""
 global OKWW_HANDOFF_PATH := ""
@@ -568,10 +569,8 @@ AttachNewestOkww(&curPid, &curHwnd, killOld := true) {
         return {attached: false, pid: 0, hwnd: 0}
     }
     
-    if (GetOkwwWindowKind(curHwnd) = "final") {
-        Log("AttachNewestOkww: 最終 pythonw 主視窗已就緒，立即交由全自動主程式；不再激活或 OCR")
-        return {attached: true, pid: curPid, hwnd: curHwnd, oldPidClosed: 0, kind: "final"}
-    }
+    ; pythonw v...Global 可能只是「應用更新／點擊檢查更新」頁，不能再把標題
+    ; 當成最終主程式證據。後面的 CaptureAndOCR 會依畫面內容決定是否 handoff。
 
     try {
         if ShouldAbortOkwwHandoff(&abortReason)
@@ -588,7 +587,7 @@ AttachNewestOkww(&curPid, &curHwnd, killOld := true) {
     return {attached: true, pid: curPid, hwnd: curHwnd, oldPidClosed: 0}
 }
 
-WaitForInteractiveOkww(&curPid, &curHwnd, maxAttempts := 30, delayMs := 3000) {
+WaitForInteractiveOkww(&curPid, &curHwnd, maxAttempts := 60, delayMs := 3000) {
     curHwnd := 0
     Loop maxAttempts {
         if ShouldAbortOkwwHandoff(&abortReason)
@@ -678,14 +677,14 @@ LaunchNewOkwwAndWait(exePath, &curPid, &curHwnd) {
     if SleepOkwwWithAbort(1500, &abortReason)
         return false
     Log("開始等待 OKWW 最終主視窗／真正升級 UI 出現...")
-    if WaitForInteractiveOkww(&curPid, &curHwnd, 30, 3000) {
+    if WaitForInteractiveOkww(&curPid, &curHwnd, 60, 3000) {
         WriteStep("等待OKWW主視窗", "成功 | pid=" curPid " hwnd=" curHwnd)
         return true
     }
     if ShouldAbortOkwwHandoff(&abortReason)
         return false
 
-    WriteStep("等待OKWW主視窗", "90 秒內無有效互動視窗", "ERROR")
+    WriteStep("等待OKWW主視窗", "180 秒內無有效互動視窗", "ERROR")
     Log("等待 OKWW 有效互動視窗超時", "ERROR")
     return false
 }
@@ -732,13 +731,13 @@ if (hasRunningOKWW) {
     OKWW_ACQUISITION_MODE := "attached_existing"
     WriteStep("OKWW守門", "發現既有實例，改為接手")
     Log("發現已運行的OKWW (視窗:" wins0.Length " 進程:" (okwwProcess ? "yes" : "no") " pythonw:" (pythonwWithOKWW ? "yes" : "no") ")，嘗試接手")
-    if WaitForInteractiveOkww(&pid, &targetHwnd, 30, 3000) {
+    if WaitForInteractiveOkww(&pid, &targetHwnd, 60, 3000) {
         Log("已成功接手現有 OKWW 互動視窗，PID=" pid)
         WriteStep("OKWW守門", "接手完成 | pid=" pid)
     } else {
         if ShouldAbortOkwwHandoff(&startupAbortReason)
             ExitApp
-        Log("既有 OKWW 在 90 秒內仍沒有有效互動視窗", "ERROR")
+        Log("既有 OKWW 在 180 秒內仍沒有有效互動視窗", "ERROR")
         WriteStep("OKWW守門", "既有實例無有效互動視窗", "ERROR")
     }
 } else {
@@ -810,7 +809,7 @@ if (hasRunningOKWW) {
         Log("最終檢查發現 OKWW 已在啟動中 (視窗:" finalCheck.Length
             " 進程:" (finalProcessCheck ? "yes" : "no") ")，改為等待有效互動視窗", "WARN")
         WriteStep("啟動OKWW", "並發啟動已存在，等待接手", "WARN")
-        WaitForInteractiveOkww(&pid, &targetHwnd, 30, 3000)
+        WaitForInteractiveOkww(&pid, &targetHwnd, 60, 3000)
         if ShouldAbortOkwwHandoff(&startupAbortReason)
             ExitApp
     } else {
@@ -829,15 +828,7 @@ if !targetHwnd {
     ExitApp
 }
 
-if (GetOkwwWindowKind(targetHwnd) = "final") {
-    if !CommitOkwwFinalHandoffUntilDeadline(targetHwnd, OKWW_ACQUISITION_MODE) {
-        WriteStep("OKWW交接", "healthy final 已確認，但 handoff 寫入失敗", "ERROR")
-        ExitApp
-    }
-    WriteStep("OKWW交接", "最終 pythonw 主視窗已就緒；不激活、不 OCR，交由全自動主程式")
-    Log("final pythonw ready; updater manager exits immediately")
-    ExitApp
-}
+; 無論宿主與標題為何，都先進入 OCR；只有真正主 UI 才能 handoff。
 
 ; ====================== 截圖 + OCR 工具 ======================
 EnsureOkwwWindow() {
@@ -899,16 +890,6 @@ CaptureAndOCR(minSize := 8192, imgPath := "") {
     }
     if ShouldAbortOkwwHandoff(&abortReason)
         return {ok: false, blocks: [], reason: "handoff_aborted"}
-    if (GetOkwwWindowKind(targetHwnd) = "final") {
-        if !CommitOkwwFinalHandoffUntilDeadline(targetHwnd,
-            OKWW_ACQUISITION_MODE "_transition") {
-            if ShouldAbortOkwwHandoff(&abortReason)
-                return {ok: false, blocks: [], reason: "handoff_aborted"}
-            return {ok: false, blocks: [], reason: "final_handoff_failed"}
-        }
-        Log("CaptureAndOCR: 最終 pythonw 主視窗已出現，停止管理器 OCR 並交接")
-        return {ok: false, blocks: [], reason: "final_ready"}
-    }
     if !IsValidHwnd(targetHwnd) {
         Log("CaptureAndOCR: invalid hwnd before capture", "WARN")
         return {ok: false, blocks: [], reason: "invalid_hwnd_before_capture"}
@@ -965,6 +946,20 @@ CaptureAndOCR(minSize := 8192, imgPath := "") {
             return {ok: false, blocks: [], reason: "handoff_aborted"}
         n := (blocks is Array) ? blocks.Length : 0
         Log("OCR done blocks=" n " size=" sz)
+        if (GetOkwwWindowKind(targetHwnd) = "final") {
+            contentKind := OKWW_ClassifyWindowOcrBlocks(blocks)
+            Log("pythonw Global 內容分類=" contentKind "；main/shell 才可 handoff")
+            if OKWW_IsOperationalContentKind(contentKind) {
+                if !CommitOkwwFinalHandoffUntilDeadline(targetHwnd,
+                    OKWW_ACQUISITION_MODE "_content_ready") {
+                    if ShouldAbortOkwwHandoff(&abortReason)
+                        return {ok: false, blocks: [], reason: "handoff_aborted"}
+                    return {ok: false, blocks: [], reason: "final_handoff_failed"}
+                }
+                Log("CaptureAndOCR: OCR 已證明完整 OKWW 主程式外殼就緒，停止管理器 OCR 並交接")
+                return {ok: false, blocks: [], reason: "final_ready"}
+            }
+        }
         return {ok: true, blocks: (blocks is Array ? blocks : []), reason: ""}
     } catch as e {
         Log("OCR exception: " e.Message, "ERROR")
@@ -1192,6 +1187,34 @@ ReleaseOkwwManagerMutex(*) {
     OKWW_MANAGER_MUTEX_OWNED := false
 }
 
+IsOkwwMainContentReadyForHandoff(hwnd, &reason := "") {
+    reason := ""
+    if !IsValidHwnd(hwnd) {
+        reason := "window_missing"
+        return false
+    }
+    tempPath := RuntimeFiles_NewImagePath("okww_handoff_content")
+    try {
+        if ShouldAbortOkwwHandoff(&abortReason) {
+            reason := "handoff_aborted"
+            return false
+        }
+        ImagePutFile(hwnd, tempPath)
+        blocks := RapidOcr().ocr_from_file(tempPath, , true)
+        contentKind := OKWW_ClassifyWindowOcrBlocks(blocks)
+        if !OKWW_IsOperationalContentKind(contentKind) {
+            reason := contentKind = "update" ? "okww_shell_not_fully_loaded" : "main_ui_markers_not_ready"
+            return false
+        }
+        return true
+    } catch as e {
+        reason := "main_ui_probe_failed:" e.Message
+        return false
+    } finally {
+        try FileDelete(tempPath)
+    }
+}
+
 GetHealthyFinalOkwwForHandoff(hwnd, &pid := 0, &title := "", &reason := "") {
     pid := 0
     title := ""
@@ -1240,6 +1263,11 @@ GetHealthyFinalOkwwForHandoff(hwnd, &pid := 0, &title := "", &reason := "") {
                 reason := "window_too_small"
                 return false
             }
+        }
+        contentReason := ""
+        if !IsOkwwMainContentReadyForHandoff(hwnd, &contentReason) {
+            reason := contentReason
+            return false
         }
         return true
     } catch as e {
