@@ -26,9 +26,12 @@ function Read-Manifest([string]$Path) {
     return $value
 }
 
-function Wait-RemoteManifest($Expected, [int]$TimeoutSeconds = 180) {
+function Wait-RemoteManifest($Expected, [string]$CommitSha, [int]$TimeoutSeconds = 180) {
     $releaseId = [string]$Expected.release_id
-    $baseUrl = 'https://raw.githubusercontent.com/derek3411888/-/main/update_manifest.example.json'
+    if ([string]::IsNullOrWhiteSpace($CommitSha)) { throw '無法取得本次發布的 Git commit。' }
+    # main 分支的 raw CDN 可能短時間回傳前一版。以不變的 commit SHA
+    # 驗證本次發布，才不會把 GitHub 快取延遲誤判成發布失敗。
+    $baseUrl = "https://raw.githubusercontent.com/derek3411888/-/$CommitSha/update_manifest.example.json"
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         try {
@@ -80,7 +83,8 @@ else {
 if (-not $SkipPush) {
     & git push origin HEAD:main
     Assert-ExitCode '推送 GitHub'
-    $remoteManifestUrl = Wait-RemoteManifest $manifest
+    $publishedCommit = ([string](& git rev-parse HEAD)).Trim()
+    $remoteManifestUrl = Wait-RemoteManifest $manifest $publishedCommit
     Write-Host "GitHub 已確認完整釋出：$($manifest.release_id)"
 } else {
     $remoteManifestUrl = ''
