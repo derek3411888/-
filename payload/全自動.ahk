@@ -8,7 +8,10 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 if !A_IsAdmin {
     if FileExist(BUNDLED_AHK_EXE) {
         try {
-            Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
+            elevatedCommand := '*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"'
+            for arg in A_Args
+                elevatedCommand .= ' "' StrReplace(arg, '"', '""') '"'
+            Run(elevatedCommand)
         }
     } else {
         MsgBox "找不到 AutoHotkey64.exe，請先執行「打包啟動器」完成解壓。"
@@ -110,7 +113,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.74"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.75"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -124,6 +127,12 @@ global SERVER_SCHEDULE_INDEX := 1
 global CURRENT_SERVER_TARGET := ""
 global SERVER_SWITCH_POINT_X := 640
 global SERVER_SWITCH_POINT_Y := 549
+global SERVER_SWITCH_LIVE_TEST_ACTIVE := false
+global SERVER_SWITCH_LIVE_TEST_EVIDENCE_DIR := ""
+global SERVER_SWITCH_LIVE_TEST_CASE_NO := 0
+global SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ := 0
+global SERVER_SWITCH_LIVE_TEST_RETRY_COUNT := 0
+global SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS := Map("up", 0, "down", 0)
 global SERVER_COMPLETED_CYCLE_MAP := Map()  ; 記錄各伺服器在當日循環的完成狀態
 global SERVER_SWITCH_NOTIFY_SECTION := "server_switch_notify"
 global REMOTE_CONTROL_ACTIVE := false
@@ -2383,6 +2392,9 @@ WriteStepResult(stepName, ok, detail := "") {
     status := ok ? "成功" : "失敗"
     WriteStep(stepName, status (detail != "" ? " | " detail : ""), level)
 }
+
+if MaybeRunServerSwitchLiveStressTest()
+    ExitApp
 
 WriteLog("全自動腳本啟動: " A_ScriptFullPath)
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
@@ -11929,6 +11941,8 @@ ServerClickClient(hwnd, x, y, logText := "") {
 }
 
 ServerScrollClient(hwnd, direction, steps := 8, logText := "") {
+    global SERVER_SWITCH_LIVE_TEST_ACTIVE, SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS
+
     if !hwnd || !WinExist("ahk_id " hwnd)
         return false
 
@@ -11966,10 +11980,15 @@ ServerScrollClient(hwnd, direction, steps := 8, logText := "") {
         CoordMode("Mouse", oldMouseMode)
     }
 
-    if scrolled
+    if scrolled {
+        if SERVER_SWITCH_LIVE_TEST_ACTIVE {
+            if !SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS.Has(direction)
+                SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS[direction] := 0
+            SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS[direction] += 1
+        }
         WriteLog(context "，已安全向" (direction = "up" ? "上" : "下")
             "捲動 " steps " 格")
-    else
+    } else
         WriteLog(context "，安全捲動失敗，未送出滾輪輸入", "WARN")
     return scrolled
 }
@@ -12145,6 +12164,9 @@ VerifyLoginServerTarget(hwnd, target, timeoutMs := 1800, stableNeeded := 2,
 }
 
 TryClickVisibleServerMenuTarget(hwnd, target, &summary) {
+    global SERVER_SWITCH_LIVE_TEST_ACTIVE, SERVER_SWITCH_LIVE_TEST_EVIDENCE_DIR
+    global SERVER_SWITCH_LIVE_TEST_CASE_NO, SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ
+
     summary := ""
     expected := CanonicalizeWutheringServerName(target)
     if !hwnd || !WinExist("ahk_id " hwnd) || expected = ""
@@ -12166,6 +12188,12 @@ TryClickVisibleServerMenuTarget(hwnd, target, &summary) {
     clicked := false
     try {
         ImagePutFile(hwnd, tempFile)
+        if (SERVER_SWITCH_LIVE_TEST_ACTIVE && SERVER_SWITCH_LIVE_TEST_EVIDENCE_DIR != "") {
+            SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ += 1
+            captureName := Format("case_{:02}_menu_scan_{:02}.png",
+                SERVER_SWITCH_LIVE_TEST_CASE_NO, SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ)
+            try FileCopy(tempFile, SERVER_SWITCH_LIVE_TEST_EVIDENCE_DIR "\" captureName, true)
+        }
         blocks := RapidOcr().ocr_from_file(tempFile, , true)
         if IsObject(blocks) {
             for block in blocks {
@@ -12204,6 +12232,10 @@ TryClickVisibleServerMenuTarget(hwnd, target, &summary) {
 
 TrySelectScheduledServer(hwnd, attempt := 1) {
     global CURRENT_SERVER_TARGET, SERVER_SWITCH_POINT_X, SERVER_SWITCH_POINT_Y
+    global SERVER_SWITCH_LIVE_TEST_ACTIVE, SERVER_SWITCH_LIVE_TEST_RETRY_COUNT
+
+    if (SERVER_SWITCH_LIVE_TEST_ACTIVE && attempt > 1)
+        SERVER_SWITCH_LIVE_TEST_RETRY_COUNT += 1
 
     WriteStep("伺服器切換", "入口 target=" CURRENT_SERVER_TARGET " attempt=" attempt)
 
@@ -12367,6 +12399,200 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
     WriteStepResult("伺服器切換", false, "確認按鈕點擊失敗")
     Sleep 800
     return TrySelectScheduledServer(hwnd, attempt + 1)
+}
+
+MaybeRunServerSwitchLiveStressTest() {
+    global CFG_FILE, CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
+    global SERVER_SCHEDULE_LIST, SERVER_SCHEDULE_INDEX, REMOTE_CONTROL_ACTIVE
+    global MAIL_NOTIFY_ENABLED, SERVER_SWITCH_LIVE_TEST_ACTIVE
+    global WUTHERING_PROCESS_EXE
+    global SERVER_SWITCH_LIVE_TEST_EVIDENCE_DIR, SERVER_SWITCH_LIVE_TEST_CASE_NO
+    global SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ, SERVER_SWITCH_LIVE_TEST_RETRY_COUNT
+    global SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS
+
+    if (A_Args.Length < 1 || A_Args[1] != "--live-server-switch-test")
+        return false
+
+    caseCount := 50
+    if (A_Args.Length >= 2 && A_Args[2] ~= "^\d+$")
+        caseCount := Integer(A_Args[2])
+    if (caseCount < 1 || caseCount > 500)
+        ServerSwitchLiveTestHardExit(2, "live-server-switch=failed | invalid_case_count=" caseCount)
+
+    evidenceRoot := A_Args.Length >= 3 && Trim(A_Args[3], ' "') != ""
+        ? Trim(A_Args[3], ' "')
+        : A_Temp "\wuthering_production_server_switch_" A_Now "_" A_TickCount
+    casesDir := evidenceRoot "\cases"
+    DirCreate(casesDir)
+    resultLog := evidenceRoot "\result.log"
+
+    if (A_Args.Length >= 4 && A_Args[4] ~= "^\d+$") {
+        stalePid := Integer(A_Args[4])
+        if (stalePid > 0 && stalePid != DllCall("GetCurrentProcessId")) {
+            try ProcessClose(stalePid)
+        }
+    }
+
+    CFG_FILE := evidenceRoot "\test_config.ini"
+    SERVER_SCHEDULE_ENABLED := true
+    SERVER_SCHEDULE_LIST := GetSupportedWutheringServers()
+    SERVER_SCHEDULE_INDEX := 1
+    REMOTE_CONTROL_ACTIVE := false
+    MAIL_NOTIFY_ENABLED := false
+    SERVER_SWITCH_LIVE_TEST_ACTIVE := true
+    SERVER_SWITCH_LIVE_TEST_EVIDENCE_DIR := casesDir
+    SERVER_SWITCH_LIVE_TEST_CASE_NO := 0
+    SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ := 0
+    SERVER_SWITCH_LIVE_TEST_RETRY_COUNT := 0
+    SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS := Map("up", 0, "down", 0)
+
+    SendMode "Input"
+    SetKeyDelay 40, 40
+    ServerSwitchLiveTestAppend(resultLog, "START | requested=" caseCount
+        " | pid=" DllCall("GetCurrentProcessId"))
+
+    hwnd := WinExist("ahk_exe " WUTHERING_PROCESS_EXE)
+    if !hwnd
+        ServerSwitchLiveTestHardExit(2, "live-server-switch=failed | 找不到鳴潮遊戲視窗", resultLog)
+
+    try WinGetClientPos(, , &clientW, &clientH, "ahk_id " hwnd)
+    catch as e
+        ServerSwitchLiveTestHardExit(2, "live-server-switch=failed | 無法取得客戶區: " e.Message, resultLog)
+    if (clientW < 1000 || clientH < 600)
+        ServerSwitchLiveTestHardExit(2, "live-server-switch=failed | 客戶區尺寸異常=" clientW "x" clientH,
+            resultLog)
+
+    initial := ReadLoginServerLabel(hwnd, "正式程式實機壓測起始辨識")
+    if (initial.server = "")
+        ServerSwitchLiveTestHardExit(2, "live-server-switch=failed | 起始伺服器辨識失敗=" initial.reason,
+            resultLog)
+    stableInitial := VerifyLoginServerTarget(hwnd, initial.server, 2500, 2, "正式程式實機壓測起始穩定驗證")
+    if !stableInitial.ok
+        ServerSwitchLiveTestHardExit(2, "live-server-switch=failed | 起始伺服器不穩定=" initial.server,
+            resultLog)
+
+    originalServer := initial.server
+    ; America 與 SEA 放在相鄰位置，強制每輪從清單上端切到下端，
+    ; 因此向上與向下捲動都必須真的成功，不能只測「目前可見」的列。
+    sequence := ["America", "SEA", "Europe", "Asia", "HMT(HK,MO,TW)"]
+    startOffset := sequence[1] = originalServer ? 1 : 0
+    passed := 0
+    failed := 0
+    failureDetail := ""
+
+    Loop caseCount {
+        caseNo := A_Index
+        target := sequence[Mod(startOffset + caseNo - 1, sequence.Length) + 1]
+        before := ReadLoginServerLabel(hwnd, "正式程式實機壓測 case " caseNo " 前置")
+        if (before.server = target) {
+            failed := 1
+            failureDetail := "case=" caseNo " target_equals_current=" target
+            break
+        }
+
+        SERVER_SWITCH_LIVE_TEST_CASE_NO := caseNo
+        SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ := 0
+        retriesBefore := SERVER_SWITCH_LIVE_TEST_RETRY_COUNT
+        CURRENT_SERVER_TARGET := target
+        for index, server in SERVER_SCHEDULE_LIST {
+            if (server = target) {
+                SERVER_SCHEDULE_INDEX := index
+                break
+            }
+        }
+
+        started := A_TickCount
+        ok := TrySelectScheduledServer(hwnd, 1)
+        elapsed := A_TickCount - started
+        if !ok {
+            failed := 1
+            failureDetail := "case=" caseNo " target=" target " production_result=false"
+            break
+        }
+        if (SERVER_SWITCH_LIVE_TEST_RETRY_COUNT != retriesBefore) {
+            failed := 1
+            failureDetail := "case=" caseNo " target=" target " required_retry=1"
+            break
+        }
+
+        verified := VerifyLoginServerTarget(hwnd, target, 2500, 2,
+            "正式程式實機壓測 case " caseNo " 最終驗證")
+        if !verified.ok {
+            failed := 1
+            failureDetail := "case=" caseNo " target=" target " final_verify=" verified.reason
+            break
+        }
+
+        safeTarget := RegExReplace(target, "[^A-Za-z0-9]+", "_")
+        evidencePath := casesDir "\" Format("case_{:02}_{}_verified.png", caseNo, safeTarget)
+        try ImagePutFile(hwnd, evidencePath)
+        catch as e {
+            failed := 1
+            failureDetail := "case=" caseNo " target=" target " evidence_capture=" e.Message
+            break
+        }
+
+        passed += 1
+        ServerSwitchLiveTestAppend(resultLog,
+            Format("CASE_{:02}_PASS | target={} | observed={} | elapsed_ms={} | menu_scans={} | retries=0",
+                caseNo, target, verified.observed, elapsed, SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ))
+    }
+
+    current := ReadLoginServerLabel(hwnd, "正式程式實機壓測還原前辨識")
+    restored := current.server = originalServer
+    if !restored {
+        SERVER_SWITCH_LIVE_TEST_CASE_NO := caseCount + 1
+        SERVER_SWITCH_LIVE_TEST_MENU_CAPTURE_SEQ := 0
+        CURRENT_SERVER_TARGET := originalServer
+        restoreRetryBefore := SERVER_SWITCH_LIVE_TEST_RETRY_COUNT
+        try restored := TrySelectScheduledServer(hwnd, 1)
+        catch
+            restored := false
+        if (SERVER_SWITCH_LIVE_TEST_RETRY_COUNT != restoreRetryBefore)
+            restored := false
+    }
+
+    upCount := SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS.Has("up")
+        ? SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS["up"] : 0
+    downCount := SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS.Has("down")
+        ? SERVER_SWITCH_LIVE_TEST_SCROLL_COUNTS["down"] : 0
+    if (failed = 0 && (upCount < 1 || downCount < 1)) {
+        failed := 1
+        failureDetail := "scroll_coverage_missing up=" upCount " down=" downCount
+    }
+
+    successRate := caseCount > 0 ? Round((passed * 100.0) / caseCount, 2) : 0
+    okResult := failed = 0 && passed = caseCount && restored
+    summary := "live-server-switch=" (okResult ? "ok" : "failed")
+        . " | requested=" caseCount " | passed=" passed " | failed=" (okResult ? 0 : 1)
+        . " | success_rate=" successRate "% | original=" originalServer
+        . " | restored=" (restored ? "1" : "0")
+        . " | scroll_up=" upCount " | scroll_down=" downCount
+        . " | retries=" SERVER_SWITCH_LIVE_TEST_RETRY_COUNT
+        . " | evidence=" evidenceRoot
+    if (failureDetail != "")
+        summary .= " | " failureDetail
+    ServerSwitchLiveTestAppend(resultLog, "SUMMARY | " summary)
+    SERVER_SWITCH_LIVE_TEST_ACTIVE := false
+    ServerSwitchLiveTestHardExit(okResult ? 0 : 1, summary)
+    return true
+}
+
+ServerSwitchLiveTestAppend(path, line) {
+    stamp := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
+    FileAppend(stamp " | " line "`r`n", path, "UTF-8")
+}
+
+ServerSwitchLiveTestHardExit(exitCode, output, resultLog := "") {
+    if (resultLog != "")
+        ServerSwitchLiveTestAppend(resultLog, "FATAL | " output)
+    ; 提權後的 GUI 子系統程序通常沒有可用的 stdout/stderr；結果檔才是
+    ; 正式證據，主控台輸出只能是可選項，不能因此卡住測試程序。
+    try FileAppend(output "`n", exitCode = 0 ? "*" : "**")
+    Sleep 50
+    ; RapidOcr DLL 的程序卸載偶爾會讓 ExitProcess 卡在 DLL detach；測試模式
+    ; 已完成落盤後直接終止自己，避免殘留 AutoHotkey 單例擋住下一輪驗證。
+    DllCall("TerminateProcess", "ptr", -1, "uint", exitCode)
 }
 
 SetupTrayMenu() {

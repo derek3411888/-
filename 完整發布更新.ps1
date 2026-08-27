@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.63',
-    [string]$LauncherVersion = '4.74',
+    [string]$PayloadVersion = '4.64',
+    [string]$LauncherVersion = '4.75',
     [string]$ServerVersion = '1.0.23',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
@@ -82,6 +82,7 @@ $releasePaths = @(
     '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
     'payload', '測試/SelfHealingPolicyTest.ahk',
     '測試/伺服器名稱與切服判斷測試.ahk', '測試/伺服器登入標籤OCR影像測試.ahk',
+    '測試/實機伺服器切換壓力測試.ahk', '測試/實機伺服器切換50次驗證報告.md',
     'self-hosted-server', 'remote-control-web',
     'payload.zip', 'self-hosted-server.zip', '全自動鋤地.exe', 'update_manifest.example.json'
 )
