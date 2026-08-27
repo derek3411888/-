@@ -110,7 +110,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.73"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.74"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -6255,12 +6255,24 @@ ClickWutheringClientCenter(hwnd, context := "") {
     }
 }
 
-ClickWutheringClientPointForInput(hwnd, clientPointX, clientPointY, context := "", useClientCenter := false) {
+ClickWutheringClientPointForInput(hwnd, clientPointX, clientPointY, context := "",
+    useClientCenter := false, inputAction := "left_click", inputCount := 1) {
     global WUTHERING_PROCESS_EXE
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
 
     if !hwnd || !WinExist("ahk_id " hwnd)
         return false
+
+    inputAction := StrLower(Trim(String(inputAction), " `t`r`n"))
+    if (inputAction != "left_click" && inputAction != "wheel_up"
+        && inputAction != "wheel_down") {
+        LAST_INPUT_ACTIVATION_FAILURE_CODE := "GAME_INPUT_ACTION_INVALID"
+        LAST_INPUT_ACTIVATION_FAILURE_DETAIL := "不支援的遊戲輸入動作：" inputAction
+        WriteLog("遊戲座標輸入已取消：" LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+            " | context=" context, "ERROR")
+        return false
+    }
+    inputCount := Max(1, Min(20, Integer(inputCount)))
 
     ; 背景辨識可接受相容 class，但實體滑鼠只能落在 Client 的 Unreal 主窗。
     ; 若先前取得的是同 PID owned popup，重新解析真正主窗；找不到就取消輸入，
@@ -6434,13 +6446,25 @@ ClickWutheringClientPointForInput(hwnd, clientPointX, clientPointY, context := "
                     " screen=" clickX "," clickY " | context=" context, "WARN")
                 return false
             }
-            MouseClick("left", clickX, clickY)
+            if (inputAction = "wheel_up")
+                MouseClick("WheelUp", clickX, clickY, inputCount, 0)
+            else if (inputAction = "wheel_down")
+                MouseClick("WheelDown", clickX, clickY, inputCount, 0)
+            else
+                MouseClick("left", clickX, clickY)
         } finally {
             Critical(previousCritical)
         }
-        WriteLog("已用實體滑鼠點擊鳴潮客戶區：screen=" clickX "," clickY
-            " clientPoint=" clickClientX "," clickClientY
-            " client=" clientW "x" clientH " hwnd=" hwnd " | context=" context)
+        if (inputAction = "left_click") {
+            WriteLog("已用實體滑鼠點擊鳴潮客戶區：screen=" clickX "," clickY
+                " clientPoint=" clickClientX "," clickClientY
+                " client=" clientW "x" clientH " hwnd=" hwnd " | context=" context)
+        } else {
+            WriteLog("已用實體滑鼠捲動鳴潮客戶區：action=" inputAction
+                " count=" inputCount " screen=" clickX "," clickY
+                " clientPoint=" clickClientX "," clickClientY
+                " client=" clientW "x" clientH " hwnd=" hwnd " | context=" context)
+        }
         return true
     } catch as e {
         if (LAST_INPUT_ACTIVATION_FAILURE_CODE = "") {
@@ -11904,6 +11928,52 @@ ServerClickClient(hwnd, x, y, logText := "") {
     return clicked
 }
 
+ServerScrollClient(hwnd, direction, steps := 8, logText := "") {
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        return false
+
+    direction := StrLower(Trim(String(direction), " `t`r`n"))
+    if (direction != "up" && direction != "down")
+        return false
+
+    try WinGetClientPos(, , &clientW, &clientH, "ahk_id " hwnd)
+    catch
+        return false
+    if (clientW <= 0 || clientH <= 0)
+        return false
+
+    ; 1280x720 選服視窗的清單中心約在 (820,330)。按目前客戶區比例映射，
+    ; 確保滾輪只落在清單內，不碰登入、確認或桌面上的其他視窗。
+    scrollX := Round((820 * clientW) / 1280)
+    scrollY := Round((330 * clientH) / 720)
+    action := direction = "up" ? "wheel_up" : "wheel_down"
+    context := logText != "" ? logText : "伺服器清單捲動"
+
+    oldMouseMode := A_CoordModeMouse
+    originalX := 0
+    originalY := 0
+    scrolled := false
+    try {
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&originalX, &originalY)
+        scrolled := ClickWutheringClientPointForInput(hwnd, scrollX, scrollY,
+            context, false, action, steps)
+    } finally {
+        try {
+            CoordMode("Mouse", "Screen")
+            MouseMove(originalX, originalY, 0)
+        }
+        CoordMode("Mouse", oldMouseMode)
+    }
+
+    if scrolled
+        WriteLog(context "，已安全向" (direction = "up" ? "上" : "下")
+            "捲動 " steps " 格")
+    else
+        WriteLog(context "，安全捲動失敗，未送出滾輪輸入", "WARN")
+    return scrolled
+}
+
 MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
     if !hwnd
         return ""
@@ -11920,13 +11990,50 @@ MapReferencePointToClient(hwnd, refX, refY, refW := 1280, refH := 720) {
     return [px, py, cw, ch]
 }
 
+CollectServerLabelOcrMatches(blocks, detected, &summary, source,
+    offsetX := 0, offsetY := 0, scaleX := 1, scaleY := 1, filter := "") {
+    if !IsObject(blocks) || !IsObject(detected)
+        return
+    if (scaleX <= 0)
+        scaleX := 1
+    if (scaleY <= 0)
+        scaleY := 1
+
+    for block in blocks {
+        if !block.HasOwnProp("text")
+            continue
+        center := GetOcrBlockCenter(block)
+        if !IsObject(center)
+            continue
+        if IsObject(filter) {
+            if (center[1] < filter.minX || center[1] > filter.maxX
+                || center[2] < filter.minY || center[2] > filter.maxY)
+                continue
+        }
+
+        rawText := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+        if (rawText = "")
+            continue
+        mappedCenter := [
+            offsetX + Round(center[1] / scaleX),
+            offsetY + Round(center[2] / scaleY)
+        ]
+        summary .= (summary = "" ? "" : " | ") rawText
+            . "@" mappedCenter[1] "," mappedCenter[2] "[" source "]"
+        canonical := DetectWutheringServerFromOcrText(rawText)
+        if (canonical != "")
+            detected[canonical] := {rawText: rawText, center: mappedCenter, source: source}
+    }
+}
+
 ReadLoginServerLabel(hwnd, purpose := "") {
     result := {
         server: "",
         rawText: "",
         center: "",
         summary: "",
-        reason: ""
+        reason: "",
+        mode: ""
     }
     if !hwnd || !WinExist("ahk_id " hwnd) {
         result.reason := "window_missing"
@@ -11945,56 +12052,56 @@ ReadLoginServerLabel(hwnd, purpose := "") {
         return result
     }
 
-    ; 1280x720 實機登入頁的區服標籤約在 (640,550)。只讀畫面中央下方的
-    ; 這一小段，避免左下角版本字串或 OCR 單字母「a」混進判斷。
-    minX := clientW * 0.25
-    maxX := clientW * 0.75
-    minY := clientH * 0.68
-    maxY := clientH * 0.84
-    tempFile := RuntimeFiles_NewImagePath("server_label")
+    ; 1280x720 實機登入頁的區服標籤約在 (640,550)。短字「Asia」直接在
+    ; 1280x720 全畫面 OCR 時會被模型漏掉；先裁切中央下方並放大兩倍，實機
+    ; 樣本可由原本只辨識成單字母 a 改為完整 Asia。全畫面掃描只作備援。
+    roiX := Max(0, Floor(clientW * 0.25))
+    roiY := Max(0, Floor(clientH * 0.68))
+    roiW := Min(clientW - roiX, Max(1, Ceil(clientW * 0.50)))
+    roiH := Min(clientH - roiY, Max(1, Ceil(clientH * 0.16)))
+    minX := roiX
+    maxX := roiX + roiW
+    minY := roiY
+    maxY := roiY + roiH
+    zoomFactor := 2
+    zoomFile := RuntimeFiles_NewImagePath("server_label_zoom")
+    fullFile := RuntimeFiles_NewImagePath("server_label_full")
     detected := Map()
+    ocrSummary := ""
     try {
-        ImagePutFile(hwnd, tempFile)
         ocr := RapidOcr()
-        blocks := ocr.ocr_from_file(tempFile, , true)
-        if !IsObject(blocks) {
-            result.reason := "ocr_no_object"
-            return result
-        }
+        ImagePutFile({Window: hwnd, crop: [roiX, roiY, roiW, roiH],
+            scale: [roiW * zoomFactor, roiH * zoomFactor]}, zoomFile)
+        zoomBlocks := ocr.ocr_from_file(zoomFile, , true)
+        CollectServerLabelOcrMatches(zoomBlocks, detected, &ocrSummary,
+            "zoomed_roi", roiX, roiY, zoomFactor, zoomFactor)
 
-        for block in blocks {
-            if !block.HasOwnProp("text")
-                continue
-            center := GetOcrBlockCenter(block)
-            if !IsObject(center)
-                continue
-            if (center[1] < minX || center[1] > maxX || center[2] < minY || center[2] > maxY)
-                continue
-            rawText := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
-            if (rawText = "")
-                continue
-            result.summary .= (result.summary = "" ? "" : " | ") rawText
-                . "@" Round(center[1]) "," Round(center[2])
-            canonical := DetectWutheringServerFromOcrText(rawText)
-            if (canonical != "")
-                detected[canonical] := {rawText: rawText, center: center}
+        if (detected.Count = 0) {
+            ImagePutFile(hwnd, fullFile)
+            fullBlocks := ocr.ocr_from_file(fullFile, , true)
+            CollectServerLabelOcrMatches(fullBlocks, detected, &ocrSummary,
+                "full_fallback", 0, 0, 1, 1,
+                {minX: minX, maxX: maxX, minY: minY, maxY: maxY})
         }
+        result.summary := ocrSummary
 
         if (detected.Count = 1) {
             for canonical, match in detected {
                 result.server := canonical
                 result.rawText := match.rawText
                 result.center := match.center
+                result.mode := match.source
             }
             result.reason := "ok"
         } else if (detected.Count > 1) {
             result.reason := "ambiguous_servers"
         } else {
-            result.reason := "server_not_found_in_login_roi"
+            result.reason := "server_not_found_in_zoomed_login_roi"
         }
         WriteLog("伺服器排程：登入頁區服標籤 OCR"
             . (purpose != "" ? "（" purpose "）" : "")
             . " | result=" (result.server != "" ? result.server : result.reason)
+            . " | mode=" (result.mode != "" ? result.mode : "none")
             . " | roi=" Round(minX) "," Round(minY) "-" Round(maxX) "," Round(maxY)
             . " | candidates=" (result.summary != "" ? result.summary : "(無)"))
         return result
@@ -12003,7 +12110,8 @@ ReadLoginServerLabel(hwnd, purpose := "") {
         WriteLog("伺服器排程：登入頁區服標籤 OCR 失敗：" e.Message, "WARN")
         return result
     } finally {
-        try FileDelete(tempFile)
+        try FileDelete(zoomFile)
+        try FileDelete(fullFile)
     }
 }
 
@@ -12034,6 +12142,64 @@ VerifyLoginServerTarget(hwnd, target, timeoutMs := 1800, stableNeeded := 2,
     }
     return {ok: false, observed: lastObserved, rawText: lastRaw,
         reason: lastReason != "" ? lastReason : "timeout", stable: stable}
+}
+
+TryClickVisibleServerMenuTarget(hwnd, target, &summary) {
+    summary := ""
+    expected := CanonicalizeWutheringServerName(target)
+    if !hwnd || !WinExist("ahk_id " hwnd) || expected = ""
+        return false
+
+    try WinGetClientPos(, , &clientW, &clientH, "ahk_id " hwnd)
+    catch
+        return false
+    if (clientW <= 0 || clientH <= 0)
+        return false
+
+    ; 只接受選服對話框清單範圍內的文字。排除背景登入頁的區服標籤與
+    ; 下方「確認」，避免 OCR 同時看見兩層畫面時點錯位置。
+    minX := clientW * 0.18
+    maxX := clientW * 0.82
+    minY := clientH * 0.20
+    maxY := clientH * 0.68
+    tempFile := RuntimeFiles_NewImagePath("server_menu_visible")
+    clicked := false
+    try {
+        ImagePutFile(hwnd, tempFile)
+        blocks := RapidOcr().ocr_from_file(tempFile, , true)
+        if IsObject(blocks) {
+            for block in blocks {
+                if !block.HasOwnProp("text")
+                    continue
+                center := GetOcrBlockCenter(block)
+                if !IsObject(center)
+                    continue
+                if (center[1] < minX || center[1] > maxX
+                    || center[2] < minY || center[2] > maxY)
+                    continue
+                text := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
+                if (text = "")
+                    continue
+                summary .= (summary = "" ? "" : " | ") text
+                    . "@" Round(center[1]) "," Round(center[2])
+                if !IsServerTargetMatch(text, expected)
+                    continue
+                clicked := ServerClickClient(hwnd, center[1], center[2],
+                    "伺服器排程：已點選伺服器 " expected "（OCR: " text "）")
+                if clicked
+                    break
+            }
+        }
+    } catch as e {
+        WriteLog("伺服器排程：掃描目前可見伺服器失敗：" e.Message, "WARN")
+    } finally {
+        try FileDelete(tempFile)
+    }
+    WriteLog("伺服器排程：目前可見清單掃描 | target=" expected
+        " | clicked=" (clicked ? "1" : "0")
+        " | roi=" Round(minX) "," Round(minY) "-" Round(maxX) "," Round(maxY)
+        " | candidates=" (summary != "" ? summary : "(無)"))
+    return clicked
 }
 
 TrySelectScheduledServer(hwnd, attempt := 1) {
@@ -12105,47 +12271,38 @@ TrySelectScheduledServer(hwnd, attempt := 1) {
         WriteLog("伺服器排程：已開啟伺服器選單，方式=" menuOpenBy)
     }
 
-    tempFile := RuntimeFiles_NewImagePath("server_pick")
-    try {
-        ImagePutFile(hwnd, tempFile)
-        ocr := RapidOcr()
-        res := ocr.ocr_from_file(tempFile, , true)
-    } catch as e {
-        WriteLog("伺服器排程：OCR 失敗: " e.Message, "WARN")
-        try FileDelete(tempFile)
-        Sleep 800
-        return TrySelectScheduledServer(hwnd, attempt + 1)
-    }
-    try FileDelete(tempFile)
-
-    targetClicked := false
-
-    if IsObject(res) {
-        for block in res {
-            txt := Trim(StrReplace(StrReplace(block.text, "`r", ""), "`n", ""), " `t")
-            if (txt = "")
+    ; 先找目前可見的列；若目標在清單上方或下方而尚未顯示，就在選服
+    ; 對話框清單中央做有界捲動。兩個方向各只試一次，不會無限捲動，且
+    ; 每次捲動後都重新 OCR，避免依固定列座標猜測並誤選其他伺服器。
+    menuSummary := ""
+    targetClicked := TryClickVisibleServerMenuTarget(hwnd, CURRENT_SERVER_TARGET, &menuSummary)
+    if !targetClicked {
+        scrollDirections := GetServerMenuSearchScrollDirections(CURRENT_SERVER_TARGET)
+        for _, direction in scrollDirections {
+            directionText := direction = "up" ? "上" : "下"
+            WriteLog("伺服器排程：目前可見清單找不到 " CURRENT_SERVER_TARGET
+                "，準備在清單內向" directionText "捲動後重找"
+                " | candidates=" (menuSummary != "" ? menuSummary : "(無)"), "WARN")
+            if !ServerScrollClient(hwnd, direction, 8,
+                "伺服器排程：搜尋 " CURRENT_SERVER_TARGET " 時在清單內向" directionText "捲動")
                 continue
-
-            if (!targetClicked && IsServerTargetMatch(txt, CURRENT_SERVER_TARGET)) {
-                c := GetOcrBlockCenter(block)
-                if IsObject(c) {
-                    if ServerClickClient(hwnd, c[1], c[2],
-                        "伺服器排程：已點選伺服器 " CURRENT_SERVER_TARGET "（OCR: " txt "）") {
-                        targetClicked := true
-                        Sleep 500
-                        break
-                    }
-                }
+            Sleep 900
+            if TryClickVisibleServerMenuTarget(hwnd, CURRENT_SERVER_TARGET, &menuSummary) {
+                targetClicked := true
+                break
             }
         }
     }
 
     if !targetClicked {
-        WriteLog("伺服器排程：未在列表中找到目標伺服器文字 -> " CURRENT_SERVER_TARGET, "WARN")
+        WriteLog("伺服器排程：目前畫面及上下捲動後都找不到目標伺服器 -> "
+            CURRENT_SERVER_TARGET " | last_candidates="
+            (menuSummary != "" ? menuSummary : "(無)"), "WARN")
         WriteStepResult("伺服器切換", false, "找不到目標伺服器文字")
         Sleep 800
         return TrySelectScheduledServer(hwnd, attempt + 1)
     }
+    Sleep 500
 
     ; 點選伺服器後需再點擊「確認」
     confirmClicked := false

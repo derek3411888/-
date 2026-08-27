@@ -142,3 +142,26 @@ IsServerTargetMatch(ocrText, targetText) {
 IsLikelyServerNameText(ocrText) {
     return DetectWutheringServerFromOcrText(ocrText) != ""
 }
+
+GetServerMenuSearchScrollDirections(targetText) {
+    target := CanonicalizeWutheringServerName(targetText)
+    if (target = "")
+        return []
+
+    supported := GetSupportedWutheringServers()
+    targetIndex := 0
+    for index, server in supported {
+        if (server = target) {
+            targetIndex := index
+            break
+        }
+    }
+    if (targetIndex = 0)
+        return []
+
+    ; 清單一次只能完整顯示約四個伺服器。靠前的項目先往上找，靠後的
+    ; 項目先往下找；第二個方向作為清單原本停在另一端時的保險。
+    return targetIndex <= Ceil(supported.Length / 2)
+        ? ["up", "down"]
+        : ["down", "up"]
+}

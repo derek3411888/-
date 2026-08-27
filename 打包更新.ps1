@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.62',
-    [string]$LauncherVersion = '4.73',
+    [string]$PayloadVersion = '4.63',
+    [string]$LauncherVersion = '4.74',
     [string]$ServerVersion = '1.0.23'
 )
 
@@ -125,6 +125,7 @@ Invoke-AhkValidate $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 
 Invoke-AhkTest $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\伺服器名稱與切服判斷測試.ahk' '伺服器名稱回歸測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\伺服器名稱與切服判斷測試.ahk' '伺服器名稱與切服回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\伺服器登入標籤OCR影像測試.ahk' '伺服器登入標籤 OCR 實機影像測試語法 validate'
 Invoke-AhkValidate $payloadRuntime 'payload\RecordingFinalizeWorker.ahk' '錄影 worker AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveLoopbackTest.ahk' '直播 loopback 測試語法 validate'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveAutomaticFallbackTest.ahk' '直播自動回退測試語法 validate'

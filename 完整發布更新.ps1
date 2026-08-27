@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.62',
-    [string]$LauncherVersion = '4.73',
+    [string]$PayloadVersion = '4.63',
+    [string]$LauncherVersion = '4.74',
     [string]$ServerVersion = '1.0.23',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
@@ -80,7 +80,9 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 
 $releasePaths = @(
     '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
-    'payload', '測試/SelfHealingPolicyTest.ahk', 'self-hosted-server', 'remote-control-web',
+    'payload', '測試/SelfHealingPolicyTest.ahk',
+    '測試/伺服器名稱與切服判斷測試.ahk', '測試/伺服器登入標籤OCR影像測試.ahk',
+    'self-hosted-server', 'remote-control-web',
     'payload.zip', 'self-hosted-server.zip', '全自動鋤地.exe', 'update_manifest.example.json'
 )
 & git add -- $releasePaths
