@@ -31,6 +31,7 @@ catch
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
+#Include InteractiveDesktopGuard.ahk
 #Include RemoteControlFirestore.ahk
 #Include RemoteControlSelfHost.ahk
 #Include OkwwOcrTextMatchers.ahk
@@ -113,7 +114,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.78"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.79"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -3908,6 +3909,14 @@ GetInteractiveDesktopState() {
     inputIo := { known: false, value: false, error: "not_queried" }
     wtsState := -1
     inspectError := ""
+    lockScreen := {
+        locked: false,
+        hwnd: 0,
+        processName: "",
+        className: "",
+        title: "",
+        inspectError: "not_queried"
+    }
 
     try {
         currentThreadId := DllCall("kernel32\GetCurrentThreadId", "uint")
@@ -3924,6 +3933,7 @@ GetInteractiveDesktopState() {
             inputIo := GetDesktopInputFlagForInputLog(inputDesktopHandle)
         }
         wtsState := GetCurrentWtsConnectStateForInputLog()
+        lockScreen := GetForegroundLockScreenState()
     } catch as e {
         inspectError := e.Message
     } finally {
@@ -3935,6 +3945,12 @@ GetInteractiveDesktopState() {
     ok := false
     if (inspectError != "")
         reason := "desktop_inspect_exception:" inspectError
+    else if lockScreen.locked {
+        lockIdentity := lockScreen.processName != ""
+            ? lockScreen.processName
+            : (lockScreen.title != "" ? lockScreen.title : "unknown")
+        reason := "windows_lock_screen:" lockIdentity
+    }
     else if !currentDesktopHandle
         reason := "current_desktop_unavailable"
     else if !inputDesktopHandle
@@ -3968,7 +3984,12 @@ GetInteractiveDesktopState() {
         currentIoKnown: currentIo.known,
         currentIo: currentIo.value,
         inputIoKnown: inputIo.known,
-        inputIo: inputIo.value
+        inputIo: inputIo.value,
+        lockScreen: lockScreen.locked,
+        foregroundHwnd: lockScreen.hwnd,
+        foregroundProcess: lockScreen.processName,
+        foregroundClass: lockScreen.className,
+        foregroundTitle: lockScreen.title
     }
 }
 
@@ -4206,6 +4227,7 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
             . "；currentDesktop=" desktopState.currentDesktop
             . "；inputDesktop=" desktopState.inputDesktop
             . "；wtsState=" desktopState.wtsState
+            . "；foreground=" desktopState.foregroundHwnd "/" desktopState.foregroundProcess
         WriteLog("視窗前景切換已中止：目前不是可互動桌面 | "
             . LAST_INPUT_ACTIVATION_FAILURE_DETAIL
             . " | self={" DescribeAutomationProcessForInputLog() "} | context=" context, "ERROR")
@@ -7606,8 +7628,9 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
             stableHits := 0
             if (state.ok && !paused) {
                 targetProbeFailures += 1
-                ; hung／disabled／主窗遺失等結構性故障連續兩次就應重建；
-                ; 單純 foreground-lock 則低頻等約 5 分鐘後只做一次不計額度的乾淨重啟。
+                ; 鎖定畫面已由 GetInteractiveDesktopState 歸類為 state.ok=false，因此不會進入
+                ; 此計數。hung／disabled／主窗遺失等結構性故障連續兩次就重建；一般前景
+                ; 拒絕則低頻等約 5 分鐘後做一次不計額度的乾淨重啟。
                 probeFailureLimit := recreateRecommended ? 2 : 20
                 if (targetProbeFailures >= probeFailureLimit) {
                     recoveryKind := recreateRecommended
@@ -7631,6 +7654,7 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
                     " | reason=" state.reason
                     " currentDesktop=" state.currentDesktop
                     " inputDesktop=" state.inputDesktop " wts=" state.wtsState
+                    " foreground=" state.foregroundHwnd "/" state.foregroundProcess
                     " | probe=" probeDetail " failures=" targetProbeFailures pauseText, "INFO")
                 lastLogTick := nowTick
             }

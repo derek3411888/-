@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.67',
-    [string]$LauncherVersion = '4.78',
-    [string]$ServerVersion = '1.0.27',
+    [string]$PayloadVersion = '4.68',
+    [string]$LauncherVersion = '4.79',
+    [string]$ServerVersion = '1.0.28',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -80,7 +80,7 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 
 $releasePaths = @(
     '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
-    'payload', '測試/SelfHealingPolicyTest.ahk',
+    'payload', '測試/InteractiveDesktopGuardTest.ahk', '測試/SelfHealingPolicyTest.ahk',
     '測試/伺服器名稱與切服判斷測試.ahk', '測試/伺服器登入標籤OCR影像測試.ahk',
     '測試/實機伺服器切換壓力測試.ahk', '測試/實機伺服器切換50次驗證報告.md',
     'self-hosted-server', 'remote-control-web',
