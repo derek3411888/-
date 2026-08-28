@@ -41,6 +41,37 @@ h2 { margin: 0; font-size: 20px; }
 
 .app-header .sub { margin-bottom: 0; }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.support-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border: 1px solid #e2b06c;
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: #8a4d00;
+  background: #fff8eb;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.support-button:hover,
+.support-button:focus-visible {
+  border-color: #c98228;
+  background: #fff1d6;
+}
+
 .quota-badge,
 .settings-support-badge {
   display: inline-flex;
@@ -749,7 +780,14 @@ select:disabled {
   .wrap { margin-top: 12px; padding-right: 10px; padding-left: 10px; }
 
   .app-header { align-items: center; }
+  .header-actions { flex: 0 0 auto; }
   .quota-badge { display: none; }
+
+  .support-button {
+    max-width: 156px;
+    white-space: normal;
+    text-align: center;
+  }
 
   .device-bar {
     grid-template-columns: 1fr;

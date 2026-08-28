@@ -4,21 +4,21 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <script>
-    if (new URLSearchParams(location.search).get("legacy") !== "1") {
-      location.replace("https://220.135.218.98/");
-    }
-  </script>
-  <link rel="stylesheet" href="styles.css?v=20260826-server-select-v2" />
+  <link rel="stylesheet" href="styles.css?v=20260828-company-mode-v1" />
 </head>
 <body>
   <main class="wrap">
     <header class="app-header">
       <div>
         <h1>AHK 遠端控制台</h1>
-        <p class="sub">Firestore 多機控制</p>
+        <p class="sub">公司模式｜GitHub Pages + Firestore</p>
       </div>
-      <span class="quota-badge">免費額度保護</span>
+      <div class="header-actions">
+        <a id="btnAskCodex" class="support-button" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
+          腳本有問題，請 AI 協助
+        </a>
+        <span class="quota-badge">免費額度保護</span>
+      </div>
     </header>
 
     <section class="device-bar" aria-label="目前控制裝置">
@@ -247,6 +247,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260826-server-select-v2"></script>
+  <script type="module" src="app.js?v=20260828-company-mode-v1"></script>
 </body>
 </html>

@@ -29,8 +29,8 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "20260826-server-select-v2";
-const SELF_HOSTED_CONTROL_URL = "https://220.135.218.98";
+const WEB_BUILD = "20260828-company-mode-v1";
+const SUPPORT_PROMPT = "現在腳本有問題，請你找出問題並修正";
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -38,6 +38,7 @@ const db = getFirestore(app);
 const clientsQuery = query(collection(db, COLLECTION), where("uid", "!=", ""));
 
 const pcDropdown = document.getElementById("pcDropdown");
+const btnAskCodex = document.getElementById("btnAskCodex");
 const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
 const btnStop = document.getElementById("btnStop");
@@ -2200,18 +2201,18 @@ btnReloadSettings.addEventListener("click", () => {
   renderSettingsPage(true);
 });
 
-async function redirectToSelfHostedControl() {
-  if (new URLSearchParams(location.search).get("legacy") === "1") return false;
-  statusMsg.textContent = "正在前往固定 IP HTTPS 控制台…";
-  location.replace(SELF_HOSTED_CONTROL_URL);
-  return true;
-}
+const supportUrl = new URL("https://chatgpt.com/");
+supportUrl.searchParams.set("q", SUPPORT_PROMPT);
+btnAskCodex.href = supportUrl.toString();
+btnAskCodex.addEventListener("click", () => {
+  // q 參數會把固定求助內容交給 ChatGPT；同時複製一份，避免公司瀏覽器
+  // 阻擋自動帶入時還要重新輸入。
+  navigator.clipboard?.writeText(SUPPORT_PROMPT).catch(() => {});
+});
 
-if (!(await redirectToSelfHostedControl())) {
-  statusMsg.textContent = `控制台已就緒（v${WEB_BUILD}）`;
-  setActiveView(activeView, false);
-  startClientListener();
-  window.setInterval(renderCommandStatus, 1000);
-  window.setInterval(renderSettingsStatus, 1000);
-  window.setInterval(() => void cleanupStaleClients(), 60_000);
-}
+statusMsg.textContent = `公司控制台已就緒（v${WEB_BUILD}）`;
+setActiveView(activeView, false);
+startClientListener();
+window.setInterval(renderCommandStatus, 1000);
+window.setInterval(renderSettingsStatus, 1000);
+window.setInterval(() => void cleanupStaleClients(), 60_000);

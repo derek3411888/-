@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const publicDirectory = new URL("../public/", import.meta.url);
+const companyControlDirectory = new URL("../../remote-control-web/", import.meta.url);
 
 test("recording status uses an isolated responsive layout", async () => {
   const [html, css] = await Promise.all([
@@ -20,4 +21,20 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(css, /\.tab-panel\.active\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
   assert.match(css, /\.table-wrap\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*auto/s);
   assert.match(css, /\.device-bar,\s*\.grid\.two,\s*\.video-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+});
+
+test("GitHub Pages company mode stays on Firestore and exposes the AI help link", async () => {
+  const [html, script, css] = await Promise.all([
+    readFile(new URL("index.html", companyControlDirectory), "utf8"),
+    readFile(new URL("app.js", companyControlDirectory), "utf8"),
+    readFile(new URL("styles.css", companyControlDirectory), "utf8"),
+  ]);
+
+  assert.doesNotMatch(html, /location\.(?:replace|href)/);
+  assert.doesNotMatch(script, /SELF_HOSTED_CONTROL_URL|redirectToSelfHostedControl/);
+  assert.match(html, /id="btnAskCodex"/);
+  assert.match(script, /SUPPORT_PROMPT\s*=\s*"現在腳本有問題，請你找出問題並修正"/);
+  assert.match(script, /startClientListener\(\)/);
+  assert.match(css, /@media\s*\(max-width:\s*700px\)/);
+  assert.match(css, /\.support-button\s*\{[^}]*white-space:\s*normal/s);
 });
