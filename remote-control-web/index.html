@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260828-company-mode-v1" />
+  <link rel="stylesheet" href="styles.css?v=20260828-codex-bridge-v1" />
 </head>
 <body>
   <main class="wrap">
@@ -14,9 +14,12 @@
         <p class="sub">公司模式｜GitHub Pages + Firestore</p>
       </div>
       <div class="header-actions">
-        <a id="btnAskCodex" class="support-button" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
-          腳本有問題，請 AI 協助
-        </a>
+        <div class="support-control">
+          <button id="btnAskCodex" class="support-button" type="button">
+            腳本有問題，請 Codex 修正
+          </button>
+          <span id="codexSupportStatus" class="support-status idle" role="status" aria-live="polite">正在確認本機 Codex…</span>
+        </div>
         <span class="quota-badge">免費額度保護</span>
       </div>
     </header>
@@ -247,6 +250,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260828-company-mode-v1"></script>
+  <script type="module" src="app.js?v=20260828-codex-bridge-v1"></script>
 </body>
 </html>

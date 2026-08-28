@@ -29,8 +29,11 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "20260828-company-mode-v1";
-const SUPPORT_PROMPT = "現在腳本有問題，請你找出問題並修正";
+const WEB_BUILD = "20260828-codex-bridge-v1";
+const CODEX_SUPPORT_DOC_ID = "__codex_support";
+const CODEX_SUPPORT_ACTION = "FIX_SCRIPT";
+const CODEX_BRIDGE_ONLINE_MS = 3 * 60_000;
+const CODEX_SUPPORT_COOLDOWN_MS = 5 * 60_000;
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -39,6 +42,7 @@ const clientsQuery = query(collection(db, COLLECTION), where("uid", "!=", ""));
 
 const pcDropdown = document.getElementById("pcDropdown");
 const btnAskCodex = document.getElementById("btnAskCodex");
+const codexSupportStatus = document.getElementById("codexSupportStatus");
 const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
 const btnStop = document.getElementById("btnStop");
@@ -114,6 +118,9 @@ let settingsFormClientId = "";
 let settingsFormSourceKey = "";
 let settingsPreferEffective = false;
 let settingsError = "";
+let codexSupportData = null;
+let codexSupportSending = false;
+let codexSupportError = "";
 const clientLastObservedChangeAt = new Map();
 const staleCleanupRetryAfter = new Map();
 
@@ -164,6 +171,111 @@ function toBoolean(value, fallback = false) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function renderCodexSupportStatus() {
+  const data = codexSupportData || {};
+  const requestNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
+  const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
+  const state = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
+  const detail = String(readField(data, "bridgeDetail", "") || "").trim();
+  const heartbeatAt = toMillis(readField(data, "bridgeHeartbeatAt", 0));
+  const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
+  const bridgeOnline = heartbeatAt > 0 && Date.now() - heartbeatAt < CODEX_BRIDGE_ONLINE_MS;
+  const cooldownRemaining = Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now());
+
+  const requestPending = requestNonce > statusNonce || (
+    requestNonce === statusNonce && ["PENDING", "RETRYING"].includes(state)
+  );
+  btnAskCodex.disabled = codexSupportSending || requestPending || cooldownRemaining > 0;
+  codexSupportStatus.className = "support-status idle";
+
+  if (codexSupportSending) {
+    codexSupportStatus.className = "support-status pending";
+    codexSupportStatus.textContent = "正在送到家中主機…";
+    return;
+  }
+  if (codexSupportError) {
+    codexSupportStatus.className = "support-status error";
+    codexSupportStatus.textContent = codexSupportError;
+    return;
+  }
+  if (requestPending) {
+    codexSupportStatus.className = "support-status pending";
+    codexSupportStatus.textContent = detail || "已送出，等待家中主機接收…";
+    return;
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && state === "QUEUED") {
+    codexSupportStatus.className = "support-status ok";
+    codexSupportStatus.textContent = cooldownRemaining > 0
+      ? `已送進目前 Codex 任務；${Math.ceil(cooldownRemaining / 1000)} 秒後可再次送出`
+      : "已送進目前 Codex 任務";
+    return;
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && ["REJECTED", "RATE_LIMITED", "FAILED"].includes(state)) {
+    codexSupportStatus.className = "support-status error";
+    codexSupportStatus.textContent = detail || "本機 Codex 未接收，請稍後重試";
+    return;
+  }
+  codexSupportStatus.textContent = bridgeOnline
+    ? `本機 Codex 已連線（${fmtAge(heartbeatAt)}）`
+    : "家中主機尚未回報 Codex 連線";
+}
+
+async function requestCodexSupport() {
+  if (codexSupportSending) return;
+  codexSupportSending = true;
+  codexSupportError = "";
+  renderCodexSupportStatus();
+
+  const supportRef = doc(db, COLLECTION, CODEX_SUPPORT_DOC_ID);
+  try {
+    const selectedUid = String(pcDropdown.value || "").trim();
+    await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(supportRef);
+      const data = snapshot.exists() ? snapshot.data() : {};
+      const currentNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
+      const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
+      const state = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
+      const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
+      if (currentNonce > statusNonce || (currentNonce === statusNonce && ["PENDING", "RETRYING"].includes(state))) {
+        throw new Error("上一筆維修請求仍在等待家中主機接收");
+      }
+      if (queuedAt > 0 && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
+        throw new Error("剛剛已送進 Codex，請等候處理結果");
+      }
+
+      const nextNonce = currentNonce + 1;
+      const requestedAt = Date.now();
+      transaction.set(supportRef, {
+        supportRequestNonce: nextNonce,
+        supportRequestAction: CODEX_SUPPORT_ACTION,
+        supportRequestedAt: requestedAt,
+        supportRequestedDeviceUid: selectedUid,
+        bridgeState: "PENDING",
+        bridgeStatusNonce: nextNonce,
+        bridgeDetail: "已由公司控制台送出，等待家中主機接收",
+        bridgeUpdatedAt: requestedAt,
+      }, { merge: true });
+    });
+  } catch (error) {
+    codexSupportError = error?.message || String(error);
+  } finally {
+    codexSupportSending = false;
+    renderCodexSupportStatus();
+  }
+}
+
+function startCodexSupportListener() {
+  const supportRef = doc(db, COLLECTION, CODEX_SUPPORT_DOC_ID);
+  onSnapshot(supportRef, (snapshot) => {
+    codexSupportData = snapshot.exists() ? snapshot.data() : {};
+    codexSupportError = "";
+    renderCodexSupportStatus();
+  }, (error) => {
+    codexSupportError = `無法讀取 Codex 橋接狀態：${error?.message || String(error)}`;
+    renderCodexSupportStatus();
+  });
 }
 
 function normalizeStatus(v) {
@@ -2201,18 +2313,13 @@ btnReloadSettings.addEventListener("click", () => {
   renderSettingsPage(true);
 });
 
-const supportUrl = new URL("https://chatgpt.com/");
-supportUrl.searchParams.set("q", SUPPORT_PROMPT);
-btnAskCodex.href = supportUrl.toString();
-btnAskCodex.addEventListener("click", () => {
-  // q 參數會把固定求助內容交給 ChatGPT；同時複製一份，避免公司瀏覽器
-  // 阻擋自動帶入時還要重新輸入。
-  navigator.clipboard?.writeText(SUPPORT_PROMPT).catch(() => {});
-});
+btnAskCodex.addEventListener("click", () => void requestCodexSupport());
 
 statusMsg.textContent = `公司控制台已就緒（v${WEB_BUILD}）`;
 setActiveView(activeView, false);
+startCodexSupportListener();
 startClientListener();
+window.setInterval(renderCodexSupportStatus, 1000);
 window.setInterval(renderCommandStatus, 1000);
 window.setInterval(renderSettingsStatus, 1000);
 window.setInterval(() => void cleanupStaleClients(), 60_000);

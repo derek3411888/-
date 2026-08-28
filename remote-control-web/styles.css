@@ -49,6 +49,14 @@ h2 { margin: 0; font-size: 20px; }
   flex-wrap: wrap;
 }
 
+.support-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
 .support-button {
   display: inline-flex;
   align-items: center;
@@ -71,6 +79,23 @@ h2 { margin: 0; font-size: 20px; }
   border-color: #c98228;
   background: #fff1d6;
 }
+
+.support-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.support-status {
+  max-width: 360px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.support-status.pending { color: var(--warn); }
+.support-status.ok { color: var(--ok); }
+.support-status.error { color: var(--danger); }
 
 .quota-badge,
 .settings-support-badge {
@@ -779,13 +804,24 @@ select:disabled {
 @media (max-width: 700px) {
   .wrap { margin-top: 12px; padding-right: 10px; padding-left: 10px; }
 
-  .app-header { align-items: center; }
-  .header-actions { flex: 0 0 auto; }
+  .app-header { align-items: stretch; flex-direction: column; }
+  .header-actions { flex: 0 0 auto; justify-content: stretch; }
   .quota-badge { display: none; }
 
+  .support-control {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
   .support-button {
-    max-width: 156px;
+    width: 100%;
     white-space: normal;
+    text-align: center;
+  }
+
+  .support-status {
+    max-width: none;
     text-align: center;
   }
 

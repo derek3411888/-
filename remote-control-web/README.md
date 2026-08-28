@@ -2,7 +2,9 @@
 
 這是供公司或其他無法連線個人網址的網路使用的 Firestore 控制台。GitHub Pages 首頁不再轉址到固定 IP；狀態、快照、命令與設定都經由既有 Firestore 文件傳遞。自架網站仍保留完整錄影與直播功能，兩者的用途分開。
 
-頁首的「腳本有問題，請 AI 協助」會開啟 ChatGPT，帶入固定文字「現在腳本有問題，請你找出問題並修正」，並嘗試把同一句話複製到剪貼簿作為公司瀏覽器未自動帶入時的備援。OpenAI 目前沒有公開文件保證可從一般網站直接把訊息送進既有 Codex 本機工作區，因此此按鈕不會假裝已連到原本的 Codex 任務。
+頁首的「腳本有問題，請 Codex 修正」不會另開 ChatGPT。按下後只會在 Firestore 的 `ahk_clients/__codex_support` 寫入固定動作 `FIX_SCRIPT`；Docker／資料庫所在的 Windows 主機常駐橋接程式收到後，使用本機 Codex 的既有任務佇列，把固定文字「現在腳本有問題，請你找出問題並修正」直接送進指定的既有 Codex 任務。網頁會依序顯示「等待家中主機／正在送入／已送進目前 Codex 任務／自動重試」。
+
+橋接端不接受網頁提供任意 prompt，也不把 Codex 任務 ID 放到 Firestore；它只接受固定動作並在本機轉成固定文字。同一 nonce 只送一次，且兩次請求至少間隔 5 分鐘。安裝方式見 `self-hosted-server/windows/Install-CodexSupportBridge.ps1`。
 
 ## Firebase 設定
 
@@ -25,6 +27,8 @@
 ## Firestore 資料結構
 
 預設集合是 `ahk_clients`，每台電腦以 AHK UID 作為文件 ID。AHK 會自動寫入心跳、執行狀態與 ACK 欄位。
+
+`__codex_support` 是固定的主機橋接文件，不含 `uid`，因此不會被裝置列表查詢誤認成第三台電腦。橋接每 15 秒只讀這一份小文件（每天最多約 5,760 reads），每 90 秒更新一次心跳（每天最多 960 writes）；只有按下按鈕才會增加請求與結果寫入，維持在 Firestore 免費額度的可控範圍內。
 
 新版 client 會寫入低畫質最新畫面、錄影收尾狀態／檔案位置與最近 50 筆流程事件。控制文件使用 UID，畫面改放在同集合的 `UID__media` companion 文件；控制台主查詢使用新舊 client 都具備的非空 `uid`，選定裝置後才監聽該裝置的 media 文件，避免心跳、ACK 與命令輪詢反覆傳輸 JPEG。由於內容可能包含桌面畫面與本機／網路路徑，正式使用前請收緊 Firestore Rules，不要把集合公開給不受信任的使用者。
 

@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.64',
-    [string]$LauncherVersion = '4.75',
-    [string]$ServerVersion = '1.0.24'
+    [string]$PayloadVersion = '4.65',
+    [string]$LauncherVersion = '4.76',
+    [string]$ServerVersion = '1.0.25'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,6 +143,20 @@ $uploaderParseErrors = $null
 if ($uploaderParseErrors.Count -gt 0) {
     throw "中央影片上傳 PowerShell 語法錯誤：$($uploaderParseErrors[0].Message)"
 }
+foreach ($bridgeScript in @(
+    'self-hosted-server\windows\CodexSupportBridge.ps1',
+    'self-hosted-server\windows\Install-CodexSupportBridge.ps1',
+    'self-hosted-server\windows\Uninstall-CodexSupportBridge.ps1'
+)) {
+    $bridgeTokens = $null
+    $bridgeParseErrors = $null
+    [void][Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $projectRoot $bridgeScript),
+        [ref]$bridgeTokens, [ref]$bridgeParseErrors)
+    if ($bridgeParseErrors.Count -gt 0) {
+        throw "Codex 橋接 PowerShell 語法錯誤 ($bridgeScript)：$($bridgeParseErrors[0].Message)"
+    }
+}
 Add-Type -AssemblyName System.Security
 if (-not ('System.Security.Cryptography.ProtectedData' -as [type])) {
     throw '目前 PowerShell 無法載入 DPAPI ProtectedData 型別。'
@@ -183,7 +197,9 @@ Assert-ZipContains 'self-hosted-server.zip' @(
     'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
     'public/index.html', 'public/app.js', 'public/styles.css',
     'migrations/004_media_auto_repair.sql', 'Update-Server.ps1',
-    'test/integration-smoke.mjs', 'test/media-stream.test.js'
+    'test/integration-smoke.mjs', 'test/media-stream.test.js',
+    'windows/CodexSupportBridge.ps1', 'windows/Install-CodexSupportBridge.ps1',
+    'windows/Uninstall-CodexSupportBridge.ps1'
 )
 
 $payloadHash = (Get-FileHash -LiteralPath 'payload.zip' -Algorithm SHA256).Hash
