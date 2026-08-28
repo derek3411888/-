@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.66',
-    [string]$LauncherVersion = '4.77',
-    [string]$ServerVersion = '1.0.26'
+    [string]$PayloadVersion = '4.67',
+    [string]$LauncherVersion = '4.78',
+    [string]$ServerVersion = '1.0.27'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,10 +16,21 @@ function Assert-ExitCode([string]$Task) {
 function Invoke-AhkValidate([string]$RuntimePath, [string]$ScriptPath, [string]$Task) {
     # AutoHotkey 是 GUI 子系統程式；直接用 & 執行時 Windows PowerShell 不一定
     # 會可靠等待或填入 LASTEXITCODE。Start-Process -Wait 才能取得真正驗證結果。
-    $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
-        '/ErrorStdOut', '/Validate', $ScriptPath
-    ) -NoNewWindow -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "$Task 失敗，exit=$($process.ExitCode)" }
+    $captureRoot = Join-Path ([IO.Path]::GetTempPath()) ("wuthering-ahk-" + [Guid]::NewGuid().ToString('N'))
+    $stdoutPath = "$captureRoot.out.txt"
+    $stderrPath = "$captureRoot.err.txt"
+    try {
+        $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
+            '/ErrorStdOut', '/Validate', $ScriptPath
+        ) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
+        if ($process.ExitCode -ne 0) {
+            throw "$Task 失敗，exit=$($process.ExitCode)：$(($stderr + $stdout).Trim())"
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-AhkCompile([string]$CompilerPath, [string]$SourcePath,
@@ -33,10 +44,24 @@ function Invoke-AhkCompile([string]$CompilerPath, [string]$SourcePath,
 }
 
 function Invoke-AhkTest([string]$RuntimePath, [string]$ScriptPath, [string]$Task) {
-    $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
-        '/ErrorStdOut', $ScriptPath
-    ) -NoNewWindow -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "$Task 失敗，exit=$($process.ExitCode)" }
+    # AHK 是 GUI 子系統，沒有重導向時 FileAppend("*"/"**") 可能取得無效控制碼
+    # 而跳出錯誤視窗。每次測試提供獨立檔案控制碼，並把結果讀回發布紀錄。
+    $captureRoot = Join-Path ([IO.Path]::GetTempPath()) ("wuthering-ahk-" + [Guid]::NewGuid().ToString('N'))
+    $stdoutPath = "$captureRoot.out.txt"
+    $stderrPath = "$captureRoot.err.txt"
+    try {
+        $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
+            '/ErrorStdOut', $ScriptPath
+        ) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host $stdout.Trim() }
+        if ($process.ExitCode -ne 0) {
+            throw "$Task 失敗，exit=$($process.ExitCode)：$(($stderr + $stdout).Trim())"
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Find-AhkCompiler {

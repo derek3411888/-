@@ -13,12 +13,84 @@
         <h1>鳴潮自動鋤地控制台</h1>
         <p>自架 Docker・PostgreSQL 多機控制</p>
       </div>
-      <div class="header-badges">
-        <span id="releaseBadge" class="badge muted">版本讀取中</span>
-        <span id="migrationBadge" class="badge warning">讀取中</span>
-        <span class="badge ok">網址直接使用</span>
+      <div class="header-actions">
+        <div class="support-control">
+          <button id="btnOpenCodexSupport" class="support-button" type="button">通知目前 Codex 任務</button>
+          <span id="codexSupportStatus" class="support-status idle" role="status" aria-live="polite">正在確認本機 Codex…</span>
+        </div>
+        <div class="header-badges">
+          <span id="releaseBadge" class="badge muted">版本讀取中</span>
+          <span id="migrationBadge" class="badge warning">讀取中</span>
+          <span class="badge ok">網址直接使用</span>
+        </div>
       </div>
     </header>
+
+    <dialog id="codexSupportDialog" class="codex-support-dialog" aria-labelledby="codexSupportTitle">
+      <div class="codex-dialog-heading">
+        <div>
+          <h2 id="codexSupportTitle">通知目前 Codex 任務</h2>
+          <p class="hint">可用預設要求，也可輸入自己的訊息。這裡顯示的是傳送進度，不會把「已排入」誤寫成「Codex 已完成」。</p>
+        </div>
+        <button id="btnCloseCodexSupport" class="codex-dialog-close" type="button" aria-label="關閉 Codex 通知視窗">關閉</button>
+      </div>
+
+      <div class="codex-message-grid">
+        <label class="codex-field" for="codexMessagePreset">
+          <span>要送出的訊息</span>
+          <select id="codexMessagePreset">
+            <option value="FIX_SCRIPT">現在腳本有問題，請找出問題並修正</option>
+            <option value="DIAGNOSE_ONLY">只找出原因並回報，先不要修改</option>
+            <option value="CHECK_CURRENT_STATUS">檢查目前執行狀態與最新 Log，告訴我發生什麼事</option>
+            <option value="CUSTOM">自行輸入訊息</option>
+          </select>
+        </label>
+
+        <label id="codexCustomMessageField" class="codex-field codex-custom-message" for="codexCustomMessage" hidden>
+          <span>自訂訊息</span>
+          <textarea id="codexCustomMessage" rows="5" maxlength="1000" placeholder="輸入要直接送進目前 Codex 任務的內容"></textarea>
+          <small id="codexMessageCharacterCount">0 / 1000</small>
+        </label>
+
+        <div class="codex-send-row">
+          <button id="btnAskCodex" class="ok" type="button">送出到目前 Codex 任務</button>
+          <span id="codexSupportDialogStatus" class="support-status idle" role="status" aria-live="polite">尚未送出</span>
+        </div>
+        <p class="codex-security-note">自訂內容會成為這個 Codex 任務的使用者訊息。網站目前沒有登入驗證，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享網址。</p>
+      </div>
+
+      <section class="codex-progress-section" aria-labelledby="codexProgressTitle">
+        <h3 id="codexProgressTitle">傳送進度</h3>
+        <ol class="codex-progress-list">
+          <li id="codexStageSubmitted" data-state="waiting"><span>1</span><div><strong>網站寫入請求</strong><small>尚未送出</small></div></li>
+          <li id="codexStageReceived" data-state="waiting"><span>2</span><div><strong>家中主機收到</strong><small>等待橋接程式讀取</small></div></li>
+          <li id="codexStageValidated" data-state="waiting"><span>3</span><div><strong>訊息驗證完成</strong><small>檢查動作、長度與內容</small></div></li>
+          <li id="codexStageAttempted" data-state="waiting"><span>4</span><div><strong>送往 Codex</strong><small>等待佇列嘗試</small></div></li>
+          <li id="codexStageQueued" data-state="waiting"><span>5</span><div><strong>Codex 已接收佇列</strong><small>不代表已開始或已完成</small></div></li>
+        </ol>
+      </section>
+
+      <details class="codex-request-details" open>
+        <summary>完整狀態</summary>
+        <dl>
+          <div><dt>目前狀態</dt><dd id="codexDetailState">等待資料</dd></div>
+          <div><dt>請求編號</dt><dd id="codexDetailNonce">-</dd></div>
+          <div><dt>送出時間</dt><dd id="codexDetailRequestedAt">-</dd></div>
+          <div><dt>關聯裝置</dt><dd id="codexDetailDevice">-</dd></div>
+          <div class="wide"><dt>訊息內容</dt><dd id="codexDetailMessage">-</dd></div>
+          <div><dt>橋接主機</dt><dd id="codexDetailHost">-</dd></div>
+          <div><dt>主機心跳</dt><dd id="codexDetailHeartbeat">-</dd></div>
+          <div><dt>主機收到時間</dt><dd id="codexDetailReceivedAt">-</dd></div>
+          <div><dt>驗證完成時間</dt><dd id="codexDetailValidatedAt">-</dd></div>
+          <div><dt>嘗試次數</dt><dd id="codexDetailAttemptCount">0</dd></div>
+          <div><dt>最後嘗試時間</dt><dd id="codexDetailLastAttemptAt">-</dd></div>
+          <div><dt>排入 Codex 時間</dt><dd id="codexDetailQueuedAt">-</dd></div>
+          <div><dt>下次重試時間</dt><dd id="codexDetailNextRetryAt">-</dd></div>
+          <div><dt>訊息指紋</dt><dd id="codexDetailMessageHash">-</dd></div>
+          <div class="wide"><dt>最後錯誤／說明</dt><dd id="codexDetailError">-</dd></div>
+        </dl>
+      </details>
+    </dialog>
 
     <section class="device-bar card">
       <label>控制電腦

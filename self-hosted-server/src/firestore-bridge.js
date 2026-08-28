@@ -1,7 +1,43 @@
 import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import { buildFallbackCommandBaseline } from "./migration-baseline.js";
+import {
+  CODEX_SUPPORT_ACTION,
+  codexSupportCooldownRemaining,
+  isCodexSupportPending,
+  resolveCodexSupportMessage,
+} from "./codex-support.js";
 import { HttpError, boundedText, integer } from "./utils.js";
+
+const CODEX_SUPPORT_DOCUMENT_ID = "__codex_support";
+const CODEX_SUPPORT_STATUS_FIELDS = Object.freeze([
+  "supportRequestNonce",
+  "supportRequestAction",
+  "supportRequestMode",
+  "supportRequestLabel",
+  "supportRequestMessage",
+  "supportRequestMessageLength",
+  "supportRequestedAt",
+  "supportRequestedDeviceUid",
+  "bridgeState",
+  "bridgeStatusNonce",
+  "bridgeDetail",
+  "bridgeUpdatedAt",
+  "bridgeHost",
+  "bridgeHeartbeatAt",
+  "bridgeReceivedAt",
+  "bridgeValidatedAt",
+  "bridgeAttemptCount",
+  "bridgeLastAttemptAt",
+  "bridgeNextRetryAt",
+  "bridgeQueuedAt",
+  "bridgeMessageSha256",
+  "bridgeErrorCode",
+  "bridgeErrorDetail",
+  "bridgeVersion",
+]);
+const CODEX_SUPPORT_CACHE_MS = 2_000;
+let codexSupportCache = { at: 0, status: null };
 
 function firestoreBase() {
   const { projectId } = config.firestore;
@@ -27,6 +63,11 @@ async function firestoreFetch(url, options = {}) {
     const text = await response.text();
     const error = new Error(`Firestore HTTP ${response.status}: ${text.slice(0, 1000)}`);
     error.status = response.status;
+    try {
+      const payload = JSON.parse(text);
+      error.firestoreStatus = String(payload?.error?.status ?? "");
+      error.firestoreCode = Number(payload?.error?.code ?? 0);
+    } catch {}
     throw error;
   }
   return response.status === 204 ? {} : response.json();
@@ -176,14 +217,151 @@ async function getFirestoreDocument(documentId, fieldNames = []) {
   return firestoreFetch(url);
 }
 
-async function patchFirestoreDocumentAtVersion(documentId, fields, updateTime) {
+async function patchFirestoreDocumentAtVersion(documentId, fields, precondition, responseMask = ["lastAckNonce"]) {
   const { apiKey, collection } = config.firestore;
   const url = new URL(`${firestoreBase()}/${encodeURIComponent(collection)}/${encodeURIComponent(documentId)}`);
   url.searchParams.set("key", apiKey);
   for (const fieldName of Object.keys(fields.fields)) url.searchParams.append("updateMask.fieldPaths", fieldName);
-  url.searchParams.set("currentDocument.updateTime", updateTime);
-  url.searchParams.append("mask.fieldPaths", "lastAckNonce");
+  if (typeof precondition === "string" && precondition) {
+    url.searchParams.set("currentDocument.updateTime", precondition);
+  } else if (precondition?.exists === false) {
+    url.searchParams.set("currentDocument.exists", "false");
+  }
+  for (const fieldName of responseMask) url.searchParams.append("mask.fieldPaths", fieldName);
   return firestoreFetch(url, { method: "PATCH", body: JSON.stringify(fields) });
+}
+
+function isFirestoreConcurrencyConflict(error) {
+  return [409, 412].includes(Number(error?.status))
+    || ["ABORTED", "FAILED_PRECONDITION"].includes(String(error?.firestoreStatus ?? ""));
+}
+
+function assertCodexSupportAvailable() {
+  const { enabled, projectId, apiKey, collection } = config.firestore;
+  if (!enabled || !projectId || !apiKey || !collection) {
+    throw new HttpError(503, "Codex 橋接目前未設定", "CODEX_SUPPORT_UNAVAILABLE");
+  }
+}
+
+function normalizedCodexSupportStatus(document = null) {
+  const requestNonce = integer(field(document, "supportRequestNonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  const statusNonce = integer(field(document, "bridgeStatusNonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  const storedState = String(field(document, "bridgeState", "") ?? "").trim().toUpperCase();
+  const state = requestNonce > statusNonce ? "PENDING" : storedState;
+  const heartbeatAt = integer(field(document, "bridgeHeartbeatAt", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  const queuedAt = integer(field(document, "bridgeQueuedAt", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  return {
+    requestNonce,
+    statusNonce,
+    state,
+    detail: String(field(document, "bridgeDetail", "") ?? ""),
+    requestedAt: integer(field(document, "supportRequestedAt", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    requestedDeviceUid: String(field(document, "supportRequestedDeviceUid", "") ?? ""),
+    requestMode: String(field(document, "supportRequestMode", "") ?? ""),
+    requestLabel: String(field(document, "supportRequestLabel", "") ?? ""),
+    requestMessage: String(field(document, "supportRequestMessage", "") ?? ""),
+    host: String(field(document, "bridgeHost", "") ?? ""),
+    heartbeatAt,
+    receivedAt: integer(field(document, "bridgeReceivedAt", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    validatedAt: integer(field(document, "bridgeValidatedAt", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    attemptCount: integer(field(document, "bridgeAttemptCount", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    lastAttemptAt: integer(field(document, "bridgeLastAttemptAt", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    nextRetryAt: integer(field(document, "bridgeNextRetryAt", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    queuedAt,
+    messageSha256: String(field(document, "bridgeMessageSha256", "") ?? ""),
+    errorCode: String(field(document, "bridgeErrorCode", "") ?? ""),
+    errorDetail: String(field(document, "bridgeErrorDetail", "") ?? ""),
+    bridgeVersion: String(field(document, "bridgeVersion", "") ?? ""),
+    online: heartbeatAt > 0 && Date.now() - heartbeatAt < 3 * 60_000,
+    pending: isCodexSupportPending(requestNonce, statusNonce, state),
+    cooldownRemainingMs: codexSupportCooldownRemaining(queuedAt),
+  };
+}
+
+async function readCodexSupportDocument(fieldNames = CODEX_SUPPORT_STATUS_FIELDS) {
+  try {
+    return await getFirestoreDocument(CODEX_SUPPORT_DOCUMENT_ID, fieldNames);
+  } catch (error) {
+    if (Number(error.status) === 404) return null;
+    throw error;
+  }
+}
+
+export async function getCodexSupportStatus({ force = false } = {}) {
+  assertCodexSupportAvailable();
+  if (!force && codexSupportCache.status && Date.now() - codexSupportCache.at < CODEX_SUPPORT_CACHE_MS) {
+    return { ...codexSupportCache.status, cached: true };
+  }
+  const document = await readCodexSupportDocument();
+  const status = normalizedCodexSupportStatus(document);
+  codexSupportCache = { at: Date.now(), status };
+  return { ...status, cached: false };
+}
+
+export async function submitCodexSupportMessage(input = {}) {
+  assertCodexSupportAvailable();
+  const selection = resolveCodexSupportMessage(input);
+  const requestedDeviceUid = String(input.deviceUid ?? "").trim();
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const document = await readCodexSupportDocument([]);
+    const current = normalizedCodexSupportStatus(document);
+    if (current.pending) {
+      throw new HttpError(409, "上一筆維修請求仍在等待家中主機接收", "CODEX_SUPPORT_PENDING", current);
+    }
+    const cooldownRemainingMs = codexSupportCooldownRemaining(current.queuedAt);
+    if (cooldownRemainingMs > 0) {
+      throw new HttpError(429, "剛剛已送進 Codex，請等候處理結果", "CODEX_SUPPORT_COOLDOWN", {
+        cooldownRemainingMs,
+      });
+    }
+
+    const nextNonce = current.requestNonce + 1;
+    const requestedAt = Date.now();
+    const fields = {
+      fields: {
+        supportRequestNonce: { integerValue: String(nextNonce) },
+        supportRequestAction: { stringValue: CODEX_SUPPORT_ACTION },
+        supportRequestMode: { stringValue: selection.mode },
+        supportRequestLabel: { stringValue: selection.label },
+        supportRequestMessage: { stringValue: selection.message },
+        supportRequestMessageLength: { integerValue: String(selection.message.length) },
+        supportRequestedAt: { integerValue: String(requestedAt) },
+        supportRequestedDeviceUid: { stringValue: requestedDeviceUid },
+        bridgeState: { stringValue: "PENDING" },
+        bridgeStatusNonce: { integerValue: String(nextNonce) },
+        bridgeDetail: { stringValue: "已由一般控制台送出，等待家中主機接收" },
+        bridgeUpdatedAt: { integerValue: String(requestedAt) },
+        bridgeReceivedAt: { integerValue: "0" },
+        bridgeValidatedAt: { integerValue: "0" },
+        bridgeAttemptCount: { integerValue: "0" },
+        bridgeLastAttemptAt: { integerValue: "0" },
+        bridgeNextRetryAt: { integerValue: "0" },
+        bridgeQueuedAt: { integerValue: "0" },
+        bridgeMessageSha256: { stringValue: "" },
+        bridgeErrorCode: { stringValue: "" },
+        bridgeErrorDetail: { stringValue: "" },
+      },
+    };
+
+    try {
+      await patchFirestoreDocumentAtVersion(
+        CODEX_SUPPORT_DOCUMENT_ID,
+        fields,
+        document?.updateTime ? document.updateTime : { exists: false },
+        [],
+      );
+      const status = normalizedCodexSupportStatus({
+        fields: { ...(document?.fields ?? {}), ...fields.fields },
+      });
+      codexSupportCache = { at: Date.now(), status };
+      return { ...status, submitted: true, cached: false };
+    } catch (error) {
+      if (isFirestoreConcurrencyConflict(error) && attempt < 4) continue;
+      throw error;
+    }
+  }
+  throw new HttpError(409, "Codex 維修請求同時更新，請再試一次", "CODEX_SUPPORT_CONFLICT");
 }
 
 export async function syncFallbackCommandBaselines() {
@@ -244,7 +422,7 @@ export async function syncFallbackCommandBaselines() {
         completed = true;
         break;
       } catch (error) {
-        if ([409, 412].includes(Number(error.status)) && attempt < 4) continue;
+        if (isFirestoreConcurrencyConflict(error) && attempt < 4) continue;
         throw error;
       }
     }

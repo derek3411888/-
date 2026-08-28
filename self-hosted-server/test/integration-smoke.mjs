@@ -65,6 +65,14 @@ async function main() {
   assert(directAccessBody.accessMode === "direct", "browser access mode is not direct");
   const directDeviceList = await request("/api/v1/devices", { browser: true });
   assert(Array.isArray(directDeviceList.devices), "direct browser could not list devices");
+  const codexSupportStatus = await request("/api/v1/codex-support", { browser: true });
+  assert(Number.isFinite(Number(codexSupportStatus.requestNonce)), "Codex support bridge status is unavailable");
+  const rejectedCodexSupportMode = await fetch(`${base}/api/v1/codex-support`, {
+    method: "POST",
+    headers: { Cookie: cookie, Origin: config.publicUrl, "X-Wuthering-CSRF": "1", "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "UNKNOWN", message: "must not be sent" }),
+  });
+  assert(rejectedCodexSupportMode.status === 400, "invalid Codex support mode was accepted");
   const rejectedCrossSiteMutation = await fetch(`${base}/api/v1/admin/migration/mode`, {
     method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" },
     body: JSON.stringify({ mode: "primary" }),
@@ -330,6 +338,7 @@ async function main() {
   assert(serverLog.isFile() && serverLog.size > 0, "mounted rotating server log was not written");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
     directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
+    codexSupportStatus: true, codexSupportInvalidModeRejected: true,
     videoRange: true, recordingProgress: true, mediaAutoRepair: true, liveHls: true, liveHlsResources: true,
     invalidSrtRejected: true, serverLog: true }));
 }

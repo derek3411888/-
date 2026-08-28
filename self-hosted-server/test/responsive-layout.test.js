@@ -6,9 +6,12 @@ const publicDirectory = new URL("../public/", import.meta.url);
 const companyControlDirectory = new URL("../../remote-control-web/", import.meta.url);
 
 test("recording status uses an isolated responsive layout", async () => {
-  const [html, css] = await Promise.all([
+  const [html, css, script, server, bridge] = await Promise.all([
     readFile(new URL("index.html", publicDirectory), "utf8"),
     readFile(new URL("styles.css", publicDirectory), "utf8"),
+    readFile(new URL("app.js", publicDirectory), "utf8"),
+    readFile(new URL("../src/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/firestore-bridge.js", import.meta.url), "utf8"),
   ]);
 
   assert.match(html, /id="recordingStatus" class="recording-status"/);
@@ -21,6 +24,23 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(css, /\.tab-panel\.active\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
   assert.match(css, /\.table-wrap\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*auto/s);
   assert.match(css, /\.device-bar,\s*\.grid\.two,\s*\.video-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.match(html, /id="btnOpenCodexSupport"/);
+  assert.match(html, /id="codexSupportDialog"/);
+  assert.match(html, /id="codexCustomMessage"[^>]*maxlength="1000"/);
+  assert.match(html, /id="codexStageQueued"/);
+  assert.match(html, /data-panel="videos"/);
+  assert.match(html, /id="liveVideo"/);
+  assert.match(html, /id="recordingList"/);
+  assert.match(css, /\.codex-field\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(css, /\.codex-progress-list\s*\{/);
+  assert.match(css, /@media\s*\(max-width:\s*820px\)[\s\S]*\.codex-progress-list\s*\{\s*grid-template-columns:\s*1fr/);
+  assert.match(script, /api\("\/api\/v1\/codex-support"/);
+  assert.match(script, /CODEX_SUPPORT_PRESETS\s*=\s*Object\.freeze/);
+  assert.match(script, /stopCodexSupportPolling/);
+  assert.match(server, /pathname === "\/api\/v1\/codex-support" && req\.method === "GET"/);
+  assert.match(server, /pathname === "\/api\/v1\/codex-support" && req\.method === "POST"/);
+  assert.match(bridge, /currentDocument\.updateTime/);
+  assert.match(bridge, /CODEX_SUPPORT_DOCUMENT_ID\s*=\s*"__codex_support"/);
 });
 
 test("GitHub Pages company mode supports preset or custom Codex messages with detailed status", async () => {

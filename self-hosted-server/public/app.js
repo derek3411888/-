@@ -19,13 +19,42 @@ const state = {
   liveStartedAt: 0,
   liveHasPlayed: false,
   liveMediaRecoveries: 0,
+  codexSupportData: null,
+  codexSupportSending: false,
+  codexSupportError: "",
+  codexSupportTimer: 0,
+  codexSupportRefreshInFlight: false,
 };
 
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
+const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
+const CODEX_SUPPORT_COOLDOWN_MS = 5 * 60_000;
+const CODEX_BRIDGE_ONLINE_MS = 3 * 60_000;
+const CODEX_SUPPORT_PENDING_STATES = ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"];
+const CODEX_SUPPORT_PRESETS = Object.freeze({
+  FIX_SCRIPT: Object.freeze({ label: "找出問題並修正", message: "現在腳本有問題，請你找出問題並修正" }),
+  DIAGNOSE_ONLY: Object.freeze({ label: "只分析原因", message: "現在腳本有問題，請找出原因並回報，先不要修改任何檔案。" }),
+  CHECK_CURRENT_STATUS: Object.freeze({ label: "檢查目前狀態", message: "請檢查目前腳本執行狀態與最新 Log，告訴我現在發生什麼事；先不要修改。" }),
+});
 
 const $ = (id) => document.getElementById(id);
 const appView = $("appView");
 const deviceSelect = $("deviceSelect");
+const codexStages = {
+  submitted: $("codexStageSubmitted"),
+  received: $("codexStageReceived"),
+  validated: $("codexStageValidated"),
+  attempted: $("codexStageAttempted"),
+  queued: $("codexStageQueued"),
+};
+const codexDetails = {
+  state: $("codexDetailState"), nonce: $("codexDetailNonce"), requestedAt: $("codexDetailRequestedAt"),
+  device: $("codexDetailDevice"), message: $("codexDetailMessage"), host: $("codexDetailHost"),
+  heartbeat: $("codexDetailHeartbeat"), receivedAt: $("codexDetailReceivedAt"), validatedAt: $("codexDetailValidatedAt"),
+  attemptCount: $("codexDetailAttemptCount"), lastAttemptAt: $("codexDetailLastAttemptAt"),
+  queuedAt: $("codexDetailQueuedAt"), nextRetryAt: $("codexDetailNextRetryAt"),
+  messageHash: $("codexDetailMessageHash"), error: $("codexDetailError"),
+};
 
 function escapeText(value) { return String(value ?? ""); }
 function formatTime(value) {
@@ -183,6 +212,204 @@ function toast(message) {
   node.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { node.hidden = true; }, 4200);
+}
+
+function formatAge(value) {
+  const at = Math.max(0, Number(value) || 0);
+  if (!at) return "尚未回報";
+  const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分鐘前`;
+  return `${Math.floor(minutes / 60)} 小時前`;
+}
+
+function normalizeCodexSupportMessage(value) {
+  return String(value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+}
+
+function selectedCodexSupportMessage() {
+  const mode = String($("codexMessagePreset").value || "FIX_SCRIPT");
+  if (mode === "CUSTOM") {
+    return { mode, label: "自訂訊息", message: normalizeCodexSupportMessage($("codexCustomMessage").value) };
+  }
+  const preset = CODEX_SUPPORT_PRESETS[mode] || CODEX_SUPPORT_PRESETS.FIX_SCRIPT;
+  return { mode, label: preset.label, message: preset.message };
+}
+
+function updateCodexMessageControls() {
+  const custom = $("codexMessagePreset").value === "CUSTOM";
+  $("codexCustomMessageField").hidden = !custom;
+  const length = normalizeCodexSupportMessage($("codexCustomMessage").value).length;
+  $("codexMessageCharacterCount").textContent = `${length} / ${CODEX_SUPPORT_MAX_MESSAGE_LENGTH}`;
+  renderCodexSupportStatus();
+}
+
+function setCodexStage(element, stageState, detail) {
+  if (!element) return;
+  element.dataset.state = stageState;
+  const small = element.querySelector("small");
+  if (small) small.textContent = detail;
+}
+
+function setCodexSupportMessage(kind, message) {
+  for (const element of [$("codexSupportStatus"), $("codexSupportDialogStatus")]) {
+    element.className = `support-status ${kind}`;
+    element.textContent = message;
+  }
+}
+
+function renderCodexSupportStatus() {
+  const data = state.codexSupportData || {};
+  const requestNonce = Math.max(0, Number(data.requestNonce) || 0);
+  const statusNonce = Math.max(0, Number(data.statusNonce) || 0);
+  const storedState = String(data.state || "").trim().toUpperCase();
+  const supportState = requestNonce > statusNonce ? "PENDING" : storedState;
+  const detail = String(data.detail || "").trim();
+  const heartbeatAt = Math.max(0, Number(data.heartbeatAt) || 0);
+  const requestedAt = Math.max(0, Number(data.requestedAt) || 0);
+  const receivedAt = Math.max(0, Number(data.receivedAt) || 0);
+  const validatedAt = Math.max(0, Number(data.validatedAt) || 0);
+  const lastAttemptAt = Math.max(0, Number(data.lastAttemptAt) || 0);
+  const nextRetryAt = Math.max(0, Number(data.nextRetryAt) || 0);
+  const queuedAt = Math.max(0, Number(data.queuedAt) || 0);
+  const attemptCount = Math.max(0, Number(data.attemptCount) || 0);
+  const bridgeOnline = heartbeatAt > 0 && Date.now() - heartbeatAt < CODEX_BRIDGE_ONLINE_MS;
+  const cooldownRemaining = queuedAt > 0 ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0;
+  const requestPending = requestNonce > statusNonce || (
+    requestNonce === statusNonce && CODEX_SUPPORT_PENDING_STATES.includes(supportState)
+  );
+  const selection = selectedCodexSupportMessage();
+  $("btnAskCodex").disabled = state.codexSupportSending || requestPending || cooldownRemaining > 0
+    || !selection.message || selection.message.length > CODEX_SUPPORT_MAX_MESSAGE_LENGTH;
+
+  const stateLabels = {
+    PENDING: "已送出，等待家中主機", RECEIVED: "家中主機已收到", VALIDATING: "正在驗證訊息",
+    QUEUEING: "正在送往 Codex", RETRYING: "Codex 暫未接收，等待重試", QUEUED: "已排入目前 Codex 任務",
+    REJECTED: "訊息被主機拒絕", RATE_LIMITED: "送出過於頻繁", FAILED: "傳送失敗", READY: "橋接程式待命",
+  };
+  codexDetails.state.textContent = stateLabels[supportState] || (bridgeOnline ? "橋接程式待命" : "等待家中主機");
+  codexDetails.nonce.textContent = requestNonce > 0 ? String(requestNonce) : "-";
+  codexDetails.requestedAt.textContent = formatTime(requestedAt);
+  codexDetails.device.textContent = String(data.requestedDeviceUid || "未指定");
+  codexDetails.message.textContent = String(data.requestMessage || "-");
+  codexDetails.host.textContent = [data.host, data.bridgeVersion ? `Bridge ${data.bridgeVersion}` : ""].filter(Boolean).join(" · ") || "-";
+  codexDetails.heartbeat.textContent = heartbeatAt ? `${formatTime(heartbeatAt)}（${formatAge(heartbeatAt)}）` : "-";
+  codexDetails.receivedAt.textContent = formatTime(receivedAt);
+  codexDetails.validatedAt.textContent = formatTime(validatedAt);
+  codexDetails.attemptCount.textContent = String(attemptCount);
+  codexDetails.lastAttemptAt.textContent = formatTime(lastAttemptAt);
+  codexDetails.queuedAt.textContent = formatTime(queuedAt);
+  codexDetails.nextRetryAt.textContent = formatTime(nextRetryAt);
+  codexDetails.messageHash.textContent = data.messageSha256 ? `SHA-256 ${data.messageSha256}` : "-";
+  codexDetails.error.textContent = [data.errorCode, data.errorDetail || detail].filter(Boolean).join("：") || "-";
+
+  const lifecycle = requestNonce > 0 && supportState !== "READY";
+  for (const stage of Object.values(codexStages)) setCodexStage(stage, "waiting", "等待前一步完成");
+  if (lifecycle) {
+    setCodexStage(codexStages.submitted, "done", requestedAt ? `已於 ${formatTime(requestedAt)} 寫入` : "網站已寫入請求");
+    setCodexStage(codexStages.received, "active", "等待橋接程式讀取");
+  } else {
+    setCodexStage(codexStages.submitted, "waiting", "目前沒有新請求");
+    setCodexStage(codexStages.received, "waiting", "等待網站送出新請求");
+  }
+  if (["RECEIVED", "VALIDATING", "QUEUEING", "RETRYING", "QUEUED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState)) {
+    setCodexStage(codexStages.received, "done", receivedAt ? `收到於 ${formatTime(receivedAt)}` : "家中主機已讀取");
+    setCodexStage(codexStages.validated, "active", "正在檢查訊息");
+  }
+  if (["QUEUEING", "RETRYING", "QUEUED", "RATE_LIMITED", "FAILED"].includes(supportState)) {
+    setCodexStage(codexStages.validated, "done", validatedAt ? `完成於 ${formatTime(validatedAt)}` : "訊息驗證完成");
+    setCodexStage(codexStages.attempted, "active", attemptCount > 0 ? `第 ${attemptCount} 次嘗試` : "準備送往 Codex");
+  }
+  if (supportState === "QUEUED") {
+    setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
+    setCodexStage(codexStages.queued, "done", queuedAt ? `排入於 ${formatTime(queuedAt)}` : "Codex 佇列已接收");
+  } else if (supportState === "RETRYING") {
+    setCodexStage(codexStages.attempted, "active", nextRetryAt ? `第 ${attemptCount} 次未成功；${formatTime(nextRetryAt)} 重試` : "暫未成功，會自動重試");
+  } else if (supportState === "REJECTED") {
+    setCodexStage(codexStages.validated, "error", data.errorDetail || detail || "訊息未通過驗證");
+  } else if (supportState === "RATE_LIMITED") {
+    setCodexStage(codexStages.attempted, "error", detail || "仍在五分鐘間隔內");
+  } else if (supportState === "FAILED") {
+    setCodexStage(codexStages.attempted, "error", data.errorDetail || detail || "無法送進 Codex");
+  }
+
+  if (state.codexSupportSending) return setCodexSupportMessage("pending", "正在寫入一般控制台請求…");
+  if (state.codexSupportError) return setCodexSupportMessage("error", state.codexSupportError);
+  if (requestPending) return setCodexSupportMessage("pending", detail || stateLabels[supportState] || "已送出，等待家中主機接收…");
+  if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED") {
+    return setCodexSupportMessage("ok", cooldownRemaining > 0
+      ? `已送進目前 Codex 任務；${Math.ceil(cooldownRemaining / 1000)} 秒後可再次送出`
+      : "已送進目前 Codex 任務");
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && ["REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState)) {
+    return setCodexSupportMessage("error", detail || "本機 Codex 未接收，請稍後重試");
+  }
+  return setCodexSupportMessage("idle", bridgeOnline
+    ? `本機 Codex 已連線（${formatAge(heartbeatAt)}）`
+    : "家中主機尚未回報 Codex 連線");
+}
+
+function stopCodexSupportPolling() {
+  clearTimeout(state.codexSupportTimer);
+  state.codexSupportTimer = 0;
+}
+
+function scheduleCodexSupportRefresh() {
+  stopCodexSupportPolling();
+  if (!$("codexSupportDialog").open) return;
+  const delay = state.codexSupportData?.pending ? 3_000 : 15_000;
+  state.codexSupportTimer = setTimeout(() => refreshCodexSupport().catch(() => {}), delay);
+}
+
+async function refreshCodexSupport({ schedule = true } = {}) {
+  if (state.codexSupportRefreshInFlight) return;
+  state.codexSupportRefreshInFlight = true;
+  try {
+    state.codexSupportData = await api("/api/v1/codex-support");
+    state.codexSupportError = "";
+  } catch (error) {
+    state.codexSupportError = `無法讀取 Codex 橋接狀態：${error.message}`;
+  } finally {
+    state.codexSupportRefreshInFlight = false;
+    renderCodexSupportStatus();
+    if (schedule) scheduleCodexSupportRefresh();
+  }
+}
+
+async function requestCodexSupport() {
+  if (state.codexSupportSending) return;
+  const selection = selectedCodexSupportMessage();
+  if (!selection.message) {
+    state.codexSupportError = "請先輸入要送出的自訂訊息";
+    renderCodexSupportStatus();
+    $("codexCustomMessage").focus();
+    return;
+  }
+  if (selection.message.length > CODEX_SUPPORT_MAX_MESSAGE_LENGTH) {
+    state.codexSupportError = `自訂訊息不可超過 ${CODEX_SUPPORT_MAX_MESSAGE_LENGTH} 個字元`;
+    renderCodexSupportStatus();
+    return;
+  }
+
+  state.codexSupportSending = true;
+  state.codexSupportError = "";
+  renderCodexSupportStatus();
+  try {
+    state.codexSupportData = await api("/api/v1/codex-support", {
+      method: "POST",
+      body: { mode: selection.mode, message: selection.message, deviceUid: state.selectedUid },
+    });
+  } catch (error) {
+    state.codexSupportError = error.message;
+  } finally {
+    state.codexSupportSending = false;
+    renderCodexSupportStatus();
+    scheduleCodexSupportRefresh();
+  }
 }
 
 async function api(path, options = {}) {
@@ -670,6 +897,26 @@ async function stopLive() {
 }
 
 function bindEvents() {
+  $("btnOpenCodexSupport").addEventListener("click", () => {
+    state.codexSupportError = "";
+    updateCodexMessageControls();
+    const dialog = $("codexSupportDialog");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    refreshCodexSupport().catch(() => {});
+  });
+  $("btnCloseCodexSupport").addEventListener("click", () => $("codexSupportDialog").close());
+  $("codexSupportDialog").addEventListener("close", stopCodexSupportPolling);
+  $("codexMessagePreset").addEventListener("change", () => {
+    state.codexSupportError = "";
+    updateCodexMessageControls();
+    if ($("codexMessagePreset").value === "CUSTOM") $("codexCustomMessage").focus();
+  });
+  $("codexCustomMessage").addEventListener("input", () => {
+    state.codexSupportError = "";
+    updateCodexMessageControls();
+  });
+  $("btnAskCodex").addEventListener("click", () => requestCodexSupport());
   document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => {
     document.querySelectorAll("[data-tab]").forEach((item) => item.classList.toggle("active", item === button));
     document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
@@ -708,6 +955,7 @@ function bindEvents() {
   window.addEventListener("beforeunload", () => {
     clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer); clearInterval(state.periodicTimer);
     clearTimeout(state.refreshTimer); clearTimeout(state.selectedRefreshTimer);
+    stopCodexSupportPolling();
   });
 }
 
@@ -715,10 +963,12 @@ async function boot() {
   renderServerChoices("");
   appView.hidden = false;
   bindEvents();
+  updateCodexMessageControls();
   state.me = await api("/api/v1/auth/me");
   setText("releaseBadge", `Server ${state.me.serverVersion || "未知"}`);
   $("releaseBadge").className = "badge muted";
   await refresh({ reloadSnapshot: true, admin: true });
+  refreshCodexSupport({ schedule: false }).catch(() => {});
   clearInterval(state.periodicTimer);
   state.periodicTimer = setInterval(() => {
     if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));

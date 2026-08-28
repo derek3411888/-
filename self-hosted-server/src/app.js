@@ -17,10 +17,12 @@ import {
 import {
   cutoverToPrimary,
   forceMigrationMode,
+  getCodexSupportStatus,
   getMigrationState,
   importFirestoreDevices,
   migrationReadiness,
   publishDiscovery,
+  submitCodexSupportMessage,
 } from "./firestore-bridge.js";
 import {
   ensureMediaRoots,
@@ -790,6 +792,23 @@ async function handleRequest(req, res) {
   }
   if (pathname === "/api/v1/devices" && req.method === "GET") {
     sendJson(res, 200, { devices: await listDevices(), migration: await getMigrationState() });
+    return;
+  }
+  if (pathname === "/api/v1/codex-support" && req.method === "GET") {
+    sendJson(res, 200, await getCodexSupportStatus());
+    return;
+  }
+  if (pathname === "/api/v1/codex-support" && req.method === "POST") {
+    if (!limiter.check(`codex-support:${browser.id}:${clientIp(req)}`, 30, 60 * 60_000)) {
+      throw new HttpError(429, "Codex 維修請求送出過於頻繁", "CODEX_SUPPORT_RATE_LIMITED");
+    }
+    const body = await readJson(req, Math.min(config.maxJsonBytes, 8 * 1024));
+    const deviceUid = String(body.deviceUid ?? "").trim();
+    sendJson(res, 201, await submitCodexSupportMessage({
+      mode: body.mode,
+      message: body.message,
+      deviceUid: deviceUid ? normalizeUid(deviceUid) : "",
+    }));
     return;
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid");
