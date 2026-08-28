@@ -86,7 +86,7 @@ $shortcut.TargetPath = $powershellPath
 $shortcut.Arguments = $arguments
 $shortcut.WorkingDirectory = $installRoot
 $shortcut.WindowStyle = 7
-$shortcut.Description = '將公司控制台的固定維修請求送進目前 Codex 任務'
+$shortcut.Description = '將公司控制台的預設或自訂訊息送進目前 Codex 任務'
 $shortcut.Save()
 
 $running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |

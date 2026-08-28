@@ -2,9 +2,11 @@
 
 這是供公司或其他無法連線個人網址的網路使用的 Firestore 控制台。GitHub Pages 首頁不再轉址到固定 IP；狀態、快照、命令與設定都經由既有 Firestore 文件傳遞。自架網站仍保留完整錄影與直播功能，兩者的用途分開。
 
-頁首的「腳本有問題，請 Codex 修正」不會另開 ChatGPT。按下後只會在 Firestore 的 `ahk_clients/__codex_support` 寫入固定動作 `FIX_SCRIPT`；Docker／資料庫所在的 Windows 主機常駐橋接程式收到後，使用本機 Codex 的既有任務佇列，把固定文字「現在腳本有問題，請你找出問題並修正」直接送進指定的既有 Codex 任務。網頁會依序顯示「等待家中主機／正在送入／已送進目前 Codex 任務／自動重試」。
+頁首的「通知目前 Codex 任務」不會另開 ChatGPT。可以選擇「找出問題並修正／只分析原因／檢查目前狀態」三種預設訊息，也可以自行輸入最多 1,000 字元；Docker／資料庫所在的 Windows 主機常駐橋接程式收到後，會使用本機 Codex 的既有任務佇列，把訊息直接送進指定的既有 Codex 任務。
 
-橋接端不接受網頁提供任意 prompt，也不把 Codex 任務 ID 放到 Firestore；它只接受固定動作並在本機轉成固定文字。同一 nonce 只送一次，且兩次請求至少間隔 5 分鐘。安裝方式見 `self-hosted-server/windows/Install-CodexSupportBridge.ps1`。
+網頁會分別顯示「網站已送出／家中主機收到／訊息驗證／送往 Codex／Codex 佇列已接收」，並列出 nonce、各階段時間、嘗試次數、下次重試、訊息 SHA-256 指紋與錯誤原因。「已排入」只代表本機佇列接收，不能當成 Codex 已開始或已完成。橋接端仍不把 Codex 任務 ID 放到 Firestore；同一 nonce 成功後不會重複送入，且兩次成功排入至少間隔 5 分鐘。舊版網頁的 `FIX_SCRIPT` 動作仍可使用。安裝方式見 `self-hosted-server/windows/Install-CodexSupportBridge.ps1`。
+
+公司控制台目前沒有登入驗證，自訂訊息會經過 Firestore，因此不得輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。
 
 ## Firebase 設定
 

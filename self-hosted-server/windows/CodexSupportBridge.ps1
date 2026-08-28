@@ -9,9 +9,11 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$ExpectedAction = 'FIX_SCRIPT'
+$ExpectedAction = 'QUEUE_MESSAGE_V1'
+$LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '1.0.0'
+$BridgeVersion = '1.1.0'
+$MaxMessageLength = 1000
 
 function Read-JsonFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "找不到 Codex 橋接設定：$Path" }
@@ -101,6 +103,18 @@ function Read-FirestoreField($Document, [string]$Name, $Fallback = $null) {
     return $Fallback
 }
 
+function Read-OptionalProperty($Object, [string]$Name, $Fallback) {
+    if ($null -eq $Object) { return $Fallback }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) { return $Fallback }
+    return $property.Value
+}
+
+function Read-MetadataValue([hashtable]$Metadata, [string]$Name, $Fallback) {
+    if ($Metadata.ContainsKey($Name)) { return $Metadata[$Name] }
+    return $Fallback
+}
+
 function Read-State([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
         return [pscustomobject]@{
@@ -108,22 +122,45 @@ function Read-State([string]$Path) {
             LastStatus = ''
             LastDetail = ''
             LastQueuedAt = 0L
+            LastReceivedAt = 0L
+            LastValidatedAt = 0L
+            LastAttemptCount = 0
+            LastAttemptAt = 0L
+            LastMessageSha256 = ''
+            LastMessageLength = 0
+            LastErrorCode = ''
+            LastErrorDetail = ''
         }
     }
     try {
         $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
         return [pscustomobject]@{
-            LastHandledNonce = [long]$state.LastHandledNonce
-            LastStatus = [string]$state.LastStatus
-            LastDetail = [string]$state.LastDetail
-            LastQueuedAt = [long]$state.LastQueuedAt
+            LastHandledNonce = [long](Read-OptionalProperty $state 'LastHandledNonce' 0L)
+            LastStatus = [string](Read-OptionalProperty $state 'LastStatus' '')
+            LastDetail = [string](Read-OptionalProperty $state 'LastDetail' '')
+            LastQueuedAt = [long](Read-OptionalProperty $state 'LastQueuedAt' 0L)
+            LastReceivedAt = [long](Read-OptionalProperty $state 'LastReceivedAt' 0L)
+            LastValidatedAt = [long](Read-OptionalProperty $state 'LastValidatedAt' 0L)
+            LastAttemptCount = [int](Read-OptionalProperty $state 'LastAttemptCount' 0)
+            LastAttemptAt = [long](Read-OptionalProperty $state 'LastAttemptAt' 0L)
+            LastMessageSha256 = [string](Read-OptionalProperty $state 'LastMessageSha256' '')
+            LastMessageLength = [int](Read-OptionalProperty $state 'LastMessageLength' 0)
+            LastErrorCode = [string](Read-OptionalProperty $state 'LastErrorCode' '')
+            LastErrorDetail = [string](Read-OptionalProperty $state 'LastErrorDetail' '')
         }
     } catch {
         throw "Codex 橋接狀態檔損壞：$Path"
     }
 }
 
-function Save-State([string]$Path, [long]$Nonce, [string]$Status, [string]$Detail, [long]$QueuedAt) {
+function Save-State(
+    [string]$Path,
+    [long]$Nonce,
+    [string]$Status,
+    [string]$Detail,
+    [long]$QueuedAt,
+    [hashtable]$Metadata = @{}
+) {
     $directory = Split-Path -Parent $Path
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     $tempPath = "$Path.$PID.tmp"
@@ -132,6 +169,14 @@ function Save-State([string]$Path, [long]$Nonce, [string]$Status, [string]$Detai
         LastStatus = $Status
         LastDetail = $Detail
         LastQueuedAt = $QueuedAt
+        LastReceivedAt = [long](Read-MetadataValue $Metadata 'ReceivedAt' 0L)
+        LastValidatedAt = [long](Read-MetadataValue $Metadata 'ValidatedAt' 0L)
+        LastAttemptCount = [int](Read-MetadataValue $Metadata 'AttemptCount' 0)
+        LastAttemptAt = [long](Read-MetadataValue $Metadata 'AttemptAt' 0L)
+        LastMessageSha256 = [string](Read-MetadataValue $Metadata 'MessageSha256' '')
+        LastMessageLength = [int](Read-MetadataValue $Metadata 'MessageLength' 0)
+        LastErrorCode = [string](Read-MetadataValue $Metadata 'ErrorCode' '')
+        LastErrorDetail = [string](Read-MetadataValue $Metadata 'ErrorDetail' '')
         UpdatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     } | ConvertTo-Json -Depth 4
     [IO.File]::WriteAllText($tempPath, $payload, [Text.UTF8Encoding]::new($false))
@@ -153,19 +198,59 @@ function Write-BridgeLog([string]$Path, [string]$Level, [string]$Message) {
     Add-Content -LiteralPath $Path -Encoding UTF8 -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Level] $safeMessage"
 }
 
-function Publish-RequestStatus($Config, [long]$Nonce, [string]$State, [string]$Detail, [long]$QueuedAt = 0L) {
+function Publish-RequestStatus(
+    $Config,
+    [long]$Nonce,
+    [string]$State,
+    [string]$Detail,
+    [long]$QueuedAt = 0L,
+    [hashtable]$Extra = @{}
+) {
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $safeDetail = [string]$Detail
+    if ($safeDetail.Length -gt 500) { $safeDetail = $safeDetail.Substring(0, 500) }
     $values = @{
         bridgeState = $State
         bridgeStatusNonce = $Nonce
-        bridgeDetail = $Detail.Substring(0, [Math]::Min(500, $Detail.Length))
+        bridgeDetail = $safeDetail
         bridgeUpdatedAt = $now
         bridgeHeartbeatAt = $now
         bridgeHost = [string]$env:COMPUTERNAME
         bridgeVersion = $BridgeVersion
     }
     if ($QueuedAt -gt 0) { $values.bridgeQueuedAt = $QueuedAt }
+    foreach ($name in $Extra.Keys) { $values[$name] = $Extra[$name] }
     Set-FirestoreFields $Config $values
+}
+
+function Normalize-RequestMessage([string]$Value) {
+    $normalized = $Value -replace "`r`n", "`n" -replace "`r", "`n"
+    $normalized = $normalized -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', ''
+    return $normalized.Trim()
+}
+
+function Get-MessageSha256([string]$Message) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Message)
+        return (($algorithm.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Get-ReplayMetadata($State) {
+    return @{
+        bridgeReceivedAt = [long]$State.LastReceivedAt
+        bridgeValidatedAt = [long]$State.LastValidatedAt
+        bridgeAttemptCount = [int]$State.LastAttemptCount
+        bridgeLastAttemptAt = [long]$State.LastAttemptAt
+        bridgeNextRetryAt = 0L
+        bridgeMessageSha256 = [string]$State.LastMessageSha256
+        bridgeMessageLength = [int]$State.LastMessageLength
+        bridgeErrorCode = [string]$State.LastErrorCode
+        bridgeErrorDetail = [string]$State.LastErrorDetail
+    }
 }
 
 $config = Read-JsonFile $ConfigPath
@@ -187,6 +272,8 @@ if ($ValidateOnly) {
         FirestoreReachable = $true
         SupportDocumentExists = ($null -ne $document)
         PollSeconds = [int]$config.PollSeconds
+        SupportsCustomMessage = $true
+        MaxMessageLength = $MaxMessageLength
     } | ConvertTo-Json -Depth 4
     exit 0
 }
@@ -218,44 +305,173 @@ try {
                 $remoteStatusNonce = [long](Read-FirestoreField $document 'bridgeStatusNonce' 0L)
                 $remoteState = [string](Read-FirestoreField $document 'bridgeState' '')
                 if ($remoteStatusNonce -ne $nonce -or $remoteState -ne $state.LastStatus) {
-                    Publish-RequestStatus $config $nonce $state.LastStatus $state.LastDetail $state.LastQueuedAt
+                    Publish-RequestStatus $config $nonce $state.LastStatus $state.LastDetail $state.LastQueuedAt (Get-ReplayMetadata $state)
                 }
             } elseif ($nonce -gt $state.LastHandledNonce) {
-                if ($action -ne $ExpectedAction) {
-                    $detail = '已拒絕：網站只能要求固定的腳本修正動作'
-                    Save-State $statePath $nonce 'REJECTED' $detail $state.LastQueuedAt
-                    Publish-RequestStatus $config $nonce 'REJECTED' $detail
+                $remoteStatusNonce = [long](Read-FirestoreField $document 'bridgeStatusNonce' 0L)
+                $previousReceivedAt = if ($remoteStatusNonce -eq $nonce) {
+                    [long](Read-FirestoreField $document 'bridgeReceivedAt' 0L)
+                } else { 0L }
+                $previousAttemptCount = if ($remoteStatusNonce -eq $nonce) {
+                    [int](Read-FirestoreField $document 'bridgeAttemptCount' 0)
+                } else { 0 }
+                $previousAttemptAt = if ($remoteStatusNonce -eq $nonce) {
+                    [long](Read-FirestoreField $document 'bridgeLastAttemptAt' 0L)
+                } else { 0L }
+                $receivedAt = if ($previousReceivedAt -gt 0) {
+                    $previousReceivedAt
+                } else { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+                Publish-RequestStatus $config $nonce 'RECEIVED' '家中主機已收到請求，準備驗證訊息' 0L @{
+                    bridgeReceivedAt = $receivedAt
+                    bridgeValidatedAt = 0L
+                    bridgeAttemptCount = $previousAttemptCount
+                    bridgeLastAttemptAt = $previousAttemptAt
+                    bridgeNextRetryAt = 0L
+                    bridgeQueuedAt = 0L
+                    bridgeMessageSha256 = ''
+                    bridgeMessageLength = 0
+                    bridgeErrorCode = ''
+                    bridgeErrorDetail = ''
+                }
+
+                Publish-RequestStatus $config $nonce 'VALIDATING' '正在檢查請求類型、訊息長度與內容' 0L @{
+                    bridgeReceivedAt = $receivedAt
+                }
+
+                $rawMessage = ''
+                if ($action -eq $LegacyAction) {
+                    $rawMessage = $FixedPrompt
+                } elseif ($action -eq $ExpectedAction) {
+                    $rawMessage = [string](Read-FirestoreField $document 'supportRequestMessage' '')
+                } else {
+                    $detail = '已拒絕：不支援的請求類型'
+                    $errorCode = 'UNSUPPORTED_ACTION'
+                    $metadata = @{ ReceivedAt = $receivedAt; ErrorCode = $errorCode; ErrorDetail = $detail }
+                    Save-State $statePath $nonce 'REJECTED' $detail $state.LastQueuedAt $metadata
+                    Publish-RequestStatus $config $nonce 'REJECTED' $detail 0L @{
+                        bridgeReceivedAt = $receivedAt
+                        bridgeErrorCode = $errorCode
+                        bridgeErrorDetail = $detail
+                    }
                     Write-BridgeLog $logPath 'WARN' "Rejected unsupported action for nonce=$nonce"
-                } elseif ($state.LastQueuedAt -gt 0 -and
+                    continue
+                }
+
+                if ($rawMessage.Length -gt $MaxMessageLength) {
+                    $detail = "已拒絕：訊息超過 $MaxMessageLength 字元"
+                    $errorCode = 'MESSAGE_TOO_LONG'
+                    $metadata = @{ ReceivedAt = $receivedAt; ErrorCode = $errorCode; ErrorDetail = $detail; MessageLength = $rawMessage.Length }
+                    Save-State $statePath $nonce 'REJECTED' $detail $state.LastQueuedAt $metadata
+                    Publish-RequestStatus $config $nonce 'REJECTED' $detail 0L @{
+                        bridgeReceivedAt = $receivedAt
+                        bridgeMessageLength = $rawMessage.Length
+                        bridgeErrorCode = $errorCode
+                        bridgeErrorDetail = $detail
+                    }
+                    Write-BridgeLog $logPath 'WARN' "Rejected overlength message for nonce=$nonce length=$($rawMessage.Length)"
+                    continue
+                }
+
+                $message = Normalize-RequestMessage $rawMessage
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    $detail = '已拒絕：訊息不可空白'
+                    $errorCode = 'EMPTY_MESSAGE'
+                    $metadata = @{ ReceivedAt = $receivedAt; ErrorCode = $errorCode; ErrorDetail = $detail }
+                    Save-State $statePath $nonce 'REJECTED' $detail $state.LastQueuedAt $metadata
+                    Publish-RequestStatus $config $nonce 'REJECTED' $detail 0L @{
+                        bridgeReceivedAt = $receivedAt
+                        bridgeErrorCode = $errorCode
+                        bridgeErrorDetail = $detail
+                    }
+                    Write-BridgeLog $logPath 'WARN' "Rejected empty message for nonce=$nonce"
+                    continue
+                }
+
+                $validatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                $messageHash = Get-MessageSha256 $message
+                if ($state.LastQueuedAt -gt 0 -and
                     $now - $state.LastQueuedAt -lt ([int]$config.MinimumRequestIntervalSeconds * 1000)) {
                     $remaining = [Math]::Ceiling((([int]$config.MinimumRequestIntervalSeconds * 1000) - ($now - $state.LastQueuedAt)) / 1000)
                     $detail = "已限制重複送出；請在 $remaining 秒後再按一次"
-                    Save-State $statePath $nonce 'RATE_LIMITED' $detail $state.LastQueuedAt
-                    Publish-RequestStatus $config $nonce 'RATE_LIMITED' $detail
+                    $errorCode = 'RATE_LIMITED'
+                    $metadata = @{
+                        ReceivedAt = $receivedAt; ValidatedAt = $validatedAt; MessageSha256 = $messageHash
+                        MessageLength = $message.Length; ErrorCode = $errorCode; ErrorDetail = $detail
+                    }
+                    Save-State $statePath $nonce 'RATE_LIMITED' $detail $state.LastQueuedAt $metadata
+                    Publish-RequestStatus $config $nonce 'RATE_LIMITED' $detail 0L @{
+                        bridgeReceivedAt = $receivedAt
+                        bridgeValidatedAt = $validatedAt
+                        bridgeMessageSha256 = $messageHash
+                        bridgeMessageLength = $message.Length
+                        bridgeErrorCode = $errorCode
+                        bridgeErrorDetail = $detail
+                    }
                     Write-BridgeLog $logPath 'WARN' "Rate limited nonce=$nonce"
+                    continue
+                }
+
+                $attemptCount = $previousAttemptCount + 1
+                $attemptAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                Publish-RequestStatus $config $nonce 'QUEUEING' "已驗證訊息，正在進行第 $attemptCount 次 Codex 佇列嘗試" 0L @{
+                    bridgeReceivedAt = $receivedAt
+                    bridgeValidatedAt = $validatedAt
+                    bridgeAttemptCount = $attemptCount
+                    bridgeLastAttemptAt = $attemptAt
+                    bridgeNextRetryAt = 0L
+                    bridgeMessageSha256 = $messageHash
+                    bridgeMessageLength = $message.Length
+                    bridgeErrorCode = ''
+                    bridgeErrorDetail = ''
+                }
+
+                Push-Location -LiteralPath ([string]$config.Workspace)
+                try {
+                    $output = @(& $codexPath queue --thread ([string]$config.ThreadId) --message $message 2>&1) -join ' '
+                    $exitCode = $LASTEXITCODE
+                } finally {
+                    Pop-Location
+                }
+                if ($exitCode -eq 0) {
+                    $queuedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    $detail = '已排入目前 Codex 任務；這只代表佇列已接收，不代表已開始或完成'
+                    $metadata = @{
+                        ReceivedAt = $receivedAt; ValidatedAt = $validatedAt; AttemptCount = $attemptCount
+                        AttemptAt = $attemptAt; MessageSha256 = $messageHash; MessageLength = $message.Length
+                    }
+                    # 本機狀態先落盤，再回寫 Firestore；即使回寫失敗也不會重複送入 Codex。
+                    Save-State $statePath $nonce 'QUEUED' $detail $queuedAt $metadata
+                    Publish-RequestStatus $config $nonce 'QUEUED' $detail $queuedAt @{
+                        bridgeReceivedAt = $receivedAt
+                        bridgeValidatedAt = $validatedAt
+                        bridgeAttemptCount = $attemptCount
+                        bridgeLastAttemptAt = $attemptAt
+                        bridgeNextRetryAt = 0L
+                        bridgeMessageSha256 = $messageHash
+                        bridgeMessageLength = $message.Length
+                        bridgeErrorCode = ''
+                        bridgeErrorDetail = ''
+                    }
+                    Write-BridgeLog $logPath 'INFO' "Queued support message nonce=$nonce length=$($message.Length) sha256=$messageHash"
                 } else {
-                    Publish-RequestStatus $config $nonce 'RETRYING' '家中主機已收到，正在送進目前 Codex 任務'
-                    Push-Location -LiteralPath ([string]$config.Workspace)
-                    try {
-                        $output = @(& $codexPath queue --thread ([string]$config.ThreadId) --message $FixedPrompt 2>&1) -join ' '
-                        $exitCode = $LASTEXITCODE
-                    } finally {
-                        Pop-Location
+                    $retryAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ([int]$config.PollSeconds * 1000)
+                    $safeOutput = ($output -replace '[\r\n]+', ' ').Trim()
+                    if ($safeOutput.Length -gt 240) { $safeOutput = $safeOutput.Substring(0, 240) }
+                    $errorCode = "CODEX_QUEUE_EXIT_$exitCode"
+                    $errorDetail = if ($safeOutput) { $safeOutput } else { 'Codex CLI 未提供錯誤內容' }
+                    $detail = "第 $attemptCount 次未排入，會在 $(Get-Date ([DateTimeOffset]::FromUnixTimeMilliseconds($retryAt).LocalDateTime) -Format 'HH:mm:ss') 自動重試"
+                    Publish-RequestStatus $config $nonce 'RETRYING' $detail 0L @{
+                        bridgeReceivedAt = $receivedAt
+                        bridgeValidatedAt = $validatedAt
+                        bridgeAttemptCount = $attemptCount
+                        bridgeLastAttemptAt = $attemptAt
+                        bridgeNextRetryAt = $retryAt
+                        bridgeMessageSha256 = $messageHash
+                        bridgeMessageLength = $message.Length
+                        bridgeErrorCode = $errorCode
+                        bridgeErrorDetail = $errorDetail
                     }
-                    if ($exitCode -eq 0) {
-                        $queuedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-                        $detail = '已送進目前 Codex 任務；不是另開 ChatGPT，也沒有建立新任務'
-                        # 本機狀態先落盤，再回寫 Firestore；即使回寫失敗也不會重複送入 Codex。
-                        Save-State $statePath $nonce 'QUEUED' $detail $queuedAt
-                        Publish-RequestStatus $config $nonce 'QUEUED' $detail $queuedAt
-                        Write-BridgeLog $logPath 'INFO' "Queued fixed support request nonce=$nonce"
-                    } else {
-                        $safeOutput = ($output -replace '[\r\n]+', ' ').Trim()
-                        if ($safeOutput.Length -gt 240) { $safeOutput = $safeOutput.Substring(0, 240) }
-                        $detail = if ($safeOutput) { "Codex 暫時未接收，會自動重試：$safeOutput" } else { 'Codex 暫時未接收，會自動重試' }
-                        Publish-RequestStatus $config $nonce 'RETRYING' $detail
-                        Write-BridgeLog $logPath 'WARN' "Codex queue failed nonce=$nonce exit=$exitCode $safeOutput"
-                    }
+                    Write-BridgeLog $logPath 'WARN' "Codex queue failed nonce=$nonce attempt=$attemptCount exit=$exitCode"
                 }
             }
         } catch {

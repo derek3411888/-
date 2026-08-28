@@ -29,11 +29,26 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "20260828-codex-bridge-v1";
+const WEB_BUILD = "20260828-codex-message-v3";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
-const CODEX_SUPPORT_ACTION = "FIX_SCRIPT";
+const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
+const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
 const CODEX_BRIDGE_ONLINE_MS = 3 * 60_000;
 const CODEX_SUPPORT_COOLDOWN_MS = 5 * 60_000;
+const CODEX_SUPPORT_PRESETS = Object.freeze({
+  FIX_SCRIPT: Object.freeze({
+    label: "找出問題並修正",
+    message: "現在腳本有問題，請你找出問題並修正",
+  }),
+  DIAGNOSE_ONLY: Object.freeze({
+    label: "只分析原因",
+    message: "現在腳本有問題，請找出原因並回報，先不要修改任何檔案。",
+  }),
+  CHECK_CURRENT_STATUS: Object.freeze({
+    label: "檢查目前狀態",
+    message: "請檢查目前腳本執行狀態與最新 Log，告訴我現在發生什麼事；先不要修改。",
+  }),
+});
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -41,8 +56,40 @@ const db = getFirestore(app);
 const clientsQuery = query(collection(db, COLLECTION), where("uid", "!=", ""));
 
 const pcDropdown = document.getElementById("pcDropdown");
+const btnOpenCodexSupport = document.getElementById("btnOpenCodexSupport");
 const btnAskCodex = document.getElementById("btnAskCodex");
 const codexSupportStatus = document.getElementById("codexSupportStatus");
+const codexSupportDialog = document.getElementById("codexSupportDialog");
+const btnCloseCodexSupport = document.getElementById("btnCloseCodexSupport");
+const codexMessagePreset = document.getElementById("codexMessagePreset");
+const codexCustomMessageField = document.getElementById("codexCustomMessageField");
+const codexCustomMessage = document.getElementById("codexCustomMessage");
+const codexMessageCharacterCount = document.getElementById("codexMessageCharacterCount");
+const codexSupportDialogStatus = document.getElementById("codexSupportDialogStatus");
+const codexStages = {
+  submitted: document.getElementById("codexStageSubmitted"),
+  received: document.getElementById("codexStageReceived"),
+  validated: document.getElementById("codexStageValidated"),
+  attempted: document.getElementById("codexStageAttempted"),
+  queued: document.getElementById("codexStageQueued"),
+};
+const codexDetails = {
+  state: document.getElementById("codexDetailState"),
+  nonce: document.getElementById("codexDetailNonce"),
+  requestedAt: document.getElementById("codexDetailRequestedAt"),
+  device: document.getElementById("codexDetailDevice"),
+  message: document.getElementById("codexDetailMessage"),
+  host: document.getElementById("codexDetailHost"),
+  heartbeat: document.getElementById("codexDetailHeartbeat"),
+  receivedAt: document.getElementById("codexDetailReceivedAt"),
+  validatedAt: document.getElementById("codexDetailValidatedAt"),
+  attemptCount: document.getElementById("codexDetailAttemptCount"),
+  lastAttemptAt: document.getElementById("codexDetailLastAttemptAt"),
+  queuedAt: document.getElementById("codexDetailQueuedAt"),
+  nextRetryAt: document.getElementById("codexDetailNextRetryAt"),
+  messageHash: document.getElementById("codexDetailMessageHash"),
+  error: document.getElementById("codexDetailError"),
+};
 const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
 const btnStop = document.getElementById("btnStop");
@@ -173,57 +220,171 @@ function toBoolean(value, fallback = false) {
   return fallback;
 }
 
+function normalizeCodexSupportMessage(value) {
+  return String(value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim()
+    .slice(0, CODEX_SUPPORT_MAX_MESSAGE_LENGTH);
+}
+
+function selectedCodexSupportMessage() {
+  const mode = String(codexMessagePreset.value || "FIX_SCRIPT");
+  if (mode === "CUSTOM") {
+    return {
+      mode,
+      label: "自訂訊息",
+      message: normalizeCodexSupportMessage(codexCustomMessage.value),
+    };
+  }
+  const preset = CODEX_SUPPORT_PRESETS[mode] || CODEX_SUPPORT_PRESETS.FIX_SCRIPT;
+  return { mode, label: preset.label, message: preset.message };
+}
+
+function updateCodexMessageControls() {
+  const custom = codexMessagePreset.value === "CUSTOM";
+  codexCustomMessageField.hidden = !custom;
+  const normalizedLength = normalizeCodexSupportMessage(codexCustomMessage.value).length;
+  codexMessageCharacterCount.textContent = `${normalizedLength} / ${CODEX_SUPPORT_MAX_MESSAGE_LENGTH}`;
+  renderCodexSupportStatus();
+}
+
+function setCodexStage(element, state, detail) {
+  if (!element) return;
+  element.dataset.state = state;
+  const text = element.querySelector("small");
+  if (text) text.textContent = detail;
+}
+
+function setCodexSupportMessage(kind, message) {
+  for (const element of [codexSupportStatus, codexSupportDialogStatus]) {
+    element.className = `support-status ${kind}`;
+    element.textContent = message;
+  }
+}
+
 function renderCodexSupportStatus() {
   const data = codexSupportData || {};
   const requestNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
   const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
-  const state = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
+  const storedState = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
+  const state = requestNonce > statusNonce ? "PENDING" : storedState;
   const detail = String(readField(data, "bridgeDetail", "") || "").trim();
   const heartbeatAt = toMillis(readField(data, "bridgeHeartbeatAt", 0));
+  const requestedAt = toMillis(readField(data, "supportRequestedAt", 0));
+  const receivedAt = toMillis(readField(data, "bridgeReceivedAt", 0));
+  const validatedAt = toMillis(readField(data, "bridgeValidatedAt", 0));
+  const lastAttemptAt = toMillis(readField(data, "bridgeLastAttemptAt", 0));
+  const nextRetryAt = toMillis(readField(data, "bridgeNextRetryAt", 0));
   const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
+  const attemptCount = Math.max(0, toInteger(readField(data, "bridgeAttemptCount", 0), 0));
   const bridgeOnline = heartbeatAt > 0 && Date.now() - heartbeatAt < CODEX_BRIDGE_ONLINE_MS;
   const cooldownRemaining = Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now());
+  const pendingStates = ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"];
 
   const requestPending = requestNonce > statusNonce || (
-    requestNonce === statusNonce && ["PENDING", "RETRYING"].includes(state)
+    requestNonce === statusNonce && pendingStates.includes(state)
   );
-  btnAskCodex.disabled = codexSupportSending || requestPending || cooldownRemaining > 0;
-  codexSupportStatus.className = "support-status idle";
+  const selection = selectedCodexSupportMessage();
+  btnAskCodex.disabled = codexSupportSending || requestPending || cooldownRemaining > 0 || !selection.message;
+
+  const stateLabels = {
+    PENDING: "已送出，等待家中主機",
+    RECEIVED: "家中主機已收到",
+    VALIDATING: "正在驗證訊息",
+    QUEUEING: "正在送往 Codex",
+    RETRYING: "Codex 暫未接收，等待重試",
+    QUEUED: "已排入目前 Codex 任務",
+    REJECTED: "訊息被主機拒絕",
+    RATE_LIMITED: "送出過於頻繁",
+    FAILED: "傳送失敗",
+    READY: "橋接程式待命",
+  };
+  codexDetails.state.textContent = stateLabels[state] || (bridgeOnline ? "橋接程式待命" : "等待家中主機");
+  codexDetails.nonce.textContent = requestNonce > 0 ? String(requestNonce) : "-";
+  codexDetails.requestedAt.textContent = fmtTs(requestedAt);
+  codexDetails.device.textContent = String(readField(data, "supportRequestedDeviceUid", "") || "未指定");
+  codexDetails.message.textContent = String(readField(data, "supportRequestMessage", "") || "-");
+  codexDetails.host.textContent = String(readField(data, "bridgeHost", "") || "-");
+  codexDetails.heartbeat.textContent = heartbeatAt ? `${fmtTs(heartbeatAt)}（${fmtAge(heartbeatAt)}）` : "-";
+  codexDetails.receivedAt.textContent = fmtTs(receivedAt);
+  codexDetails.validatedAt.textContent = fmtTs(validatedAt);
+  codexDetails.attemptCount.textContent = String(attemptCount);
+  codexDetails.lastAttemptAt.textContent = fmtTs(lastAttemptAt);
+  codexDetails.queuedAt.textContent = fmtTs(queuedAt);
+  codexDetails.nextRetryAt.textContent = fmtTs(nextRetryAt);
+  const messageHash = String(readField(data, "bridgeMessageSha256", "") || "");
+  codexDetails.messageHash.textContent = messageHash ? `SHA-256 ${messageHash}` : "-";
+  const errorCode = String(readField(data, "bridgeErrorCode", "") || "");
+  const errorDetail = String(readField(data, "bridgeErrorDetail", "") || "");
+  codexDetails.error.textContent = [errorCode, errorDetail || detail].filter(Boolean).join("：") || "-";
+
+  const hasRequestLifecycle = requestNonce > 0 && state !== "READY";
+  for (const stage of Object.values(codexStages)) setCodexStage(stage, "waiting", "等待前一步完成");
+  if (hasRequestLifecycle) {
+    setCodexStage(codexStages.submitted, "done", requestedAt ? `已於 ${fmtTs(requestedAt)} 寫入` : "網站已寫入請求");
+    setCodexStage(codexStages.received, "active", "等待橋接程式讀取");
+  } else {
+    setCodexStage(codexStages.submitted, "waiting", "目前沒有新請求");
+    setCodexStage(codexStages.received, "waiting", "等待網站送出新請求");
+  }
+  if (["RECEIVED", "VALIDATING", "QUEUEING", "RETRYING", "QUEUED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state)) {
+    setCodexStage(codexStages.received, "done", receivedAt ? `收到於 ${fmtTs(receivedAt)}` : "家中主機已讀取");
+    setCodexStage(codexStages.validated, "active", "正在檢查訊息");
+  }
+  if (["QUEUEING", "RETRYING", "QUEUED", "RATE_LIMITED", "FAILED"].includes(state)) {
+    setCodexStage(codexStages.validated, "done", validatedAt ? `完成於 ${fmtTs(validatedAt)}` : "訊息驗證完成");
+    setCodexStage(codexStages.attempted, "active", attemptCount > 0 ? `第 ${attemptCount} 次嘗試` : "準備送往 Codex");
+  }
+  if (state === "QUEUED") {
+    setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
+    setCodexStage(codexStages.queued, "done", queuedAt ? `排入於 ${fmtTs(queuedAt)}` : "Codex 佇列已接收");
+  } else if (state === "RETRYING") {
+    setCodexStage(codexStages.attempted, "active", nextRetryAt ? `第 ${attemptCount} 次未成功；${fmtTs(nextRetryAt)} 重試` : "暫未成功，會自動重試");
+  } else if (state === "REJECTED") {
+    setCodexStage(codexStages.validated, "error", errorDetail || detail || "訊息未通過驗證");
+  } else if (state === "RATE_LIMITED") {
+    setCodexStage(codexStages.attempted, "error", detail || "仍在五分鐘間隔內");
+  } else if (state === "FAILED") {
+    setCodexStage(codexStages.attempted, "error", errorDetail || detail || "無法送進 Codex");
+  }
 
   if (codexSupportSending) {
-    codexSupportStatus.className = "support-status pending";
-    codexSupportStatus.textContent = "正在送到家中主機…";
+    setCodexSupportMessage("pending", "正在寫入公司控制台請求…");
     return;
   }
   if (codexSupportError) {
-    codexSupportStatus.className = "support-status error";
-    codexSupportStatus.textContent = codexSupportError;
+    setCodexSupportMessage("error", codexSupportError);
     return;
   }
   if (requestPending) {
-    codexSupportStatus.className = "support-status pending";
-    codexSupportStatus.textContent = detail || "已送出，等待家中主機接收…";
+    setCodexSupportMessage("pending", detail || stateLabels[state] || "已送出，等待家中主機接收…");
     return;
   }
   if (requestNonce > 0 && requestNonce === statusNonce && state === "QUEUED") {
-    codexSupportStatus.className = "support-status ok";
-    codexSupportStatus.textContent = cooldownRemaining > 0
+    setCodexSupportMessage("ok", cooldownRemaining > 0
       ? `已送進目前 Codex 任務；${Math.ceil(cooldownRemaining / 1000)} 秒後可再次送出`
-      : "已送進目前 Codex 任務";
+      : "已送進目前 Codex 任務");
     return;
   }
   if (requestNonce > 0 && requestNonce === statusNonce && ["REJECTED", "RATE_LIMITED", "FAILED"].includes(state)) {
-    codexSupportStatus.className = "support-status error";
-    codexSupportStatus.textContent = detail || "本機 Codex 未接收，請稍後重試";
+    setCodexSupportMessage("error", detail || "本機 Codex 未接收，請稍後重試");
     return;
   }
-  codexSupportStatus.textContent = bridgeOnline
+  setCodexSupportMessage("idle", bridgeOnline
     ? `本機 Codex 已連線（${fmtAge(heartbeatAt)}）`
-    : "家中主機尚未回報 Codex 連線";
+    : "家中主機尚未回報 Codex 連線");
 }
 
 async function requestCodexSupport() {
   if (codexSupportSending) return;
+  const selection = selectedCodexSupportMessage();
+  if (!selection.message) {
+    codexSupportError = "請先輸入要送出的自訂訊息";
+    renderCodexSupportStatus();
+    codexCustomMessage.focus();
+    return;
+  }
   codexSupportSending = true;
   codexSupportError = "";
   renderCodexSupportStatus();
@@ -238,7 +399,9 @@ async function requestCodexSupport() {
       const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
       const state = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
       const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
-      if (currentNonce > statusNonce || (currentNonce === statusNonce && ["PENDING", "RETRYING"].includes(state))) {
+      if (currentNonce > statusNonce || (
+        currentNonce === statusNonce && ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"].includes(state)
+      )) {
         throw new Error("上一筆維修請求仍在等待家中主機接收");
       }
       if (queuedAt > 0 && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
@@ -250,12 +413,25 @@ async function requestCodexSupport() {
       transaction.set(supportRef, {
         supportRequestNonce: nextNonce,
         supportRequestAction: CODEX_SUPPORT_ACTION,
+        supportRequestMode: selection.mode,
+        supportRequestLabel: selection.label,
+        supportRequestMessage: selection.message,
+        supportRequestMessageLength: selection.message.length,
         supportRequestedAt: requestedAt,
         supportRequestedDeviceUid: selectedUid,
         bridgeState: "PENDING",
         bridgeStatusNonce: nextNonce,
         bridgeDetail: "已由公司控制台送出，等待家中主機接收",
         bridgeUpdatedAt: requestedAt,
+        bridgeReceivedAt: 0,
+        bridgeValidatedAt: 0,
+        bridgeAttemptCount: 0,
+        bridgeLastAttemptAt: 0,
+        bridgeNextRetryAt: 0,
+        bridgeQueuedAt: 0,
+        bridgeMessageSha256: "",
+        bridgeErrorCode: "",
+        bridgeErrorDetail: "",
       }, { merge: true });
     });
   } catch (error) {
@@ -2313,9 +2489,26 @@ btnReloadSettings.addEventListener("click", () => {
   renderSettingsPage(true);
 });
 
+btnOpenCodexSupport.addEventListener("click", () => {
+  codexSupportError = "";
+  updateCodexMessageControls();
+  if (typeof codexSupportDialog.showModal === "function") codexSupportDialog.showModal();
+  else codexSupportDialog.setAttribute("open", "");
+});
+btnCloseCodexSupport.addEventListener("click", () => codexSupportDialog.close());
+codexMessagePreset.addEventListener("change", () => {
+  codexSupportError = "";
+  updateCodexMessageControls();
+  if (codexMessagePreset.value === "CUSTOM") codexCustomMessage.focus();
+});
+codexCustomMessage.addEventListener("input", () => {
+  codexSupportError = "";
+  updateCodexMessageControls();
+});
 btnAskCodex.addEventListener("click", () => void requestCodexSupport());
 
 statusMsg.textContent = `公司控制台已就緒（v${WEB_BUILD}）`;
+updateCodexMessageControls();
 setActiveView(activeView, false);
 startCodexSupportListener();
 startClientListener();

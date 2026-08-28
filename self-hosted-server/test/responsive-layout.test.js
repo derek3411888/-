@@ -23,7 +23,7 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(css, /\.device-bar,\s*\.grid\.two,\s*\.video-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
 });
 
-test("GitHub Pages company mode sends a fixed support action to the local Codex bridge", async () => {
+test("GitHub Pages company mode supports preset or custom Codex messages with detailed status", async () => {
   const [html, script, css, bridge] = await Promise.all([
     readFile(new URL("index.html", companyControlDirectory), "utf8"),
     readFile(new URL("app.js", companyControlDirectory), "utf8"),
@@ -33,17 +33,40 @@ test("GitHub Pages company mode sends a fixed support action to the local Codex 
 
   assert.doesNotMatch(html, /location\.(?:replace|href)/);
   assert.doesNotMatch(script, /SELF_HOSTED_CONTROL_URL|redirectToSelfHostedControl/);
+  assert.match(html, /id="btnOpenCodexSupport"/);
+  assert.match(html, /id="codexSupportDialog"/);
+  assert.match(html, /id="codexMessagePreset"/);
+  assert.match(html, /option value="CUSTOM"/);
+  assert.match(html, /id="codexCustomMessage"[^>]*maxlength="1000"/);
   assert.match(html, /id="btnAskCodex"/);
+  assert.match(html, /id="codexStageQueued"/);
+  assert.match(html, /id="codexDetailAttemptCount"/);
+  assert.match(html, /id="codexDetailError"/);
   assert.doesNotMatch(html, /chatgpt\.com/i);
-  assert.match(script, /CODEX_SUPPORT_ACTION\s*=\s*"FIX_SCRIPT"/);
+  assert.match(script, /CODEX_SUPPORT_ACTION\s*=\s*"QUEUE_MESSAGE_V1"/);
+  assert.match(script, /CODEX_SUPPORT_MAX_MESSAGE_LENGTH\s*=\s*1000/);
+  assert.match(script, /FIX_SCRIPT:\s*Object\.freeze/);
+  assert.match(script, /DIAGNOSE_ONLY:\s*Object\.freeze/);
+  assert.match(script, /CHECK_CURRENT_STATUS:\s*Object\.freeze/);
   assert.match(script, /CODEX_SUPPORT_DOC_ID\s*=\s*"__codex_support"/);
-  assert.match(script, /transaction\.set\(supportRef,[\s\S]*supportRequestAction:\s*CODEX_SUPPORT_ACTION/);
-  assert.match(bridge, /\$ExpectedAction\s*=\s*'FIX_SCRIPT'/);
+  assert.match(script, /transaction\.set\(supportRef,[\s\S]*supportRequestAction:\s*CODEX_SUPPORT_ACTION[\s\S]*supportRequestMessage:\s*selection\.message/);
+  assert.match(script, /bridgeAttemptCount:\s*0/);
+  assert.match(script, /bridgeNextRetryAt:\s*0/);
+  assert.match(bridge, /\$ExpectedAction\s*=\s*'QUEUE_MESSAGE_V1'/);
+  assert.match(bridge, /\$LegacyAction\s*=\s*'FIX_SCRIPT'/);
   assert.match(bridge, /\$FixedPrompt\s*=\s*'現在腳本有問題，請你找出問題並修正'/);
-  assert.match(bridge, /queue --thread \(\[string\]\$config\.ThreadId\) --message \$FixedPrompt/);
-  assert.doesNotMatch(script, /supportRequestPrompt|SUPPORT_PROMPT/);
+  assert.match(bridge, /\$MaxMessageLength\s*=\s*1000/);
+  assert.match(bridge, /queue --thread \(\[string\]\$config\.ThreadId\) --message \$message/);
+  assert.match(bridge, /bridgeState = \$State/);
+  assert.match(bridge, /bridgeMessageSha256/);
+  assert.match(bridge, /bridgeAttemptCount/);
+  assert.match(bridge, /Queued support message nonce=\$nonce length=\$\(\$message\.Length\) sha256=\$messageHash/);
+  assert.doesNotMatch(bridge, /\[[^\]]+\]\(if\s*\(/);
   assert.match(script, /startClientListener\(\)/);
   assert.match(script, /startCodexSupportListener\(\)/);
   assert.match(css, /@media\s*\(max-width:\s*700px\)/);
   assert.match(css, /\.support-button\s*\{[^}]*white-space:\s*normal/s);
+  assert.match(css, /\.codex-support-dialog\s*\{/);
+  assert.match(css, /\.codex-progress-list\s*\{/);
+  assert.match(css, /\.codex-request-details\s+dl\s*\{/);
 });

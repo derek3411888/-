@@ -79,7 +79,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 公司控制台直接通知目前 Codex 任務
 
-GitHub Pages 的「腳本有問題，請 Codex 修正」透過 Firestore 把固定請求送回這台 Windows 主機，再由本機 Codex CLI 的任務佇列交給指定的既有 Codex 任務。它不會另開 ChatGPT，也不會建立新的 Codex 任務。第一次在 Docker 主機安裝時，從 Codex 任務網址或 Codex 任務列表取得該任務 UUID，執行：
+GitHub Pages 的「通知目前 Codex 任務」透過 Firestore 把預設或自訂訊息送回這台 Windows 主機，再由本機 Codex CLI 的任務佇列交給指定的既有 Codex 任務。它不會另開 ChatGPT，也不會建立新的 Codex 任務。第一次在 Docker 主機安裝時，從 Codex 任務網址或 Codex 任務列表取得該任務 UUID，執行：
 
 ```powershell
 .\windows\Install-CodexSupportBridge.ps1 -ThreadId '你的-Codex-任務-UUID' -Workspace 'E:\Downloads\一鍵啟動鋤地腳本'
@@ -87,7 +87,9 @@ GitHub Pages 的「腳本有問題，請 Codex 修正」透過 Firestore 把固�
 
 安裝工具會驗證 Firestore、本機 Codex CLI 與工作區，將橋接程式放到目前使用者的 LocalAppData，建立隱藏的登入啟動項目並立即啟動。設定與最多 15 份輪替 Log 位於 `%LOCALAPPDATA%\WutheringAutomation\CodexSupportBridge`。移除時執行 `windows\Uninstall-CodexSupportBridge.ps1`。
 
-為避免公開靜態頁面成為任意指令入口，網站只能寫入 `FIX_SCRIPT`，真正 prompt 固定保存在主機腳本；Codex task ID 只存在主機本機。每 15 秒一次單文件讀取、每 90 秒一次心跳，兩次成功排入至少間隔 5 分鐘。
+新版網站使用 `QUEUE_MESSAGE_V1`，提供三種預設訊息及最多 1,000 字元的自訂訊息；橋接端會再次檢查動作、長度、空白與控制字元，並相容舊版 `FIX_SCRIPT`。Codex task ID 仍只存在主機本機。網頁會顯示收到、驗證、嘗試、重試與排入時間、嘗試次數、訊息 SHA-256 指紋及錯誤代碼；「已排入」不會被描述成 Codex 已完成。每 15 秒一次單文件讀取、每 90 秒一次心跳，兩次成功排入至少間隔 5 分鐘。
+
+由於 GitHub Pages 控制台目前沒有登入驗證，自訂訊息會經過 Firestore，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。橋接 Log 只記錄 nonce、長度、指紋與結果，不記錄訊息本文。
 
 專案根目錄的 `完整發布更新.ps1` 是正式發布唯一入口；舊的 `編譯打包.bat` 也只會呼叫它。它會強制同次產生 Launcher、Payload、網站與 Docker 套件，推送 GitHub 後等待遠端 manifest 與雜湊一致，再從遠端套件部署 Docker、核對公開網站版本並執行控制／影片／直播整合測試。任何一段失敗都不會顯示「完整發布完成」。
 
