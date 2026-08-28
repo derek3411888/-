@@ -2,7 +2,7 @@
 param(
     [string]$PayloadVersion = '4.64',
     [string]$LauncherVersion = '4.75',
-    [string]$ServerVersion = '1.0.23',
+    [string]$ServerVersion = '1.0.24',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,

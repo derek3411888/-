@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
+import { buildFallbackCommandBaseline } from "./migration-baseline.js";
 import { HttpError, boundedText, integer } from "./utils.js";
 
 function firestoreBase() {
@@ -24,7 +25,9 @@ async function firestoreFetch(url, options = {}) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Firestore HTTP ${response.status}: ${text.slice(0, 1000)}`);
+    const error = new Error(`Firestore HTTP ${response.status}: ${text.slice(0, 1000)}`);
+    error.status = response.status;
+    throw error;
   }
   return response.status === 204 ? {} : response.json();
 }
@@ -165,6 +168,91 @@ async function patchFirestoreDocument(documentId, fields) {
   await firestoreFetch(url, { method: "PATCH", body: JSON.stringify(fields) });
 }
 
+async function getFirestoreDocument(documentId, fieldNames = []) {
+  const { apiKey, collection } = config.firestore;
+  const url = new URL(`${firestoreBase()}/${encodeURIComponent(collection)}/${encodeURIComponent(documentId)}`);
+  url.searchParams.set("key", apiKey);
+  for (const fieldName of fieldNames) url.searchParams.append("mask.fieldPaths", fieldName);
+  return firestoreFetch(url);
+}
+
+async function patchFirestoreDocumentAtVersion(documentId, fields, updateTime) {
+  const { apiKey, collection } = config.firestore;
+  const url = new URL(`${firestoreBase()}/${encodeURIComponent(collection)}/${encodeURIComponent(documentId)}`);
+  url.searchParams.set("key", apiKey);
+  for (const fieldName of Object.keys(fields.fields)) url.searchParams.append("updateMask.fieldPaths", fieldName);
+  url.searchParams.set("currentDocument.updateTime", updateTime);
+  url.searchParams.append("mask.fieldPaths", "lastAckNonce");
+  return firestoreFetch(url, { method: "PATCH", body: JSON.stringify(fields) });
+}
+
+export async function syncFallbackCommandBaselines() {
+  if (!config.firestore.enabled) return { enabled: false, synced: 0, skipped: 0 };
+  const pending = await query("SELECT count(*)::int AS count FROM commands WHERE status='PENDING'");
+  if (Number(pending.rows[0]?.count ?? 0) > 0) {
+    throw new HttpError(409, "仍有自架命令等待 ACK，不可切回 Firestore", "PENDING_SELFHOST_COMMANDS");
+  }
+
+  const devices = await query(
+    `SELECT uid,state,last_nonce,command_nonce FROM devices
+     WHERE imported_from_firestore=true ORDER BY uid`,
+  );
+  let synced = 0;
+  let skipped = 0;
+  for (const device of devices.rows) {
+    let completed = false;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const document = await getFirestoreDocument(device.uid, ["nonce", "lastAckNonce"]);
+      const baseline = buildFallbackCommandBaseline({
+        state: device.state,
+        lastNonce: Number(device.last_nonce),
+        commandNonce: Number(device.command_nonce),
+        remoteNonce: field(document, "nonce", 0),
+        remoteAckNonce: field(document, "lastAckNonce", 0),
+      });
+      if (!baseline) {
+        skipped += 1;
+        completed = true;
+        break;
+      }
+
+      const fields = {
+        fields: {
+          desiredState: { stringValue: baseline.desiredState },
+          nonce: { integerValue: String(baseline.nonce) },
+          requestedServerIndex: { integerValue: "0" },
+          requestedServerName: { stringValue: "" },
+          commandUpdatedAt: { integerValue: String(baseline.at) },
+          lastAckNonce: { integerValue: String(baseline.nonce) },
+          lastAckState: { stringValue: baseline.desiredState },
+          lastAckResult: { stringValue: "MIGRATION_BASELINE" },
+          lastAckDetail: { stringValue: "切回 Firestore 前已對齊裝置處理游標；這不是新指令" },
+          lastAckServerIndex: { integerValue: "0" },
+          lastAckServerName: { stringValue: "" },
+          lastAckAt: { integerValue: String(baseline.at) },
+        },
+      };
+      try {
+        await patchFirestoreDocumentAtVersion(device.uid, fields, document.updateTime);
+        await query(
+          `UPDATE devices SET firestore_observed_nonce=GREATEST(firestore_observed_nonce,$2),
+             firestore_observed_ack_nonce=GREATEST(firestore_observed_ack_nonce,$2),
+             firestore_observed_at=now(),updated_at=now() WHERE uid=$1`,
+          [device.uid, baseline.nonce],
+        );
+        synced += 1;
+        completed = true;
+        break;
+      } catch (error) {
+        if ([409, 412].includes(Number(error.status)) && attempt < 4) continue;
+        throw error;
+      }
+    }
+    if (!completed) throw new Error(`無法對齊 ${device.uid} 的 Firestore 命令游標`);
+  }
+  return { enabled: true, synced, skipped };
+}
+
 export async function publishDiscovery() {
   if (!config.firestore.enabled) return { published: 0 };
   const migration = await getMigrationState();
@@ -266,11 +354,12 @@ export async function forceMigrationMode(mode) {
   if (!["shadow", "primary", "fallback", "disabled"].includes(mode)) {
     throw new HttpError(400, "遷移模式無效", "INVALID_MIGRATION_MODE");
   }
+  const fallbackBaseline = mode === "fallback" ? await syncFallbackCommandBaselines() : null;
   await query(
     `UPDATE system_settings SET value=jsonb_set(jsonb_set(value,'{mode}',to_jsonb($1::text),true),
       '{epoch}',to_jsonb($2::text),true),updated_at=now() WHERE key='migration'`,
     [mode, `selfhost-${Date.now()}`],
   );
   await publishDiscovery();
-  return getMigrationState();
+  return { ...(await getMigrationState()), ...(fallbackBaseline ? { fallbackBaseline } : {}) };
 }

@@ -4,12 +4,14 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
+import { forceMigrationMode } from "../src/firestore-bridge.js";
 import { repairStalledMediaJobs } from "../src/media.js";
 
 const base = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
 const uid = `smoke-device-${Date.now()}`;
 const deviceToken = crypto.randomBytes(48).toString("base64url");
 let cookie = "";
+let originalMigrationMode = "";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -52,6 +54,8 @@ async function waitFor(check, message, timeoutMs = 30_000) {
 
 async function main() {
   assert((await request("/health/ready")).ok, "ready endpoint failed");
+  const migration = await query("SELECT value->>'mode' AS mode FROM system_settings WHERE key='migration'");
+  originalMigrationMode = String(migration.rows[0]?.mode ?? "");
   await query("UPDATE system_settings SET value=jsonb_build_object('openUntil',NULL),updated_at=now() WHERE key='enrollment'");
   const directAccess = await fetch(`${base}/api/v1/auth/me`);
   assert(directAccess.ok, `direct browser access failed: ${directAccess.status}`);
@@ -332,6 +336,9 @@ async function main() {
 
 async function cleanup() {
   await query("DELETE FROM devices WHERE uid=$1", [uid]).catch(() => {});
+  if (["shadow", "primary", "fallback", "disabled"].includes(originalMigrationMode)) {
+    await forceMigrationMode(originalMigrationMode);
+  }
   const token = decodeURIComponent(cookie.split("=", 2)[1] ?? "");
   if (token) {
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
