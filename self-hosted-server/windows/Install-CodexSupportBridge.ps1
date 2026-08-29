@@ -84,25 +84,14 @@ New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 # virtualized and invisible to Task Scheduler. ProgramData is shared with the
 # scheduled process, but the bridge token must remain private to this user.
 $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$systemSid = [Security.Principal.SecurityIdentifier]::new(
-    [Security.Principal.WellKnownSidType]::LocalSystemSid,
-    $null
-)
-$inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-$propagation = [Security.AccessControl.PropagationFlags]::None
-$allow = [Security.AccessControl.AccessControlType]::Allow
-$secureAcl = [Security.AccessControl.DirectorySecurity]::new()
-$secureAcl.SetOwner($currentIdentity.User)
-$secureAcl.SetAccessRuleProtection($true, $false)
-$secureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
-    $currentIdentity.User, [Security.AccessControl.FileSystemRights]::FullControl,
-    $inheritance, $propagation, $allow
-))
-$secureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
-    $systemSid, [Security.AccessControl.FileSystemRights]::FullControl,
-    $inheritance, $propagation, $allow
-))
-Set-Acl -LiteralPath $installRoot -AclObject $secureAcl
+# PowerShell 7 Set-Acl attempts to write the SACL as well and therefore asks
+# for SeSecurityPrivilege even when only the DACL changes. icacls updates only
+# the DACL and works for the directory owned by the current interactive user.
+$icaclsPath = Join-Path $env:SystemRoot 'System32\icacls.exe'
+$userGrant = "*$($currentIdentity.User.Value):(OI)(CI)F"
+$systemGrant = '*S-1-5-18:(OI)(CI)F'
+& $icaclsPath $installRoot '/inheritance:r' '/grant:r' $userGrant $systemGrant | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '無法限制 Codex 橋接目錄 ACL。' }
 $existingWatchdogProcesses = @(Get-ScriptProcesses $installedWatchdog $installedBootstrap)
 $existingBridgeProcesses = @(Get-ScriptProcesses $installedScript)
 $legacyInstallRoot = Join-Path $env:LOCALAPPDATA 'WutheringAutomation\CodexSupportBridge'
