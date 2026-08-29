@@ -4,7 +4,6 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
-import { forceMigrationMode } from "../src/firestore-bridge.js";
 import { repairStalledMediaJobs } from "../src/media.js";
 
 const base = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
@@ -12,15 +11,18 @@ const uid = `smoke-device-${Date.now()}`;
 const deviceToken = crypto.randomBytes(48).toString("base64url");
 let cookie = "";
 let originalMigrationMode = "";
+let originalMigrationEpoch = "";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function request(path, { method = "GET", body, headers = {}, browser = false, device = false, raw = false } = {}) {
+async function request(path, { method = "GET", body, headers = {}, browser = false,
+  device = false, raw = false, smokeMutation = false } = {}) {
   const finalHeaders = { Accept: "application/json", ...headers };
   if (browser) finalHeaders.Cookie = cookie;
   if (device) finalHeaders.Authorization = `Bearer ${deviceToken}`;
+  if (smokeMutation) finalHeaders["X-Wuthering-Integration-Smoke"] = "1";
   if (!["GET", "HEAD"].includes(method) && browser) {
     finalHeaders.Origin = config.publicUrl;
     finalHeaders["X-Wuthering-CSRF"] = "1";
@@ -54,8 +56,11 @@ async function waitFor(check, message, timeoutMs = 30_000) {
 
 async function main() {
   assert((await request("/health/ready")).ok, "ready endpoint failed");
-  const migration = await query("SELECT value->>'mode' AS mode FROM system_settings WHERE key='migration'");
+  const migration = await query(
+    "SELECT value->>'mode' AS mode,value->>'epoch' AS epoch FROM system_settings WHERE key='migration'",
+  );
   originalMigrationMode = String(migration.rows[0]?.mode ?? "");
+  originalMigrationEpoch = String(migration.rows[0]?.epoch ?? "");
   await query("UPDATE system_settings SET value=jsonb_build_object('openUntil',NULL),updated_at=now() WHERE key='enrollment'");
   const directAccess = await fetch(`${base}/api/v1/auth/me`);
   assert(directAccess.ok, `direct browser access failed: ${directAccess.status}`);
@@ -109,19 +114,31 @@ async function main() {
   assert(backgroundRecordingStatus.progressPercent === 25
     && backgroundRecordingStatus.source === "background-worker",
   "background recording worker status was not accepted");
-  await request("/api/v1/admin/migration/mode", { method: "PUT", body: { mode: "primary" }, browser: true });
+  if (originalMigrationMode !== "primary") {
+    const shadowCommand = await fetch(`${base}/api/v1/devices/${encodeURIComponent(uid)}/commands`, {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: config.publicUrl, "X-Wuthering-CSRF": "1",
+        "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "PAUSE", idempotencyKey: crypto.randomUUID() }),
+    });
+    assert(shadowCommand.status === 423,
+      "ordinary website command bypassed Firestore authority during shadow/fallback mode");
+  }
 
   const pause = await request(`/api/v1/devices/${encodeURIComponent(uid)}/commands`, {
-    method: "POST", browser: true, body: { command: "PAUSE", idempotencyKey: crypto.randomUUID() },
+    method: "POST", browser: true, smokeMutation: true,
+    body: { command: "PAUSE", idempotencyKey: crypto.randomUUID() },
   });
   const conflict = await fetch(`${base}/api/v1/devices/${encodeURIComponent(uid)}/commands`, {
     method: "POST",
-    headers: { Cookie: cookie, Origin: config.publicUrl, "X-Wuthering-CSRF": "1", "Content-Type": "application/json" },
+    headers: { Cookie: cookie, Origin: config.publicUrl, "X-Wuthering-CSRF": "1",
+      "X-Wuthering-Integration-Smoke": "1", "Content-Type": "application/json" },
     body: JSON.stringify({ command: "RUN", idempotencyKey: crypto.randomUUID() }),
   });
   assert(conflict.status === 409, "non-STOP command overwrote pending command");
   const stop = await request(`/api/v1/devices/${encodeURIComponent(uid)}/commands`, {
-    method: "POST", browser: true, body: { command: "STOP", idempotencyKey: crypto.randomUUID() },
+    method: "POST", browser: true, smokeMutation: true,
+    body: { command: "STOP", idempotencyKey: crypto.randomUUID() },
   });
   assert(Number(stop.nonce) > Number(pause.nonce), "STOP nonce did not advance");
   const control = await request("/api/v1/device/control?format=firestore", { device: true });
@@ -137,7 +154,7 @@ async function main() {
     "STOP device remained online during the heartbeat grace window");
 
   const setting = await request(`/api/v1/devices/${encodeURIComponent(uid)}/settings`, {
-    method: "PUT", browser: true,
+    method: "PUT", browser: true, smokeMutation: true,
     body: { serverScheduleEnabled: true, serverScheduleList: "HMT,Asia", maxRestartCount: 10,
       runtimeDiagnosticsEnabled: true, runtimeDiagnosticsIntervalSec: 60,
       runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false,
@@ -151,7 +168,7 @@ async function main() {
   assert(appliedLiveSettings.settings.liveQualityProfile === "smooth",
     "device control lost the ACKed live quality profile");
   const rejectedSetting = await request(`/api/v1/devices/${encodeURIComponent(uid)}/settings`, {
-    method: "PUT", browser: true,
+    method: "PUT", browser: true, smokeMutation: true,
     body: { serverScheduleEnabled: false, serverScheduleList: "Asia", maxRestartCount: 9,
       runtimeDiagnosticsEnabled: true, runtimeDiagnosticsIntervalSec: 60,
       runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false,
@@ -336,18 +353,21 @@ async function main() {
   assert(details.events.some((event) => event.name === "測試啟動"), "runtime event missing");
   const serverLog = await fs.stat(`${config.serverLogRoot}/server.log`);
   assert(serverLog.isFile() && serverLog.size > 0, "mounted rotating server log was not written");
+  const finalMigration = await query(
+    "SELECT value->>'mode' AS mode,value->>'epoch' AS epoch FROM system_settings WHERE key='migration'",
+  );
+  assert(String(finalMigration.rows[0]?.mode ?? "") === originalMigrationMode
+    && String(finalMigration.rows[0]?.epoch ?? "") === originalMigrationEpoch,
+  "integration smoke changed the live migration mode or epoch");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
     directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
     codexSupportStatus: true, codexSupportInvalidModeRejected: true,
     videoRange: true, recordingProgress: true, mediaAutoRepair: true, liveHls: true, liveHlsResources: true,
-    invalidSrtRejected: true, serverLog: true }));
+    invalidSrtRejected: true, serverLog: true, migrationIsolation: true }));
 }
 
 async function cleanup() {
   await query("DELETE FROM devices WHERE uid=$1", [uid]).catch(() => {});
-  if (["shadow", "primary", "fallback", "disabled"].includes(originalMigrationMode)) {
-    await forceMigrationMode(originalMigrationMode);
-  }
   const token = decodeURIComponent(cookie.split("=", 2)[1] ?? "");
   if (token) {
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");

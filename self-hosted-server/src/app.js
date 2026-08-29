@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { config, assertChildPath } from "./config.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
+import { allowInternalSmokeMutation } from "./internal-smoke.js";
 import { analyzeServerSchedule } from "./server-names.js";
 import {
   browserCookie,
@@ -96,12 +97,14 @@ async function migrationMode() {
   return (await getMigrationState()).mode ?? "shadow";
 }
 
-async function sendCommand(uid, body) {
+async function sendCommand(uid, body, allowShadow = false) {
   const command = String(body.command ?? "").trim().toUpperCase();
   if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER"].includes(command)) {
     throw new HttpError(400, "命令不在允許清單", "INVALID_COMMAND");
   }
-  if ((await migrationMode()) !== "primary") throw new HttpError(423, "並行驗證期間命令仍由 Firestore 控制", "SHADOW_MODE");
+  if (!allowShadow && (await migrationMode()) !== "primary") {
+    throw new HttpError(423, "並行驗證期間命令仍由 Firestore 控制", "SHADOW_MODE");
+  }
   const idempotencyKey = boundedText(body.idempotencyKey, 100) || null;
   const payload = commandPayload(body);
   return withTransaction(async (client) => {
@@ -341,8 +344,10 @@ async function ackCommand(uid, body) {
   return updated;
 }
 
-async function saveSettings(uid, body) {
-  if ((await migrationMode()) !== "primary") throw new HttpError(423, "並行驗證期間設定仍由 Firestore 控制", "SHADOW_MODE");
+async function saveSettings(uid, body, allowShadow = false) {
+  if (!allowShadow && (await migrationMode()) !== "primary") {
+    throw new HttpError(423, "並行驗證期間設定仍由 Firestore 控制", "SHADOW_MODE");
+  }
   const serverSchedule = analyzeServerSchedule(body.serverScheduleList);
   if (serverSchedule.invalid.length) {
     throw new HttpError(400, `只允許 America、Europe、Asia、HMT(HK,MO,TW)、SEA；無效項目：${serverSchedule.invalid.join("、")}`, "INVALID_SERVER_LIST");
@@ -818,14 +823,18 @@ async function handleRequest(req, res) {
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/commands");
   if (params && req.method === "POST") {
-    const row = await sendCommand(normalizeUid(params.uid), await readJson(req, config.maxJsonBytes));
+    const uid = normalizeUid(params.uid);
+    const row = await sendCommand(uid, await readJson(req, config.maxJsonBytes),
+      allowInternalSmokeMutation(req, uid));
     eventHub.emit("command", { uid: params.uid, nonce: Number(row.nonce), status: row.status, at: Date.now() });
     sendJson(res, 201, row);
     return;
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/settings");
   if (params && req.method === "PUT") {
-    sendJson(res, 201, await saveSettings(normalizeUid(params.uid), await readJson(req, config.maxJsonBytes)));
+    const uid = normalizeUid(params.uid);
+    sendJson(res, 201, await saveSettings(uid, await readJson(req, config.maxJsonBytes),
+      allowInternalSmokeMutation(req, uid)));
     return;
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/snapshot");
