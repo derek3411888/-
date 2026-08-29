@@ -115,7 +115,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.80"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.81"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2919,7 +2919,8 @@ StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
     fallbackSent := false
     if fallbackHwnd {
         topmostCtx := PrepareOkwwTopmostOperation(fallbackHwnd)
-        try fallbackSent := SendF11ToOkww(fallbackHwnd)
+        try fallbackSent := SendF11ToOkwwWithTransientForegroundRetry(
+            fallbackHwnd, "OCR降級F11")
         finally RestoreTopmostAfterOkwwOperation(topmostCtx)
     }
 
@@ -2953,6 +2954,39 @@ StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
 IsOkwwAutoBattleCheckFailure(result) {
     return IsObject(result) && result.HasOwnProp("ok") && !result.ok
         && result.HasOwnProp("code") && result.code = "OKWW_AUTOBATTLE_CHECK_FAILED"
+}
+
+; DeskIn、通知視窗或使用者短暫切換視窗可能剛好落在最後 150ms 的
+; SendEvent 安全重驗點。目標 HWND/PID 仍健康時先對同一視窗重新取得前景，
+; 不要因單次瞬間搶焦點就關閉遊戲、OKWW 與整個流程。
+SendF11ToOkwwWithTransientForegroundRetry(okwwHwnd, context := "") {
+    global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
+
+    Loop 3 {
+        attempt := A_Index
+        if SendF11ToOkww(okwwHwnd)
+            return true
+
+        failureCode := LAST_OKWW_F11_FAILURE_CODE
+        if !IsForegroundInputFailureCode(failureCode)
+            return false
+        if (failureCode = "INTERACTIVE_DESKTOP_UNAVAILABLE")
+            return false
+        if (attempt >= 3)
+            break
+        if !okwwHwnd || !WinExist("ahk_id " okwwHwnd)
+            return false
+
+        WriteLog("OKWW F11 遇到瞬間前景搶占；保留同一 HWND/PID，等待後重試"
+            " | attempt=" attempt "/3 context=" context
+            " | code=" failureCode " detail=" LAST_OKWW_F11_FAILURE_DETAIL, "WARN")
+        RawSleep(1200)
+    }
+
+    WriteLog("OKWW F11 同一健康視窗的前景重試已用盡；交由既有恢復政策處理"
+        " | attempts=3 context=" context " | code=" LAST_OKWW_F11_FAILURE_CODE
+        " detail=" LAST_OKWW_F11_FAILURE_DETAIL, "ERROR")
+    return false
 }
 
 ; ★ OKWW 啟動＋前置流程（啟動 → 等待最終主視窗 → F11 → 最小化）
@@ -3156,7 +3190,8 @@ StartOKWWFlow(isRestart) {
                 WriteLog("OKWW 自動戰鬥前置確認：attempt=" checkAttempt "/2")
                 if EnsureOkwwAutoBattleEnabled(okwwHwnd) {
                     autoBattleConfirmed := true
-                    f11Sent := SendF11ToOkww(okwwHwnd)
+                    f11Sent := SendF11ToOkwwWithTransientForegroundRetry(
+                        okwwHwnd, "自動戰鬥確認後F11")
                     break
                 }
 

@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.69',
-    [string]$LauncherVersion = '4.80',
-    [string]$ServerVersion = '1.0.29',
+    [string]$PayloadVersion = '4.70',
+    [string]$LauncherVersion = '4.81',
+    [string]$ServerVersion = '1.0.30',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -82,6 +82,7 @@ $releasePaths = @(
     'PROJECT_AI_HANDOFF.md', '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
     'payload', '測試/InteractiveDesktopGuardTest.ahk', '測試/SelfHealingPolicyTest.ahk',
     '測試/ScreenRecordingEncoderPolicyTest.ahk', '測試/SelfHostLiveCandidatesTest.ahk',
+    '測試/SelfHostCredentialReuseTest.ahk', '測試/SelfHostBufferRegressionTest.ahk',
     '測試/伺服器名稱與切服判斷測試.ahk', '測試/伺服器登入標籤OCR影像測試.ahk',
     '測試/實機伺服器切換壓力測試.ahk', '測試/實機伺服器切換50次驗證報告.md',
     'self-hosted-server', 'remote-control-web',

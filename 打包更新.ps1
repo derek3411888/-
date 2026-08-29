@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.69',
-    [string]$LauncherVersion = '4.80',
-    [string]$ServerVersion = '1.0.29'
+    [string]$PayloadVersion = '4.70',
+    [string]$LauncherVersion = '4.81',
+    [string]$ServerVersion = '1.0.30'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -163,6 +163,10 @@ Invoke-AhkValidate $payloadRuntime '測試\SelfHostLiveCandidatesTest.ahk' '直�
 Invoke-AhkTest $payloadRuntime '測試\SelfHostLiveCandidatesTest.ahk' '直播路由候選回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostFreshDeviceDefaultTest.ahk' '外網新裝置預設連線測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHostFreshDeviceDefaultTest.ahk' '外網新裝置預設連線回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 回歸測試'
 Invoke-AhkValidate $runtime '打包啟動器.ahk' 'Launcher AHK validate'
 $uploaderTokens = $null
 $uploaderParseErrors = $null

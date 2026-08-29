@@ -37,7 +37,7 @@ global RCSH_DEFAULT_SERVER_URL := "https://220.135.218.98"
 
 RCSH_Init(cfgPath) {
     global RCSH_CFG_PATH, RCSH_SERVER_URL, RCSH_MODE, RCSH_EPOCH
-    global RCSH_FIRESTORE_FALLBACK_UNTIL, RCSH_DEVICE_TOKEN
+    global RCSH_FIRESTORE_FALLBACK_UNTIL, RCSH_DEVICE_TOKEN, RCSH_ENROLLED
     global RCSH_DEFAULT_SERVER_URL
 
     RCSH_CFG_PATH := cfgPath
@@ -51,17 +51,36 @@ RCSH_Init(cfgPath) {
         RC_IniReadSafe(cfgPath, "self_hosted", "firestore_fallback_until", "0"),
         0, 0, 9999999999999)
 
-    protectedToken := Trim(RC_IniReadSafe(cfgPath, "self_hosted", "device_token_dpapi", ""), " `t`r`n")
-    if (protectedToken != "") {
-        try RCSH_DEVICE_TOKEN := RCSH_DpapiUnprotect(protectedToken)
-        catch as e {
-            RCSH_DEVICE_TOKEN := ""
-            RC_Log("Self-hosted DPAPI token could not be opened for this Windows user: " e.Message, "WARN")
-        }
-    }
+    RCSH_LoadStoredCredential(cfgPath)
     RCSH_CleanupOrphanLivePreviews()
     if (RCSH_SERVER_URL != "" && RCSH_MODE != "disabled")
-        RCSH_EnsureEnrolled()
+        RCSH_EnsureReady()
+}
+
+RCSH_LoadStoredCredential(cfgPath) {
+    global RCSH_DEVICE_TOKEN, RCSH_ENROLLED
+
+    ; Init 可能在測試或背景 worker 生命週期內再次執行；先清除舊狀態，
+    ; 避免缺少／損壞的設定誤沿用上一個 cfg 的憑證。
+    RCSH_DEVICE_TOKEN := ""
+    RCSH_ENROLLED := false
+    protectedToken := Trim(
+        RC_IniReadSafe(cfgPath, "self_hosted", "device_token_dpapi", ""), " `t`r`n")
+    if (protectedToken = "")
+        return false
+    try {
+        RCSH_DEVICE_TOKEN := RCSH_DpapiUnprotect(protectedToken)
+        ; 已由同一個 Windows 使用者成功解開的既有憑證可直接拿來做
+        ; Bearer 驗證，不必讓每個主流程／錄影背景工具重新呼叫 enroll。
+        ; 若伺服器端憑證真的遺失或被撤銷，第一個 authenticated 401
+        ; 仍會在 RCSH_HttpRequest 內把此旗標清掉，下一輪才重新註冊。
+        RCSH_ENROLLED := RCSH_DEVICE_TOKEN != ""
+    } catch as e {
+        RCSH_DEVICE_TOKEN := ""
+        RCSH_ENROLLED := false
+        RC_Log("Self-hosted DPAPI token could not be opened for this Windows user: " e.Message, "WARN")
+    }
+    return RCSH_ENROLLED
 }
 
 RCSH_EnsureDefaults(cfgPath) {
@@ -199,6 +218,10 @@ RCSH_EnsureEnrolled() {
     global RC_LAST_SETTINGS_APPLIED_REVISION
     if !RCSH_IsAvailable()
         return false
+    ; 同一 Windows 使用者已成功解開的 token 先直接用於 Bearer 驗證。
+    ; 真正失效時 authenticated 401 會清除此旗標，下一輪才重新 enroll。
+    if (RCSH_ENROLLED && RCSH_DEVICE_TOKEN != "")
+        return true
     if (RCSH_DEVICE_TOKEN = "") {
         RCSH_DEVICE_TOKEN := RCSH_RandomToken(48)
         try IniWrite(RCSH_DpapiProtect(RCSH_DEVICE_TOKEN), RCSH_CFG_PATH,
