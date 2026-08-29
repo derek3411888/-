@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.68',
-    [string]$LauncherVersion = '4.79',
-    [string]$ServerVersion = '1.0.28'
+    [string]$PayloadVersion = '4.69',
+    [string]$LauncherVersion = '4.80',
+    [string]$ServerVersion = '1.0.29'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,6 +143,8 @@ if ([string]$package.version -ne $ServerVersion) { throw "server package 版本�
 
 Write-Host '執行語法與單元測試…'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
+Invoke-AhkValidate $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHealingPolicyTest.ahk' '自動修復策略測試語法 validate'
@@ -208,7 +210,7 @@ New-FilteredZip 'payload' 'payload.zip' @(
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk',
-    'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
+    'ScreenRecordingEncoderPolicy.ahk', 'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
 )
 
 Write-Host '編譯內嵌最新版 Payload 的 Launcher EXE…'

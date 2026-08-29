@@ -32,6 +32,7 @@ catch
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include InteractiveDesktopGuard.ahk
+#Include ScreenRecordingEncoderPolicy.ahk
 #Include RemoteControlFirestore.ahk
 #Include RemoteControlSelfHost.ahk
 #Include OkwwOcrTextMatchers.ahk
@@ -66,7 +67,7 @@ global SCREEN_RECORDING_ENABLED := 0
 global SCREEN_RECORDING_SECTION := "screen_recording"
 global SCREEN_RECORDING_ENGINE := "ffmpeg"
 global SCREEN_RECORDING_FFMPEG_EXE := ""
-global SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+global SCREEN_RECORDING_FFMPEG_ARGS := ScreenRecordingBuildFfmpegArgsForEncoder("libx264", 30, 23)
 global SCREEN_RECORDING_OUTPUT_DIR := "recordings"
 global SCREEN_RECORDING_SEGMENT_MINUTES := 5
 global SCREEN_RECORDING_AUTO_MERGE := 1
@@ -114,7 +115,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.79"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.80"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -909,7 +910,7 @@ ParseScreenRecordingSimpleSettingsFromArgs(args) {
 
     if RegExMatch(txt, "i)\s-framerate\s+(\d+)", &m1)
         fps := ToIntRange(m1[1], 30, 10, 120)
-    if RegExMatch(txt, "i)\s-crf\s+(\d+)", &m2)
+    if RegExMatch(txt, "i)\s-(?:crf|cq|global_quality|qp_i)\s+(\d+)", &m2)
         crf := ToIntRange(m2[1], 23, 0, 51)
 
     quality := "balanced"
@@ -925,7 +926,16 @@ ParseScreenRecordingSimpleSettingsFromArgs(args) {
     }
 }
 
-BuildScreenRecordingFfmpegArgsBySimple(qualityPreset, fpsVal, crfVal) {
+ResolvePreferredScreenRecordingEncoder(ffmpegExe := "") {
+    resolvedExe := ResolveScreenRecordingFfmpegExePath(ffmpegExe)
+    if (resolvedExe = "" || !FileExist(resolvedExe))
+        return "libx264"
+    encoder := "libx264"
+    try encoder := RCSH_DetectLiveHardwareEncoder(resolvedExe)
+    return ScreenRecordingNormalizeEncoderName(encoder)
+}
+
+BuildScreenRecordingFfmpegArgsBySimple(qualityPreset, fpsVal, crfVal, ffmpegExe := "") {
     q := NormalizeScreenRecordingQualityPreset(qualityPreset)
     fps := ToIntRange(fpsVal, 30, 10, 120)
     crf := 23
@@ -937,23 +947,40 @@ BuildScreenRecordingFfmpegArgsBySimple(qualityPreset, fpsVal, crfVal) {
     else if (q = "custom")
         crf := ToIntRange(crfVal, 23, 0, 51)
 
-    return "-y -f gdigrab -framerate " fps " -i desktop -c:v libx264 -preset veryfast -crf " crf " -pix_fmt yuv420p -f matroska"
+    encoder := ResolvePreferredScreenRecordingEncoder(ffmpegExe)
+    return ScreenRecordingBuildFfmpegArgsForEncoder(encoder, fps, crf)
+}
+
+PreferHardwareScreenRecordingArgs(args, ffmpegExe, &encoderName := "", &changed := false) {
+    configuredEncoder := ScreenRecordingExtractEncoder(args)
+    if ScreenRecordingIsHardwareEncoder(configuredEncoder) {
+        encoderName := configuredEncoder
+        changed := false
+        return args
+    }
+
+    preferredEncoder := ResolvePreferredScreenRecordingEncoder(ffmpegExe)
+    upgraded := ScreenRecordingUpgradeSoftwareArgs(args, preferredEncoder, &changed)
+    encoderName := changed ? preferredEncoder : ScreenRecordingExtractEncoder(upgraded)
+    if (encoderName = "")
+        encoderName := preferredEncoder
+    return upgraded
 }
 
 GetScreenRecordingQualityHint(qualityPreset, crfText := "") {
     q := NormalizeScreenRecordingQualityPreset(qualityPreset)
     if (q = "high")
-        return "高畫質：固定 CRF 18（畫質高、檔案較大）"
+        return "高畫質：品質值 18（GPU 使用 CQ，數字越小畫質越高）"
     if (q = "balanced")
-        return "平衡：固定 CRF 23（預設建議）"
+        return "平衡：品質值 23（GPU 編碼預設建議）"
     if (q = "low")
-        return "小檔案：固定 CRF 28（畫質較低、檔案較小）"
+        return "小檔案：品質值 28（畫質較低、檔案較小）"
 
     if RegExMatch(Trim(crfText, " `t`r`n"), "^\d+$") {
         c := ToIntRange(crfText, 23, 0, 51)
-        return "自訂 CRF：" c "（數字越小畫質越高、檔案越大；建議 18~28）"
+        return "自訂品質值：" c "（GPU 使用 CQ；數字越小畫質越高，建議 18~28）"
     }
-    return "自訂 CRF：數字越小畫質越高、檔案越大；建議 18~28"
+    return "自訂品質值：GPU 使用 CQ；數字越小畫質越高，建議 18~28"
 }
 
 MuteWutheringAudioAtStartup() {
@@ -9135,9 +9162,15 @@ ReadCombinedConfigState() {
     state.screenRecordingFfmpegExe := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_exe", ResolveDefaultScreenRecordingFfmpegExe()))
     if (state.screenRecordingFfmpegExe = "")
         state.screenRecordingFfmpegExe := ResolveDefaultScreenRecordingFfmpegExe()
-    state.screenRecordingFfmpegArgs := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"), " `t`r`n")
+    defaultRecordingArgs := BuildScreenRecordingFfmpegArgsBySimple("balanced", 30, 23,
+        state.screenRecordingFfmpegExe)
+    state.screenRecordingFfmpegArgs := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION,
+        "ffmpeg_args", defaultRecordingArgs), " `t`r`n")
     if (state.screenRecordingFfmpegArgs = "")
-        state.screenRecordingFfmpegArgs := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+        state.screenRecordingFfmpegArgs := defaultRecordingArgs
+    state.screenRecordingFfmpegArgs := PreferHardwareScreenRecordingArgs(
+        state.screenRecordingFfmpegArgs, state.screenRecordingFfmpegExe,
+        &stateRecordingEncoder, &stateRecordingArgsChanged)
     state.screenRecordingAutoStopExternalFfmpeg := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_stop_external_ffmpeg", "1"), 1)
     parsedSimple := ParseScreenRecordingSimpleSettingsFromArgs(state.screenRecordingFfmpegArgs)
     state.screenRecordingUseSimpleParams := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "use_simple_params", "1"), 1)
@@ -9414,12 +9447,12 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     cbScreenRecordingAutoStopExternalFfmpeg.Value := state.screenRecordingAutoStopExternalFfmpeg ? 1 : 0
 
     g.AddText("xs y+8 w80", "畫質等級")
-    ddScreenRecordingQualityPreset := g.AddDropDownList("x+5 w355", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂CRF"])
+    ddScreenRecordingQualityPreset := g.AddDropDownList("x+5 w355", ["balanced:平衡(建議)", "high:高畫質", "low:小檔案", "custom:自訂品質"])
     ddScreenRecordingQualityPreset.Choose((state.screenRecordingQualityPreset = "high") ? 2 : (state.screenRecordingQualityPreset = "low") ? 3 : (state.screenRecordingQualityPreset = "custom") ? 4 : 1)
 
     g.AddText("xs y+8 w40", "FPS")
     edScreenRecordingFps := g.AddEdit("x+5 w60", state.screenRecordingFps)
-    g.AddText("x+10 w40", "CRF")
+    g.AddText("x+10 w65", "品質值")
     edScreenRecordingCrf := g.AddEdit("x+5 w60", state.screenRecordingCrf)
 
     txtScreenRecordingQualityHint := g.AddText("xs y+4 w440 c666666", GetScreenRecordingQualityHint(state.screenRecordingQualityPreset, state.screenRecordingCrf))
@@ -9781,6 +9814,8 @@ OnCombinedSetupSave(*) {
     fpsVal := ToIntRange(fpsText, 30, 10, 120)
     crfVal := ToIntRange(crfText, 23, 0, 51)
     ffmpegExeVal := NormalizePath(st.edScreenRecordingFfmpegExe.Value)
+    resolvedFfmpegForSettings := (ffmpegExeVal = "")
+        ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal
     ffmpegArgsVal := Trim(st.edScreenRecordingFfmpegArgs.Value, " `t`r`n")
     outputDirVal := ConvertMappedPathToUnc(NormalizePath(st.edScreenRecordingOutputDir.Value))
     segmentMinutesText := Trim(st.edScreenRecordingSegmentMinutes.Value, " `t`r`n")
@@ -9856,13 +9891,19 @@ OnCombinedSetupSave(*) {
                 return
             }
             if (qualityPresetVal = "custom") && !RegExMatch(crfText, "^\d+$") {
-                MsgBox "自訂 CRF 必須是數字（0~51，建議 18~28）", "整合設定", "Iconx"
+                MsgBox "自訂品質值必須是數字（0~51，建議 18~28）", "整合設定", "Iconx"
                 return
             }
         }
 
-        if useSimpleParamsVal
-            ffmpegArgsVal := BuildScreenRecordingFfmpegArgsBySimple(qualityPresetVal, fpsVal, crfVal)
+        if useSimpleParamsVal {
+            ffmpegArgsVal := BuildScreenRecordingFfmpegArgsBySimple(
+                qualityPresetVal, fpsVal, crfVal, resolvedFfmpegForSettings)
+        } else {
+            ffmpegArgsVal := PreferHardwareScreenRecordingArgs(
+                ffmpegArgsVal, resolvedFfmpegForSettings,
+                &savedRecordingEncoder, &savedRecordingArgsChanged)
+        }
 
         if (ffmpegArgsVal = "") {
             MsgBox "使用 FFmpeg 錄影時，ffmpeg 參數不可空白", "整合設定", "Iconx"
@@ -9950,8 +9991,10 @@ OnCombinedSetupSave(*) {
     IniWrite qualityPresetVal, st.cfgPath, "screen_recording", "quality_preset"
     IniWrite fpsVal, st.cfgPath, "screen_recording", "fps"
     IniWrite crfVal, st.cfgPath, "screen_recording", "crf"
-    IniWrite (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal), st.cfgPath, "screen_recording", "ffmpeg_exe"
-    IniWrite (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
+    defaultRecordingArgs := BuildScreenRecordingFfmpegArgsBySimple(
+        "balanced", 30, 23, resolvedFfmpegForSettings)
+    IniWrite resolvedFfmpegForSettings, st.cfgPath, "screen_recording", "ffmpeg_exe"
+    IniWrite (ffmpegArgsVal = "" ? defaultRecordingArgs : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
     IniWrite (outputDirVal = "" ? "recordings" : outputDirVal), st.cfgPath, "screen_recording", "output_dir"
     IniWrite segmentMinutesVal, st.cfgPath, "screen_recording", "segment_minutes"
     IniWrite autoMergeVal, st.cfgPath, "screen_recording", "auto_merge"
@@ -9971,8 +10014,8 @@ OnCombinedSetupSave(*) {
     SCREEN_RECORDING_ENABLED := screenRecordingEnabledVal
     SCREEN_RECORDING_ENGINE := recordingEngineVal
     SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
-    SCREEN_RECORDING_FFMPEG_EXE := (ffmpegExeVal = "" ? ResolveDefaultScreenRecordingFfmpegExe() : ffmpegExeVal)
-    SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska" : ffmpegArgsVal)
+    SCREEN_RECORDING_FFMPEG_EXE := resolvedFfmpegForSettings
+    SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? defaultRecordingArgs : ffmpegArgsVal)
     SCREEN_RECORDING_OUTPUT_DIR := (outputDirVal = "" ? "recordings" : outputDirVal)
     SCREEN_RECORDING_SEGMENT_MINUTES := segmentMinutesVal
     SCREEN_RECORDING_AUTO_MERGE := autoMergeVal
@@ -10253,8 +10296,11 @@ RefreshScreenRecordingInputsEnabled() {
     if useSimple {
         fpsVal := ToIntRange(__MAIL_SETUP.edScreenRecordingFps.Value, 30, 10, 120)
         crfVal := ToIntRange(__MAIL_SETUP.edScreenRecordingCrf.Value, 23, 0, 51)
-        __MAIL_SETUP.edScreenRecordingFfmpegArgs.Value := BuildScreenRecordingFfmpegArgsBySimple(qualityKey, fpsVal, crfVal)
-        __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "簡易模式已啟用：會自動用畫質/FPS/CRF 組合 ffmpeg 參數。"
+        __MAIL_SETUP.edScreenRecordingFfmpegArgs.Value := BuildScreenRecordingFfmpegArgsBySimple(
+            qualityKey, fpsVal, crfVal, __MAIL_SETUP.edScreenRecordingFfmpegExe.Value)
+        activeEncoder := ScreenRecordingExtractEncoder(__MAIL_SETUP.edScreenRecordingFfmpegArgs.Value)
+        encoderLabel := ScreenRecordingIsHardwareEncoder(activeEncoder) ? activeEncoder "（GPU）" : "CPU 後備"
+        __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "簡易模式：已使用 " encoderLabel "，自動組合畫質/FPS 參數。"
     } else
         __MAIL_SETUP.txtScreenRecordingArgsHint.Value := "進階模式：你可直接手動編輯完整 ffmpeg 參數。"
 
@@ -10691,9 +10737,23 @@ LoadScreenRecordingEnabled() {
     SCREEN_RECORDING_FFMPEG_EXE := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_exe", ResolveDefaultScreenRecordingFfmpegExe()))
     if (SCREEN_RECORDING_FFMPEG_EXE = "")
         SCREEN_RECORDING_FFMPEG_EXE := ResolveDefaultScreenRecordingFfmpegExe()
-    SCREEN_RECORDING_FFMPEG_ARGS := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args", "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"), " `t`r`n")
+    defaultRecordingArgs := BuildScreenRecordingFfmpegArgsBySimple(
+        "balanced", 30, 23, SCREEN_RECORDING_FFMPEG_EXE)
+    SCREEN_RECORDING_FFMPEG_ARGS := Trim(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION,
+        "ffmpeg_args", defaultRecordingArgs), " `t`r`n")
     if (SCREEN_RECORDING_FFMPEG_ARGS = "")
-        SCREEN_RECORDING_FFMPEG_ARGS := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+        SCREEN_RECORDING_FFMPEG_ARGS := defaultRecordingArgs
+    SCREEN_RECORDING_FFMPEG_ARGS := PreferHardwareScreenRecordingArgs(
+        SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_FFMPEG_EXE,
+        &recordingEncoder, &recordingArgsChanged)
+    if recordingArgsChanged {
+        IniWrite SCREEN_RECORDING_FFMPEG_ARGS, CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args"
+        WriteLog("正式錄影已自動從 CPU 軟體編碼遷移為 " recordingEncoder "（GPU）")
+    } else if ScreenRecordingIsHardwareEncoder(recordingEncoder) {
+        WriteLog("正式錄影編碼器=" recordingEncoder "（GPU）")
+    } else {
+        WriteLog("未找到可用的顯卡 H.264 編碼器；本次保留 CPU 後備以避免錄影完全失敗", "WARN")
+    }
     SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_stop_external_ffmpeg", "1"), 1)
     SCREEN_RECORDING_OUTPUT_DIR := ConvertMappedPathToUnc(NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings")))
     if (SCREEN_RECORDING_OUTPUT_DIR = "")
@@ -11232,6 +11292,7 @@ PruneScreenRecordingFiles(keepCount := 5) {
 }
 
 StartFfmpegScreenRecording(&outPath, &pid) {
+    global CFG_FILE, SCREEN_RECORDING_SECTION
     global SCREEN_RECORDING_FFMPEG_EXE, SCREEN_RECORDING_FFMPEG_ARGS, SCREEN_RECORDING_OWNER_MARKER
     global SCREEN_RECORDING_SEGMENT_MINUTES
 
@@ -11272,13 +11333,20 @@ StartFfmpegScreenRecording(&outPath, &pid) {
     segmentListPath := sessionDir "\segments.ffconcat"
     args := Trim(SCREEN_RECORDING_FFMPEG_ARGS, " `t`r`n")
     if (args = "")
-        args := "-y -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -f matroska"
+        args := BuildScreenRecordingFfmpegArgsBySimple("balanced", 30, 23, ffmpegExe)
+    args := PreferHardwareScreenRecordingArgs(args, ffmpegExe,
+        &recordingEncoder, &recordingArgsChanged)
+    if recordingArgsChanged {
+        SCREEN_RECORDING_FFMPEG_ARGS := args
+        IniWrite args, CFG_FILE, SCREEN_RECORDING_SECTION, "ffmpeg_args"
+        WriteLog("錄影啟動前已將舊 CPU 參數遷移為 " recordingEncoder "（GPU）")
+    }
     ; 舊設定把單一輸出的 matroska muxer 放在參數尾端；分段模式改由 segment muxer
     ; 管理每個 MKV，因此只移除尾端的輸出格式宣告，保留所有擷取與編碼參數。
     args := RegExReplace(args, "i)\s+-f\s+matroska\s*$", "")
     segmentSeconds := Max(60, SCREEN_RECORDING_SEGMENT_MINUTES * 60)
     keyframeArgs := ""
-    if RegExMatch(args, "i)(libx264|libx265|h264_nvenc|hevc_nvenc)")
+    if RegExMatch(args, "i)(libx264|libx265|h264_nvenc|hevc_nvenc|h264_qsv|h264_amf)")
         keyframeArgs := ' -force_key_frames "expr:gte(t,n_forced*' segmentSeconds ')"'
 
     cmd := '"' ffmpegExe '" ' args keyframeArgs
@@ -11301,7 +11369,8 @@ StartFfmpegScreenRecording(&outPath, &pid) {
             return false
         }
         WriteRecordingRuntimeState(sessionDir, "recording", "FFmpeg 分段錄影進行中；分段同步由背景工具處理", 1)
-        WriteLog("FFmpeg 分段錄影已啟動 | segment=" SCREEN_RECORDING_SEGMENT_MINUTES
+        WriteLog("FFmpeg 分段錄影已啟動 | encoder=" recordingEncoder
+            " | segment=" SCREEN_RECORDING_SEGMENT_MINUTES
             "min | staging=" sessionDir " | destination=" destinationDir)
         return true
     } catch as e {

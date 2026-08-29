@@ -571,9 +571,7 @@ RCSH_LiveQualityConfig(profile) {
 
 RCSH_LiveEncoderConfig(ffmpegExe, profile) {
     profile := RCSH_NormalizeLiveQualityProfile(profile)
-    if (profile != "smooth")
-        return { name: "libx264", arguments: '-preset ultrafast -tune zerolatency ' }
-
+    ; 所有直播畫質都優先使用硬體編碼，不再只有 60fps 才使用 GPU。
     encoder := RCSH_DetectLiveHardwareEncoder(ffmpegExe)
     if (encoder = "h264_nvenc")
         return { name: encoder, arguments: '-preset p1 -tune ll -rc cbr ' }
@@ -597,7 +595,7 @@ RCSH_DetectLiveHardwareEncoder(ffmpegExe) {
         }
     }
     RCSH_LIVE_HARDWARE_ENCODER := "libx264"
-    RC_Log("Self-hosted 720p60 hardware encoder unavailable; using libx264 fallback", "WARN")
+    RC_Log("Self-hosted live hardware encoder unavailable; using libx264 fallback", "WARN")
     return RCSH_LIVE_HARDWARE_ENCODER
 }
 
