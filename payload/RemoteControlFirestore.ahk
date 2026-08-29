@@ -1452,11 +1452,13 @@ RC_PatchClientState(state, isShutdown) {
     switchNotify := RC_ReadServerSwitchNotifyStatus()
     recordingActive := __SCREEN_RECORDING_ACTIVE ? true : false
     recordingDetail := SubStr(recording.detail, 1, 1000)
+    performanceJson := PerformanceTelemetry_ReadFirestoreJson()
+    performanceAvailable := performanceJson != ""
 
     body := "{"
     body .= '"fields":{'
     body .= '"docKind":{"stringValue":"client"},'
-    body .= '"schemaVersion":{"integerValue":"5"},'
+    body .= '"schemaVersion":{"integerValue":"6"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
@@ -1507,6 +1509,9 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"recentEventsJson":{"stringValue":"' RC_JsonEsc(recentEventsJson) '"},'
     body .= '"recentEventCount":{"integerValue":"' RC_RECENT_EVENTS.Length '"},'
     body .= '"lastRuntimeEventAt":{"integerValue":"' RC_LAST_EVENT_AT '"},'
+    body .= '"performanceSchemaVersion":{"integerValue":"1"},'
+    body .= '"performanceStatusAvailable":{"booleanValue":' (performanceAvailable ? "true" : "false") '},'
+    body .= '"performanceJson":{"stringValue":"' RC_JsonEsc(performanceJson) '"},'
     body .= '"recordingStatusAvailable":{"booleanValue":' (recording.available ? "true" : "false") '},'
     body .= '"recordingEnabled":{"booleanValue":' (SCREEN_RECORDING_ENABLED ? "true" : "false") '},'
     body .= '"recordingActive":{"booleanValue":' (recordingActive ? "true" : "false") '},'
@@ -1578,6 +1583,9 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=recentEventsJson"
     url .= "&updateMask.fieldPaths=recentEventCount"
     url .= "&updateMask.fieldPaths=lastRuntimeEventAt"
+    url .= "&updateMask.fieldPaths=performanceSchemaVersion"
+    url .= "&updateMask.fieldPaths=performanceStatusAvailable"
+    url .= "&updateMask.fieldPaths=performanceJson"
     url .= "&updateMask.fieldPaths=recordingStatusAvailable"
     url .= "&updateMask.fieldPaths=recordingEnabled"
     url .= "&updateMask.fieldPaths=recordingActive"

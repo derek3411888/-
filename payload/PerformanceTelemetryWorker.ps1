@@ -11,6 +11,7 @@ $ProgressPreference = 'SilentlyContinue'
 $SampleIntervalSeconds = [Math]::Max(2, [Math]::Min(10, $SampleIntervalSeconds))
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $heartbeatPath = Join-Path $OutputRoot 'heartbeat.json'
+$firestorePath = Join-Path $OutputRoot 'firestore.json'
 $minutesPath = Join-Path $OutputRoot 'minutes.ndjson'
 $stopPath = Join-Path $OutputRoot ("stop_{0}.flag" -f $ParentPid)
 $presentMonVersion = '2.5.1'
@@ -273,13 +274,13 @@ function Append-Minute($Minute) {
     $json = $Minute | ConvertTo-Json -Depth 6 -Compress
     [IO.File]::AppendAllText($minutesPath, $json + "`n", $utf8)
     $script:minuteHistory.Add($Minute)
-    while ($script:minuteHistory.Count -gt 10) { $script:minuteHistory.RemoveAt(0) }
+    while ($script:minuteHistory.Count -gt 60) { $script:minuteHistory.RemoveAt(0) }
 }
 
 function Load-MinuteHistory {
     if (-not (Test-Path -LiteralPath $minutesPath)) { return }
     try {
-        foreach ($line in @(Get-Content -LiteralPath $minutesPath -Tail 10 -ErrorAction Stop)) {
+        foreach ($line in @(Get-Content -LiteralPath $minutesPath -Tail 60 -ErrorAction Stop)) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             $script:minuteHistory.Add(($line | ConvertFrom-Json))
         }
@@ -473,8 +474,52 @@ try {
             nvidiaTelemetry = [bool]$nvidiaSmi
             error = [string]$lastCollectorError
         }
-        $heartbeat = [ordered]@{ collector = $collector; current = $sample; minutes = $minuteHistory.ToArray() }
+        $historyArray = @($minuteHistory.ToArray())
+        $heartbeatMinutes = if ($historyArray.Count -gt 10) {
+            @($historyArray[($historyArray.Count - 10)..($historyArray.Count - 1)])
+        } else {
+            $historyArray
+        }
+        $heartbeat = [ordered]@{ collector = $collector; current = $sample; minutes = $heartbeatMinutes }
         Write-AtomicUtf8 $heartbeatPath ($heartbeat | ConvertTo-Json -Depth 8 -Compress)
+
+        # 公司版 GitHub Pages 只能讀 Firestore。這裡另外產生一份有界的
+        # 60 分鐘精簡資料，AHK 會把它併入既有 90 秒心跳；不新增 Firestore
+        # 文件、寫入次數、listener 或輪詢計時器。
+        $compactPoints = @(
+            foreach ($minute in $historyArray) {
+                $metrics = $minute.metrics
+                [ordered]@{
+                    at = [long]$minute.bucketStart
+                    fps = $metrics.fps; fps1Low = $metrics.fps1Low
+                    frameTimeMs = $metrics.frameTimeMs; frameTimeP95Ms = $metrics.frameTimeP95Ms
+                    cpuTotalPct = $metrics.cpuTotalPct; gpuPct = $metrics.gpuPct
+                    gpuEncoderPct = $metrics.gpuEncoderPct
+                    diskWriteMbps = $metrics.diskWriteMbps; networkUpMbps = $metrics.networkUpMbps
+                }
+            }
+        )
+        $compactCurrent = [ordered]@{
+            at = $sample.at
+            fps = $sample.fps; fps1Low = $sample.fps1Low
+            frameTimeMs = $sample.frameTimeMs; frameTimeP95Ms = $sample.frameTimeP95Ms
+            cpuTotalPct = $sample.cpuTotalPct; cpuGamePct = $sample.cpuGamePct
+            gpuPct = $sample.gpuPct; gpuEncoderPct = $sample.gpuEncoderPct
+            ramUsedGb = $sample.ramUsedGb; ramTotalGb = $sample.ramTotalGb
+            gameRamMb = $sample.gameRamMb; gpuVramMb = $sample.gpuVramMb
+            gpuTempC = $sample.gpuTempC; gpuPowerW = $sample.gpuPowerW
+            diskWriteMbps = $sample.diskWriteMbps; diskFreeGb = $sample.diskFreeGb
+            networkUpMbps = $sample.networkUpMbps
+            recordingActive = $sample.recordingActive; recordingFps = $sample.recordingFps
+            liveActive = $sample.liveActive; liveFps = $sample.liveFps
+        }
+        $firestore = [ordered]@{
+            schemaVersion = 1
+            collector = $collector
+            current = $compactCurrent
+            points = $compactPoints
+        }
+        Write-AtomicUtf8 $firestorePath ($firestore | ConvertTo-Json -Depth 7 -Compress)
         $lastCollectorError = ''
 
         if (($sampleStarted - $lastPruneAt).TotalHours -ge 1) {
@@ -497,6 +542,15 @@ try {
             current = $null; minutes = $minuteHistory.ToArray()
         }
         Write-AtomicUtf8 $heartbeatPath ($failed | ConvertTo-Json -Depth 8 -Compress)
+        $failedFirestore = [ordered]@{
+            schemaVersion = 1
+            collector = $failed.collector
+            current = $null
+            points = @($minuteHistory.ToArray() | ForEach-Object {
+                [ordered]@{ at = [long]$_.bucketStart; fps = $_.metrics.fps; fps1Low = $_.metrics.fps1Low }
+            })
+        }
+        Write-AtomicUtf8 $firestorePath ($failedFirestore | ConvertTo-Json -Depth 7 -Compress)
     } catch {}
 } finally {
     Stop-PresentMon

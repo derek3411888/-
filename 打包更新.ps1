@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.73',
-    [string]$LauncherVersion = '4.84',
-    [string]$ServerVersion = '1.0.33'
+    [string]$PayloadVersion = '4.74',
+    [string]$LauncherVersion = '4.85',
+    [string]$ServerVersion = '1.0.34'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -240,6 +240,7 @@ Assert-ZipContains 'self-hosted-server.zip' @(
     'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
     'src/performance.js', 'Update-Server.ps1',
     'test/integration-smoke.mjs', 'test/media-stream.test.js',
+    'test/company-performance-web.test.js',
     'windows/CodexSupportBridge.ps1', 'windows/Install-CodexSupportBridge.ps1',
     'windows/Uninstall-CodexSupportBridge.ps1'
 )

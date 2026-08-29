@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260828-codex-message-v3" />
+  <link rel="stylesheet" href="styles.css?v=20260829-performance-v1" />
 </head>
 <body>
   <main class="wrap">
@@ -177,18 +177,45 @@
     </section>
 
     <section id="viewDiagnostics" class="app-view" role="tabpanel" aria-labelledby="tabDiagnostics" hidden>
-      <div class="diagnostics-grid">
-        <section class="card recording-card" aria-labelledby="recordingStatusTitle">
-          <div class="section-heading heading-row">
-            <div>
-              <h2 id="recordingStatusTitle">完整錄影狀態與存放位置</h2>
-              <p id="recordingStatusUpdated" class="sub">尚未收到錄影狀態。</p>
-            </div>
-            <span id="recordingStatusBadge" class="recording-status-badge idle">尚無資料</span>
+      <section class="card performance-card" aria-labelledby="performanceTitle">
+        <div class="section-heading heading-row performance-heading">
+          <div>
+            <h2 id="performanceTitle">效能分析</h2>
+            <p class="sub">目前狀態與最近 60 分鐘趨勢；資料併入原本 90 秒心跳，不增加 Firestore 寫入次數。</p>
           </div>
+          <span id="performanceFreshnessBadge" class="performance-freshness-badge idle">等待資料</span>
+        </div>
+        <p id="performanceNotice" class="performance-notice">請先選擇一台電腦。</p>
+        <div class="performance-kpis" aria-label="目前效能摘要">
+          <div><span>遊戲 FPS</span><strong id="perfFps">—</strong><small id="perfFpsLow">1% Low —</small></div>
+          <div><span>Frame time</span><strong id="perfFrameTime">—</strong><small id="perfFrameP95">P95 —</small></div>
+          <div><span>CPU</span><strong id="perfCpu">—</strong><small id="perfGameCpu">遊戲 —</small></div>
+          <div><span>GPU</span><strong id="perfGpu">—</strong><small id="perfEncoder">編碼器 —</small></div>
+          <div><span>記憶體</span><strong id="perfRam">—</strong><small id="perfGameRam">遊戲 —</small></div>
+          <div><span>顯示記憶體</span><strong id="perfVram">—</strong><small id="perfTemperature">溫度 —</small></div>
+          <div><span>磁碟寫入</span><strong id="perfDiskWrite">—</strong><small id="perfDiskFree">可用 —</small></div>
+          <div><span>錄影／直播</span><strong id="perfRecording">—</strong><small id="perfLive">直播 —</small></div>
+        </div>
+        <div class="performance-chart-grid">
+          <figure><figcaption>FPS 與 1% Low</figcaption><canvas id="perfFpsChart" role="img" aria-label="最近一小時 FPS 趨勢圖"></canvas><div class="chart-legend"><span class="fps">FPS</span><span class="low">1% Low</span></div></figure>
+          <figure><figcaption>CPU／GPU 使用率</figcaption><canvas id="perfUsageChart" role="img" aria-label="最近一小時 CPU 與 GPU 使用率趨勢圖"></canvas><div class="chart-legend"><span class="cpu">CPU</span><span class="gpu">GPU</span><span class="encoder">編碼器</span></div></figure>
+          <figure><figcaption>Frame time</figcaption><canvas id="perfFrameChart" role="img" aria-label="最近一小時 Frame time 趨勢圖"></canvas><div class="chart-legend"><span class="frame">平均</span><span class="p95">P95</span></div></figure>
+          <figure><figcaption>磁碟與網路輸出</figcaption><canvas id="perfIoChart" role="img" aria-label="最近一小時磁碟與網路趨勢圖"></canvas><div class="chart-legend"><span class="disk">磁碟寫入</span><span class="network">網路上傳</span></div></figure>
+        </div>
+      </section>
+
+      <div class="diagnostics-grid">
+        <details class="card recording-card recording-details">
+          <summary>
+            <span>
+              <strong id="recordingStatusTitle">完整錄影狀態與存放位置</strong>
+              <small id="recordingStatusUpdated">尚未收到錄影狀態（預設收起）</small>
+            </span>
+            <span id="recordingStatusBadge" class="recording-status-badge idle">尚無資料</span>
+          </summary>
           <p id="recordingStatusNote" class="recording-status-note">選擇電腦後會顯示成功、失敗原因與實際保留位置。</p>
           <div id="recordingPaths" class="recording-paths"></div>
-        </section>
+        </details>
 
         <section class="card events-card" aria-labelledby="runtimeEventsTitle">
           <div class="section-heading">
@@ -316,6 +343,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260828-codex-message-v3"></script>
+  <script type="module" src="app.js?v=20260829-performance-v1"></script>
 </body>
 </html>

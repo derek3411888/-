@@ -7,10 +7,11 @@ global PERF_TELEMETRY_PID := 0
 global PERF_TELEMETRY_PARENT_PID := 0
 global PERF_TELEMETRY_ROOT := ""
 global PERF_TELEMETRY_HEARTBEAT_PATH := ""
+global PERF_TELEMETRY_FIRESTORE_PATH := ""
 
 PerformanceTelemetry_Start(cfgPath := "") {
     global PERF_TELEMETRY_PID, PERF_TELEMETRY_PARENT_PID
-    global PERF_TELEMETRY_ROOT, PERF_TELEMETRY_HEARTBEAT_PATH
+    global PERF_TELEMETRY_ROOT, PERF_TELEMETRY_HEARTBEAT_PATH, PERF_TELEMETRY_FIRESTORE_PATH
 
     if (PERF_TELEMETRY_PID > 0 && ProcessExist(PERF_TELEMETRY_PID))
         return true
@@ -21,6 +22,7 @@ PerformanceTelemetry_Start(cfgPath := "") {
 
     PERF_TELEMETRY_ROOT := RuntimeFiles_ProgramRoot() "\效能分析"
     PERF_TELEMETRY_HEARTBEAT_PATH := PERF_TELEMETRY_ROOT "\heartbeat.json"
+    PERF_TELEMETRY_FIRESTORE_PATH := PERF_TELEMETRY_ROOT "\firestore.json"
     try DirCreate(PERF_TELEMETRY_ROOT)
     catch
         return false
@@ -75,6 +77,29 @@ PerformanceTelemetry_ReadHeartbeatJson() {
         return ""
     try {
         if (FileGetSize(path) <= 2 || FileGetSize(path) > 262144)
+            return ""
+        json := Trim(FileRead(path, "UTF-8"), " `t`r`n")
+        if (SubStr(json, 1, 1) != "{" || SubStr(json, -1) != "}")
+            return ""
+        return json
+    } catch {
+        return ""
+    }
+}
+
+PerformanceTelemetry_ReadFirestoreJson() {
+    global PERF_TELEMETRY_FIRESTORE_PATH
+    path := PERF_TELEMETRY_FIRESTORE_PATH
+    if (path = "")
+        path := RuntimeFiles_ProgramRoot() "\效能分析\firestore.json"
+    if !FileExist(path)
+        return ""
+    try {
+        ; Firestore client 文件上限為 1 MiB；這份檔案只保留最近 60 個
+        ; 每分鐘彙整點，並在本機先設更嚴格的 32 KiB 上限，保護免費
+        ; 額度的網路傳輸量。
+        size := FileGetSize(path)
+        if (size <= 2 || size > 32768)
             return ""
         json := Trim(FileRead(path, "UTF-8"), " `t`r`n")
         if (SubStr(json, 1, 1) != "{" || SubStr(json, -1) != "}")
