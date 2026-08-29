@@ -32,6 +32,11 @@ if (A_Args.Length >= 1) {
     if !(encoder = "h264_nvenc" || encoder = "h264_qsv"
         || encoder = "h264_amf" || encoder = "libx264")
         throw Error("Unexpected live encoder result: " encoder)
+    for profile in ["economy", "balanced", "smooth"] {
+        profileEncoder := RCSH_LiveEncoderConfig(A_Args[1], profile)
+        if (profileEncoder.name != encoder)
+            throw Error(profile " profile did not use detected encoder: " profileEncoder.name)
+    }
     FileAppend("encoder=" encoder "`n", "*")
 }
 
