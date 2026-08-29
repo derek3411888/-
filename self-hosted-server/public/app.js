@@ -5,6 +5,8 @@ const state = {
   selectedUid: localStorage.getItem("wuthering.selectedUid") || "",
   details: null,
   recordings: [],
+  performance: null,
+  performanceRange: localStorage.getItem("wuthering.performanceRange") || "6h",
   eventSource: null,
   refreshTimer: 0,
   selectedRefreshTimer: 0,
@@ -74,6 +76,122 @@ function formatBytes(value) {
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${Math.round(bytes)} B`;
+}
+
+function metric(value, digits = 1, suffix = "") {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "—";
+}
+
+function performancePoints() {
+  return (state.performance?.points || []).map((row) => ({
+    at: new Date(row.bucket_start).valueOf(),
+    ...(row.metrics || {}),
+    context: row.context || {},
+  })).filter((row) => Number.isFinite(row.at));
+}
+
+function drawPerformanceChart(canvas, points, series, { fixedMax = 0, suffix = "" } = {}) {
+  if (!canvas) return;
+  const width = Math.max(300, Math.round(canvas.getBoundingClientRect().width || canvas.clientWidth || 480));
+  const height = Math.max(160, Math.round(canvas.getBoundingClientRect().height || canvas.clientHeight || 210));
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, width, height);
+  const padding = { left: 42, right: 12, top: 12, bottom: 25 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const values = points.flatMap((point) => series.map((item) => Number(point[item.key])).filter(Number.isFinite));
+  context.font = '11px system-ui, "Microsoft JhengHei", sans-serif';
+  context.fillStyle = "#718391";
+  if (!points.length || !values.length) {
+    context.textAlign = "center"; context.fillText("尚無這段時間的資料", width / 2, height / 2); return;
+  }
+  const firstAt = points[0].at; const lastAt = points.at(-1).at;
+  const span = Math.max(60_000, lastAt - firstAt);
+  const maximum = fixedMax || Math.max(1, Math.max(...values) * 1.12);
+  context.strokeStyle = "#e4ebf0"; context.lineWidth = 1; context.textAlign = "right";
+  for (let index = 0; index <= 4; index += 1) {
+    const y = padding.top + plotHeight * index / 4;
+    context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+    context.fillText(`${(maximum * (1 - index / 4)).toFixed(maximum <= 10 ? 1 : 0)}${suffix}`, padding.left - 5, y + 4);
+  }
+  const errorEvents = (state.details?.events || []).filter((item) => String(item.level).toUpperCase() === "ERROR")
+    .map((item) => new Date(item.event_at).valueOf()).filter((at) => at >= firstAt && at <= lastAt);
+  context.save(); context.strokeStyle = "rgba(189,61,72,.32)"; context.setLineDash([3, 3]);
+  for (const at of errorEvents) {
+    const x = padding.left + (at - firstAt) / span * plotWidth;
+    context.beginPath(); context.moveTo(x, padding.top); context.lineTo(x, padding.top + plotHeight); context.stroke();
+  }
+  context.restore();
+  for (const item of series) {
+    context.beginPath(); context.strokeStyle = item.color; context.lineWidth = 2; context.lineJoin = "round";
+    let drawing = false;
+    for (const point of points) {
+      const value = Number(point[item.key]);
+      if (!Number.isFinite(value)) { drawing = false; continue; }
+      const x = padding.left + (point.at - firstAt) / span * plotWidth;
+      const y = padding.top + plotHeight - Math.max(0, Math.min(1, value / maximum)) * plotHeight;
+      if (!drawing) { context.moveTo(x, y); drawing = true; } else context.lineTo(x, y);
+    }
+    context.stroke();
+  }
+  context.fillStyle = "#718391"; context.textAlign = "left";
+  context.fillText(new Date(firstAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }), padding.left, height - 6);
+  context.textAlign = "right";
+  context.fillText(new Date(lastAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }), width - padding.right, height - 6);
+}
+
+function renderPerformance(fallback = null) {
+  const wrapped = state.performance?.current || fallback || {};
+  const current = wrapped.current || {};
+  const collector = wrapped.collector || {};
+  setText("perfFps", metric(current.fps, 1));
+  setText("perfFpsLow", `1% Low ${metric(current.fps1Low, 1)}`);
+  setText("perfFrameTime", metric(current.frameTimeMs, 1, " ms"));
+  setText("perfFrameP95", `P95 ${metric(current.frameTimeP95Ms, 1, " ms")}`);
+  setText("perfCpu", metric(current.cpuTotalPct, 1, "%"));
+  setText("perfGameCpu", `遊戲 ${metric(current.cpuGamePct, 1, "%")}`);
+  setText("perfGpu", metric(current.gpuPct, 1, "%"));
+  setText("perfEncoder", `編碼器 ${metric(current.gpuEncoderPct, 1, "%")}`);
+  setText("perfRam", Number.isFinite(Number(current.ramUsedGb)) && Number.isFinite(Number(current.ramTotalGb))
+    ? `${Number(current.ramUsedGb).toFixed(1)} / ${Number(current.ramTotalGb).toFixed(1)} GB` : "—");
+  setText("perfGameRam", `遊戲 ${metric(current.gameRamMb, 0, " MB")}`);
+  setText("perfVram", metric(current.gpuVramMb, 0, " MB"));
+  setText("perfTemperature", `溫度 ${metric(current.gpuTempC, 0, "°C")}｜功耗 ${metric(current.gpuPowerW, 0, " W")}`);
+  setText("perfDiskWrite", metric(current.diskWriteMbps, 1, " Mbps"));
+  setText("perfDiskFree", `可用 ${metric(current.diskFreeGb, 1, " GB")}`);
+  setText("perfRecording", current.recordingActive ? `${metric(current.recordingFps, 1)} fps` : "未錄影");
+  setText("perfLive", current.liveActive ? `直播 ${metric(current.liveFps, 1)} fps` : "直播未啟動");
+
+  const ageSeconds = current.at ? Math.max(0, Math.floor((Date.now() - Number(current.at)) / 1000)) : null;
+  const presentMonText = {
+    capturing: collector.fpsAvailable ? "FPS 正常" : "等待遊戲畫面",
+    waiting_game: "遊戲未執行，FPS 暫無資料",
+    starting: "採集器啟動中",
+    retry_wait: "FPS 工具等待權限或稍後重試",
+    error: "FPS 工具暫時失敗",
+  }[collector.presentMon] || "FPS 工具尚未回報";
+  const noticeParts = [collector.state === "running" ? "效能採集正常" : `採集器：${collector.state || "尚無資料"}`, presentMonText];
+  if (ageSeconds !== null) noticeParts.push(`${ageSeconds} 秒前更新`);
+  if (collector.error) noticeParts.push(`最近錯誤：${collector.error}`);
+  setText("performanceNotice", noticeParts.join("｜"));
+  $("performanceNotice").className = `transport-status ${collector.error || (ageSeconds !== null && ageSeconds > 30) ? "warning" : "muted"}`;
+
+  const points = performancePoints();
+  drawPerformanceChart($("perfFpsChart"), points, [
+    { key: "fps", color: "#236f9f" }, { key: "fps1Low", color: "#1c9a70" },
+  ]);
+  drawPerformanceChart($("perfUsageChart"), points, [
+    { key: "cpuTotalPct", color: "#236f9f" }, { key: "gpuPct", color: "#1c9a70" }, { key: "gpuEncoderPct", color: "#d17b2b" },
+  ], { fixedMax: 100, suffix: "%" });
+  drawPerformanceChart($("perfFrameChart"), points, [
+    { key: "frameTimeMs", color: "#1c9a70" }, { key: "frameTimeP95Ms", color: "#d17b2b" },
+  ], { suffix: "ms" });
+  drawPerformanceChart($("perfIoChart"), points, [
+    { key: "diskWriteMbps", color: "#1c9a70" }, { key: "networkUpMbps", color: "#d17b2b" },
+  ], { suffix: "M" });
 }
 function recordingStageLabel(value) {
   return {
@@ -486,6 +604,7 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   if (!device) {
     setText("deviceTitle", "尚未選擇裝置");
     setText("deviceSummary", "無資料");
+    renderPerformance();
     return;
   }
   const status = device.status || {};
@@ -556,6 +675,8 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   const recordingCard = document.createElement("div"); recordingCard.className = "recording-status-card";
   if (!Object.keys(recording).length) {
     recordingCard.textContent = "尚未收到錄影資料。";
+    setText("recordingSummaryBadge", "尚無資料");
+    $("recordingSummaryBadge").className = "badge muted";
   } else {
     const stateLine = document.createElement("div"); stateLine.className = "state-line";
     const badge = document.createElement("span"); badge.className = `badge ${String(recording.state).includes("error") || String(recording.state).includes("waiting") ? "warning" : recording.state === "complete" ? "ok" : "muted"}`;
@@ -576,6 +697,8 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     if (recording.resultPath) { const row = document.createElement("span"); row.textContent = `完成位置：${recording.resultPath}`; paths.append(row); }
     if (recording.failureStorage && recording.state !== "complete") { const row = document.createElement("span"); row.textContent = `失敗保留：${recording.failureStorage}`; paths.append(row); }
     recordingCard.append(paths);
+    setText("recordingSummaryBadge", recordingStageLabel(recording.state));
+    $("recordingSummaryBadge").className = badge.className;
   }
   recordingNode.append(recordingCard);
 
@@ -602,6 +725,7 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     ? wrapper.settings.settings : (device.settings || {});
   if (reloadSettings && !$("settingsForm").contains(document.activeElement)) renderSettings(displayedSettings);
   setText("liveProfileSummary", `${liveQualityLabel(displayedSettings.liveQualityProfile)}；有人觀看時才推流。`);
+  renderPerformance(status.performance);
 }
 
 function renderSettings(settings) {
@@ -703,6 +827,7 @@ function mergeRefreshOptions(left = {}, right = {}) {
   return {
     includeDevices: left.includeDevices !== false || right.includeDevices !== false,
     includeRecordings: left.includeRecordings !== false || right.includeRecordings !== false,
+    includePerformance: Boolean(left.includePerformance || right.includePerformance),
     reloadSnapshot: Boolean(left.reloadSnapshot || right.reloadSnapshot),
     reloadSettings: Boolean(left.reloadSettings || right.reloadSettings),
     admin: Boolean(left.admin || right.admin),
@@ -713,6 +838,7 @@ async function refresh(options = {}) {
   const requested = {
     includeDevices: options.includeDevices !== false,
     includeRecordings: options.includeRecordings !== false,
+    includePerformance: options.includePerformance ?? state.activeTab === "diagnostics",
     reloadSnapshot: Boolean(options.reloadSnapshot),
     reloadSettings: options.reloadSettings !== false,
     admin: Boolean(options.admin),
@@ -733,18 +859,26 @@ async function refresh(options = {}) {
       renderDevices();
     }
     const selectedChanged = previousUid !== state.selectedUid;
+    if (selectedChanged) state.performance = null;
     if (state.selectedUid) {
       const encoded = encodeURIComponent(state.selectedUid);
       const requests = [api(`/api/v1/devices/${encoded}`)];
       if (requested.includeRecordings) requests.push(api(`/api/v1/devices/${encoded}/recordings`));
-      const [details, recordings] = await Promise.all(requests);
+      if (requested.includePerformance) requests.push(api(`/api/v1/devices/${encoded}/performance?range=${encodeURIComponent(state.performanceRange)}`));
+      const results = await Promise.all(requests);
+      const details = results[0];
+      let resultIndex = 1;
+      const recordings = requested.includeRecordings ? results[resultIndex++] : null;
+      const performance = requested.includePerformance ? results[resultIndex++] : null;
       state.details = details;
       if (recordings) state.recordings = recordings.recordings || [];
+      if (performance) state.performance = performance;
       renderDetails({
         reloadSnapshot: requested.reloadSnapshot || selectedChanged,
         reloadSettings: requested.reloadSettings,
       });
       if (requested.includeRecordings) renderRecordings();
+      if (requested.includePerformance) renderPerformance(details.device?.status?.performance);
     }
     if (requested.admin) await refreshAdmin();
   } finally {
@@ -923,8 +1057,14 @@ function bindEvents() {
     state.activeTab = button.dataset.tab;
     if (state.activeTab === "settings") refresh({ admin: true, reloadSettings: true }).catch((error) => toast(error.message));
     else if (state.activeTab === "videos") refresh({ includeDevices: false, includeRecordings: true, reloadSettings: false }).catch((error) => toast(error.message));
+    else if (state.activeTab === "diagnostics") refresh({ includeDevices: false, includeRecordings: false, includePerformance: true, reloadSettings: false }).catch((error) => toast(error.message));
   }));
-  deviceSelect.addEventListener("change", async () => { await stopLive(); state.selectedUid = deviceSelect.value; localStorage.setItem("wuthering.selectedUid", state.selectedUid); await refresh({ reloadSnapshot: true, admin: state.activeTab === "settings" }); });
+  $("performanceRange").addEventListener("change", () => {
+    state.performanceRange = $("performanceRange").value;
+    localStorage.setItem("wuthering.performanceRange", state.performanceRange);
+    refresh({ includeDevices: false, includeRecordings: false, includePerformance: true, reloadSettings: false }).catch((error) => toast(error.message));
+  });
+  deviceSelect.addEventListener("change", async () => { await stopLive(); state.selectedUid = deviceSelect.value; state.performance = null; localStorage.setItem("wuthering.selectedUid", state.selectedUid); await refresh({ reloadSnapshot: true, admin: state.activeTab === "settings" }); });
   $("refreshButton").addEventListener("click", () => refresh({ reloadSnapshot: true, admin: state.activeTab === "settings" }).catch((error) => toast(error.message)));
   $("pauseButton").addEventListener("click", () => sendCommand("PAUSE").catch((error) => toast(error.message)));
   $("runButton").addEventListener("click", () => sendCommand("RUN").catch((error) => toast(error.message)));
@@ -952,6 +1092,11 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
   });
+  let chartResizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(chartResizeTimer);
+    chartResizeTimer = setTimeout(() => { if (state.activeTab === "diagnostics") renderPerformance(state.details?.device?.status?.performance); }, 150);
+  });
   window.addEventListener("beforeunload", () => {
     clearInterval(state.liveTimer); clearTimeout(state.liveRetryTimer); clearInterval(state.periodicTimer);
     clearTimeout(state.refreshTimer); clearTimeout(state.selectedRefreshTimer);
@@ -961,6 +1106,8 @@ function bindEvents() {
 
 async function boot() {
   renderServerChoices("");
+  if (!["15m", "1h", "6h", "24h", "7d", "14d"].includes(state.performanceRange)) state.performanceRange = "6h";
+  $("performanceRange").value = state.performanceRange;
   appView.hidden = false;
   bindEvents();
   updateCodexMessageControls();

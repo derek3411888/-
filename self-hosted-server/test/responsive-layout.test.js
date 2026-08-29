@@ -15,10 +15,17 @@ test("recording status uses an isolated responsive layout", async () => {
   ]);
 
   assert.match(html, /id="recordingStatus" class="recording-status"/);
+  assert.match(html, /<details class="card recording-details">/);
+  assert.doesNotMatch(html, /<details class="card recording-details"\s+open/);
+  assert.match(html, /id="performanceRange"/);
+  assert.match(html, /id="perfFpsChart"/);
+  assert.match(html, /id="perfUsageChart"/);
   assert.doesNotMatch(html, /id="recordingStatus" class="key-values"/);
   assert.match(css, /\.key-values\s*>\s*div\s*\{/);
   assert.doesNotMatch(css, /\.key-values\s+div\s*\{/);
   assert.match(css, /\.recording-paths\s*>\s*span\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(css, /\.performance-kpis\s*\{[^}]*grid-template-columns:\s*repeat\(4,/s);
+  assert.match(css, /\.performance-chart-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s);
   assert.match(css, /\.progress-summary\s+span\s*\{[^}]*white-space:\s*nowrap/s);
   assert.match(css, /\.card\s*\{[^}]*min-width:\s*0/s);
   assert.match(css, /\.tab-panel\.active\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
@@ -37,6 +44,8 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(script, /api\("\/api\/v1\/codex-support"/);
   assert.match(script, /CODEX_SUPPORT_PRESETS\s*=\s*Object\.freeze/);
   assert.match(script, /stopCodexSupportPolling/);
+  assert.match(script, /\/api\/v1\/devices\/\$\{encoded\}\/performance\?range=/);
+  assert.match(script, /function renderPerformance/);
   assert.match(server, /pathname === "\/api\/v1\/codex-support" && req\.method === "GET"/);
   assert.match(server, /pathname === "\/api\/v1\/codex-support" && req\.method === "POST"/);
   assert.match(bridge, /currentDocument\.updateTime/);

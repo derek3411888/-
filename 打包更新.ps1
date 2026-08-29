@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.72',
-    [string]$LauncherVersion = '4.83',
-    [string]$ServerVersion = '1.0.32'
+    [string]$PayloadVersion = '4.73',
+    [string]$LauncherVersion = '4.84',
+    [string]$ServerVersion = '1.0.33'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -168,13 +168,18 @@ Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架�
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 回歸測試'
 Invoke-AhkValidate $runtime '打包啟動器.ahk' 'Launcher AHK validate'
-$uploaderTokens = $null
-$uploaderParseErrors = $null
-[void][Management.Automation.Language.Parser]::ParseFile(
-    (Join-Path $projectRoot 'payload\SelfHostMediaUpload.ps1'),
-    [ref]$uploaderTokens, [ref]$uploaderParseErrors)
-if ($uploaderParseErrors.Count -gt 0) {
-    throw "中央影片上傳 PowerShell 語法錯誤：$($uploaderParseErrors[0].Message)"
+foreach ($payloadUtilityScript in @(
+    'payload\SelfHostMediaUpload.ps1',
+    'payload\PerformanceTelemetryWorker.ps1'
+)) {
+    $utilityTokens = $null
+    $utilityParseErrors = $null
+    [void][Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $projectRoot $payloadUtilityScript),
+        [ref]$utilityTokens, [ref]$utilityParseErrors)
+    if ($utilityParseErrors.Count -gt 0) {
+        throw "Payload PowerShell 語法錯誤 ($payloadUtilityScript)：$($utilityParseErrors[0].Message)"
+    }
 }
 foreach ($bridgeScript in @(
     'self-hosted-server\windows\CodexSupportBridge.ps1',
@@ -214,7 +219,9 @@ New-FilteredZip 'payload' 'payload.zip' @(
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk',
-    'ScreenRecordingEncoderPolicy.ahk', 'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
+    'ScreenRecordingEncoderPolicy.ahk', 'PerformanceTelemetry.ahk',
+    'PerformanceTelemetryWorker.ps1', 'tools/PresentMon/LICENSE.txt',
+    'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
 )
 
 Write-Host '編譯內嵌最新版 Payload 的 Launcher EXE…'
@@ -230,7 +237,8 @@ New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
 Assert-ZipContains 'self-hosted-server.zip' @(
     'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
     'public/index.html', 'public/app.js', 'public/styles.css',
-    'migrations/004_media_auto_repair.sql', 'Update-Server.ps1',
+    'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
+    'src/performance.js', 'Update-Server.ps1',
     'test/integration-smoke.mjs', 'test/media-stream.test.js',
     'windows/CodexSupportBridge.ps1', 'windows/Install-CodexSupportBridge.ps1',
     'windows/Uninstall-CodexSupportBridge.ps1'

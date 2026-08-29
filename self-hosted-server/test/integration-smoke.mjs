@@ -110,12 +110,23 @@ async function main() {
     headers: { Authorization: `Bearer ${crypto.randomBytes(48).toString("base64url")}` },
   });
   assert(unauthorizedDevice.status === 401, "forged device credential reached control API");
+  const performanceBucket = Math.floor((Date.now() - 60_000) / 60_000) * 60_000;
   await request("/api/v1/device/heartbeat", {
     method: "PUT", device: true,
     body: { state: "RUN", displayName: "整合測試裝置", lastNonce: 0, settingsRevision: 0,
       status: { currentStep: "smoke", currentServerLabel: "1/2 | HMT", serverScheduleList: ["HMT", "Asia"] },
-      events: [{ at: Date.now(), level: "INFO", name: "測試啟動", detail: "integration smoke" }] },
+      events: [{ at: Date.now(), level: "INFO", name: "測試啟動", detail: "integration smoke" }],
+      performance: {
+        collector: { state: "running", presentMon: "capturing", fpsAvailable: true, updatedAt: Date.now() },
+        current: { at: Date.now(), fps: 60, frameTimeMs: 16.67, cpuTotalPct: 20, gpuPct: 40, gameRunning: true },
+        minutes: [{ bucketStart: performanceBucket, sampleCount: 30,
+          metrics: { fps: 59.8, fps1Low: 52.1, frameTimeMs: 16.7, cpuTotalPct: 21, gpuPct: 42 } }],
+      } },
   });
+  const performance = await request(`/api/v1/devices/${encodeURIComponent(uid)}/performance?range=1h`, { browser: true });
+  assert(performance.range === "1h" && performance.current?.current?.fps === 60
+    && performance.points.some((point) => Number(point.metrics?.fps) === 59.8),
+  "performance minute aggregation or current status was not readable");
   const backgroundRecordingStatus = await request("/api/v1/device/recording/status", {
     method: "PUT", device: true,
     body: { state: "merging", detail: "本機無損合併 25%", active: false,

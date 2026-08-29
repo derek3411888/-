@@ -8,6 +8,7 @@ import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
 import { allowInternalSmokeMutation } from "./internal-smoke.js";
 import { analyzeServerSchedule } from "./server-names.js";
+import { normalizePerformancePayload, normalizePerformanceRange, performanceRangeInterval } from "./performance.js";
 import {
   browserCookie,
   ensureBrowser,
@@ -252,6 +253,8 @@ async function updateHeartbeat(uid, body) {
   const displayName = boundedText(body.displayName, 160);
   const alias = boundedText(body.deviceAlias, 120);
   const status = typeof body.status === "object" && body.status ? body.status : {};
+  const performance = normalizePerformancePayload(body.performance, status);
+  if (performance) status.performance = { collector: performance.collector, current: performance.current };
   await query(
     `UPDATE devices SET display_name=COALESCE(NULLIF($2,''),display_name),device_alias=COALESCE(NULLIF($3,''),device_alias),
       state=$4,status=$5,last_seen=now(),last_nonce=GREATEST(last_nonce,$6),command_nonce=GREATEST(command_nonce,$6),
@@ -272,7 +275,40 @@ async function updateHeartbeat(uid, body) {
       );
     }
   }
+  if (performance?.minutes?.length) {
+    for (const item of performance.minutes) {
+      await query(
+        `INSERT INTO performance_minutes(uid,bucket_start,sample_count,metrics,context,collector)
+         VALUES($1,to_timestamp($2/1000.0),$3,$4,$5,$6)
+         ON CONFLICT(uid,bucket_start) DO UPDATE SET
+           sample_count=EXCLUDED.sample_count,metrics=EXCLUDED.metrics,context=EXCLUDED.context,
+           collector=EXCLUDED.collector,updated_at=now()`,
+        [uid, item.bucketStart, item.sampleCount, item.metrics, item.context, item.collector],
+      );
+    }
+  }
   eventHub.emit("device", { uid, state, at: Date.now() });
+}
+
+async function devicePerformance(uid, rangeValue) {
+  const range = normalizePerformanceRange(rangeValue);
+  const interval = performanceRangeInterval(range);
+  const [device, points] = await Promise.all([
+    query("SELECT status,last_seen FROM devices WHERE uid=$1", [uid]),
+    query(
+      `SELECT bucket_start,sample_count,metrics,context,collector
+       FROM performance_minutes WHERE uid=$1 AND bucket_start>=now()-$2::interval
+       ORDER BY bucket_start`,
+      [uid, interval],
+    ),
+  ]);
+  if (!device.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+  return {
+    range,
+    current: device.rows[0].status?.performance ?? null,
+    lastSeen: device.rows[0].last_seen,
+    points: points.rows,
+  };
 }
 
 async function updateRecordingWorkerStatus(uid, body) {
@@ -834,6 +870,11 @@ async function handleRequest(req, res) {
     sendJson(res, 200, await deviceDetails(normalizeUid(params.uid)));
     return;
   }
+  params = routeMatch(pathname, "/api/v1/devices/:uid/performance");
+  if (params && req.method === "GET") {
+    sendJson(res, 200, await devicePerformance(normalizeUid(params.uid), url.searchParams.get("range")));
+    return;
+  }
   params = routeMatch(pathname, "/api/v1/devices/:uid/commands");
   if (params && req.method === "POST") {
     const uid = normalizeUid(params.uid);
@@ -919,6 +960,7 @@ async function cleanupRuntimeData() {
   await query("DELETE FROM browser_sessions WHERE expires_at<now() OR revoked_at<now()-interval '30 days'");
   await query("DELETE FROM activation_tokens WHERE expires_at<now() OR used_at<now()-interval '7 days'");
   await query("DELETE FROM runtime_events WHERE event_at<now()-interval '30 days'");
+  await query("DELETE FROM performance_minutes WHERE bucket_start<now()-interval '14 days'");
   await query("DELETE FROM commands WHERE created_at<now()-interval '90 days' AND status<>'PENDING'");
   await query("DELETE FROM server_alerts WHERE created_at<now()-interval '90 days'");
   const oldSnapshots = await query("DELETE FROM snapshots s USING devices d WHERE s.uid=d.uid AND d.last_seen<now()-interval '7 days' RETURNING s.relative_path");

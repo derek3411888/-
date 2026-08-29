@@ -405,6 +405,9 @@ RCSH_SendHeartbeat(state) {
     body .= '"settingsRevision":' RC_LAST_SETTINGS_APPLIED_REVISION ","
     body .= '"status":' status ","
     body .= '"events":' eventsJson
+    performanceJson := PerformanceTelemetry_ReadHeartbeatJson()
+    if (performanceJson != "")
+        body .= ',"performance":' performanceJson
     body .= "}"
     result := RCSH_HttpRequest("PUT", "/api/v1/device/heartbeat", body)
     if result.ok {
@@ -539,7 +542,8 @@ RCSH_StartLivePreview(publishUrl, publishUrls := "") {
         . '-vf "scale=-2:720" -an -c:v ' encoder.name ' ' encoder.arguments
         . '-pix_fmt yuv420p -b:v ' quality.bitrateKbps 'k -maxrate ' quality.bitrateKbps
         . 'k -bufsize ' quality.bufferKbps 'k -g ' quality.gop ' -bf 0 '
-        . '-metadata comment=' RCSH_PREVIEW_MARKER ' -f mpegts "' effectiveUrl '"'
+        . PerformanceTelemetry_FfmpegProgressArgs("live")
+        . ' -metadata comment=' RCSH_PREVIEW_MARKER ' -f mpegts "' effectiveUrl '"'
     try {
         pid := 0
         Run(cmd, , "Hide", &pid)

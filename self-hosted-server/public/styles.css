@@ -134,6 +134,30 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
 .recording-status-card .state-line strong { min-width: 0; overflow-wrap: anywhere; }
 .recording-paths { display: grid; min-width: 0; gap: 4px; color: var(--muted); font-size: .84rem; }
 .recording-paths > span { display: block; min-width: 0; overflow-wrap: anywhere; }
+.performance-card { display: grid; gap: 14px; }
+.performance-title { margin-bottom: 0; }
+.performance-range { display: grid; min-width: 130px; gap: 4px; color: var(--muted); font-size: .82rem; }
+.performance-range select { border: 1px solid var(--line); border-radius: 8px; padding: .55rem .65rem; color: var(--ink); background: #fff; }
+.performance-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.performance-kpis > div { display: grid; min-width: 0; gap: 2px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: linear-gradient(145deg, #f8fbfd, #fff); }
+.performance-kpis span, .performance-kpis small { color: var(--muted); overflow-wrap: anywhere; }
+.performance-kpis strong { font-size: 1.3rem; line-height: 1.25; overflow-wrap: anywhere; }
+.performance-kpis small { min-height: 1.3em; font-size: .76rem; }
+.performance-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.performance-chart-grid figure { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fbfdfe; }
+.performance-chart-grid figcaption { margin-bottom: 5px; color: #3e5b6f; font-weight: 700; }
+.performance-chart-grid canvas { display: block; width: 100%; height: 210px; border-radius: 7px; background: #fff; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 6px; color: var(--muted); font-size: .75rem; }
+.chart-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; background: #738b9b; }
+.chart-legend .fps::before, .chart-legend .cpu::before { background: #236f9f; }
+.chart-legend .low::before, .chart-legend .gpu::before, .chart-legend .frame::before, .chart-legend .disk::before { background: #1c9a70; }
+.chart-legend .encoder::before, .chart-legend .p95::before, .chart-legend .network::before { background: #d17b2b; }
+.recording-details { margin-top: 0; border-top: 1px solid var(--line); padding-top: 16px; }
+.recording-details > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style-position: outside; }
+.recording-details > summary > span:first-child { display: grid; min-width: 0; gap: 2px; }
+.recording-details > summary small { color: var(--muted); font-weight: 400; }
+.recording-details[open] > summary { margin-bottom: 12px; }
+.recording-details > .hint { margin-bottom: 10px; }
 .transport-status { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: #f5f8fa; color: #506a7b; }
 .transport-status.warning { color: var(--warn); background: #fff7eb; }
 .transport-status.danger { color: var(--danger); background: #fff1f2; }
@@ -173,6 +197,8 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
   .codex-progress-list { grid-template-columns: 1fr; }
   .codex-request-details dl { grid-template-columns: 1fr; }
   .codex-request-details dl > div.wide { grid-column: auto; }
+  .performance-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .performance-chart-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 520px) {
   .recording-status-card .state-line { display: grid; grid-template-columns: 1fr; align-items: start; }
@@ -180,4 +206,8 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
   .support-button, .codex-send-row button { width: 100%; white-space: normal; }
   .codex-send-row .support-status { text-align: center; }
   .codex-support-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 14px; }
+  .performance-title, .recording-details > summary { display: grid; grid-template-columns: 1fr; align-items: stretch; }
+  .performance-range { width: 100%; }
+  .performance-kpis { grid-template-columns: minmax(0, 1fr); }
+  .performance-chart-grid canvas { height: 185px; }
 }

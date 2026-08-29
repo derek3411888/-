@@ -33,6 +33,7 @@ catch
 #Include RuntimeFilePaths.ahk
 #Include InteractiveDesktopGuard.ahk
 #Include ScreenRecordingEncoderPolicy.ahk
+#Include PerformanceTelemetry.ahk
 #Include RemoteControlFirestore.ahk
 #Include RemoteControlSelfHost.ahk
 #Include OkwwOcrTextMatchers.ahk
@@ -115,7 +116,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.83"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.84"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -1037,6 +1038,7 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_HANDOFF_LAUNCHED, TOOLTIP_SLOT
     try ToolTip(, , , TOOLTIP_SLOT)
     try StopRuntimeDiagnostics()
+    try PerformanceTelemetry_Stop()
     try SetTimer(ScreenRecordingMaintenanceTick, 0)
     cleanFinalExit := IsCleanFinalScriptExit(exitReason)
     try RC_Shutdown(cleanFinalExit)
@@ -2466,6 +2468,10 @@ LoadMailNotifyEnabled()
 LoadScreenRecordingEnabled()
 LoadRuntimeDiagnosticsSettings()
 WriteLog("OCR 模型設定=" RapidOcr.DescribeDefaultModels())
+if PerformanceTelemetry_Start(CFG_FILE)
+    WriteLog("效能分析採集器已在低優先權背景程序啟動（本機 2 秒取樣、自架端分鐘彙整）")
+else
+    WriteLog("效能分析採集器未能啟動；不影響鋤地、錄影或遠端控制", "WARN")
 REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged", "OnRemoteControlSettingsChanged")
 ; 沒有 restart／nextserver handoff 參數代表使用者明確開始新的日循環；這是解除
 ; 前次 durable PAUSE 的安全入口。接手程序則保留 PAUSE，直到網頁送出較新 RUN nonce。
@@ -7506,6 +7512,7 @@ RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNS
     detail := "code=" reasonCode " | stage=" stage " | recovery=" LAST_RESTART_RECOVERY
     detail .= " | lrmc=" LAST_RESTART_LRMC_STATE " | processes=" LAST_RESTART_PROCESS_SNAPSHOT
     detail .= " | reason=" reason
+    try PerformanceTelemetry_MarkIncident(reasonCode, stage, detail)
     WriteLog("觸發重啟請求：" detail, level)
     WriteStep("重啟請求", detail, level)
 
@@ -11385,6 +11392,7 @@ StartFfmpegScreenRecording(&outPath, &pid) {
         keyframeArgs := ' -force_key_frames "expr:gte(t,n_forced*' segmentSeconds ')"'
 
     cmd := '"' ffmpegExe '" ' args keyframeArgs
+    cmd .= PerformanceTelemetry_FfmpegProgressArgs("recording")
     cmd .= ' -metadata comment="' SCREEN_RECORDING_OWNER_MARKER '"'
     cmd .= ' -f segment -segment_time ' segmentSeconds
     cmd .= ' -reset_timestamps 1 -segment_format matroska'

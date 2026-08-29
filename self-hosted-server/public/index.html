@@ -147,20 +147,53 @@
     </section>
 
     <section class="tab-panel" data-panel="diagnostics">
-      <div class="grid two">
-        <article class="card">
-          <div class="section-title"><div><h2>錄影與上傳狀態</h2><p>本機正式錄影不受中央服務故障影響。</p></div></div>
-          <div id="recordingStatus" class="recording-status"></div>
-        </article>
+      <article class="card performance-card">
+        <div class="section-title performance-title">
+          <div><h2>效能分析</h2><p>本機每 2 秒低負擔取樣；網站只保存每分鐘彙整，不占 Firestore 額度。</p></div>
+          <label class="performance-range">顯示範圍
+            <select id="performanceRange">
+              <option value="15m">15 分鐘</option>
+              <option value="1h">1 小時</option>
+              <option value="6h" selected>6 小時</option>
+              <option value="24h">24 小時</option>
+              <option value="7d">7 天</option>
+              <option value="14d">14 天</option>
+            </select>
+          </label>
+        </div>
+        <p id="performanceNotice" class="transport-status muted">等待裝置回報效能資料。</p>
+        <div class="performance-kpis" aria-label="目前效能摘要">
+          <div><span>遊戲 FPS</span><strong id="perfFps">—</strong><small id="perfFpsLow">1% Low —</small></div>
+          <div><span>Frame time</span><strong id="perfFrameTime">—</strong><small id="perfFrameP95">P95 —</small></div>
+          <div><span>CPU</span><strong id="perfCpu">—</strong><small id="perfGameCpu">遊戲 —</small></div>
+          <div><span>GPU</span><strong id="perfGpu">—</strong><small id="perfEncoder">編碼器 —</small></div>
+          <div><span>記憶體</span><strong id="perfRam">—</strong><small id="perfGameRam">遊戲 —</small></div>
+          <div><span>顯示記憶體</span><strong id="perfVram">—</strong><small id="perfTemperature">溫度 —</small></div>
+          <div><span>磁碟寫入</span><strong id="perfDiskWrite">—</strong><small id="perfDiskFree">可用 —</small></div>
+          <div><span>錄影／直播</span><strong id="perfRecording">—</strong><small id="perfLive">直播 —</small></div>
+        </div>
+        <div class="performance-chart-grid">
+          <figure><figcaption>FPS 與 1% Low</figcaption><canvas id="perfFpsChart" role="img" aria-label="FPS 趨勢圖"></canvas><div class="chart-legend"><span class="fps">FPS</span><span class="low">1% Low</span></div></figure>
+          <figure><figcaption>CPU／GPU 使用率</figcaption><canvas id="perfUsageChart" role="img" aria-label="CPU 與 GPU 使用率趨勢圖"></canvas><div class="chart-legend"><span class="cpu">CPU</span><span class="gpu">GPU</span><span class="encoder">編碼器</span></div></figure>
+          <figure><figcaption>Frame time</figcaption><canvas id="perfFrameChart" role="img" aria-label="Frame time 趨勢圖"></canvas><div class="chart-legend"><span class="frame">平均</span><span class="p95">P95</span></div></figure>
+          <figure><figcaption>磁碟與網路輸出</figcaption><canvas id="perfIoChart" role="img" aria-label="磁碟與網路趨勢圖"></canvas><div class="chart-legend"><span class="disk">磁碟寫入</span><span class="network">網路上傳</span></div></figure>
+        </div>
+      </article>
+      <div class="grid two diagnostics-secondary">
         <article class="card">
           <div class="section-title"><div><h2>最近流程事件</h2><p>保留最近 50 筆畫面所需資料。</p></div></div>
           <div class="table-wrap"><table><thead><tr><th>時間</th><th>等級</th><th>事件</th><th>內容</th></tr></thead><tbody id="eventsBody"></tbody></table></div>
         </article>
+        <article class="card">
+          <div class="section-title"><div><h2>命令歷史</h2><p>送出、ACK、取消與失敗原因都會保留。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>送出時間</th><th>命令</th><th>Nonce</th><th>狀態</th><th>結果</th></tr></thead><tbody id="commandsBody"></tbody></table></div>
+        </article>
       </div>
-      <article class="card">
-        <div class="section-title"><div><h2>命令歷史</h2><p>送出、ACK、取消與失敗原因都會保留。</p></div></div>
-        <div class="table-wrap"><table><thead><tr><th>送出時間</th><th>命令</th><th>Nonce</th><th>狀態</th><th>結果</th></tr></thead><tbody id="commandsBody"></tbody></table></div>
-      </article>
+      <details class="card recording-details">
+        <summary><span><strong>錄影與上傳狀態</strong><small>錄影位置、失敗保留路徑與詳細進度（預設收起）</small></span><span id="recordingSummaryBadge" class="badge muted">尚無資料</span></summary>
+        <p class="hint">本機正式錄影不受中央服務故障影響。</p>
+        <div id="recordingStatus" class="recording-status"></div>
+      </details>
     </section>
 
     <section class="tab-panel" data-panel="videos">
