@@ -74,15 +74,32 @@ export async function requireDevice(req) {
   return result.rows[0];
 }
 
-export async function enrollDevice(body) {
+function enrollmentIdentity(body) {
   const uid = normalizeUid(body.uid);
   const token = String(body.deviceToken ?? "");
   if (!/^[A-Za-z0-9_-]{40,180}$/.test(token)) throw new HttpError(400, "裝置憑證格式無效", "INVALID_DEVICE_TOKEN");
+  return { uid, token, tokenHash: sha256(token) };
+}
+
+export async function existingEnrollment(body) {
+  const { uid, tokenHash } = enrollmentIdentity(body);
+  const existing = await query(
+    "SELECT uid FROM device_credentials WHERE token_hash=$1 AND revoked_at IS NULL",
+    [tokenHash],
+  );
+  if (!existing.rowCount) return null;
+  if (existing.rows[0].uid !== uid) {
+    throw new HttpError(409, "裝置憑證與 UID 不一致", "DEVICE_TOKEN_UID_MISMATCH");
+  }
+  return { uid, enrolled: true, existing: true };
+}
+
+export async function enrollDevice(body) {
+  const { uid, token, tokenHash } = enrollmentIdentity(body);
   const displayName = boundedText(body.displayName, 160);
   const deviceAlias = boundedText(body.deviceAlias, 120);
   const lastNonce = Math.max(0, Number(body.lastNonce) || 0);
   const settingsRevision = Math.max(0, Number(body.settingsRevision) || 0);
-  const tokenHash = sha256(token);
 
   return withTransaction(async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [uid]);

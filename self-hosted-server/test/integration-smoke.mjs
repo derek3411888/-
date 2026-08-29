@@ -90,6 +90,17 @@ async function main() {
       lastNonce: 0, settingsRevision: 0, deviceToken }),
   });
   assert(automaticEnrollment.ok, `automatic device enrollment failed: ${automaticEnrollment.status}`);
+  for (let index = 0; index < 65; index += 1) {
+    const repeatedEnrollment = await fetch(`${base}/api/v1/device/enroll`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid, displayName: "整合測試裝置", deviceAlias: "smoke",
+        lastNonce: 0, settingsRevision: 0, deviceToken }),
+    });
+    assert(repeatedEnrollment.ok,
+      `existing device enrollment consumed the new-device limit at attempt ${index + 1}`);
+    const repeatedBody = await repeatedEnrollment.json();
+    assert(repeatedBody.existing === true, "existing enrollment did not use the idempotent fast path");
+  }
   const forgedUid = await fetch(`${base}/api/v1/device/enroll`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ uid: `${uid}-forged`, deviceToken }),
@@ -360,7 +371,7 @@ async function main() {
     && String(finalMigration.rows[0]?.epoch ?? "") === originalMigrationEpoch,
   "integration smoke changed the live migration mode or epoch");
   console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
-    directBrowserAccess: true, automaticEnrollment: true, csrfRejected: true,
+    directBrowserAccess: true, automaticEnrollment: true, existingEnrollmentReuse: true, csrfRejected: true,
     codexSupportStatus: true, codexSupportInvalidModeRejected: true,
     videoRange: true, recordingProgress: true, mediaAutoRepair: true, liveHls: true, liveHlsResources: true,
     invalidSrtRejected: true, serverLog: true, migrationIsolation: true }));

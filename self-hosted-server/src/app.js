@@ -12,6 +12,7 @@ import {
   browserCookie,
   ensureBrowser,
   enrollDevice,
+  existingEnrollment,
   requireDevice,
   requireSameOrigin,
 } from "./auth.js";
@@ -703,8 +704,20 @@ async function handleRequest(req, res) {
   }
   if (pathname === "/api/v1/device/enroll" && req.method === "POST") {
     const ip = clientIp(req);
-    if (!limiter.check(`enroll:${ip}`, 60, 10 * 60_000)) throw new HttpError(429, "裝置註冊嘗試過多", "RATE_LIMITED");
     const body = await readJson(req, config.maxJsonBytes);
+    // Payload 4.70 以前的主流程與錄影 worker 會重複呼叫 enroll。先用較寬鬆的
+    // 查詢上限確認既有有效憑證；命中時不寫 DB，也不消耗新裝置註冊額度。
+    if (!limiter.check(`enroll-probe:${ip}`, 600, 10 * 60_000)) {
+      throw new HttpError(429, "裝置憑證確認過於頻繁", "RATE_LIMITED");
+    }
+    const existing = await existingEnrollment(body);
+    if (existing) {
+      sendJson(res, 200, existing);
+      return;
+    }
+    if (!limiter.check(`enroll-new:${ip}`, 60, 10 * 60_000)) {
+      throw new HttpError(429, "裝置註冊嘗試過多", "RATE_LIMITED");
+    }
     sendJson(res, 200, await enrollDevice(body));
     return;
   }
