@@ -1430,7 +1430,8 @@ RC_PatchClientState(state, isShutdown) {
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
     nowMs := RC_UnixMs()
-    selfHostedOk := RCSH_IsAvailable() ? RCSH_SendHeartbeat(state) : false
+    recentLog := SupportLog_CurrentSummary()
+    selfHostedOk := RCSH_IsAvailable() ? RCSH_SendHeartbeat(state, recentLog) : false
     if (RCSH_IsPrimary() && !RCSH_ShouldWriteFirestore())
         return selfHostedOk
 
@@ -1458,7 +1459,7 @@ RC_PatchClientState(state, isShutdown) {
     body := "{"
     body .= '"fields":{'
     body .= '"docKind":{"stringValue":"client"},'
-    body .= '"schemaVersion":{"integerValue":"6"},'
+    body .= '"schemaVersion":{"integerValue":"7"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
@@ -1509,6 +1510,13 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"recentEventsJson":{"stringValue":"' RC_JsonEsc(recentEventsJson) '"},'
     body .= '"recentEventCount":{"integerValue":"' RC_RECENT_EVENTS.Length '"},'
     body .= '"lastRuntimeEventAt":{"integerValue":"' RC_LAST_EVENT_AT '"},'
+    body .= '"recentLogSchemaVersion":{"integerValue":"1"},'
+    body .= '"recentLogAvailable":{"booleanValue":' (recentLog.available ? "true" : "false") '},'
+    body .= '"recentLogFileName":{"stringValue":"' RC_JsonEsc(recentLog.fileName) '"},'
+    body .= '"recentLogExcerpt":{"stringValue":"' RC_JsonEsc(recentLog.excerpt) '"},'
+    body .= '"recentLogCapturedAt":{"integerValue":"' nowMs '"},'
+    body .= '"recentLogTruncated":{"booleanValue":' (recentLog.truncated ? "true" : "false") '},'
+    body .= '"recentLogSourceBytes":{"integerValue":"' recentLog.sourceBytes '"},'
     body .= '"performanceSchemaVersion":{"integerValue":"1"},'
     body .= '"performanceStatusAvailable":{"booleanValue":' (performanceAvailable ? "true" : "false") '},'
     body .= '"performanceJson":{"stringValue":"' RC_JsonEsc(performanceJson) '"},'
@@ -1583,6 +1591,13 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=recentEventsJson"
     url .= "&updateMask.fieldPaths=recentEventCount"
     url .= "&updateMask.fieldPaths=lastRuntimeEventAt"
+    url .= "&updateMask.fieldPaths=recentLogSchemaVersion"
+    url .= "&updateMask.fieldPaths=recentLogAvailable"
+    url .= "&updateMask.fieldPaths=recentLogFileName"
+    url .= "&updateMask.fieldPaths=recentLogExcerpt"
+    url .= "&updateMask.fieldPaths=recentLogCapturedAt"
+    url .= "&updateMask.fieldPaths=recentLogTruncated"
+    url .= "&updateMask.fieldPaths=recentLogSourceBytes"
     url .= "&updateMask.fieldPaths=performanceSchemaVersion"
     url .= "&updateMask.fieldPaths=performanceStatusAvailable"
     url .= "&updateMask.fieldPaths=performanceJson"

@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.74',
-    [string]$LauncherVersion = '4.85',
-    [string]$ServerVersion = '1.0.34',
+    [string]$PayloadVersion = '4.75',
+    [string]$LauncherVersion = '4.86',
+    [string]$ServerVersion = '1.0.35',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -83,6 +83,7 @@ $releasePaths = @(
     'payload', '測試/InteractiveDesktopGuardTest.ahk', '測試/SelfHealingPolicyTest.ahk',
     '測試/ScreenRecordingEncoderPolicyTest.ahk', '測試/SelfHostLiveCandidatesTest.ahk',
     '測試/SelfHostCredentialReuseTest.ahk', '測試/SelfHostBufferRegressionTest.ahk',
+    '測試/SupportLogContextTest.ahk',
     '測試/伺服器名稱與切服判斷測試.ahk', '測試/伺服器登入標籤OCR影像測試.ahk',
     '測試/實機伺服器切換壓力測試.ahk', '測試/實機伺服器切換50次驗證報告.md',
     'self-hosted-server', 'remote-control-web',
@@ -97,7 +98,7 @@ if ($stagedPaths | Where-Object { $_ -match '^(\.vscode/|文字識別/)' }) {
 if (-not $stagedPaths.Count) { Write-Host '沒有新的發布差異，沿用目前提交。' }
 else {
     if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
-        $CommitMessage = "發布 $PayloadVersion：自動修復與完整同步更新"
+        $CommitMessage = "發布 $PayloadVersion：效能、設定與支援回報修正"
     }
     & git commit -m $CommitMessage
     Assert-ExitCode '建立 Git 提交'

@@ -58,6 +58,7 @@ export const config = Object.freeze({
   localSrtHost: srtHost("LOCAL_SRT_HOST"),
   publicSrtPort: integer("PUBLIC_SRT_PORT", 8890, 1, 65535),
   sessionSecret: requiredSecret("SESSION_SECRET"),
+  codexBridgeToken: requiredSecret("CODEX_BRIDGE_TOKEN"),
   liveSecret: requiredSecret("LIVE_TOKEN_SECRET"),
   liveSrtPassphrase: requiredSecret("LIVE_SRT_PASSPHRASE"),
   mediaRoot: path.resolve(process.env.MEDIA_ROOT ?? "/data/media"),

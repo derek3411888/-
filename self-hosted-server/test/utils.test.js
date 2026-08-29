@@ -54,6 +54,7 @@ test("rate limiter resets by time window", async () => {
 
 test("path guard rejects siblings sharing a prefix", async () => {
   process.env.SESSION_SECRET = "test-session-secret-abcdefghijklmnopqrstuvwxyz";
+  process.env.CODEX_BRIDGE_TOKEN = "test-codex-bridge-token-abcdefghijklmnopqrstuvwxyz";
   process.env.LIVE_TOKEN_SECRET = "test-live-token-secret-abcdefghijklmnopqrstuvwxyz";
   process.env.LIVE_SRT_PASSPHRASE = "test-live-srt-passphrase-abcdefghijklm";
   const { assertChildPath } = await import("../src/config.js");

@@ -186,6 +186,12 @@ async function main() {
     method: "POST", device: true,
     body: { revision: Number(setting.revision), applied: true, result: "APPLIED", detail: "smoke settings" },
   });
+  const appliedSettingsState = await query(
+    "SELECT settings_effective_revision FROM devices WHERE uid=$1",
+    [uid],
+  );
+  assert(Number(appliedSettingsState.rows[0]?.settings_effective_revision) === Number(setting.revision),
+    "applied settings did not advance the effective revision");
   const appliedLiveSettings = await request("/api/v1/device/control", { device: true });
   assert(appliedLiveSettings.settings.liveQualityProfile === "smooth",
     "device control lost the ACKed live quality profile");
@@ -211,6 +217,16 @@ async function main() {
     "rejected setting replaced the last ACKed effective setting");
   assert(effectiveAfterReject.device.settings.liveQualityProfile === "smooth",
     "live quality profile was not preserved by exact settings ACK semantics");
+  const rejectedSettingsState = await query(
+    "SELECT settings_effective_revision FROM devices WHERE uid=$1",
+    [uid],
+  );
+  assert(Number(rejectedSettingsState.rows[0]?.settings_effective_revision) === Number(setting.revision),
+    "rejected settings incorrectly advanced the effective revision");
+  const controlAfterReject = await request("/api/v1/device/control", { device: true });
+  assert(Number(controlAfterReject.settings?.revision) === Number(setting.revision)
+    && controlAfterReject.settings.liveQualityProfile === "smooth",
+  "device control served the rejected settings revision");
 
   const jpeg = Buffer.alloc(200, 0x22); jpeg[0] = 0xff; jpeg[1] = 0xd8;
   await request(`/api/v1/device/snapshot?capturedAt=${Date.now()}&width=1&height=1&reason=smoke`, {

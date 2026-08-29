@@ -316,7 +316,7 @@ RCSH_SendSettingsAck(revision, resultCode, resultDetail, applied) {
     return result.ok
 }
 
-RCSH_SendHeartbeat(state) {
+RCSH_SendHeartbeat(state, diagnosticLog := "") {
     global RCSH_LAST_HEARTBEAT_OK
     global RC_UID, RC_DISPLAY_NAME, RC_DEVICE_ALIAS, RC_LAST_NONCE
     global RC_LAST_SETTINGS_APPLIED_REVISION, RC_RECENT_EVENTS
@@ -329,6 +329,9 @@ RCSH_SendHeartbeat(state) {
         RCSH_ExpireLivePreviewIfNeeded()
         return false
     }
+
+    if !IsObject(diagnosticLog)
+        diagnosticLog := SupportLog_CurrentSummary()
 
     currentServer := Trim(CURRENT_SERVER_TARGET, " `t`r`n")
     serverIndex := SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_INDEX > 0 ? SERVER_SCHEDULE_INDEX : 0
@@ -364,6 +367,15 @@ RCSH_SendHeartbeat(state) {
     status .= '"lastServerSwitchCompletedAt":' switchNotify.lastCompletedAt ","
     status .= '"lastServerSwitchMailResult":"' RC_JsonEsc(switchNotify.lastMailResult) '",'
     status .= '"lastServerSwitchMailDetail":"' RC_JsonEsc(switchNotify.lastMailDetail) '",'
+    status .= '"diagnosticLog":{'
+    status .= '"schemaVersion":1,'
+    status .= '"available":' (diagnosticLog.available ? "true" : "false") ","
+    status .= '"fileName":"' RC_JsonEsc(diagnosticLog.fileName) '",'
+    status .= '"excerpt":"' RC_JsonEsc(diagnosticLog.excerpt) '",'
+    status .= '"capturedAt":' RC_UnixMs() ","
+    status .= '"truncated":' (diagnosticLog.truncated ? "true" : "false") ","
+    status .= '"sourceBytes":' diagnosticLog.sourceBytes
+    status .= "},"
     status .= '"recording":{'
     status .= '"enabled":' (SCREEN_RECORDING_ENABLED ? "true" : "false") ","
     status .= '"active":' (__SCREEN_RECORDING_ACTIVE ? "true" : "false") ","

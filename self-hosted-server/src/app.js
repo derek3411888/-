@@ -7,7 +7,6 @@ import { config, assertChildPath } from "./config.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
 import { allowInternalSmokeMutation } from "./internal-smoke.js";
-import { analyzeServerSchedule } from "./server-names.js";
 import { normalizePerformancePayload, normalizePerformanceRange, performanceRangeInterval } from "./performance.js";
 import {
   browserCookie,
@@ -20,13 +19,23 @@ import {
 import {
   cutoverToPrimary,
   forceMigrationMode,
-  getCodexSupportStatus,
   getMigrationState,
   importFirestoreDevices,
   migrationReadiness,
   publishDiscovery,
-  submitCodexSupportMessage,
+  saveFirestoreSettings,
 } from "./firestore-bridge.js";
+import { normalizeLiveQualityProfile, normalizeSettingsInput } from "./settings.js";
+import {
+  assertCodexDispatcher,
+  cancelDirectCodexSupport,
+  dispatcherHeartbeat,
+  getDirectCodexSupportStatus,
+  nextDispatcherRequest,
+  retryDirectCodexSupport,
+  submitDirectCodexSupport,
+  updateDispatcherRequest,
+} from "./codex-support-queue.js";
 import {
   ensureMediaRoots,
   getSegmentUploadState,
@@ -141,11 +150,6 @@ function firestoreString(value) { return { stringValue: String(value ?? "") }; }
 function firestoreInteger(value) { return { integerValue: String(Math.max(0, Number(value) || 0)) }; }
 function firestoreBoolean(value) { return { booleanValue: Boolean(value) }; }
 
-function normalizeLiveQualityProfile(value) {
-  const profile = String(value ?? "").trim().toLowerCase();
-  return ["economy", "balanced", "smooth"].includes(profile) ? profile : "balanced";
-}
-
 function livePublishUrl(uid, token, host) {
   return `srt://${host}:${config.publicSrtPort}?streamid=publish:${uid}:device:${token}`
     + `&pkt_size=1316&latency=200000&passphrase=${encodeURIComponent(config.liveSrtPassphrase)}&pbkeylen=32`;
@@ -156,7 +160,7 @@ async function deviceControl(uid, firestoreFormat) {
     query("SELECT * FROM devices WHERE uid=$1", [uid]),
     query("SELECT * FROM commands WHERE uid=$1 AND status='PENDING' ORDER BY nonce DESC LIMIT 1", [uid]),
     query("SELECT * FROM commands WHERE uid=$1 AND status='ACKED' ORDER BY nonce DESC LIMIT 1", [uid]),
-    query("SELECT * FROM settings_revisions WHERE uid=$1 ORDER BY revision DESC LIMIT 1", [uid]),
+    query("SELECT * FROM settings_revisions WHERE uid=$1 AND status IN ('PENDING','APPLIED') ORDER BY revision DESC LIMIT 1", [uid]),
     query("SELECT max(expires_at) AS expires_at FROM live_leases WHERE uid=$1 AND expires_at>now()", [uid]),
     getMigrationState(),
   ]);
@@ -238,6 +242,7 @@ async function deviceControl(uid, firestoreFormat) {
     selfHostedMode: firestoreString(migration.mode ?? "shadow"),
     selfHostedEpoch: firestoreString(migration.epoch ?? "selfhost-v1"),
     selfHostedFirestoreFallbackUntil: firestoreInteger(fallbackUntilMs),
+    selfHostedWritesFrozen: firestoreBoolean(migration.writesFrozen ?? false),
     selfHostedLiveEnabled: firestoreBoolean(liveActive),
     selfHostedLivePublishUrl: firestoreString(liveUrl),
     selfHostedLivePublishUrls: firestoreString(liveUrls.join("|")),
@@ -381,32 +386,8 @@ async function ackCommand(uid, body) {
   return updated;
 }
 
-async function saveSettings(uid, body, allowShadow = false) {
-  if (!allowShadow && (await migrationMode()) !== "primary") {
-    throw new HttpError(423, "並行驗證期間設定仍由 Firestore 控制", "SHADOW_MODE");
-  }
-  const serverSchedule = analyzeServerSchedule(body.serverScheduleList);
-  if (serverSchedule.invalid.length) {
-    throw new HttpError(400, `只允許 America、Europe、Asia、HMT(HK,MO,TW)、SEA；無效項目：${serverSchedule.invalid.join("、")}`, "INVALID_SERVER_LIST");
-  }
-  if (serverSchedule.duplicates.length) {
-    throw new HttpError(400, `伺服器不可重複：${serverSchedule.duplicates.join("、")}`, "DUPLICATE_SERVER");
-  }
-  if (Boolean(body.serverScheduleEnabled) && !serverSchedule.servers.length) {
-    throw new HttpError(400, "啟用排程時至少要選擇一個伺服器", "EMPTY_SERVER_LIST");
-  }
-  const settings = {
-    schemaVersion: 1,
-    serverScheduleEnabled: Boolean(body.serverScheduleEnabled),
-    serverScheduleList: boundedText(serverSchedule.servers.join(" | "), 1200),
-    mailNotifyEnabled: Boolean(body.mailNotifyEnabled),
-    runtimeDiagnosticsEnabled: body.runtimeDiagnosticsEnabled !== false,
-    runtimeDiagnosticsIntervalSec: integer(body.runtimeDiagnosticsIntervalSec, 60, 60, 600),
-    runtimeDiagnosticsErrorKeepCount: integer(body.runtimeDiagnosticsErrorKeepCount, 30, 5, 200),
-    maxRestartCount: integer(body.maxRestartCount, 10, 1, 50),
-    liveQualityProfile: normalizeLiveQualityProfile(body.liveQualityProfile),
-  };
-  return withTransaction(async (client) => {
+async function savePrimarySettings(uid, settings) {
+  const inserted = await withTransaction(async (client) => {
     const device = await client.query("SELECT settings_revision FROM devices WHERE uid=$1 FOR UPDATE", [uid]);
     if (!device.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
     const pending = await client.query(
@@ -425,6 +406,20 @@ async function saveSettings(uid, body, allowShadow = false) {
     await client.query("UPDATE devices SET settings_revision=$2,updated_at=now() WHERE uid=$1", [uid, revision]);
     return inserted.rows[0];
   });
+  return { ...inserted, transport: "postgres" };
+}
+
+async function saveSettings(uid, body, allowInternalMutation = false) {
+  const settings = normalizeSettingsInput(body);
+  if (allowInternalMutation) return savePrimarySettings(uid, settings);
+  const mode = await migrationMode();
+  if (mode === "primary") return savePrimarySettings(uid, settings);
+  if (["shadow", "fallback"].includes(mode)) {
+    const saved = await saveFirestoreSettings(uid, settings);
+    eventHub.emit("settings", { uid, revision: saved.revision, status: "PENDING", transport: "firestore", at: Date.now() });
+    return saved;
+  }
+  throw new HttpError(423, "目前遷移模式不允許修改設定", "SETTINGS_WRITE_DISABLED", { mode });
 }
 
 async function ackSettings(uid, body) {
@@ -455,7 +450,8 @@ async function ackSettings(uid, body) {
     }
     if (status === "APPLIED") {
       await client.query(
-        `UPDATE devices d SET settings=s.settings,settings_ack=$3,updated_at=now()
+        `UPDATE devices d SET settings=s.settings,settings_ack=$3,
+           settings_effective_revision=GREATEST(settings_effective_revision,$2),updated_at=now()
          FROM settings_revisions s WHERE d.uid=$1 AND s.uid=d.uid AND s.revision=$2`,
         [uid, revision, normalizedAck],
       );
@@ -738,6 +734,26 @@ async function handleRequest(req, res) {
     else sendJson(res, 401, { error: "media unauthorized" });
     return;
   }
+  if (pathname === "/internal/codex-support/heartbeat" && req.method === "POST") {
+    const dispatcherId = assertCodexDispatcher(req);
+    sendJson(res, 200, await dispatcherHeartbeat(await readJson(req, 64 * 1024), dispatcherId));
+    return;
+  }
+  if (pathname === "/internal/codex-support/next" && req.method === "GET") {
+    const dispatcherId = assertCodexDispatcher(req);
+    sendJson(res, 200, await nextDispatcherRequest(dispatcherId));
+    return;
+  }
+  let internalParams = routeMatch(pathname, "/internal/codex-support/:nonce/status");
+  if (internalParams && req.method === "POST") {
+    const dispatcherId = assertCodexDispatcher(req);
+    sendJson(res, 200, await updateDispatcherRequest(
+      internalParams.nonce,
+      await readJson(req, 64 * 1024),
+      dispatcherId,
+    ));
+    return;
+  }
   if (pathname === "/api/v1/device/enroll" && req.method === "POST") {
     const ip = clientIp(req);
     const body = await readJson(req, config.maxJsonBytes);
@@ -849,7 +865,7 @@ async function handleRequest(req, res) {
     return;
   }
   if (pathname === "/api/v1/codex-support" && req.method === "GET") {
-    sendJson(res, 200, await getCodexSupportStatus());
+    sendJson(res, 200, await getDirectCodexSupportStatus());
     return;
   }
   if (pathname === "/api/v1/codex-support" && req.method === "POST") {
@@ -858,11 +874,20 @@ async function handleRequest(req, res) {
     }
     const body = await readJson(req, Math.min(config.maxJsonBytes, 8 * 1024));
     const deviceUid = String(body.deviceUid ?? "").trim();
-    sendJson(res, 201, await submitCodexSupportMessage({
+    sendJson(res, 201, await submitDirectCodexSupport({
       mode: body.mode,
       message: body.message,
       deviceUid: deviceUid ? normalizeUid(deviceUid) : "",
+      includeDeviceLog: body.includeDeviceLog !== false,
     }));
+    return;
+  }
+  if (pathname === "/api/v1/codex-support/cancel" && req.method === "POST") {
+    sendJson(res, 200, await cancelDirectCodexSupport());
+    return;
+  }
+  if (pathname === "/api/v1/codex-support/retry" && req.method === "POST") {
+    sendJson(res, 201, await retryDirectCodexSupport());
     return;
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid");

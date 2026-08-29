@@ -23,6 +23,7 @@ const state = {
   liveMediaRecoveries: 0,
   codexSupportData: null,
   codexSupportSending: false,
+  codexSupportRecoveryBusy: false,
   codexSupportError: "",
   codexSupportTimer: 0,
   codexSupportRefreshInFlight: false,
@@ -52,6 +53,7 @@ const codexStages = {
 const codexDetails = {
   state: $("codexDetailState"), nonce: $("codexDetailNonce"), requestedAt: $("codexDetailRequestedAt"),
   device: $("codexDetailDevice"), message: $("codexDetailMessage"), host: $("codexDetailHost"),
+  log: $("codexDetailLog"),
   heartbeat: $("codexDetailHeartbeat"), receivedAt: $("codexDetailReceivedAt"), validatedAt: $("codexDetailValidatedAt"),
   attemptCount: $("codexDetailAttemptCount"), lastAttemptAt: $("codexDetailLastAttemptAt"),
   queuedAt: $("codexDetailQueuedAt"), nextRetryAt: $("codexDetailNextRetryAt"),
@@ -173,7 +175,12 @@ function renderPerformance(fallback = null) {
     retry_wait: "FPS 工具等待權限或稍後重試",
     error: "FPS 工具暫時失敗",
   }[collector.presentMon] || "FPS 工具尚未回報";
-  const noticeParts = [collector.state === "running" ? "效能採集正常" : `採集器：${collector.state || "尚無資料"}`, presentMonText];
+  const collectorText = collector.error || collector.state === "degraded"
+    ? "效能資料部分可用；遊戲 FPS 採集異常"
+    : collector.state === "running"
+      ? "效能採集正常"
+      : `採集器：${collector.state || "尚無資料"}`;
+  const noticeParts = [collectorText, presentMonText];
   if (ageSeconds !== null) noticeParts.push(`${ageSeconds} 秒前更新`);
   if (collector.error) noticeParts.push(`最近錯誤：${collector.error}`);
   setText("performanceNotice", noticeParts.join("｜"));
@@ -363,7 +370,36 @@ function updateCodexMessageControls() {
   $("codexCustomMessageField").hidden = !custom;
   const length = normalizeCodexSupportMessage($("codexCustomMessage").value).length;
   $("codexMessageCharacterCount").textContent = `${length} / ${CODEX_SUPPORT_MAX_MESSAGE_LENGTH}`;
+  renderCodexLogSelection();
   renderCodexSupportStatus();
+}
+
+function syncCodexLogDeviceOptions(preferCurrent = false) {
+  const select = $("codexLogDeviceSelect");
+  const previous = preferCurrent ? String(state.selectedUid || "") : String(select.value || "");
+  const rows = [...state.devices].sort((a, b) => new Date(b.last_seen || 0) - new Date(a.last_seen || 0));
+  select.replaceChildren();
+  for (const device of rows) {
+    select.append(new Option(`${device.display_name || device.uid}｜${device.uid}`, device.uid));
+  }
+  if (!rows.length) select.append(new Option("沒有可選裝置", ""));
+  select.value = rows.some((device) => device.uid === previous)
+    ? previous
+    : rows.some((device) => device.uid === state.selectedUid) ? state.selectedUid : rows[0]?.uid || "";
+  renderCodexLogSelection();
+}
+
+function renderCodexLogSelection() {
+  const attach = Boolean($("codexAttachSelectedLog").checked);
+  const select = $("codexLogDeviceSelect");
+  select.disabled = !attach || select.options.length === 0;
+  const device = state.devices.find((item) => item.uid === select.value);
+  if (!attach) return setText("codexSelectedLogSummary", "這次不附裝置 Log");
+  if (!device) return setText("codexSelectedLogSummary", "尚未選到可用裝置");
+  const log = device.status?.diagnosticLog || {};
+  setText("codexSelectedLogSummary", log.available
+    ? `${device.display_name || device.uid}｜${log.fileName || "最近 Log"}｜${formatTime(log.capturedAt)} 擷取`
+    : `${device.display_name || device.uid}｜執行端尚未回報 Log；仍會附上目前狀態與最近流程事件`);
 }
 
 function setCodexStage(element, stageState, detail) {
@@ -400,19 +436,43 @@ function renderCodexSupportStatus() {
   const requestPending = requestNonce > statusNonce || (
     requestNonce === statusNonce && CODEX_SUPPORT_PENDING_STATES.includes(supportState)
   );
+  const safelyCancellable = requestPending && attemptCount === 0
+    && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(supportState);
+  const stalled = safelyCancellable && requestedAt > 0
+    && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
+  const dispatchResultUnknown = String(data.errorCode || "").trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
+  const retryable = !dispatchResultUnknown
+    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState) || stalled);
   const selection = selectedCodexSupportMessage();
-  $("btnAskCodex").disabled = state.codexSupportSending || requestPending || cooldownRemaining > 0
+  $("btnAskCodex").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || requestPending || cooldownRemaining > 0
     || !selection.message || selection.message.length > CODEX_SUPPORT_MAX_MESSAGE_LENGTH;
+  $("btnCancelCodexSupport").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || !safelyCancellable;
+  $("btnRetryCodexSupport").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || !retryable;
+  setText("codexRecoveryHint", stalled
+    ? "這筆請求已超過 3 分鐘且尚未嘗試，可取消，或取消後用新編號重送。"
+    : dispatchResultUnknown
+      ? "傳送結果不明，這筆訊息可能已進入 Codex；為避免重複執行，不能直接重送。請先檢查目前 Codex 任務。"
+    : safelyCancellable
+      ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
+      : supportState === "QUEUED"
+        ? "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。"
+        : retryable
+          ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
+          : "一般控制台會直接寫入中央主機，不經 Firestore。只有尚未進入 Codex 的請求可以安全取消。");
 
   const stateLabels = {
     PENDING: "已送出，等待家中主機", RECEIVED: "家中主機已收到", VALIDATING: "正在驗證訊息",
     QUEUEING: "正在送往 Codex", RETRYING: "Codex 暫未接收，等待重試", QUEUED: "已排入目前 Codex 任務",
-    REJECTED: "訊息被主機拒絕", RATE_LIMITED: "送出過於頻繁", FAILED: "傳送失敗", READY: "橋接程式待命",
+    REJECTED: "訊息被主機拒絕", RATE_LIMITED: "送出過於頻繁", FAILED: "傳送失敗",
+    CANCELLED: "已取消（未送進 Codex）", READY: "橋接程式待命",
   };
   codexDetails.state.textContent = stateLabels[supportState] || (bridgeOnline ? "橋接程式待命" : "等待家中主機");
   codexDetails.nonce.textContent = requestNonce > 0 ? String(requestNonce) : "-";
   codexDetails.requestedAt.textContent = formatTime(requestedAt);
   codexDetails.device.textContent = String(data.requestedDeviceUid || "未指定");
+  codexDetails.log.textContent = data.contextIncluded
+    ? `已附上${data.logFileName ? ` ${data.logFileName}` : "裝置狀態／Log"}（${Number(data.contextLength) || 0} 字元）`
+    : "未附上";
   codexDetails.message.textContent = String(data.requestMessage || "-");
   codexDetails.host.textContent = [data.host, data.bridgeVersion ? `Bridge ${data.bridgeVersion}` : ""].filter(Boolean).join(" · ") || "-";
   codexDetails.heartbeat.textContent = heartbeatAt ? `${formatTime(heartbeatAt)}（${formatAge(heartbeatAt)}）` : "-";
@@ -453,6 +513,8 @@ function renderCodexSupportStatus() {
     setCodexStage(codexStages.attempted, "error", detail || "仍在五分鐘間隔內");
   } else if (supportState === "FAILED") {
     setCodexStage(codexStages.attempted, "error", data.errorDetail || detail || "無法送進 Codex");
+  } else if (supportState === "CANCELLED") {
+    setCodexStage(codexStages.received, "error", detail || "已取消，未送進 Codex");
   }
 
   if (state.codexSupportSending) return setCodexSupportMessage("pending", "正在寫入一般控制台請求…");
@@ -463,7 +525,7 @@ function renderCodexSupportStatus() {
       ? `已送進目前 Codex 任務；${Math.ceil(cooldownRemaining / 1000)} 秒後可再次送出`
       : "已送進目前 Codex 任務");
   }
-  if (requestNonce > 0 && requestNonce === statusNonce && ["REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState)) {
+  if (requestNonce > 0 && requestNonce === statusNonce && ["REJECTED", "RATE_LIMITED", "FAILED", "CANCELLED"].includes(supportState)) {
     return setCodexSupportMessage("error", detail || "本機 Codex 未接收，請稍後重試");
   }
   return setCodexSupportMessage("idle", bridgeOnline
@@ -519,12 +581,33 @@ async function requestCodexSupport() {
   try {
     state.codexSupportData = await api("/api/v1/codex-support", {
       method: "POST",
-      body: { mode: selection.mode, message: selection.message, deviceUid: state.selectedUid },
+      body: {
+        mode: selection.mode,
+        message: selection.message,
+        deviceUid: $("codexLogDeviceSelect").value || state.selectedUid,
+        includeDeviceLog: Boolean($("codexAttachSelectedLog").checked),
+      },
     });
   } catch (error) {
     state.codexSupportError = error.message;
   } finally {
     state.codexSupportSending = false;
+    renderCodexSupportStatus();
+    scheduleCodexSupportRefresh();
+  }
+}
+
+async function recoverCodexSupport(action) {
+  if (state.codexSupportRecoveryBusy) return;
+  state.codexSupportRecoveryBusy = true;
+  state.codexSupportError = "";
+  renderCodexSupportStatus();
+  try {
+    state.codexSupportData = await api(`/api/v1/codex-support/${action}`, { method: "POST" });
+  } catch (error) {
+    state.codexSupportError = error.message;
+  } finally {
+    state.codexSupportRecoveryBusy = false;
     renderCodexSupportStatus();
     scheduleCodexSupportRefresh();
   }
@@ -737,8 +820,16 @@ function renderSettings(settings) {
   $("diagnosticsEnabled").checked = settings.runtimeDiagnosticsEnabled !== false;
   $("mailEnabled").checked = Boolean(settings.mailNotifyEnabled);
   $("liveQualityProfile").value = normalizeLiveQualityProfile(settings.liveQualityProfile);
-  $("saveSettingsButton").disabled = state.migration?.mode !== "primary" || !state.selectedUid;
-  setText("settingsMessage", state.migration?.mode === "primary" ? "儲存後等待裝置回報套用結果。" : "並行驗證期間設定仍由原 Firestore 控制台管理。");
+  const mode = String(state.migration?.mode || "");
+  $("saveSettingsButton").disabled = !["primary", "shadow", "fallback"].includes(mode) || !state.selectedUid;
+  const message = mode === "primary"
+    ? "設定會直接儲存至中央主機，並等待裝置 ACK。"
+    : mode === "shadow"
+      ? "並行驗證中：設定會以版本檢查安全轉送 Firestore，並等待裝置 ACK。"
+      : mode === "fallback"
+        ? "Firestore 備援模式：設定會以版本檢查安全轉送，並等待裝置 ACK。"
+        : "目前模式不允許修改設定。";
+  setText("settingsMessage", message);
 }
 
 function renderRecordings() {
@@ -857,6 +948,7 @@ async function refresh(options = {}) {
       state.devices = payload.devices || [];
       state.migration = payload.migration || {};
       renderDevices();
+      syncCodexLogDeviceOptions(false);
     }
     const selectedChanged = previousUid !== state.selectedUid;
     if (selectedChanged) state.performance = null;
@@ -1033,6 +1125,7 @@ async function stopLive() {
 function bindEvents() {
   $("btnOpenCodexSupport").addEventListener("click", () => {
     state.codexSupportError = "";
+    syncCodexLogDeviceOptions(true);
     updateCodexMessageControls();
     const dialog = $("codexSupportDialog");
     if (typeof dialog.showModal === "function") dialog.showModal();
@@ -1050,7 +1143,17 @@ function bindEvents() {
     state.codexSupportError = "";
     updateCodexMessageControls();
   });
+  $("codexAttachSelectedLog").addEventListener("change", () => {
+    state.codexSupportError = "";
+    renderCodexLogSelection();
+  });
+  $("codexLogDeviceSelect").addEventListener("change", () => {
+    state.codexSupportError = "";
+    renderCodexLogSelection();
+  });
   $("btnAskCodex").addEventListener("click", () => requestCodexSupport());
+  $("btnCancelCodexSupport").addEventListener("click", () => recoverCodexSupport("cancel"));
+  $("btnRetryCodexSupport").addEventListener("click", () => recoverCodexSupport("retry"));
   document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => {
     document.querySelectorAll("[data-tab]").forEach((item) => item.classList.toggle("active", item === button));
     document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
@@ -1074,7 +1177,7 @@ function bindEvents() {
   $("settingsForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      await api(`/api/v1/devices/${encodeURIComponent(state.selectedUid)}/settings`, { method: "PUT", body: {
+      const saved = await api(`/api/v1/devices/${encodeURIComponent(state.selectedUid)}/settings`, { method: "PUT", body: {
         serverScheduleEnabled: $("scheduleEnabled").checked,
         serverScheduleList: selectedServerChoices().join(" | "),
         maxRestartCount: Number($("maxRestart").value), runtimeDiagnosticsEnabled: $("diagnosticsEnabled").checked,
@@ -1082,7 +1185,11 @@ function bindEvents() {
         mailNotifyEnabled: $("mailEnabled").checked,
         liveQualityProfile: normalizeLiveQualityProfile($("liveQualityProfile").value),
       }});
-      toast("設定已儲存，等待裝置 ACK"); await refresh();
+      const revision = Number(saved?.revision) > 0 ? `（版本 ${Number(saved.revision)}）` : "";
+      toast(saved?.transport === "firestore"
+        ? `設定已安全轉送 Firestore${revision}，等待裝置 ACK`
+        : `設定已儲存至中央主機${revision}，等待裝置 ACK`);
+      await refresh();
     } catch (error) { toast(error.message); }
   });
   $("scheduleEnabled").addEventListener("change", refreshServerChoicesEnabled);

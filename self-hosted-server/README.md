@@ -85,17 +85,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 更新工具會先備份，再建立與啟動新版、執行 migration 並等待健康檢查；失敗時把 API 容器回復到上一個映像。容器 Log 使用 10 MB 輪替並保留 15 份。資料庫備份保留每日 14 份、每週 8 份與更新前 5 份。
 
-## 兩個控制台直接通知目前 Codex 任務
+## 兩個控制台通知目前 Codex 任務
 
-GitHub Pages 公司控制台與自架一般控制台都有「通知目前 Codex 任務」。兩個網站共用 Firestore 的同一筆原子 nonce，把預設或自訂訊息送回這台 Windows 主機，再由本機 Codex CLI 的任務佇列交給指定的既有 Codex 任務；同一請求不會重複送入。它不會另開 ChatGPT，也不會建立新的 Codex 任務。第一次在 Docker 主機安裝時，從 Codex 任務網址或 Codex 任務列表取得該任務 UUID，執行：
+GitHub Pages 公司控制台與自架一般控制台都有「通知目前 Codex 任務」，但使用不同的耐故障路徑：公司控制台以 Firestore 原子 nonce 跨受限網路傳回家中；自架一般控制台直接寫入 PostgreSQL 中央佇列，不再繞經 Firestore。Windows watchdog 同時讀取兩個來源，再由本機 Codex CLI 的任務佇列交給指定的既有 Codex 任務；取消、重送、來源間隔與本機 journal 共同避免重複送入。它不會另開 ChatGPT，也不會建立新的 Codex 任務。第一次在 Docker 主機安裝時，從 Codex 任務網址或 Codex 任務列表取得該任務 UUID，執行：
 
 ```powershell
 .\windows\Install-CodexSupportBridge.ps1 -ThreadId '你的-Codex-任務-UUID' -Workspace 'E:\Downloads\一鍵啟動鋤地腳本'
 ```
 
-安裝工具會驗證 Firestore、本機 Codex CLI 與工作區，將橋接程式放到目前使用者的 LocalAppData，建立隱藏的登入啟動項目並立即啟動。設定與最多 15 份輪替 Log 位於 `%LOCALAPPDATA%\WutheringAutomation\CodexSupportBridge`。移除時執行 `windows\Uninstall-CodexSupportBridge.ps1`。
+安裝工具會驗證 Firestore、中央 loopback API、本機 Codex CLI 與工作區，將 bridge、watchdog 與 bootstrap 放到 Task Scheduler 可見的 ProgramData，建立隱藏的登入啟動項目並立即啟動。設定會保留穩定的 dispatcher ID，讓橋接或 Codex 更新重啟後仍可以安全回報原本的 claim。設定與最多 15 份輪替 Log 位於 `%ProgramData%\WutheringAutomation\CodexSupportBridge`，資料夾 ACL 僅允許目前 Windows 使用者與 SYSTEM。伺服器更新會同步重裝 bridge/watchdog；移除時執行 `windows\Uninstall-CodexSupportBridge.ps1`。
 
-新版網站使用 `QUEUE_MESSAGE_V1`，提供三種預設訊息及最多 1,000 字元的自訂訊息；橋接端會再次檢查動作、長度、空白與控制字元，並相容舊版 `FIX_SCRIPT`。Codex task ID 仍只存在主機本機。網頁會顯示收到、驗證、嘗試、重試與排入時間、嘗試次數、訊息 SHA-256 指紋及錯誤代碼；「已排入」不會被描述成 Codex 已完成。自架網站只在載入時讀取一次，開啟對話框後才以 3～15 秒間隔查詢；橋接主機每 90 秒回報心跳，兩次成功排入至少間隔 5 分鐘。
+新版網站使用 `QUEUE_MESSAGE_V1`，提供三種預設訊息及最多 1,000 字元的自訂訊息，也可選擇一台裝置並附上經截斷、遮蔽敏感字串的最近 Log。橋接端會再次檢查動作、長度、空白與控制字元，並相容舊版 `FIX_SCRIPT`。Codex task ID 仍只存在主機本機。網頁會顯示收到、驗證、嘗試、重試與排入時間、嘗試次數、訊息 SHA-256 指紋及錯誤代碼；尚未開始送出的請求可取消，失敗或安全判定卡住的請求會以新 nonce 重送；「已排入」不會被描述成 Codex 已完成。自架網站只在載入時讀取一次，開啟對話框後才以 3～15 秒間隔查詢；橋接主機每 90 秒回報心跳，兩次成功排入至少間隔 5 分鐘。
 
 由於 GitHub Pages 控制台目前沒有登入驗證，自訂訊息會經過 Firestore，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。橋接 Log 只記錄 nonce、長度、指紋與結果，不記錄訊息本文。
 

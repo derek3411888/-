@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import { buildFallbackCommandBaseline } from "./migration-baseline.js";
+import { firestoreSettingsImportState, forwardSettingsWithFirestoreCas } from "./settings.js";
 import {
   CODEX_SUPPORT_ACTION,
   codexSupportCooldownRemaining,
@@ -79,7 +80,7 @@ export async function getMigrationState() {
   return { ...value, updatedAt: result.rows[0]?.updated_at ?? null };
 }
 
-export async function importFirestoreDevices() {
+export async function importFirestoreDevices({ publish = true } = {}) {
   if (!config.firestore.enabled) return { enabled: false, imported: 0 };
   const { projectId, apiKey, collection } = config.firestore;
   if (!projectId || !apiKey) throw new Error("已啟用 Firestore 匯入，但缺少 project ID 或 API key");
@@ -98,55 +99,73 @@ export async function importFirestoreDevices() {
       const deviceAlias = boundedText(field(document, "deviceAlias", ""), 120);
       const nonce = integer(field(document, "nonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
       const lastAck = integer(field(document, "lastAckNonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
-      const effectiveSettingsRevision = integer(field(document, "effectiveSettingsRevision", 0), 0);
-      const desiredSettingsRevision = integer(field(document, "desiredSettingsRevision", 0), 0);
-      const settingsAckRevision = integer(field(document, "lastSettingsAckRevision", 0), 0);
-      const settingsRevision = Math.max(
-        desiredSettingsRevision,
-        settingsAckRevision,
-        effectiveSettingsRevision,
-      );
-      const settings = {
-        schemaVersion: 1,
-        serverScheduleEnabled: Boolean(field(document, "effectiveServerScheduleEnabled", false)),
-        serverScheduleList: boundedText(field(document, "effectiveServerScheduleList", ""), 1200),
-        mailNotifyEnabled: Boolean(field(document, "effectiveMailNotifyEnabled", false)),
-        runtimeDiagnosticsEnabled: Boolean(field(document, "effectiveRuntimeDiagnosticsEnabled", true)),
-        runtimeDiagnosticsIntervalSec: integer(field(document, "effectiveRuntimeDiagnosticsIntervalSec", 60), 60, 60, 600),
-        runtimeDiagnosticsErrorKeepCount: integer(field(document, "effectiveRuntimeDiagnosticsErrorKeepCount", 30), 30, 5, 200),
-        maxRestartCount: integer(field(document, "effectiveMaxRestartCount", 10), 10, 1, 50),
-        liveQualityProfile: ["economy", "balanced", "smooth"].includes(
-          String(field(document, "effectiveLiveQualityProfile", "balanced")).trim().toLowerCase(),
-        ) ? String(field(document, "effectiveLiveQualityProfile", "balanced")).trim().toLowerCase() : "balanced",
-      };
+      const importedSettings = firestoreSettingsImportState(document);
+      const settingsAck = importedSettings.ackRevision > 0 ? {
+        revision: importedSettings.ackRevision,
+        applied: importedSettings.ackApplied,
+        result: importedSettings.ackResult,
+        detail: importedSettings.ackDetail,
+        at: importedSettings.ackAt,
+        source: "firestore",
+      } : {};
       await withTransaction(async (client) => {
         await client.query(
-          `INSERT INTO devices(uid,display_name,device_alias,last_nonce,command_nonce,settings_revision,settings,
+          `INSERT INTO devices(uid,display_name,device_alias,last_nonce,command_nonce,settings_revision,
+             settings_effective_revision,settings,settings_ack,
              imported_from_firestore,firestore_observed_nonce,firestore_observed_ack_nonce,
              firestore_observed_settings_revision,firestore_observed_settings_ack_revision,firestore_observed_at)
-           VALUES($1,$2,$3,$4,$4,$5,$6,true,$7,$8,$9,$10,now())
+           VALUES($1,$2,$3,$4,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,now())
            ON CONFLICT(uid) DO UPDATE SET
              display_name=COALESCE(NULLIF(EXCLUDED.display_name,''),devices.display_name),
              device_alias=COALESCE(NULLIF(EXCLUDED.device_alias,''),devices.device_alias),
              last_nonce=GREATEST(devices.last_nonce,EXCLUDED.last_nonce),
              command_nonce=GREATEST(devices.command_nonce,EXCLUDED.command_nonce),
              settings_revision=GREATEST(devices.settings_revision,EXCLUDED.settings_revision),
-             settings=CASE WHEN EXCLUDED.settings_revision>=devices.settings_revision THEN EXCLUDED.settings ELSE devices.settings END,
+             settings=CASE WHEN EXCLUDED.settings_effective_revision>=devices.settings_effective_revision
+               THEN EXCLUDED.settings ELSE devices.settings END,
+             settings_effective_revision=GREATEST(devices.settings_effective_revision,EXCLUDED.settings_effective_revision),
+             settings_ack=CASE
+               WHEN COALESCE((EXCLUDED.settings_ack->>'revision')::bigint,0)
+                 >=COALESCE((devices.settings_ack->>'revision')::bigint,0)
+               THEN EXCLUDED.settings_ack ELSE devices.settings_ack END,
              firestore_observed_nonce=EXCLUDED.firestore_observed_nonce,
              firestore_observed_ack_nonce=EXCLUDED.firestore_observed_ack_nonce,
              firestore_observed_settings_revision=EXCLUDED.firestore_observed_settings_revision,
              firestore_observed_settings_ack_revision=EXCLUDED.firestore_observed_settings_ack_revision,
              firestore_observed_at=now(),
              imported_from_firestore=true,updated_at=now()`,
-          [uid, displayName, deviceAlias, Math.max(nonce, lastAck), settingsRevision, settings,
-            nonce, lastAck, desiredSettingsRevision, settingsAckRevision],
+          [uid, displayName, deviceAlias, Math.max(nonce, lastAck), importedSettings.maxRevision,
+            importedSettings.effectiveRevision, importedSettings.effectiveSettings, settingsAck,
+            nonce, lastAck, importedSettings.desiredRevision, importedSettings.ackRevision],
         );
-        if (settingsRevision > 0) {
+        if (importedSettings.effectiveRevision > 0) {
+          const effectiveAckAt = importedSettings.ackRevision === importedSettings.effectiveRevision
+            && importedSettings.ackAt > 0 ? new Date(importedSettings.ackAt) : new Date();
           await client.query(
             `INSERT INTO settings_revisions(uid,revision,settings,status,acked_at,ack_result,ack_detail)
-             VALUES($1,$2,$3,'APPLIED',now(),'IMPORTED','Firestore 並行期已套用值')
-             ON CONFLICT(uid,revision) DO UPDATE SET settings=EXCLUDED.settings`,
-            [uid, settingsRevision, settings],
+             VALUES($1,$2,$3,'APPLIED',$4,$5,$6)
+             ON CONFLICT(uid,revision) DO UPDATE SET settings=EXCLUDED.settings,status='APPLIED',
+               acked_at=EXCLUDED.acked_at,ack_result=EXCLUDED.ack_result,ack_detail=EXCLUDED.ack_detail`,
+            [uid, importedSettings.effectiveRevision, importedSettings.effectiveSettings, effectiveAckAt,
+              importedSettings.ackRevision === importedSettings.effectiveRevision
+                ? importedSettings.ackResult || "APPLIED" : "IMPORTED_EFFECTIVE",
+              importedSettings.ackRevision === importedSettings.effectiveRevision
+                ? importedSettings.ackDetail || "Firestore 已套用設定" : "Firestore 有效設定鏡像"],
+          );
+        }
+        if (importedSettings.desiredRevision > 0
+          && importedSettings.desiredRevision !== importedSettings.effectiveRevision) {
+          const pending = importedSettings.desiredRevision > importedSettings.ackRevision;
+          const desiredStatus = pending ? "PENDING" : importedSettings.ackApplied ? "APPLIED" : "REJECTED";
+          const ackedAt = pending ? null : new Date(importedSettings.ackAt || Date.now());
+          await client.query(
+            `INSERT INTO settings_revisions(uid,revision,settings,status,acked_at,ack_result,ack_detail)
+             VALUES($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT(uid,revision) DO UPDATE SET settings=EXCLUDED.settings,status=EXCLUDED.status,
+               acked_at=EXCLUDED.acked_at,ack_result=EXCLUDED.ack_result,ack_detail=EXCLUDED.ack_detail`,
+            [uid, importedSettings.desiredRevision, importedSettings.desiredSettings, desiredStatus, ackedAt,
+              pending ? null : importedSettings.ackResult || desiredStatus,
+              pending ? null : importedSettings.ackDetail || "Firestore 設定 ACK"],
           );
         }
         await client.query(
@@ -160,7 +179,7 @@ export async function importFirestoreDevices() {
     pageToken = payload.nextPageToken ?? "";
   } while (pageToken);
   await updateShadowConsistencyWindow();
-  await publishDiscovery();
+  if (publish) await publishDiscovery();
   return { enabled: true, imported };
 }
 
@@ -188,13 +207,14 @@ async function updateShadowConsistencyWindow() {
   }
 }
 
-function firestoreFieldsForDiscovery(mode, epoch, fallbackUntil = "") {
+function firestoreFieldsForDiscovery(mode, epoch, fallbackUntil = "", writesFrozen = false) {
   return {
     fields: {
       selfHostedServerUrl: { stringValue: config.publicUrl },
       selfHostedMode: { stringValue: mode },
       selfHostedEpoch: { stringValue: epoch },
       selfHostedFirestoreFallbackUntil: { integerValue: String(fallbackUntil ? new Date(fallbackUntil).valueOf() : 0) },
+      selfHostedWritesFrozen: { booleanValue: Boolean(writesFrozen) },
       selfHostedUpdatedAt: { integerValue: String(Date.now()) },
     },
   };
@@ -234,6 +254,52 @@ async function patchFirestoreDocumentAtVersion(documentId, fields, precondition,
 function isFirestoreConcurrencyConflict(error) {
   return [409, 412].includes(Number(error?.status))
     || ["ABORTED", "FAILED_PRECONDITION"].includes(String(error?.firestoreStatus ?? ""));
+}
+
+function assertFirestoreSettingsAvailable() {
+  const { enabled, projectId, apiKey, collection } = config.firestore;
+  if (!enabled || !projectId || !apiKey || !collection) {
+    throw new HttpError(503, "Firestore 設定轉送目前未設定", "FIRESTORE_SETTINGS_UNAVAILABLE");
+  }
+}
+
+export async function saveFirestoreSettings(uid, settings) {
+  assertFirestoreSettingsAvailable();
+  const localDevice = await query("SELECT uid FROM devices WHERE uid=$1", [uid]);
+  if (!localDevice.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+  try {
+    const forwarded = await forwardSettingsWithFirestoreCas({
+      uid,
+      settings,
+      readDocument: getFirestoreDocument,
+      patchDocument: (documentId, fields, updateTime) => (
+        patchFirestoreDocumentAtVersion(documentId, fields, updateTime, [])
+      ),
+      isConcurrencyConflict: isFirestoreConcurrencyConflict,
+    });
+    await withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO settings_revisions(uid,revision,settings,status,ack_result,ack_detail)
+         VALUES($1,$2,$3,'PENDING',NULL,NULL)
+         ON CONFLICT(uid,revision) DO UPDATE SET settings=EXCLUDED.settings
+         WHERE settings_revisions.status='PENDING'`,
+        [uid, forwarded.revision, settings],
+      );
+      await client.query(
+        `UPDATE devices SET settings_revision=GREATEST(settings_revision,$2),
+           firestore_observed_settings_revision=GREATEST(firestore_observed_settings_revision,$2),
+           firestore_observed_settings_ack_revision=GREATEST(firestore_observed_settings_ack_revision,$3),
+           firestore_observed_at=now(),updated_at=now() WHERE uid=$1`,
+        [uid, forwarded.revision, forwarded.previousAckRevision],
+      );
+    });
+    return forwarded;
+  } catch (error) {
+    if (Number(error?.status) === 404) {
+      throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+    }
+    throw error;
+  }
 }
 
 function assertCodexSupportAvailable() {
@@ -366,6 +432,10 @@ export async function submitCodexSupportMessage(input = {}) {
 
 export async function syncFallbackCommandBaselines() {
   if (!config.firestore.enabled) return { enabled: false, synced: 0, skipped: 0 };
+  const pendingSettings = await query("SELECT count(*)::int AS count FROM settings_revisions WHERE status='PENDING'");
+  if (Number(pendingSettings.rows[0]?.count ?? 0) > 0) {
+    throw new HttpError(409, "仍有設定等待 ACK，不可切回 Firestore", "PENDING_SELFHOST_SETTINGS");
+  }
   const pending = await query("SELECT count(*)::int AS count FROM commands WHERE status='PENDING'");
   if (Number(pending.rows[0]?.count ?? 0) > 0) {
     throw new HttpError(409, "仍有自架命令等待 ACK，不可切回 Firestore", "PENDING_SELFHOST_COMMANDS");
@@ -431,18 +501,27 @@ export async function syncFallbackCommandBaselines() {
   return { enabled: true, synced, skipped };
 }
 
-export async function publishDiscovery() {
-  if (!config.firestore.enabled) return { published: 0 };
+export async function publishDiscovery(options = {}) {
+  const strict = Boolean(options.strict);
+  if (!config.firestore.enabled) {
+    if (strict) throw new HttpError(503, "Firestore 未啟用，無法安全發布遷移模式", "FIRESTORE_DISCOVERY_UNAVAILABLE");
+    return { published: 0, failed: 0 };
+  }
   const migration = await getMigrationState();
-  const epoch = String(migration.epoch ?? "selfhost-v1");
-  const fields = firestoreFieldsForDiscovery(migration.mode ?? "shadow", epoch, migration.fallbackUntil);
+  const mode = String(options.mode ?? migration.mode ?? "shadow");
+  const epoch = String(options.epoch ?? migration.epoch ?? "selfhost-v1");
+  const fallbackUntil = options.fallbackUntil ?? migration.fallbackUntil;
+  const writesFrozen = options.writesFrozen ?? migration.writesFrozen ?? false;
+  const fields = firestoreFieldsForDiscovery(mode, epoch, fallbackUntil, writesFrozen);
   const devices = await query("SELECT uid FROM devices WHERE imported_from_firestore=true");
   let published = 0;
+  const failures = [];
   for (const { uid } of devices.rows) {
     try {
       await patchFirestoreDocument(uid, fields);
       published += 1;
     } catch (error) {
+      failures.push({ uid, error: error.message });
       await query(
         `INSERT INTO server_alerts(level,code,message,details)
          SELECT 'WARN','FIRESTORE_DISCOVERY_FAILED',$1,$2
@@ -452,16 +531,28 @@ export async function publishDiscovery() {
       );
     }
   }
-  await patchFirestoreDocument("__selfhost_migration", {
+  try {
+    await patchFirestoreDocument("__selfhost_migration", {
     fields: {
       selfHostedServerUrl: { stringValue: config.publicUrl },
-      selfHostedMode: { stringValue: migration.mode ?? "shadow" },
+      selfHostedMode: { stringValue: mode },
       selfHostedEpoch: { stringValue: epoch },
-      selfHostedFirestoreFallbackUntil: { integerValue: String(migration.fallbackUntil ? new Date(migration.fallbackUntil).valueOf() : 0) },
+      selfHostedFirestoreFallbackUntil: { integerValue: String(fallbackUntil ? new Date(fallbackUntil).valueOf() : 0) },
+      selfHostedWritesFrozen: { booleanValue: Boolean(writesFrozen) },
       selfHostedUpdatedAt: { integerValue: String(Date.now()) },
     },
-  }).catch(() => {});
-  return { published };
+    });
+  } catch (error) {
+    failures.push({ uid: "__selfhost_migration", error: error.message });
+  }
+  if (strict && failures.length) {
+    throw new HttpError(503, "遷移模式未能發布到所有 Firestore 裝置", "FIRESTORE_DISCOVERY_PARTIAL", {
+      published,
+      expected: devices.rows.length + 1,
+      failures,
+    });
+  }
+  return { published, failed: failures.length, failures };
 }
 
 export async function migrationReadiness() {
@@ -512,32 +603,151 @@ export async function migrationReadiness() {
   };
 }
 
+function migrationValue(state) {
+  const { updatedAt: _updatedAt, ...value } = state ?? {};
+  return value;
+}
+
+async function replaceMigrationValue(value) {
+  await query("UPDATE system_settings SET value=$1::jsonb,updated_at=now() WHERE key='migration'", [value]);
+}
+
+async function commitFrozenPrimaryValue(value, epoch) {
+  await withTransaction(async (client) => {
+    const current = await client.query(
+      "SELECT value FROM system_settings WHERE key='migration' FOR UPDATE",
+    );
+    const currentValue = current.rows[0]?.value ?? {};
+    if (currentValue.mode !== "cutover"
+      || currentValue.epoch !== epoch
+      || currentValue.writesFrozen !== true) {
+      throw new HttpError(409, "遷移狀態已變更，拒絕提交 primary", "MIGRATION_MODE_CHANGED", {
+        mode: currentValue.mode,
+        epoch: currentValue.epoch,
+        writesFrozen: currentValue.writesFrozen,
+      });
+    }
+    await client.query(
+      "UPDATE system_settings SET value=$1::jsonb,updated_at=now() WHERE key='migration'",
+      [value],
+    );
+  });
+}
+
+let migrationTransitionTail = Promise.resolve();
+
+function serializeMigrationTransition(callback) {
+  const running = migrationTransitionTail.then(callback, callback);
+  migrationTransitionTail = running.catch(() => {});
+  return running;
+}
+
+export async function runCutoverSequence({ freeze, reconcile, readiness, publishPrimary, commitPrimary, restore }) {
+  let committed = false;
+  try {
+    await freeze();
+    await reconcile();
+    const state = await readiness();
+    if (!state.ready) {
+      throw new HttpError(409, "尚未符合 7 天並行切換條件", "MIGRATION_NOT_READY", state);
+    }
+    await publishPrimary();
+    const result = await commitPrimary();
+    committed = true;
+    return result;
+  } catch (error) {
+    if (!committed) {
+      try {
+        await restore();
+      } catch (restoreError) {
+        throw new HttpError(503, "遷移失敗，且無法完整恢復 shadow 發布狀態", "MIGRATION_ROLLBACK_FAILED", {
+          cause: error.message,
+          restore: restoreError.message,
+        });
+      }
+    }
+    throw error;
+  }
+}
+
 export async function cutoverToPrimary() {
-  const readiness = await migrationReadiness();
-  if (!readiness.ready) throw new HttpError(409, "尚未符合 7 天並行切換條件", "MIGRATION_NOT_READY", readiness);
-  const epoch = `selfhost-${Date.now()}`;
-  await query(
-    `UPDATE system_settings SET value=jsonb_build_object(
-       'mode','primary','shadowStartedAt',COALESCE(value->'shadowStartedAt',to_jsonb(now())),
-       'cutoverAt',to_jsonb(now()),'fallbackUntil',to_jsonb(now() + interval '7 days'),
-       'consistencyErrors',COALESCE(value->'consistencyErrors','0'::jsonb),'epoch',$1::text
-     ),updated_at=now() WHERE key='migration'`,
-    [epoch],
-  );
-  await publishDiscovery();
-  return getMigrationState();
+  return serializeMigrationTransition(async () => {
+    const original = await getMigrationState();
+    if ((original.mode ?? "shadow") !== "shadow") {
+      throw new HttpError(409, "只有 shadow 模式可以正式切換", "MIGRATION_MODE_CHANGED", { mode: original.mode });
+    }
+    const originalValue = migrationValue(original);
+    const epoch = `selfhost-${Date.now()}`;
+    const fallbackUntil = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const frozenValue = { ...originalValue, mode: "cutover", epoch, writesFrozen: true };
+    const primaryValue = {
+      ...originalValue,
+      mode: "primary",
+      epoch,
+      writesFrozen: false,
+      cutoverAt: new Date().toISOString(),
+      fallbackUntil,
+    };
+    return runCutoverSequence({
+      freeze: async () => {
+        await replaceMigrationValue(frozenValue);
+        await publishDiscovery({ strict: true, mode: "cutover", epoch, fallbackUntil, writesFrozen: true });
+      },
+      reconcile: () => importFirestoreDevices({ publish: false }),
+      readiness: migrationReadiness,
+      publishPrimary: () => publishDiscovery({
+        strict: true,
+        mode: "primary",
+        epoch,
+        fallbackUntil,
+        writesFrozen: false,
+      }),
+      commitPrimary: async () => {
+        await commitFrozenPrimaryValue(primaryValue, epoch);
+        return getMigrationState();
+      },
+      restore: async () => {
+        await replaceMigrationValue(originalValue);
+        await publishDiscovery({
+          strict: true,
+          mode: originalValue.mode ?? "shadow",
+          epoch: originalValue.epoch ?? "selfhost-v1",
+          fallbackUntil: originalValue.fallbackUntil,
+          writesFrozen: false,
+        });
+      },
+    });
+  });
 }
 
 export async function forceMigrationMode(mode) {
   if (!["shadow", "primary", "fallback", "disabled"].includes(mode)) {
     throw new HttpError(400, "遷移模式無效", "INVALID_MIGRATION_MODE");
   }
-  const fallbackBaseline = mode === "fallback" ? await syncFallbackCommandBaselines() : null;
-  await query(
-    `UPDATE system_settings SET value=jsonb_set(jsonb_set(value,'{mode}',to_jsonb($1::text),true),
-      '{epoch}',to_jsonb($2::text),true),updated_at=now() WHERE key='migration'`,
-    [mode, `selfhost-${Date.now()}`],
-  );
-  await publishDiscovery();
-  return { ...(await getMigrationState()), ...(fallbackBaseline ? { fallbackBaseline } : {}) };
+  return serializeMigrationTransition(async () => {
+    const original = await getMigrationState();
+    if (original.mode === "cutover") throw new HttpError(409, "正式切換正在進行中", "MIGRATION_TRANSITION_BUSY");
+    const pendingSettings = await query("SELECT count(*)::int AS count FROM settings_revisions WHERE status='PENDING'");
+    if (mode !== "primary" && Number(pendingSettings.rows[0]?.count ?? 0) > 0) {
+      throw new HttpError(409, "仍有設定等待 ACK，不可離開自架控制", "PENDING_SELFHOST_SETTINGS");
+    }
+    const fallbackBaseline = mode === "fallback" ? await syncFallbackCommandBaselines() : null;
+    const epoch = `selfhost-${Date.now()}`;
+    const nextValue = { ...migrationValue(original), mode, epoch, writesFrozen: false };
+    await replaceMigrationValue(nextValue);
+    try {
+      await publishDiscovery({ strict: true, mode, epoch, fallbackUntil: nextValue.fallbackUntil, writesFrozen: false });
+    } catch (error) {
+      await replaceMigrationValue(migrationValue(original));
+      await publishDiscovery({
+        strict: true,
+        mode: original.mode ?? "shadow",
+        epoch: original.epoch ?? "selfhost-v1",
+        fallbackUntil: original.fallbackUntil,
+        writesFrozen: false,
+      });
+      throw error;
+    }
+    return { ...(await getMigrationState()), ...(fallbackBaseline ? { fallbackBaseline } : {}) };
+  });
 }

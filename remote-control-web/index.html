@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260829-performance-v1" />
+  <link rel="stylesheet" href="styles.css?v=20260829-support-recovery-v2" />
 </head>
 <body>
   <main class="wrap">
@@ -50,9 +50,26 @@
           <small id="codexMessageCharacterCount">0 / 1000</small>
         </label>
 
+        <div class="codex-log-option">
+          <label class="codex-log-toggle" for="codexAttachSelectedLog">
+            <input id="codexAttachSelectedLog" type="checkbox" checked>
+            <span><strong>附上對應裝置的最近 Log</strong><small>只附尾端摘要，並遮蔽常見密碼與金鑰</small></span>
+          </label>
+          <label class="codex-field" for="codexLogDeviceSelect">
+            <span>選擇 Log 裝置</span>
+            <select id="codexLogDeviceSelect"></select>
+            <small id="codexSelectedLogSummary">等待裝置資料</small>
+          </label>
+        </div>
+
         <div class="codex-send-row">
           <button id="btnAskCodex" class="ok" type="button">送出到目前 Codex 任務</button>
           <span id="codexSupportDialogStatus" class="support-status idle" role="status" aria-live="polite">尚未送出</span>
+        </div>
+        <div class="codex-recovery-row" aria-label="卡住請求處理">
+          <button id="btnCancelCodexSupport" type="button" disabled>取消尚未送出</button>
+          <button id="btnRetryCodexSupport" type="button" disabled>以新編號重送</button>
+          <small id="codexRecoveryHint">只有尚未進入 Codex 的請求可以安全取消。</small>
         </div>
         <p class="codex-security-note">自訂內容會成為這個 Codex 任務的使用者訊息。公司頁面目前沒有登入驗證，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享網址。</p>
       </div>
@@ -75,6 +92,7 @@
           <div><dt>請求編號</dt><dd id="codexDetailNonce">-</dd></div>
           <div><dt>送出時間</dt><dd id="codexDetailRequestedAt">-</dd></div>
           <div><dt>關聯裝置</dt><dd id="codexDetailDevice">-</dd></div>
+          <div><dt>裝置 Log</dt><dd id="codexDetailLog">-</dd></div>
           <div class="wide"><dt>訊息內容</dt><dd id="codexDetailMessage">-</dd></div>
           <div><dt>橋接主機</dt><dd id="codexDetailHost">-</dd></div>
           <div><dt>主機心跳</dt><dd id="codexDetailHeartbeat">-</dd></div>
@@ -343,6 +361,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260829-performance-v1"></script>
+  <script type="module" src="app.js?v=20260829-support-recovery-v2"></script>
 </body>
 </html>

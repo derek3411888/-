@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'WutheringAutomation\CodexSupportBridge\config.json'),
-    [string]$InstalledScript = (Join-Path $env:LOCALAPPDATA 'WutheringAutomation\CodexSupportBridge\CodexSupportBridge.ps1')
+    [string]$ConfigPath = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\config.json'),
+    [string]$InstalledScript = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\CodexSupportBridge.ps1')
 )
 
 $ErrorActionPreference = 'Stop'

@@ -32,6 +32,80 @@ $metricNames = @(
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
 
+# PresentMon keeps its file output open without read sharing while a capture is
+# active.  Pump stdout on background .NET threads instead, so the worker never
+# blocks the two-second CPU/GPU/recording sampling loop and never races a locked
+# CSV file.  The bounded queues also prevent an unattended capture from growing
+# memory if the PowerShell loop is briefly delayed.
+if (-not ('WutheringPresentMonLinePump' -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Threading;
+
+public sealed class WutheringPresentMonLinePump : IDisposable
+{
+    private readonly ConcurrentQueue<string> queue = new ConcurrentQueue<string>();
+    private readonly StreamReader reader;
+    private readonly Thread thread;
+    private readonly int maximumLines;
+    private volatile bool stopping;
+
+    public string Error { get; private set; }
+
+    public WutheringPresentMonLinePump(StreamReader reader, int maximumLines)
+    {
+        if (reader == null) throw new ArgumentNullException("reader");
+        this.reader = reader;
+        this.maximumLines = Math.Max(100, maximumLines);
+        this.Error = String.Empty;
+        this.thread = new Thread(ReadLoop);
+        this.thread.IsBackground = true;
+        this.thread.Name = "Wuthering PresentMon output pump";
+        this.thread.Start();
+    }
+
+    private void ReadLoop()
+    {
+        try
+        {
+            while (!stopping)
+            {
+                string line = reader.ReadLine();
+                if (line == null) break;
+                queue.Enqueue(line);
+                string discarded;
+                while (queue.Count > maximumLines && queue.TryDequeue(out discarded)) { }
+            }
+        }
+        catch (ObjectDisposedException ex)
+        {
+            if (!stopping) Error = ex.Message ?? ex.GetType().Name;
+        }
+        catch (IOException ex)
+        {
+            if (!stopping) Error = ex.Message ?? ex.GetType().Name;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message ?? ex.GetType().Name;
+        }
+    }
+
+    public bool TryDequeue(out string line)
+    {
+        return queue.TryDequeue(out line);
+    }
+
+    public void Dispose()
+    {
+        stopping = true;
+    }
+}
+'@
+}
+
 function Get-UnixMilliseconds {
     return [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 }
@@ -149,16 +223,19 @@ function Stop-PresentMon {
         try { $script:presentMonProcess.Kill() } catch {}
         try { $script:presentMonProcess.WaitForExit(3000) | Out-Null } catch {}
     }
+    if ($script:presentStdoutPump) { try { $script:presentStdoutPump.Dispose() } catch {} }
+    if ($script:presentStderrPump) { try { $script:presentStderrPump.Dispose() } catch {} }
     $script:presentMonProcess = $null
+    $script:presentStdoutPump = $null
+    $script:presentStderrPump = $null
     $script:presentHeader = $null
-    $script:presentOffset = 0L
+    $script:presentFrameIndex = -1
 }
 
 function Start-PresentMon {
     if (-not (Ensure-PresentMon)) { return $false }
     Stop-PresentMon
-    $script:presentCsv = Join-Path $OutputRoot ("presentmon_{0:yyyyMMdd_HHmmss}.csv" -f (Get-Date))
-    $arguments = '--process_name Client-Win64-Shipping.exe --output_file "{0}" --v2_metrics --exclude_dropped --no_console_stats --session_name WutheringAutoPerformance --stop_existing_session' -f $script:presentCsv
+    $arguments = '--process_name Client-Win64-Shipping.exe --output_stdout --v2_metrics --exclude_dropped --no_console_stats --session_name WutheringAutoPerformance --stop_existing_session'
     try {
         $startInfo = New-Object Diagnostics.ProcessStartInfo
         $startInfo.FileName = $presentMonExe
@@ -167,13 +244,22 @@ function Start-PresentMon {
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-        $script:presentMonProcess = [Diagnostics.Process]::Start($startInfo)
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) { throw 'PresentMon process did not start' }
+        $script:presentMonProcess = $process
+        $script:presentStdoutPump = [WutheringPresentMonLinePump]::new($process.StandardOutput, 20000)
+        $script:presentStderrPump = [WutheringPresentMonLinePump]::new($process.StandardError, 500)
         $script:presentMonStarted = Get-Date
-        $script:presentOffset = 0L
+        $script:lastPresentFrameAt = [DateTime]::MinValue
         $script:presentHeader = $null
-        $script:presentMonState = 'capturing'
+        $script:presentFrameIndex = -1
+        $script:presentMonState = 'starting'
         return $true
     } catch {
+        try { Stop-PresentMon } catch {}
         $script:lastCollectorError = "PresentMon start: $($_.Exception.Message)"
         $script:presentMonState = 'error'
         return $false
@@ -182,41 +268,52 @@ function Start-PresentMon {
 
 function Read-PresentMonFrames {
     $frames = New-Object 'System.Collections.Generic.List[double]'
-    if (-not $script:presentCsv -or -not (Test-Path -LiteralPath $script:presentCsv)) { return $frames }
+    if (-not $script:presentStdoutPump) { return $frames }
     try {
-        $stream = New-Object IO.FileStream($script:presentCsv, [IO.FileMode]::Open,
-            [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-        try {
-            if ($script:presentOffset -gt $stream.Length) {
-                $script:presentOffset = 0L
-                $script:presentHeader = $null
-            }
-            $stream.Position = $script:presentOffset
-            $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8, $true, 65536, $true)
-            try {
-                $lineCount = 0
-                while (-not $reader.EndOfStream -and $lineCount -lt 20000) {
-                    $line = $reader.ReadLine()
-                    $lineCount++
-                    if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                    if ($null -eq $script:presentHeader) {
-                        $script:presentHeader = @($line.Split(','))
-                        $script:presentFrameIndex = [Array]::IndexOf($script:presentHeader, 'FrameTime')
-                        continue
-                    }
-                    if ($script:presentFrameIndex -lt 0) { continue }
-                    $parts = $line.Split(',')
-                    if ($parts.Count -le $script:presentFrameIndex) { continue }
-                    $frameTime = Convert-Number $parts[$script:presentFrameIndex] 0.01 10000
-                    if ($null -ne $frameTime) { $frames.Add([double]$frameTime) }
+        $lineCount = 0
+        $line = $null
+        while ($lineCount -lt 20000 -and $script:presentStdoutPump.TryDequeue([ref]$line)) {
+            $lineCount++
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $line = $line.TrimStart([char]0xFEFF)
+            if ($null -eq $script:presentHeader) {
+                if (-not $line.StartsWith('Application,')) { continue }
+                $script:presentHeader = @($line.Split(','))
+                $script:presentFrameIndex = [Array]::IndexOf($script:presentHeader, 'FrameTime')
+                if ($script:presentFrameIndex -lt 0) {
+                    throw 'PresentMon stdout header does not contain FrameTime'
                 }
-                $script:presentOffset = $stream.Position
-            } finally { $reader.Dispose() }
-        } finally { $stream.Dispose() }
+                continue
+            }
+            $parts = $line.Split(',')
+            if ($parts.Count -le $script:presentFrameIndex) { continue }
+            $frameTime = Convert-Number $parts[$script:presentFrameIndex] 0.01 10000
+            if ($null -ne $frameTime) { $frames.Add([double]$frameTime) }
+        }
+        if ($script:presentStdoutPump.Error) {
+            throw "stdout pump: $($script:presentStdoutPump.Error)"
+        }
     } catch {
         $script:lastCollectorError = "PresentMon read: $($_.Exception.Message)"
+        $script:presentMonState = 'error'
     }
     return $frames
+}
+
+function Read-PresentMonStderr {
+    if (-not $script:presentStderrPump) { return '' }
+    $messages = New-Object 'System.Collections.Generic.List[string]'
+    $line = $null
+    while ($messages.Count -lt 20 -and $script:presentStderrPump.TryDequeue([ref]$line)) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) { $messages.Add($line.Trim()) }
+    }
+    if ($script:presentStderrPump.Error) { $messages.Add("stderr pump: $($script:presentStderrPump.Error)") }
+    return [string]::Join(' | ', $messages.ToArray())
+}
+
+function Test-PresentMonFatalMessage([string]$Message) {
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+    return $Message -match '(?i)\b(error|failed|failure|fatal|denied|exception|invalid|unable)\b|access is denied|拒絕存取'
 }
 
 function Get-FpsMetrics($Frames) {
@@ -316,14 +413,15 @@ $rootHash = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).
 $mutex = New-Object Threading.Mutex($false, "Local\WutheringPerformanceTelemetry_$rootHash")
 $hasMutex = $false
 $presentMonProcess = $null
+$presentStdoutPump = $null
+$presentStderrPump = $null
 $presentMonState = 'starting'
 $presentMonStarted = Get-Date
-$presentCsv = ''
-$presentOffset = 0L
 $presentHeader = $null
 $presentFrameIndex = -1
 $lastCollectorError = ''
 $lastPresentAttempt = [DateTime]::MinValue
+$lastPresentFrameAt = [DateTime]::MinValue
 $previousProcessCpu = @{}
 $logicalProcessors = [Environment]::ProcessorCount
 $minuteHistory = New-Object 'System.Collections.Generic.List[object]'
@@ -362,9 +460,11 @@ try {
         $ffmpeg = Get-ProcessSnapshot 'ffmpeg'
         if ($game.Count -gt 0) {
             if ($presentMonProcess -and $presentMonProcess.HasExited) {
-                try { $lastCollectorError = "PresentMon exited: $($presentMonProcess.ExitCode)" } catch {}
+                $presentError = Read-PresentMonStderr
+                try { $lastCollectorError = "PresentMon exited: $($presentMonProcess.ExitCode)" } catch { $lastCollectorError = 'PresentMon exited' }
+                if ($presentError) { $lastCollectorError += " ($presentError)" }
+                Stop-PresentMon
                 $presentMonState = 'retry_wait'
-                $presentMonProcess = $null
             }
             $needsStart = $null -eq $presentMonProcess -or $presentMonProcess.HasExited
             $needsRotate = -not $needsStart -and (($sampleStarted - $presentMonStarted).TotalMinutes -ge 60)
@@ -375,9 +475,32 @@ try {
         } else {
             if ($presentMonProcess) { Stop-PresentMon }
             $presentMonState = 'waiting_game'
+            $lastPresentFrameAt = [DateTime]::MinValue
+            $lastCollectorError = ''
         }
 
         $fps = Get-FpsMetrics (Read-PresentMonFrames)
+        $presentError = Read-PresentMonStderr
+        if ($null -ne $fps.Fps) {
+            $lastPresentFrameAt = $sampleStarted
+            $lastCollectorError = ''
+            $presentMonState = 'capturing'
+        } elseif ($presentMonState -eq 'error' -or (Test-PresentMonFatalMessage $presentError)) {
+            if ($presentMonState -ne 'error') { $lastCollectorError = "PresentMon: $presentError" }
+            Stop-PresentMon
+            $presentMonState = 'retry_wait'
+        } elseif ($presentMonProcess -and -not $presentMonProcess.HasExited) {
+            $frameReference = if ($lastPresentFrameAt -gt [DateTime]::MinValue) {
+                $lastPresentFrameAt
+            } else {
+                $presentMonStarted
+            }
+            if (($sampleStarted - $frameReference).TotalSeconds -ge 30) {
+                $lastCollectorError = 'PresentMon: 30 秒未收到有效 FrameTime，已受控重啟採集器'
+                Stop-PresentMon
+                $presentMonState = 'retry_wait'
+            }
+        }
 
         if (($sampleStarted - $lastExtendedAt).TotalSeconds -ge 4) {
             $lastExtendedAt = $sampleStarted
@@ -467,8 +590,9 @@ try {
 
         $rawPath = Join-Path $OutputRoot ("raw_{0:yyyyMMdd}.ndjson" -f (Get-Date))
         [IO.File]::AppendAllText($rawPath, (($sample | ConvertTo-Json -Depth 5 -Compress) + "`n"), $utf8)
+        $collectorState = if ($lastCollectorError -or $presentMonState -in @('error', 'retry_wait')) { 'degraded' } else { 'running' }
         $collector = [ordered]@{
-            state = 'running'; version = 1; updatedAt = $nowMs; sampleIntervalSec = $SampleIntervalSeconds
+            state = $collectorState; version = 1; updatedAt = $nowMs; sampleIntervalSec = $SampleIntervalSeconds
             presentMon = $presentMonState; presentMonVersion = $presentMonVersion
             fpsAvailable = $null -ne $fps.Fps
             nvidiaTelemetry = [bool]$nvidiaSmi
@@ -520,7 +644,6 @@ try {
             points = $compactPoints
         }
         Write-AtomicUtf8 $firestorePath ($firestore | ConvertTo-Json -Depth 7 -Compress)
-        $lastCollectorError = ''
 
         if (($sampleStarted - $lastPruneAt).TotalHours -ge 1) {
             $lastPruneAt = $sampleStarted

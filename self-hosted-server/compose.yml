@@ -39,6 +39,7 @@ services:
       PUBLIC_SRT_PORT: ${PUBLIC_SRT_PORT:-8890}
       LIVE_PUBLISHER_GRACE_SECONDS: ${LIVE_PUBLISHER_GRACE_SECONDS:-600}
       SESSION_SECRET: ${SESSION_SECRET}
+      CODEX_BRIDGE_TOKEN: ${CODEX_BRIDGE_TOKEN}
       LIVE_TOKEN_SECRET: ${LIVE_TOKEN_SECRET}
       LIVE_SRT_PASSPHRASE: ${LIVE_SRT_PASSPHRASE}
       MEDIA_ROOT: /data/media
@@ -55,6 +56,8 @@ services:
       - type: bind
         source: ${DATA_ROOT_HOST}
         target: /data
+    ports:
+      - "127.0.0.1:3000:3000"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/health/ready"]
       interval: 15s

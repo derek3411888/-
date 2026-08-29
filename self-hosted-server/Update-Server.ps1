@@ -20,6 +20,44 @@ if (-not (Test-Path -LiteralPath $envPath)) {
     throw '找不到 .env，請先執行 Install-Server.ps1。'
 }
 
+function New-CryptoSecret([int]$ByteCount = 36) {
+    $bytes = New-Object byte[] $ByteCount
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Ensure-CodexBridgeToken {
+    $lines = @(Get-Content -LiteralPath $script:envPath -Encoding UTF8)
+    $tokenIndex = -1
+    $token = ''
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match '^\s*CODEX_BRIDGE_TOKEN\s*=\s*(.*)$') {
+            $tokenIndex = $index
+            $token = $matches[1].Trim().Trim('"').Trim("'")
+            break
+        }
+    }
+    if ($token.Length -ge 32) { return }
+    $newToken = New-CryptoSecret 36
+    if ($tokenIndex -ge 0) {
+        $lines[$tokenIndex] = "CODEX_BRIDGE_TOKEN=$newToken"
+    } else {
+        $lines += "CODEX_BRIDGE_TOKEN=$newToken"
+    }
+    $tempPath = "$script:envPath.$PID.tmp"
+    [IO.File]::WriteAllLines($tempPath, $lines, [Text.UTF8Encoding]::new($false))
+    try {
+        [IO.File]::Replace($tempPath, $script:envPath, $null)
+    } catch {
+        Move-Item -LiteralPath $tempPath -Destination $script:envPath -Force
+    }
+    Write-Host '已為中央 Codex loopback 補齊本機橋接憑證。'
+}
+
+# 新版 API 在載入設定時即要求此憑證；必須早於任何 compose config/build。
+Ensure-CodexBridgeToken
+
 function Invoke-Compose {
     param([Parameter(Mandatory = $true)][string[]]$ComposeArguments)
     & docker compose --env-file $script:envPath -f (Join-Path $script:serverRoot 'compose.yml') @ComposeArguments
@@ -153,6 +191,44 @@ function Test-ServerHealth {
     return $false
 }
 
+function Get-OptionalJsonValue($Object, [string]$Name, $Fallback) {
+    if ($null -eq $Object) { return $Fallback }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) { return $Fallback }
+    return $property.Value
+}
+
+function Update-InstalledCodexBridge {
+    $bridgeRoot = Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge'
+    $bridgeConfigPath = Join-Path $bridgeRoot 'config.json'
+    $legacyBridgeRoot = Join-Path $env:LOCALAPPDATA 'WutheringAutomation\CodexSupportBridge'
+    $legacyBridgeConfigPath = Join-Path $legacyBridgeRoot 'config.json'
+    if (-not (Test-Path -LiteralPath $bridgeConfigPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $legacyBridgeConfigPath -PathType Leaf)) {
+        # One-time migration: read the old AppContainer/LocalAppData config and
+        # let the installer write a secured ProgramData installation.
+        $bridgeConfigPath = $legacyBridgeConfigPath
+    }
+    if (-not (Test-Path -LiteralPath $bridgeConfigPath -PathType Leaf)) {
+        Write-Host '本機尚未安裝 Codex 橋接，略過橋接更新。'
+        return
+    }
+    $installer = Join-Path $script:serverRoot 'windows\Install-CodexSupportBridge.ps1'
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw '新伺服器套件缺少 Codex 橋接安裝工具。' }
+    $bridgeConfig = Get-Content -LiteralPath $bridgeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $threadId = [string](Get-OptionalJsonValue $bridgeConfig 'ThreadId' '')
+    if ($threadId -notmatch '^[0-9a-fA-F-]{36}$') { throw '既有 Codex 橋接 ThreadId 無效，無法安全更新。' }
+    & $installer `
+        -ThreadId $threadId `
+        -Workspace ([string](Get-OptionalJsonValue $bridgeConfig 'Workspace' (Split-Path -Parent $script:serverRoot))) `
+        -ProjectId ([string](Get-OptionalJsonValue $bridgeConfig 'ProjectId' 'ww-control-a3988')) `
+        -ApiKey ([string](Get-OptionalJsonValue $bridgeConfig 'ApiKey' '')) `
+        -Collection ([string](Get-OptionalJsonValue $bridgeConfig 'Collection' 'ahk_clients')) `
+        -SelfHostedBaseUrl 'http://127.0.0.1:3000' `
+        -PollSeconds ([int](Get-OptionalJsonValue $bridgeConfig 'PollSeconds' 15)) `
+        -MinimumRequestIntervalSeconds ([int](Get-OptionalJsonValue $bridgeConfig 'MinimumRequestIntervalSeconds' 300))
+}
+
 function Restore-PreviousVersion {
     Write-Warning '正在回復上一版伺服器檔案與 API 映像…'
     if ($script:sourceChanged -and (Test-Path -LiteralPath $script:rollbackRoot)) {
@@ -200,6 +276,8 @@ try {
         if ($targetVersion -eq $runningIdentity.Version -and
             $targetWebSha256 -eq $runningIdentity.WebSha256) {
             Write-Host "執行中的伺服器與網站已是最新版 $targetVersion。"
+            Write-Host '重新確認 Windows Codex 橋接 watchdog…'
+            Update-InstalledCodexBridge
             return
         }
         Invoke-WebRequest -UseBasicParsing -Uri ([string]$manifest.server_bundle_url) -OutFile $bundlePath
@@ -249,6 +327,9 @@ try {
     if ($deployedIdentity.WebSha256 -ne $targetWebSha256) {
         throw "容器網站 SHA-256 $($deployedIdentity.WebSha256)；預期 $targetWebSha256。"
     }
+
+    Write-Host '更新並重新啟動 Windows Codex 橋接 watchdog…'
+    Update-InstalledCodexBridge
 
     Write-Host "伺服器與網站更新完成：$currentVersion -> $targetVersion｜web=$targetWebSha256"
     if ($rollbackImageTag) { & docker image rm $rollbackImageTag 2>$null | Out-Null }

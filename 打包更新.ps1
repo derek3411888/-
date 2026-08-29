@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.74',
-    [string]$LauncherVersion = '4.85',
-    [string]$ServerVersion = '1.0.34'
+    [string]$PayloadVersion = '4.75',
+    [string]$LauncherVersion = '4.86',
+    [string]$ServerVersion = '1.0.35'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,6 +167,8 @@ Invoke-AhkValidate $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自
 Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\SupportLogContextTest.ahk' '裝置 Log 摘要測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\SupportLogContextTest.ahk' '裝置 Log 摘要與敏感字串遮蔽測試'
 Invoke-AhkValidate $runtime '打包啟動器.ahk' 'Launcher AHK validate'
 foreach ($payloadUtilityScript in @(
     'payload\SelfHostMediaUpload.ps1',
@@ -182,7 +184,11 @@ foreach ($payloadUtilityScript in @(
     }
 }
 foreach ($bridgeScript in @(
+    'self-hosted-server\Install-Server.ps1',
+    'self-hosted-server\Update-Server.ps1',
     'self-hosted-server\windows\CodexSupportBridge.ps1',
+    'self-hosted-server\windows\CodexSupportBootstrap.ps1',
+    'self-hosted-server\windows\CodexSupportWatchdog.ps1',
     'self-hosted-server\windows\Install-CodexSupportBridge.ps1',
     'self-hosted-server\windows\Uninstall-CodexSupportBridge.ps1'
 )) {
@@ -219,7 +225,7 @@ New-FilteredZip 'payload' 'payload.zip' @(
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk',
-    'ScreenRecordingEncoderPolicy.ahk', 'PerformanceTelemetry.ahk',
+    'ScreenRecordingEncoderPolicy.ahk', 'PerformanceTelemetry.ahk', 'SupportLogContext.ahk',
     'PerformanceTelemetryWorker.ps1', 'tools/PresentMon/LICENSE.txt',
     'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
 )
@@ -238,10 +244,12 @@ Assert-ZipContains 'self-hosted-server.zip' @(
     'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
     'public/index.html', 'public/app.js', 'public/styles.css',
     'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
-    'src/performance.js', 'Update-Server.ps1',
+    'migrations/006_codex_support_queue.sql', 'migrations/007_effective_settings_revision.sql',
+    'src/performance.js', 'src/settings.js',
+    'src/codex-support.js', 'src/codex-support-queue.js', 'Update-Server.ps1',
     'test/integration-smoke.mjs', 'test/media-stream.test.js',
     'test/company-performance-web.test.js',
-    'windows/CodexSupportBridge.ps1', 'windows/Install-CodexSupportBridge.ps1',
+    'windows/CodexSupportBridge.ps1', 'windows/CodexSupportWatchdog.ps1', 'windows/CodexSupportBootstrap.ps1', 'windows/Install-CodexSupportBridge.ps1',
     'windows/Uninstall-CodexSupportBridge.ps1'
 )
 

@@ -141,6 +141,7 @@ $envPath = Join-Path $serverRoot '.env'
 $envValues = Read-EnvFile $envPath
 if (-not $envValues.ContainsKey('POSTGRES_PASSWORD')) { $envValues.POSTGRES_PASSWORD = New-RandomSecret 36 }
 if (-not $envValues.ContainsKey('SESSION_SECRET')) { $envValues.SESSION_SECRET = New-RandomSecret 48 }
+if (-not $envValues.ContainsKey('CODEX_BRIDGE_TOKEN')) { $envValues.CODEX_BRIDGE_TOKEN = New-RandomSecret 48 }
 if (-not $envValues.ContainsKey('LIVE_TOKEN_SECRET')) { $envValues.LIVE_TOKEN_SECRET = New-RandomSecret 48 }
 if (-not $envValues.ContainsKey('LIVE_SRT_PASSPHRASE')) { $envValues.LIVE_SRT_PASSPHRASE = New-RandomSecret 24 }
 $envValues.PUBLIC_HOSTNAME = $PublicHostname.ToLowerInvariant()
@@ -160,7 +161,7 @@ $envValues.SERVER_IMAGE_TAG = 'current'
 
 $orderedNames = @(
     'PUBLIC_HOSTNAME', 'PUBLIC_IP_ADDRESS', 'PUBLIC_SRT_HOST', 'LOCAL_SRT_HOST', 'PUBLIC_SRT_PORT', 'DATA_ROOT_HOST', 'BACKUP_ROOT_HOST',
-    'POSTGRES_PASSWORD', 'SESSION_SECRET', 'LIVE_TOKEN_SECRET', 'LIVE_SRT_PASSPHRASE', 'MIN_FREE_GB', 'SESSIONS_PER_DEVICE',
+    'POSTGRES_PASSWORD', 'SESSION_SECRET', 'CODEX_BRIDGE_TOKEN', 'LIVE_TOKEN_SECRET', 'LIVE_SRT_PASSPHRASE', 'MIN_FREE_GB', 'SESSIONS_PER_DEVICE',
     'FIRESTORE_IMPORT_ENABLED', 'FIRESTORE_PROJECT_ID', 'FIRESTORE_API_KEY', 'FIRESTORE_COLLECTION', 'SERVER_IMAGE_TAG'
 )
 $content = foreach ($name in $orderedNames) { "$name=$($envValues[$name])" }
