@@ -73,6 +73,15 @@ if (-not $codexCommand) {
 }
 if (-not $codexCommand) { throw '找不到 Codex CLI；請先安裝或啟動 Codex 桌面版。' }
 $codexPath = if ($codexCommand.PSObject.Properties['Source']) { $codexCommand.Source } else { $codexCommand.FullName }
+$pwshCommand = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+$bridgePowerShellPath = if ($pwshCommand -and (Test-Path -LiteralPath $pwshCommand.Source -PathType Leaf)) {
+    [string]$pwshCommand.Source
+} else {
+    Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+}
+if (-not (Test-Path -LiteralPath $bridgePowerShellPath -PathType Leaf)) {
+    throw '找不到可執行 Codex 回覆橋接的 PowerShell。'
+}
 
 $installRoot = Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge'
 $installedScript = Join-Path $installRoot 'CodexSupportBridge.ps1'
@@ -166,6 +175,7 @@ $config = [ordered]@{
     ThreadId = $ThreadId.ToLowerInvariant()
     Workspace = $workspaceFull
     CodexPath = [string]$codexPath
+    BridgePowerShellPath = $bridgePowerShellPath
     DispatcherId = $dispatcherId
     SelfHostedBaseUrl = $SelfHostedBaseUrl.TrimEnd('/')
     SelfHostedBridgeToken = $SelfHostedBridgeToken
@@ -179,7 +189,7 @@ $config = [ordered]@{
 )
 
 Write-Host '正在驗證 Firestore 與本機 Codex…'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installedScript -ConfigPath $configPath -ValidateOnly
+& $bridgePowerShellPath -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installedScript -ConfigPath $configPath -ValidateOnly
 if ($LASTEXITCODE -ne 0) { throw 'Codex 橋接驗證失敗。' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installedWatchdog `
     -BridgeScriptPath $installedScript -ConfigPath $configPath -ValidateOnly | Out-Null

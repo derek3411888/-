@@ -31,10 +31,12 @@ import {
   cancelDirectCodexSupport,
   dispatcherHeartbeat,
   getDirectCodexSupportStatus,
+  listPendingCodexResponses,
   nextDispatcherRequest,
   retryDirectCodexSupport,
   submitDirectCodexSupport,
   updateDispatcherRequest,
+  updateCodexResponse,
 } from "./codex-support-queue.js";
 import {
   ensureMediaRoots,
@@ -266,6 +268,7 @@ async function updateHeartbeat(uid, body) {
       settings_revision=GREATEST(settings_revision,$7),updated_at=now() WHERE uid=$1`,
     [uid, displayName, alias, state, status, lastNonce, settingsRevision],
   );
+  if (settingsRevision > 0) await reconcileSettingsRevisionFromHeartbeat(uid, settingsRevision);
   if (Array.isArray(body.events)) {
     for (const item of body.events.slice(-50)) {
       const atMs = integer(item.at, Date.now(), 0, Number.MAX_SAFE_INTEGER);
@@ -293,6 +296,49 @@ async function updateHeartbeat(uid, body) {
     }
   }
   eventHub.emit("device", { uid, state, at: Date.now() });
+}
+
+async function reconcileSettingsRevisionFromHeartbeat(uid, revision) {
+  const reconciled = await withTransaction(async (client) => {
+    const version = await client.query(
+      "SELECT * FROM settings_revisions WHERE uid=$1 AND revision=$2 FOR UPDATE",
+      [uid, revision],
+    );
+    if (!version.rowCount || version.rows[0].status === "REJECTED") return null;
+    const at = Date.now();
+    const ack = {
+      revision,
+      applied: true,
+      result: "APPLIED",
+      detail: "裝置心跳已確認設定在本機生效",
+      at,
+      source: "heartbeat",
+    };
+    if (version.rows[0].status === "PENDING") {
+      const applied = await client.query(
+        `UPDATE settings_revisions SET status='APPLIED',acked_at=now(),
+           ack_result='APPLIED',ack_detail=$3
+         WHERE uid=$1 AND revision=$2 AND status='PENDING' RETURNING *`,
+        [uid, revision, ack.detail],
+      );
+      if (applied.rowCount) version.rows[0] = applied.rows[0];
+    }
+    await client.query(
+      `UPDATE devices d SET
+         settings=CASE WHEN $2>=settings_effective_revision THEN s.settings ELSE d.settings END,
+         settings_effective_revision=GREATEST(settings_effective_revision,$2),
+         settings_ack=CASE
+           WHEN $2>=CASE WHEN COALESCE(d.settings_ack->>'revision','') ~ '^[0-9]+$'
+             THEN (d.settings_ack->>'revision')::bigint ELSE 0 END
+           THEN $3 ELSE d.settings_ack END,
+         updated_at=now()
+       FROM settings_revisions s
+       WHERE d.uid=$1 AND s.uid=d.uid AND s.revision=$2`,
+      [uid, revision, ack],
+    );
+    return version.rows[0];
+  });
+  if (reconciled) eventHub.emit("settings", { uid, revision, status: "APPLIED", source: "heartbeat", at: Date.now() });
 }
 
 async function devicePerformance(uid, rangeValue) {
@@ -744,7 +790,22 @@ async function handleRequest(req, res) {
     sendJson(res, 200, await nextDispatcherRequest(dispatcherId));
     return;
   }
-  let internalParams = routeMatch(pathname, "/internal/codex-support/:nonce/status");
+  if (pathname === "/internal/codex-support/responses/pending" && req.method === "GET") {
+    const dispatcherId = assertCodexDispatcher(req);
+    sendJson(res, 200, await listPendingCodexResponses(dispatcherId));
+    return;
+  }
+  let internalParams = routeMatch(pathname, "/internal/codex-support/:nonce/response");
+  if (internalParams && req.method === "POST") {
+    const dispatcherId = assertCodexDispatcher(req);
+    sendJson(res, 200, await updateCodexResponse(
+      internalParams.nonce,
+      await readJson(req, Math.min(config.maxJsonBytes, 64 * 1024)),
+      dispatcherId,
+    ));
+    return;
+  }
+  internalParams = routeMatch(pathname, "/internal/codex-support/:nonce/status");
   if (internalParams && req.method === "POST") {
     const dispatcherId = assertCodexDispatcher(req);
     sendJson(res, 200, await updateDispatcherRequest(

@@ -7,10 +7,12 @@ import {
   buildDeviceSupportContext,
   resolveCodexSupportMessage,
 } from "./codex-support.js";
-import { HttpError, boundedText, integer } from "./utils.js";
+import { HttpError, boundedText, integer, sha256 } from "./utils.js";
 
 const RETRYABLE_TERMINAL_STATES = new Set(["REJECTED", "RATE_LIMITED", "FAILED", "CANCELLED"]);
 const CANCELLABLE_STATES = new Set(["PENDING", "RECEIVED", "VALIDATING", "RETRYING"]);
+const PENDING_RESPONSE_STATES = new Set(["WAITING", "IN_PROGRESS"]);
+const TERMINAL_RESPONSE_STATES = new Set(["COMPLETED", "FAILED", "INTERRUPTED"]);
 const BRIDGE_ONLINE_MS = 3 * 60_000;
 export const CODEX_DISPATCH_LEASE_MS = 2 * 60_000;
 const CODEX_DISPATCHER_ID_PATTERN = /^[A-Za-z0-9._:@-]{8,160}$/;
@@ -80,11 +82,15 @@ function statusFromRow(row = null, dispatcher = {}) {
       host: presence.host, heartbeatAt: presence.heartbeatAt, receivedAt: 0, validatedAt: 0, attemptCount: 0,
       lastAttemptAt: 0, nextRetryAt: 0, queuedAt: 0, messageSha256: "", errorCode: "", errorDetail: "",
       bridgeVersion: presence.version, online: presence.online,
-      pending: false, cooldownRemainingMs: 0, transport: "selfhost",
+      pending: false, responsePending: false, responseState: "NONE", responseText: "", responseAt: 0,
+      responseSha256: "", codexTurnId: "", codexTurnStatus: "", replyCheckedAt: 0, replyError: "",
+      cooldownRemainingMs: 0, transport: "selfhost",
     };
   }
   const queuedAt = milliseconds(row.queued_at);
-  const pending = CODEX_SUPPORT_PENDING_STATES.includes(String(row.state));
+  const dispatchPending = CODEX_SUPPORT_PENDING_STATES.includes(String(row.state));
+  const responseState = String(row.state) === "QUEUED" ? String(row.response_state || "WAITING") : "NONE";
+  const responsePending = String(row.state) === "QUEUED" && PENDING_RESPONSE_STATES.has(responseState);
   return {
     requestNonce: Number(row.id), statusNonce: Number(row.id), state: String(row.state), detail: String(row.detail || ""),
     requestedAt: milliseconds(row.created_at), requestedDeviceUid: String(row.device_uid || ""),
@@ -98,7 +104,12 @@ function statusFromRow(row = null, dispatcher = {}) {
     errorCode: String(row.error_code || ""), errorDetail: String(row.error_detail || ""),
     bridgeVersion: presence.version,
     online: presence.online,
-    pending, cooldownRemainingMs: queuedAt ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0,
+    pending: dispatchPending || responsePending, responsePending, responseState,
+    responseText: String(row.codex_response || ""), responseAt: milliseconds(row.codex_response_at),
+    responseSha256: String(row.codex_response_sha256 || ""), codexTurnId: String(row.codex_turn_id || ""),
+    codexTurnStatus: String(row.codex_turn_status || ""), replyCheckedAt: milliseconds(row.codex_reply_checked_at),
+    replyError: String(row.codex_reply_error || ""),
+    cooldownRemainingMs: queuedAt ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0,
     transport: "selfhost",
   };
 }
@@ -154,8 +165,9 @@ export async function submitDirectCodexSupport(input = {}) {
   return withTransaction(async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(1647329011)");
     const current = await latestRequest(client, true);
-    if (current && CODEX_SUPPORT_PENDING_STATES.includes(String(current.state))) {
-      throw new HttpError(409, "上一筆維修請求仍在等待中央主機處理", "CODEX_SUPPORT_PENDING", statusFromRow(current));
+    if (current && (CODEX_SUPPORT_PENDING_STATES.includes(String(current.state))
+        || (String(current.state) === "QUEUED" && PENDING_RESPONSE_STATES.has(String(current.response_state || "WAITING"))))) {
+      throw new HttpError(409, "上一筆維修請求仍在處理或等待 Codex 回覆", "CODEX_SUPPORT_PENDING", statusFromRow(current));
     }
     const recent = await client.query(
       "SELECT queued_at FROM codex_support_requests WHERE queued_at IS NOT NULL ORDER BY queued_at DESC LIMIT 1",
@@ -304,6 +316,77 @@ export async function nextDispatcherRequest(dispatcherIdValue = "") {
       claimGeneration: Number(request.claim_generation) || 0,
       dispatcherId: String(request.claimed_by || ""),
     } };
+  });
+}
+
+export async function listPendingCodexResponses(dispatcherIdValue = "") {
+  normalizeCodexDispatcherId(dispatcherIdValue);
+  const pending = await query(
+    `SELECT id,message_sha256,queued_at,response_state,codex_turn_id,codex_turn_status,codex_reply_checked_at
+     FROM codex_support_requests
+     WHERE state='QUEUED' AND response_state IN ('WAITING','IN_PROGRESS')
+     ORDER BY id DESC LIMIT 20`,
+  );
+  return {
+    requests: pending.rows.map((row) => ({
+      nonce: Number(row.id), messageSha256: String(row.message_sha256 || ""),
+      queuedAt: milliseconds(row.queued_at), responseState: String(row.response_state || "WAITING"),
+      codexTurnId: String(row.codex_turn_id || ""), codexTurnStatus: String(row.codex_turn_status || ""),
+      replyCheckedAt: milliseconds(row.codex_reply_checked_at),
+    })),
+  };
+}
+
+export async function updateCodexResponse(nonceValue, body = {}, dispatcherIdValue = "") {
+  const nonce = integer(nonceValue, 0, 1, Number.MAX_SAFE_INTEGER);
+  normalizeCodexDispatcherId(dispatcherIdValue);
+  const responseState = String(body.responseState ?? "").trim().toUpperCase();
+  if (![...PENDING_RESPONSE_STATES, ...TERMINAL_RESPONSE_STATES].includes(responseState)) {
+    throw new HttpError(400, "Codex 回覆狀態無效", "INVALID_CODEX_RESPONSE_STATE");
+  }
+  const messageSha256 = String(body.messageSha256 ?? "").trim().toLowerCase();
+  const responseText = String(body.responseText ?? "").trim();
+  const suppliedResponseSha256 = boundedText(body.responseSha256, 128).toLowerCase();
+  const responseSha256 = responseText ? sha256(responseText) : "";
+  if (suppliedResponseSha256 && suppliedResponseSha256 !== responseSha256) {
+    throw new HttpError(409, "Codex 回覆指紋不一致", "CODEX_RESPONSE_HASH_MISMATCH");
+  }
+  if (responseText.length > 30_000) throw new HttpError(413, "Codex 回覆超過 30000 字元", "CODEX_RESPONSE_TOO_LONG");
+  const turnId = boundedText(body.codexTurnId, 200);
+  const turnStatus = boundedText(body.codexTurnStatus, 80);
+  if (responseState === "COMPLETED" && (!turnId || !responseText)) {
+    throw new HttpError(400, "完成狀態必須包含 Codex turn 與最終回覆", "CODEX_RESPONSE_INCOMPLETE");
+  }
+  return withTransaction(async (client) => {
+    const selected = await client.query("SELECT * FROM codex_support_requests WHERE id=$1 FOR UPDATE", [nonce]);
+    if (!selected.rowCount) throw new HttpError(404, "找不到 Codex 請求", "CODEX_SUPPORT_NOT_FOUND");
+    const current = selected.rows[0];
+    if (String(current.state) !== "QUEUED") {
+      throw new HttpError(409, "這筆請求尚未送進 Codex", "CODEX_RESPONSE_NOT_QUEUED", statusFromRow(current));
+    }
+    if (!/^[a-f0-9]{64}$/.test(messageSha256) || messageSha256 !== String(current.message_sha256 || "").toLowerCase()) {
+      throw new HttpError(409, "Codex 回覆與原始網站訊息不一致", "CODEX_RESPONSE_MESSAGE_MISMATCH");
+    }
+    const currentState = String(current.response_state || "WAITING");
+    if (TERMINAL_RESPONSE_STATES.has(currentState)) {
+      const sameTerminal = currentState === responseState
+        && String(current.codex_turn_id || "") === turnId
+        && String(current.codex_response || "") === responseText
+        && String(current.codex_response_sha256 || "") === responseSha256;
+      if (sameTerminal) return statusFromRow(current);
+      throw new HttpError(409, "Codex 回覆已是最終狀態，不能覆蓋", "CODEX_RESPONSE_ALREADY_TERMINAL", statusFromRow(current));
+    }
+    const responseAt = TERMINAL_RESPONSE_STATES.has(responseState)
+      ? new Date(Number(body.responseAt) > 0 ? Number(body.responseAt) : Date.now()) : null;
+    const updated = await client.query(
+      `UPDATE codex_support_requests SET response_state=$2,codex_turn_id=$3,codex_turn_status=$4,
+         codex_response=$5,codex_response_sha256=$6,codex_response_at=COALESCE($7,codex_response_at),
+         codex_reply_checked_at=now(),codex_reply_error=$8,updated_at=now()
+       WHERE id=$1 RETURNING *`,
+      [nonce, responseState, turnId, turnStatus, responseText, responseSha256, responseAt,
+        boundedText(body.replyError, 500)],
+    );
+    return statusFromRow(updated.rows[0]);
   });
 }
 

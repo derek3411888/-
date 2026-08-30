@@ -71,6 +71,7 @@ test("bridge presence reports the newest heartbeat and derives online from that 
 test("queue SQL contract uses row locking, expiring leases, and state compare-and-set", async () => {
   const source = await fs.readFile(new URL("../src/codex-support-queue.js", import.meta.url), "utf8");
   const migration = await fs.readFile(new URL("../migrations/006_codex_support_queue.sql", import.meta.url), "utf8");
+  const responseMigration = await fs.readFile(new URL("../migrations/008_codex_support_responses.sql", import.meta.url), "utf8");
   const publicApp = await fs.readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const serverApp = await fs.readFile(new URL("../src/app.js", import.meta.url), "utf8");
 
@@ -88,6 +89,9 @@ test("queue SQL contract uses row locking, expiring leases, and state compare-an
   assert.match(migration, /claim_generation integer NOT NULL DEFAULT 0/);
   assert.match(migration, /claimed_by text NOT NULL DEFAULT ''/);
   assert.match(migration, /claim_expires_at timestamptz/);
+  assert.match(responseMigration, /CHECK \(response_state IN \('WAITING','IN_PROGRESS','COMPLETED','FAILED','INTERRUPTED'\)\)/);
+  assert.match(source, /CODEX_RESPONSE_MESSAGE_MISMATCH/);
+  assert.match(source, /CODEX_RESPONSE_ALREADY_TERMINAL/);
   assert.match(publicApp, /dispatchResultUnknown/);
   assert.match(publicApp, /deviceUid: \$\("codexLogDeviceSelect"\)\.value \|\| state\.selectedUid/);
   assert.match(serverApp, /nextDispatcherRequest\(dispatcherId\)/);

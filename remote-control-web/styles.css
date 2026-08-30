@@ -114,6 +114,23 @@ h2 { margin: 0; font-size: 20px; }
   backdrop-filter: blur(2px);
 }
 
+.codex-response-card {
+  display: grid; gap: 10px; margin-top: 16px; border: 1px solid var(--line);
+  border-left: 4px solid var(--muted); border-radius: 12px; padding: 14px; background: #f8fbfd;
+}
+.codex-response-card.in-progress { border-left-color: var(--warn); background: #fff8ed; }
+.codex-response-card.completed { border-left-color: var(--ok); background: #f0faf5; }
+.codex-response-card.failed, .codex-response-card.interrupted { border-left-color: var(--danger); background: #fff3f4; }
+.codex-response-heading, .codex-response-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.codex-response-heading { justify-content: space-between; }
+.codex-response-heading h3, .codex-response-card p { margin: 0; }
+.codex-response-heading time { color: var(--muted); font-size: 12px; }
+.codex-response-card pre {
+  max-height: 340px; margin: 0; overflow: auto; border: 1px solid var(--line); border-radius: 9px;
+  padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); background: #fff;
+  font: 14px/1.6 system-ui, "Microsoft JhengHei", sans-serif;
+}
+
 .codex-dialog-heading,
 .codex-send-row {
   display: flex;
@@ -944,7 +961,8 @@ tbody tr:last-child td {
   background: #f8fbfd;
 }
 
-.settings-status span { color: var(--muted); }
+.settings-status span, .settings-status small { color: var(--muted); }
+.settings-status small { overflow-wrap: anywhere; }
 .settings-status[data-status="pending"] { border-left-color: var(--info); }
 .settings-status[data-status="applied"] { border-left-color: var(--ok); background: #f2fbf6; }
 .settings-status[data-status="next-run"] { border-left-color: var(--warn); background: #fff9f3; }

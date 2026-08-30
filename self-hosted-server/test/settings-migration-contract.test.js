@@ -48,3 +48,11 @@ test("effective settings migration is present and backfills only acknowledged ap
   assert.match(migration, /settings_ack->>'applied'/);
   assert.match(migration, /settings_ack->>'revision'/);
 });
+
+test("device heartbeat reconciles an applied settings revision without waiting for Firestore import", async () => {
+  const app = await source("../src/app.js");
+  assert.match(app, /reconcileSettingsRevisionFromHeartbeat\(uid, settingsRevision\)/);
+  assert.match(app, /UPDATE settings_revisions SET status='APPLIED'/);
+  assert.match(app, /裝置心跳已確認設定在本機生效/);
+  assert.match(app, /settings_effective_revision=GREATEST\(settings_effective_revision,\$2\)/);
+});

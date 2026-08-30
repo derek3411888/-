@@ -84,7 +84,17 @@
           <li id="codexStageValidated" data-state="waiting"><span>3</span><div><strong>訊息驗證完成</strong><small>檢查動作、長度與內容</small></div></li>
           <li id="codexStageAttempted" data-state="waiting"><span>4</span><div><strong>送往 Codex</strong><small>等待佇列嘗試</small></div></li>
           <li id="codexStageQueued" data-state="waiting"><span>5</span><div><strong>Codex 已接收佇列</strong><small>不代表已開始或已完成</small></div></li>
+          <li id="codexStageResponse" data-state="waiting"><span>6</span><div><strong>Codex 處理與回覆</strong><small>等待最終回覆</small></div></li>
         </ol>
+      </section>
+
+      <section id="codexResponseCard" class="codex-response-card waiting" aria-labelledby="codexResponseTitle">
+        <div class="codex-response-heading">
+          <div><span id="codexResponseBadge" class="badge muted">等待</span><h3 id="codexResponseTitle">Codex 回覆</h3></div>
+          <time id="codexResponseAt">—</time>
+        </div>
+        <p id="codexResponseHint">請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。</p>
+        <pre id="codexResponseText" hidden></pre>
       </section>
 
       <details class="codex-request-details" open>
@@ -269,6 +279,14 @@
           <p class="hint">60fps 會優先使用 NVIDIA、Intel 或 AMD 硬體編碼；無法使用時會以軟體編碼降級，CPU 負載較高。</p>
           <button id="saveSettingsButton" class="ok" type="submit">儲存設定</button>
           <p id="settingsMessage" class="hint"></p>
+          <section id="settingsAckStatus" class="settings-ack-status idle" role="status" aria-live="polite">
+            <div class="settings-ack-heading">
+              <strong id="settingsAckTitle">尚未讀取設定狀態</strong>
+              <span id="settingsAckTime">—</span>
+            </div>
+            <p id="settingsAckDetail">等待裝置資料。</p>
+            <small id="settingsEffectiveSummary">實際生效值：—</small>
+          </section>
         </form>
 
         <article class="card">

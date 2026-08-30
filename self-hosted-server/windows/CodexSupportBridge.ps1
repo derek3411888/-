@@ -12,10 +12,13 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '2.0.0'
+$BridgeVersion = '3.0.0'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
+$script:LastFirestoreDocument = $null
+$script:CodexSessionLogPath = ''
+$script:CodexResponseCursors = @{}
 
 function Read-JsonFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "找不到 Codex 橋接設定：$Path" }
@@ -29,6 +32,10 @@ function Assert-Config($Config) {
     if ([string]$Config.DocumentId -ne '__codex_support') { throw '只允許固定的 __codex_support 文件。' }
     if ([string]$Config.ThreadId -notmatch '^[0-9a-fA-F-]{36}$') { throw 'Codex ThreadId 格式無效。' }
     if (-not (Test-Path -LiteralPath ([string]$Config.Workspace) -PathType Container)) { throw 'Codex 工作區不存在。' }
+    $bridgePowerShellPath = [string](Read-OptionalProperty $Config 'BridgePowerShellPath' '')
+    if ($bridgePowerShellPath -and -not (Test-Path -LiteralPath $bridgePowerShellPath -PathType Leaf)) {
+        throw 'Codex 橋接 PowerShell 路徑不存在。'
+    }
     $poll = [int]$Config.PollSeconds
     if ($poll -lt 10 -or $poll -gt 300) { throw 'PollSeconds 必須介於 10 到 300 秒。' }
     $cooldown = [int]$Config.MinimumRequestIntervalSeconds
@@ -79,10 +86,15 @@ function Get-FirestoreBaseUrl($Config) {
 function Get-FirestoreDocument($Config) {
     $url = "$(Get-FirestoreBaseUrl $Config)?key=$([Uri]::EscapeDataString([string]$Config.ApiKey))"
     try {
-        return Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 15
+        $document = Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 15
+        $script:LastFirestoreDocument = $document
+        return $document
     } catch {
         $response = $_.Exception.Response
-        if ($null -ne $response -and [int]$response.StatusCode -eq 404) { return $null }
+        if ($null -ne $response -and [int]$response.StatusCode -eq 404) {
+            $script:LastFirestoreDocument = $null
+            return $null
+        }
         throw
     }
 }
@@ -652,6 +664,411 @@ function Get-MessageSha256([string]$Message) {
     }
 }
 
+function Read-CodexRpcResponse($Process, [long]$Id, [int]$TimeoutMilliseconds) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $task = $Process.StandardOutput.ReadLineAsync()
+        # Windows PowerShell 5.1 對 ReadLineAsync().Wait(timeout) 可能產生
+        # 假性逾時；用短輪詢等待背景 I/O，仍保留真正的總逾時上限。
+        while (-not $task.IsCompleted) {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Codex app-server 回應逾時（id=$Id）。" }
+            if ($Process.HasExited) { throw "Codex app-server 已提前結束（exit=$($Process.ExitCode)）。" }
+            Start-Sleep -Milliseconds 25
+        }
+        $line = [string]$task.GetAwaiter().GetResult()
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            if ($Process.HasExited) { throw "Codex app-server 已提前結束（exit=$($Process.ExitCode)）。" }
+            continue
+        }
+        try { $message = $line | ConvertFrom-Json } catch { continue }
+        if ([long](Read-OptionalProperty $message 'id' ([long]-1)) -eq $Id) {
+            $rpcError = Read-OptionalProperty $message 'error' $null
+            if ($null -ne $rpcError) {
+                throw "Codex app-server RPC 失敗：$([string](Read-OptionalProperty $rpcError 'message' '未知錯誤'))"
+            }
+            return $message
+        }
+    }
+    throw "Codex app-server 回應逾時（id=$Id）。"
+}
+
+function Get-CodexThreadTurns($Config) {
+    $codexPath = Find-CodexExecutable $Config
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $codexPath
+    $startInfo.Arguments = 'app-server --listen stdio://'
+    # 工作排程器預設從 System32 啟動；Codex 必須在原任務工作區讀取同一份
+    # 專案與 thread，否則 thread/turns/list 會長時間等待甚至逾時。
+    $startInfo.WorkingDirectory = [string]$Config.Workspace
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw '無法啟動 Codex app-server。' }
+    # app-server 會把診斷訊息寫到 stderr；若只重導卻不持續讀取，Windows
+    # pipe 填滿後會反向卡住 stdout RPC，表面上就會變成 id=2 逾時。
+    $stderrDrain = $process.StandardError.ReadToEndAsync()
+    try {
+        $initialize = @{
+            id = 1
+            method = 'initialize'
+            params = @{ clientInfo = @{ name = 'wuthering-codex-support-bridge'; version = $BridgeVersion } }
+        } | ConvertTo-Json -Depth 6 -Compress
+        $process.StandardInput.WriteLine($initialize)
+        $process.StandardInput.Flush()
+        [void](Read-CodexRpcResponse $process 1 10000)
+
+        $request = @{
+            id = 2
+            method = 'thread/turns/list'
+            params = @{
+                threadId = [string]$Config.ThreadId
+                # 網站回報一定是這個既有任務的最新 turn；只讀最近 5 筆摘要，
+                # 摘要仍包含 userMessage 與最後一筆 agentMessage，可避免長任務
+                # 把完整工具歷史序列化成巨大單行 JSON 而逾時。
+                limit = 5
+                sortDirection = 'desc'
+                itemsView = 'summary'
+            }
+        } | ConvertTo-Json -Depth 6 -Compress
+        $process.StandardInput.WriteLine($request)
+        $process.StandardInput.Flush()
+        $response = Read-CodexRpcResponse $process 2 20000
+        $result = Read-OptionalProperty $response 'result' $null
+        if ($null -eq $result) { return @() }
+        return @((Read-OptionalProperty $result 'data' @()))
+    } catch {
+        $primaryMessage = $_.Exception.Message
+        if (-not $process.HasExited) {
+            try { $process.Kill(); [void]$process.WaitForExit(2000) } catch {}
+        }
+        $stderrText = ''
+        try {
+            if ($stderrDrain.Wait(1500)) { $stderrText = [string]$stderrDrain.Result }
+        } catch {}
+        $stderrText = (($stderrText -replace '[\r\n]+', ' ').Trim())
+        if ($stderrText.Length -gt 1200) { $stderrText = $stderrText.Substring($stderrText.Length - 1200) }
+        if ($stderrText) { throw "$primaryMessage | app-server stderr: $stderrText" }
+        throw
+    } finally {
+        try { $process.StandardInput.Close() } catch {}
+        if (-not $process.HasExited) { try { $process.Kill() } catch {} }
+        if ($null -ne $stderrDrain -and -not $stderrDrain.IsCompleted) {
+            try { [void]$stderrDrain.Wait(1000) } catch {}
+        }
+        $process.Dispose()
+    }
+}
+
+function Get-CodexUserMessageText($Item) {
+    $parts = New-Object Collections.Generic.List[string]
+    foreach ($content in @((Read-OptionalProperty $Item 'content' @()))) {
+        if ($content -is [string]) {
+            if (-not [string]::IsNullOrEmpty([string]$content)) { $parts.Add([string]$content) }
+            continue
+        }
+        $text = [string](Read-OptionalProperty $content 'text' '')
+        if (-not [string]::IsNullOrEmpty($text)) { $parts.Add($text) }
+    }
+    return [string]::Join("`n", $parts.ToArray())
+}
+
+function Find-CodexSessionLog($Config) {
+    if ($script:CodexSessionLogPath -and
+        (Test-Path -LiteralPath $script:CodexSessionLogPath -PathType Leaf)) {
+        return $script:CodexSessionLogPath
+    }
+    $sessionRoot = Join-Path $env:USERPROFILE '.codex\sessions'
+    if (-not (Test-Path -LiteralPath $sessionRoot -PathType Container)) { return '' }
+    $pattern = "rollout-*-$([string]$Config.ThreadId).jsonl"
+    $candidate = Get-ChildItem -LiteralPath $sessionRoot -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if ($null -eq $candidate) { return '' }
+    $script:CodexSessionLogPath = $candidate.FullName
+    return $script:CodexSessionLogPath
+}
+
+function New-CodexResponseMatch(
+    [bool]$Found,
+    [string]$ResponseState,
+    [string]$ResponseText,
+    [long]$ResponseAt,
+    [string]$TurnId,
+    [string]$TurnStatus,
+    [string]$ReplyError
+) {
+    return [pscustomobject]@{
+        Found = $Found
+        ResponseState = $ResponseState
+        ResponseText = $ResponseText
+        ResponseAt = $ResponseAt
+        ResponseSha256 = $(if ($ResponseText) { Get-MessageSha256 $ResponseText } else { '' })
+        TurnId = $TurnId
+        TurnStatus = $TurnStatus
+        ReplyError = $ReplyError
+    }
+}
+
+function Find-CodexResponseFromSessionLog($Config, $Target) {
+    $sessionPath = Find-CodexSessionLog $Config
+    if (-not $sessionPath) {
+        return New-CodexResponseMatch $false 'WAITING' '' 0L '' '' '找不到目前 Codex 任務的本機記錄'
+    }
+
+    $messageHash = [string]$Target.MessageSha256
+    $knownTurnId = [string]$Target.TurnId
+    $cursor = if ($script:CodexResponseCursors.ContainsKey($messageHash)) {
+        $script:CodexResponseCursors[$messageHash]
+    } else { $null }
+
+    $stream = [IO.File]::Open($sessionPath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $reader = $null
+    $targetSeen = $false
+    $targetActive = $false
+    $superseded = $false
+    $currentTurnId = ''
+    $targetTurnId = $knownTurnId
+    $finalText = ''
+    $finalAt = 0L
+    $supersededAt = 0L
+    try {
+        $fileLength = [long]$stream.Length
+        if ($null -ne $cursor -and [string]$cursor.TurnId -eq $knownTurnId -and
+            [long]$cursor.Offset -ge 0 -and [long]$cursor.Offset -le $fileLength) {
+            # 已確認過所屬 turn 後，只重讀 1 MiB 邊界並接著讀新增內容，
+            # 避免每 15 秒掃描數十 MiB 的長聊天室。
+            $scanStart = [Math]::Max(0L, [long]$cursor.Offset - 1MB)
+            $targetSeen = $true
+            $targetActive = $true
+            $currentTurnId = $knownTurnId
+        } else {
+            # 首次或橋接重啟時只掃描檔尾 96 MiB。網站訊息送入後會立即
+            # 進入目前 turn；不需要載入可能接近 1 GiB 的完整工具歷史。
+            $scanStart = [Math]::Max(0L, $fileLength - 96MB)
+        }
+        [void]$stream.Seek([long]$scanStart, [IO.SeekOrigin]::Begin)
+        $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false), $true, 65536, $false)
+        if ($scanStart -gt 0) { [void]$reader.ReadLine() }
+
+        while (($line = $reader.ReadLine()) -ne $null) {
+            $isTurnContext = $line.IndexOf('"type":"turn_context"', [StringComparison]::Ordinal) -ge 0
+            $isMessage = $line.IndexOf('"type":"response_item"', [StringComparison]::Ordinal) -ge 0 -and
+                $line.IndexOf('"type":"message"', [StringComparison]::Ordinal) -ge 0
+            if (-not $isTurnContext -and -not $isMessage) { continue }
+            try { $record = $line | ConvertFrom-Json } catch { continue }
+            $payload = Read-OptionalProperty $record 'payload' $null
+            if ($null -eq $payload) { continue }
+
+            if ($isTurnContext) {
+                $nextTurnId = [string](Read-OptionalProperty $payload 'turn_id' '')
+                if (-not $nextTurnId) { continue }
+                if ($targetSeen -and $targetTurnId -and $nextTurnId -ne $targetTurnId) {
+                    $targetActive = $false
+                    $superseded = $true
+                    try { $supersededAt = ([DateTimeOffset]::Parse([string]$record.timestamp)).ToUnixTimeMilliseconds() } catch {}
+                }
+                $currentTurnId = $nextTurnId
+                if ($targetTurnId -and $nextTurnId -eq $targetTurnId) {
+                    $targetSeen = $true
+                    $targetActive = $true
+                    $superseded = $false
+                }
+                continue
+            }
+
+            $role = [string](Read-OptionalProperty $payload 'role' '')
+            if ($role -eq 'user') {
+                $userText = Get-CodexUserMessageText $payload
+                if ($userText -and (Get-MessageSha256 $userText) -eq $messageHash) {
+                    $targetSeen = $true
+                    $targetActive = $true
+                    $superseded = $false
+                    if (-not $targetTurnId) { $targetTurnId = $currentTurnId }
+                }
+                continue
+            }
+            if ($role -ne 'assistant' -or -not $targetSeen -or -not $targetActive) { continue }
+            if ($targetTurnId -and $currentTurnId -and $currentTurnId -ne $targetTurnId) { continue }
+            if ([string](Read-OptionalProperty $payload 'phase' '') -ne 'final_answer') { continue }
+            $candidate = (Get-CodexUserMessageText $payload).Trim()
+            if (-not $candidate) { continue }
+            if ($candidate.Length -gt 30000) { $candidate = $candidate.Substring(0, 30000) }
+            $finalText = $candidate
+            try { $finalAt = ([DateTimeOffset]::Parse([string]$record.timestamp)).ToUnixTimeMilliseconds() } catch {
+                $finalAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            }
+        }
+        if ($targetSeen -and $targetTurnId) {
+            $script:CodexResponseCursors[$messageHash] = [pscustomobject]@{
+                Offset = [long]$stream.Length
+                TurnId = $targetTurnId
+            }
+        }
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() } else { $stream.Dispose() }
+    }
+
+    if ($finalText) {
+        return New-CodexResponseMatch $true 'COMPLETED' $finalText $finalAt $targetTurnId 'completed' ''
+    }
+    if ($targetSeen -and $superseded) {
+        if ($supersededAt -le 0) { $supersededAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+        return New-CodexResponseMatch $true 'INTERRUPTED' '' $supersededAt $targetTurnId 'interrupted' `
+            'Codex 任務已被後續回合取代，沒有產生可顯示的最終回覆'
+    }
+    if ($targetSeen) {
+        return New-CodexResponseMatch $true 'IN_PROGRESS' '' 0L $targetTurnId 'inProgress' ''
+    }
+    return New-CodexResponseMatch $false 'WAITING' '' 0L '' '' ''
+}
+
+function Find-CodexResponseByMessageHash($Turns, [string]$MessageSha256) {
+    foreach ($turn in @($Turns)) {
+        $matched = $false
+        foreach ($item in @((Read-OptionalProperty $turn 'items' @()))) {
+            if ([string](Read-OptionalProperty $item 'type' '') -ne 'userMessage') { continue }
+            $userText = Get-CodexUserMessageText $item
+            if ($userText -and (Get-MessageSha256 $userText) -eq $MessageSha256) {
+                $matched = $true
+                break
+            }
+        }
+        if (-not $matched) { continue }
+
+        $finalText = ''
+        foreach ($item in @((Read-OptionalProperty $turn 'items' @()))) {
+            if ([string](Read-OptionalProperty $item 'type' '') -eq 'agentMessage' -and
+                [string](Read-OptionalProperty $item 'phase' '') -eq 'final_answer') {
+                $candidate = [string](Read-OptionalProperty $item 'text' '')
+                if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                    $finalText = $candidate.Trim()
+                    if ($finalText.Length -gt 30000) { $finalText = $finalText.Substring(0, 30000) }
+                }
+            }
+        }
+        $turnStatus = [string](Read-OptionalProperty $turn 'status' '')
+        $completedRaw = Read-OptionalProperty $turn 'completedAt' $null
+        $completedAt = 0L
+        if ($null -ne $completedRaw -and [double]$completedRaw -gt 0) {
+            $completedAt = [long]([double]$completedRaw)
+            if ($completedAt -lt 1000000000000L) { $completedAt *= 1000L }
+        }
+        $responseState = 'IN_PROGRESS'
+        $replyError = ''
+        if (-not [string]::IsNullOrWhiteSpace($finalText)) {
+            $responseState = 'COMPLETED'
+            if ($completedAt -le 0) { $completedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+        } elseif ($completedAt -gt 0) {
+            if ($turnStatus -eq 'interrupted') { $responseState = 'INTERRUPTED' }
+            else { $responseState = 'FAILED' }
+            $turnError = Read-OptionalProperty $turn 'error' $null
+            $replyError = if ($null -ne $turnError) {
+                [string](Read-OptionalProperty $turnError 'message' 'Codex 任務未產生最終回覆')
+            } else { 'Codex 任務已結束，但沒有可顯示的最終回覆' }
+        }
+        return [pscustomobject]@{
+            Found = $true
+            ResponseState = $responseState
+            ResponseText = $finalText
+            ResponseAt = $completedAt
+            ResponseSha256 = $(if ($finalText) { Get-MessageSha256 $finalText } else { '' })
+            TurnId = [string](Read-OptionalProperty $turn 'id' '')
+            TurnStatus = $turnStatus
+            ReplyError = $replyError
+        }
+    }
+    return [pscustomobject]@{
+        Found = $false; ResponseState = 'WAITING'; ResponseText = ''; ResponseAt = 0L
+        ResponseSha256 = ''; TurnId = ''; TurnStatus = ''; ReplyError = ''
+    }
+}
+
+function Publish-SelfHostedCodexResponse($BridgeConfig, $Target, $Match) {
+    $body = @{
+        messageSha256 = [string]$Target.MessageSha256
+        responseState = [string]$Match.ResponseState
+        responseText = [string]$Match.ResponseText
+        responseAt = [long]$Match.ResponseAt
+        responseSha256 = [string]$Match.ResponseSha256
+        codexTurnId = [string]$Match.TurnId
+        codexTurnStatus = [string]$Match.TurnStatus
+        replyError = [string]$Match.ReplyError
+    }
+    Invoke-SelfHostedBridgeRequest $BridgeConfig 'POST' "/internal/codex-support/$([long]$Target.Nonce)/response" $body | Out-Null
+}
+
+function Publish-FirestoreCodexResponse($Config, $Target, $Match) {
+    Set-FirestoreFields $Config @{
+        codexResponseNonce = [long]$Target.Nonce
+        codexResponseState = [string]$Match.ResponseState
+        codexResponseText = [string]$Match.ResponseText
+        codexResponseAt = [long]$Match.ResponseAt
+        codexResponseSha256 = [string]$Match.ResponseSha256
+        codexResponseTurnId = [string]$Match.TurnId
+        codexResponseTurnStatus = [string]$Match.TurnStatus
+        codexResponseCheckedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        codexResponseError = [string]$Match.ReplyError
+    }
+}
+
+function Sync-CodexResponses($Config, $SelfHostedBridge, [string]$LogPath) {
+    $targets = New-Object Collections.Generic.List[object]
+    if ($null -ne $SelfHostedBridge) {
+        $pending = Invoke-SelfHostedBridgeRequest $SelfHostedBridge 'GET' '/internal/codex-support/responses/pending'
+        foreach ($request in @((Read-OptionalProperty $pending 'requests' @()))) {
+            $hash = [string](Read-OptionalProperty $request 'messageSha256' '')
+            if ($hash -match '^[a-f0-9]{64}$') {
+                $targets.Add([pscustomobject]@{
+                    Source = 'selfhost'; Nonce = [long](Read-OptionalProperty $request 'nonce' 0L)
+                    MessageSha256 = $hash; ResponseState = [string](Read-OptionalProperty $request 'responseState' 'WAITING')
+                    TurnId = [string](Read-OptionalProperty $request 'codexTurnId' '')
+                    TurnStatus = [string](Read-OptionalProperty $request 'codexTurnStatus' '')
+                    QueuedAt = [long](Read-OptionalProperty $request 'queuedAt' 0L)
+                })
+            }
+        }
+    }
+
+    $document = $script:LastFirestoreDocument
+    if ($null -ne $document) {
+        $nonce = [long](Read-FirestoreField $document 'supportRequestNonce' 0L)
+        $statusNonce = [long](Read-FirestoreField $document 'bridgeStatusNonce' 0L)
+        $dispatchState = [string](Read-FirestoreField $document 'bridgeState' '')
+        $responseState = [string](Read-FirestoreField $document 'codexResponseState' 'WAITING')
+        $hash = [string](Read-FirestoreField $document 'bridgeMessageSha256' '')
+        if ($nonce -gt 0 -and $nonce -eq $statusNonce -and $dispatchState -eq 'QUEUED' -and
+            $responseState -notin @('COMPLETED', 'FAILED', 'INTERRUPTED') -and $hash -match '^[a-f0-9]{64}$') {
+            $targets.Add([pscustomobject]@{
+                Source = 'firestore'; Nonce = $nonce; MessageSha256 = $hash; ResponseState = $responseState
+                TurnId = [string](Read-FirestoreField $document 'codexResponseTurnId' '')
+                TurnStatus = [string](Read-FirestoreField $document 'codexResponseTurnStatus' '')
+                QueuedAt = [long](Read-FirestoreField $document 'bridgeQueuedAt' 0L)
+            })
+        }
+    }
+    if ($targets.Count -eq 0) { return }
+
+    foreach ($target in $targets) {
+        $match = Find-CodexResponseFromSessionLog $Config $target
+        if (-not $match.Found) { continue }
+        if ([string]$target.ResponseState -eq [string]$match.ResponseState -and
+            [string]$target.TurnId -eq [string]$match.TurnId -and
+            [string]$target.TurnStatus -eq [string]$match.TurnStatus -and
+            [string]$match.ResponseState -eq 'IN_PROGRESS') { continue }
+        if ([string]$target.Source -eq 'selfhost') {
+            Publish-SelfHostedCodexResponse $SelfHostedBridge $target $match
+        } else {
+            Publish-FirestoreCodexResponse $Config $target $match
+        }
+        Write-BridgeLog $LogPath 'INFO' "Codex response synced source=$($target.Source) nonce=$($target.Nonce) state=$($match.ResponseState) turn=$($match.TurnId)"
+    }
+}
+
 function Get-ReplayMetadata($State) {
     return @{
         bridgeReceivedAt = [long]$State.LastReceivedAt
@@ -981,6 +1398,9 @@ function Invoke-FirestoreQueue(
             bridgeMessageSha256 = $messageHash; bridgeMessageLength = $queuedMessage.Length
             bridgeContextIncluded = [bool]$context; bridgeContextLength = $context.Length
             bridgeErrorCode = ''; bridgeErrorDetail = ''
+            codexResponseNonce = $nonce; codexResponseState = 'WAITING'; codexResponseText = ''
+            codexResponseAt = 0L; codexResponseSha256 = ''; codexResponseTurnId = ''
+            codexResponseTurnStatus = ''; codexResponseCheckedAt = 0L; codexResponseError = ''
         }
         Remove-InFlightMarker $InFlightPath
         Write-BridgeLog $LogPath 'INFO' "Queued Firestore support message nonce=$nonce length=$($queuedMessage.Length) sha256=$messageHash"
@@ -1056,6 +1476,7 @@ if ($ValidateOnly) {
         SupportsDeviceContext = $true
         SupportsCancellationCheck = $true
         SupportsDualTransport = $true
+        SupportsCodexResponseSync = $true
         MaxMessageLength = $MaxMessageLength
         MaxContextLength = $MaxContextLength
     } | ConvertTo-Json -Depth 4
@@ -1114,6 +1535,12 @@ try {
             } catch {
                 Write-BridgeLog $logPath 'ERROR' "Self-hosted source: $($_.Exception.Message)"
             }
+        }
+
+        try {
+            Sync-CodexResponses $config $selfHostedBridge $logPath
+        } catch {
+            Write-BridgeLog $logPath 'ERROR' "Codex response sync: $($_.Exception.Message)"
         }
 
         if (-not $Once) { Start-Sleep -Seconds ([int]$config.PollSeconds) }

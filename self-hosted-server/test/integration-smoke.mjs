@@ -182,10 +182,18 @@ async function main() {
       runtimeDiagnosticsErrorKeepCount: 30, mailNotifyEnabled: false,
       liveQualityProfile: "smooth" },
   });
-  await request("/api/v1/device/settings/ack", {
-    method: "POST", device: true,
-    body: { revision: Number(setting.revision), applied: true, result: "APPLIED", detail: "smoke settings" },
+  await request("/api/v1/device/heartbeat", {
+    method: "PUT", device: true,
+    body: { state: "PAUSE", displayName: "整合測試裝置", lastNonce: Number(stop.nonce),
+      settingsRevision: Number(setting.revision), status: { currentStep: "settings heartbeat reconciliation" } },
   });
+  const reconciledSetting = await query(
+    "SELECT status,ack_result,ack_detail FROM settings_revisions WHERE uid=$1 AND revision=$2",
+    [uid, Number(setting.revision)],
+  );
+  assert(reconciledSetting.rows[0]?.status === "APPLIED"
+    && reconciledSetting.rows[0]?.ack_result === "APPLIED",
+  "device heartbeat did not reconcile the pending settings revision");
   const appliedSettingsState = await query(
     "SELECT settings_effective_revision FROM devices WHERE uid=$1",
     [uid],

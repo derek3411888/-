@@ -27,6 +27,8 @@ const state = {
   codexSupportError: "",
   codexSupportTimer: 0,
   codexSupportRefreshInFlight: false,
+  settingsSaving: false,
+  settingsSaveStatus: null,
 };
 
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
@@ -49,6 +51,7 @@ const codexStages = {
   validated: $("codexStageValidated"),
   attempted: $("codexStageAttempted"),
   queued: $("codexStageQueued"),
+  response: $("codexStageResponse"),
 };
 const codexDetails = {
   state: $("codexDetailState"), nonce: $("codexDetailNonce"), requestedAt: $("codexDetailRequestedAt"),
@@ -436,6 +439,8 @@ function renderCodexSupportStatus() {
   const requestPending = requestNonce > statusNonce || (
     requestNonce === statusNonce && CODEX_SUPPORT_PENDING_STATES.includes(supportState)
   );
+  const responseState = String(data.responseState || "NONE").trim().toUpperCase();
+  const responsePending = supportState === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
   const safelyCancellable = requestPending && attemptCount === 0
     && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(supportState);
   const stalled = safelyCancellable && requestedAt > 0
@@ -444,7 +449,7 @@ function renderCodexSupportStatus() {
   const retryable = !dispatchResultUnknown
     && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState) || stalled);
   const selection = selectedCodexSupportMessage();
-  $("btnAskCodex").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || requestPending || cooldownRemaining > 0
+  $("btnAskCodex").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || requestPending || responsePending || cooldownRemaining > 0
     || !selection.message || selection.message.length > CODEX_SUPPORT_MAX_MESSAGE_LENGTH;
   $("btnCancelCodexSupport").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || !safelyCancellable;
   $("btnRetryCodexSupport").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || !retryable;
@@ -455,7 +460,7 @@ function renderCodexSupportStatus() {
     : safelyCancellable
       ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
       : supportState === "QUEUED"
-        ? "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。"
+        ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
         : retryable
           ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
           : "一般控制台會直接寫入中央主機，不經 Firestore。只有尚未進入 Codex 的請求可以安全取消。");
@@ -505,6 +510,13 @@ function renderCodexSupportStatus() {
   if (supportState === "QUEUED") {
     setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
     setCodexStage(codexStages.queued, "done", queuedAt ? `排入於 ${formatTime(queuedAt)}` : "Codex 佇列已接收");
+    if (responseState === "COMPLETED") {
+      setCodexStage(codexStages.response, "done", data.responseAt ? `完成於 ${formatTime(data.responseAt)}` : "最終回覆已同步");
+    } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
+      setCodexStage(codexStages.response, "error", data.replyError || (responseState === "INTERRUPTED" ? "Codex 處理中斷" : "Codex 未產生最終回覆"));
+    } else {
+      setCodexStage(codexStages.response, "active", responseState === "IN_PROGRESS" ? "Codex 正在處理" : "等待 Codex 開始處理");
+    }
   } else if (supportState === "RETRYING") {
     setCodexStage(codexStages.attempted, "active", nextRetryAt ? `第 ${attemptCount} 次未成功；${formatTime(nextRetryAt)} 重試` : "暫未成功，會自動重試");
   } else if (supportState === "REJECTED") {
@@ -517,9 +529,37 @@ function renderCodexSupportStatus() {
     setCodexStage(codexStages.received, "error", detail || "已取消，未送進 Codex");
   }
 
+  const responseCard = $("codexResponseCard");
+  const responseText = String(data.responseText || "").trim();
+  const responseLabels = {
+    NONE: ["waiting", "尚未送出", "請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。", "muted"],
+    WAITING: ["waiting", "等待 Codex", "已排入目前任務，等待 Codex 開始處理。", "warning"],
+    IN_PROGRESS: ["in-progress", "處理中", "Codex 正在處理這筆網站回報；完成後會自動更新。", "warning"],
+    COMPLETED: ["completed", "已完成", "已取得這個 Codex turn 的最終回覆。", "ok"],
+    FAILED: ["failed", "失敗", data.replyError || "Codex 任務結束但沒有可顯示的最終回覆。", "danger"],
+    INTERRUPTED: ["interrupted", "已中斷", data.replyError || "Codex turn 已中斷，沒有最終回覆。", "danger"],
+  };
+  const responseView = responseLabels[responseState] || responseLabels.NONE;
+  responseCard.className = `codex-response-card ${responseView[0]}`;
+  $("codexResponseBadge").className = `badge ${responseView[3]}`;
+  setText("codexResponseBadge", responseView[1]);
+  setText("codexResponseAt", formatTime(data.responseAt));
+  setText("codexResponseHint", responseView[2]);
+  $("codexResponseText").hidden = !responseText;
+  $("codexResponseText").textContent = responseText;
+
   if (state.codexSupportSending) return setCodexSupportMessage("pending", "正在寫入一般控制台請求…");
   if (state.codexSupportError) return setCodexSupportMessage("error", state.codexSupportError);
   if (requestPending) return setCodexSupportMessage("pending", detail || stateLabels[supportState] || "已送出，等待家中主機接收…");
+  if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED" && responsePending) {
+    return setCodexSupportMessage("pending", responseState === "IN_PROGRESS" ? "Codex 正在處理；完成後會在這裡顯示回覆" : "已送進 Codex，等待開始處理");
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED" && responseState === "COMPLETED") {
+    return setCodexSupportMessage("ok", "Codex 已完成，最終回覆已同步到網站");
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState)) {
+    return setCodexSupportMessage("error", data.replyError || "Codex 沒有產生可顯示的最終回覆");
+  }
   if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED") {
     return setCodexSupportMessage("ok", cooldownRemaining > 0
       ? `已送進目前 Codex 任務；${Math.ceil(cooldownRemaining / 1000)} 秒後可再次送出`
@@ -808,7 +848,56 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     ? wrapper.settings.settings : (device.settings || {});
   if (reloadSettings && !$("settingsForm").contains(document.activeElement)) renderSettings(displayedSettings);
   setText("liveProfileSummary", `${liveQualityLabel(displayedSettings.liveQualityProfile)}；有人觀看時才推流。`);
+  renderSettingsAckStatus(wrapper);
   renderPerformance(status.performance);
+}
+
+function settingsSummary(settings = {}) {
+  const servers = String(settings.serverScheduleList || "").trim() || "未設定";
+  return [
+    `排程 ${settings.serverScheduleEnabled ? "開" : "關"}（${servers}）`,
+    `重啟上限 ${settings.maxRestartCount ?? "—"}`,
+    `診斷 ${settings.runtimeDiagnosticsEnabled === false ? "關" : "開"}/${settings.runtimeDiagnosticsIntervalSec ?? "—"} 秒`,
+    `郵件 ${settings.mailNotifyEnabled ? "開" : "關"}`,
+    `直播 ${liveQualityLabel(settings.liveQualityProfile)}`,
+  ].join("｜");
+}
+
+function renderSettingsAckStatus(wrapper = state.details || {}) {
+  const box = $("settingsAckStatus");
+  if (!box) return;
+  const device = wrapper.device || {};
+  const version = wrapper.settings || {};
+  const ack = device.settings_ack || {};
+  const desiredRevision = Math.max(Number(version.revision) || 0, Number(device.settings_revision) || 0,
+    Number(state.settingsSaveStatus?.revision) || 0);
+  const effectiveRevision = Math.max(0, Number(device.settings_effective_revision) || 0);
+  const ackRevision = Math.max(0, Number(ack.revision) || 0);
+  const saved = state.settingsSaveStatus;
+  let kind = "idle";
+  let title = desiredRevision > 0 ? `設定版本 ${desiredRevision}` : "尚未儲存設定";
+  let detail = "尚無裝置設定 ACK。";
+  let at = Number(ack.at) || (version.acked_at ? new Date(version.acked_at).valueOf() : 0);
+  if (saved?.state === "error") {
+    kind = "error"; title = "設定儲存失敗"; detail = saved.detail || "請重新嘗試。"; at = Date.now();
+  } else if (String(version.status).toUpperCase() === "REJECTED" || (ackRevision === desiredRevision && ack.applied === false)) {
+    kind = "rejected"; title = `裝置拒絕設定｜revision ${desiredRevision}`;
+    detail = String(version.ack_detail || ack.detail || "裝置未套用這一版設定。");
+  } else if (desiredRevision > 0 && effectiveRevision >= desiredRevision
+      && (String(version.status).toUpperCase() === "APPLIED" || ackRevision >= desiredRevision)) {
+    kind = "applied"; title = `設定已生效｜revision ${desiredRevision}`;
+    detail = String(version.ack_detail || ack.detail || "裝置已確認套用。");
+  } else if (desiredRevision > 0) {
+    kind = "pending"; title = `已送出 revision ${desiredRevision}，等待裝置套用`;
+    detail = saved?.detail || "裝置心跳最慢約 90 秒內會更新實際生效狀態。";
+    at = Number(saved?.at) || (version.created_at ? new Date(version.created_at).valueOf() : 0);
+  }
+  box.className = `settings-ack-status ${kind}`;
+  setText("settingsAckTitle", title);
+  setText("settingsAckTime", at ? formatTime(at) : "—");
+  setText("settingsAckDetail", detail);
+  setText("settingsEffectiveSummary", `實際生效值（revision ${effectiveRevision || "—"}）：${settingsSummary(device.settings || {})}`);
+  if (kind === "applied" && saved && desiredRevision >= Number(saved.revision || 0)) state.settingsSaveStatus = null;
 }
 
 function renderSettings(settings) {
@@ -821,7 +910,7 @@ function renderSettings(settings) {
   $("mailEnabled").checked = Boolean(settings.mailNotifyEnabled);
   $("liveQualityProfile").value = normalizeLiveQualityProfile(settings.liveQualityProfile);
   const mode = String(state.migration?.mode || "");
-  $("saveSettingsButton").disabled = !["primary", "shadow", "fallback"].includes(mode) || !state.selectedUid;
+  $("saveSettingsButton").disabled = state.settingsSaving || !["primary", "shadow", "fallback"].includes(mode) || !state.selectedUid;
   const message = mode === "primary"
     ? "設定會直接儲存至中央主機，並等待裝置 ACK。"
     : mode === "shadow"
@@ -1176,6 +1265,11 @@ function bindEvents() {
   $("completeButton").addEventListener("click", () => { const value = $("serverSelect").value; if (!value) return; const target = JSON.parse(value); if (confirm(`把 ${target.name} 標記為今天已完成？`)) sendCommand("COMPLETE_SERVER", { serverIndex: target.index, serverName: target.name }).catch((error) => toast(error.message)); });
   $("settingsForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (state.settingsSaving) return;
+    state.settingsSaving = true;
+    state.settingsSaveStatus = { state: "pending", revision: 0, at: Date.now(), detail: "正在儲存設定…" };
+    $("saveSettingsButton").disabled = true;
+    renderSettingsAckStatus();
     try {
       const saved = await api(`/api/v1/devices/${encodeURIComponent(state.selectedUid)}/settings`, { method: "PUT", body: {
         serverScheduleEnabled: $("scheduleEnabled").checked,
@@ -1185,12 +1279,23 @@ function bindEvents() {
         mailNotifyEnabled: $("mailEnabled").checked,
         liveQualityProfile: normalizeLiveQualityProfile($("liveQualityProfile").value),
       }});
+      state.settingsSaveStatus = {
+        state: "pending", revision: Number(saved?.revision) || 0, at: Date.now(),
+        detail: "設定已保存，等待裝置回報實際套用結果。",
+      };
       const revision = Number(saved?.revision) > 0 ? `（版本 ${Number(saved.revision)}）` : "";
       toast(saved?.transport === "firestore"
         ? `設定已安全轉送 Firestore${revision}，等待裝置 ACK`
         : `設定已儲存至中央主機${revision}，等待裝置 ACK`);
-      await refresh();
-    } catch (error) { toast(error.message); }
+      await refresh({ reloadSettings: false, admin: true });
+    } catch (error) {
+      state.settingsSaveStatus = { state: "error", revision: 0, at: Date.now(), detail: error.message };
+      toast(error.message);
+    } finally {
+      state.settingsSaving = false;
+      renderSettings(state.details?.device?.settings || {});
+      renderSettingsAckStatus();
+    }
   });
   $("scheduleEnabled").addEventListener("change", refreshServerChoicesEnabled);
   $("startLiveButton").addEventListener("click", () => startLive().catch((error) => toast(error.message)));

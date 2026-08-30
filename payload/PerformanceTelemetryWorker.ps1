@@ -320,7 +320,9 @@ function Get-FpsMetrics($Frames) {
     if ($null -eq $Frames -or $Frames.Count -eq 0) {
         return [pscustomobject]@{ Fps = $null; Fps1Low = $null; FrameTime = $null; P95 = $null; P99 = $null }
     }
-    $values = [double[]]$Frames.ToArray()
+    # PowerShell 會把只有一筆的 Generic.List 管線輸出自動展開成
+    # System.Double；不能假設呼叫端永遠還保有 ToArray() 方法。
+    $values = [double[]]@($Frames)
     $average = ($values | Measure-Object -Average).Average
     $p95 = Get-Percentile $values 95
     $p99 = Get-Percentile $values 99
@@ -479,7 +481,16 @@ try {
             $lastCollectorError = ''
         }
 
-        $fps = Get-FpsMetrics (Read-PresentMonFrames)
+        try {
+            $fps = Get-FpsMetrics (Read-PresentMonFrames)
+        } catch {
+            # FPS 是選配訊號；PresentMon 的單次解析錯誤不能清空同一筆
+            # CPU、GPU、RAM、磁碟與網路資料，也不能讓整個 worker 結束。
+            $lastCollectorError = "PresentMon FPS: $($_.Exception.Message)"
+            Stop-PresentMon
+            $presentMonState = 'retry_wait'
+            $fps = [pscustomobject]@{ Fps = $null; Fps1Low = $null; FrameTime = $null; P95 = $null; P99 = $null }
+        }
         $presentError = Read-PresentMonStderr
         if ($null -ne $fps.Fps) {
             $lastPresentFrameAt = $sampleStarted

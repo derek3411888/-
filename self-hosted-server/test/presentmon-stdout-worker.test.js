@@ -34,3 +34,11 @@ test("valid frames win over warnings and a stalled stream is restarted", () => {
   assert.match(worker, /30 秒未收到有效 FrameTime/);
   assert.match(worker, /Stop-PresentMon\s*\r?\n\s*\$presentMonState\s*=\s*'retry_wait'/);
 });
+
+test("a single FPS sample stays an array and FPS errors do not erase other metrics", () => {
+  assert.match(worker, /\$values\s*=\s*\[double\[\]\]@\(\$Frames\)/);
+  assert.doesNotMatch(worker, /\$values\s*=\s*\[double\[\]\]\$Frames\.ToArray\(\)/);
+  assert.match(worker, /try\s*\{\s*\$fps\s*=\s*Get-FpsMetrics/);
+  assert.match(worker, /PresentMon FPS:/);
+  assert.match(worker, /\$fps\s*=\s*\[pscustomobject\]@\{\s*Fps\s*=\s*\$null/);
+});

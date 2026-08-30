@@ -80,6 +80,7 @@ const codexStages = {
   validated: document.getElementById("codexStageValidated"),
   attempted: document.getElementById("codexStageAttempted"),
   queued: document.getElementById("codexStageQueued"),
+  response: document.getElementById("codexStageResponse"),
 };
 const codexDetails = {
   state: document.getElementById("codexDetailState"),
@@ -405,6 +406,11 @@ function renderCodexSupportStatus() {
   const bridgeOnline = heartbeatAt > 0 && Date.now() - heartbeatAt < CODEX_BRIDGE_ONLINE_MS;
   const cooldownRemaining = Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now());
   const pendingStates = ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"];
+  const responseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
+  const responseState = state === "QUEUED" && responseNonce === requestNonce
+    ? String(readField(data, "codexResponseState", "WAITING") || "WAITING").trim().toUpperCase()
+    : "NONE";
+  const responsePending = state === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
 
   const requestPending = requestNonce > statusNonce || (
     requestNonce === statusNonce && pendingStates.includes(state)
@@ -418,7 +424,7 @@ function renderCodexSupportStatus() {
   const retryable = !dispatchResultUnknown
     && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) || stalled);
   const selection = selectedCodexSupportMessage();
-  btnAskCodex.disabled = codexSupportSending || codexSupportRecoveryBusy || requestPending || cooldownRemaining > 0 || !selection.message;
+  btnAskCodex.disabled = codexSupportSending || codexSupportRecoveryBusy || requestPending || responsePending || cooldownRemaining > 0 || !selection.message;
   btnCancelCodexSupport.disabled = codexSupportSending || codexSupportRecoveryBusy || !safelyCancellable;
   btnRetryCodexSupport.disabled = codexSupportSending || codexSupportRecoveryBusy || !retryable;
   codexRecoveryHint.textContent = stalled
@@ -428,7 +434,7 @@ function renderCodexSupportStatus() {
     : safelyCancellable
       ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
       : state === "QUEUED"
-        ? "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。"
+        ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
         : retryable
           ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
           : "只有尚未進入 Codex 的請求可以安全取消。";
@@ -491,6 +497,13 @@ function renderCodexSupportStatus() {
   if (state === "QUEUED") {
     setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
     setCodexStage(codexStages.queued, "done", queuedAt ? `排入於 ${fmtTs(queuedAt)}` : "Codex 佇列已接收");
+    if (responseState === "COMPLETED") {
+      setCodexStage(codexStages.response, "done", `完成於 ${fmtTs(readField(data, "codexResponseAt", 0))}`);
+    } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
+      setCodexStage(codexStages.response, "error", String(readField(data, "codexResponseError", "") || "Codex 沒有產生最終回覆"));
+    } else {
+      setCodexStage(codexStages.response, "active", responseState === "IN_PROGRESS" ? "Codex 正在處理" : "等待 Codex 開始處理");
+    }
   } else if (state === "RETRYING") {
     setCodexStage(codexStages.attempted, "active", nextRetryAt ? `第 ${attemptCount} 次未成功；${fmtTs(nextRetryAt)} 重試` : "暫未成功，會自動重試");
   } else if (state === "REJECTED") {
@@ -503,6 +516,25 @@ function renderCodexSupportStatus() {
     setCodexStage(codexStages.received, "error", detail || "已取消，未送進 Codex");
   }
 
+  const responseText = String(readField(data, "codexResponseText", "") || "").trim();
+  const responseError = String(readField(data, "codexResponseError", "") || "").trim();
+  const responseViews = {
+    NONE: ["waiting", "尚未送出", "請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。", "muted"],
+    WAITING: ["waiting", "等待 Codex", "已排入目前任務，等待 Codex 開始處理。", "warning"],
+    IN_PROGRESS: ["in-progress", "處理中", "Codex 正在處理這筆網站回報；完成後會自動更新。", "warning"],
+    COMPLETED: ["completed", "已完成", "已取得這個 Codex turn 的最終回覆。", "ok"],
+    FAILED: ["failed", "失敗", responseError || "Codex 任務結束但沒有可顯示的最終回覆。", "danger"],
+    INTERRUPTED: ["interrupted", "已中斷", responseError || "Codex turn 已中斷，沒有最終回覆。", "danger"],
+  };
+  const responseView = responseViews[responseState] || responseViews.NONE;
+  document.getElementById("codexResponseCard").className = `codex-response-card ${responseView[0]}`;
+  document.getElementById("codexResponseBadge").className = `badge ${responseView[3]}`;
+  document.getElementById("codexResponseBadge").textContent = responseView[1];
+  document.getElementById("codexResponseAt").textContent = fmtTs(readField(data, "codexResponseAt", 0));
+  document.getElementById("codexResponseHint").textContent = responseView[2];
+  document.getElementById("codexResponseText").hidden = !responseText;
+  document.getElementById("codexResponseText").textContent = responseText;
+
   if (codexSupportSending) {
     setCodexSupportMessage("pending", "正在寫入公司控制台請求…");
     return;
@@ -513,6 +545,18 @@ function renderCodexSupportStatus() {
   }
   if (requestPending) {
     setCodexSupportMessage("pending", detail || stateLabels[state] || "已送出，等待家中主機接收…");
+    return;
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && state === "QUEUED" && responsePending) {
+    setCodexSupportMessage("pending", responseState === "IN_PROGRESS" ? "Codex 正在處理；完成後會在這裡顯示回覆" : "已送進 Codex，等待開始處理");
+    return;
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && state === "QUEUED" && responseState === "COMPLETED") {
+    setCodexSupportMessage("ok", "Codex 已完成，最終回覆已同步到網站");
+    return;
+  }
+  if (requestNonce > 0 && requestNonce === statusNonce && state === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState)) {
+    setCodexSupportMessage("error", responseError || "Codex 沒有產生可顯示的最終回覆");
     return;
   }
   if (requestNonce > 0 && requestNonce === statusNonce && state === "QUEUED") {
@@ -558,6 +602,15 @@ async function cancelCodexSupport() {
         bridgeNextRetryAt: 0,
         bridgeErrorCode: "",
         bridgeErrorDetail: "",
+        codexResponseNonce: nextNonce,
+        codexResponseState: "WAITING",
+        codexResponseText: "",
+        codexResponseAt: 0,
+        codexResponseSha256: "",
+        codexResponseTurnId: "",
+        codexResponseTurnStatus: "",
+        codexResponseCheckedAt: 0,
+        codexResponseError: "",
       }, { merge: true });
     });
   } catch (error) {
@@ -653,10 +706,16 @@ async function requestCodexSupport() {
       const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
       const state = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
       const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
+      const existingResponseState = String(readField(data, "codexResponseState", "") || "").trim().toUpperCase();
+      const existingResponseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
       if (currentNonce > statusNonce || (
         currentNonce === statusNonce && ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"].includes(state)
       )) {
         throw new Error("上一筆維修請求仍在等待家中主機接收");
+      }
+      if (currentNonce === statusNonce && state === "QUEUED" && existingResponseNonce === currentNonce
+          && ["WAITING", "IN_PROGRESS"].includes(existingResponseState)) {
+        throw new Error("上一筆維修請求仍在等待 Codex 完成並回覆");
       }
       if (queuedAt > 0 && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
         throw new Error("剛剛已送進 Codex，請等候處理結果");
@@ -694,6 +753,15 @@ async function requestCodexSupport() {
         bridgeContextLength: 0,
         bridgeErrorCode: "",
         bridgeErrorDetail: "",
+        codexResponseNonce: nextNonce,
+        codexResponseState: "WAITING",
+        codexResponseText: "",
+        codexResponseAt: 0,
+        codexResponseSha256: "",
+        codexResponseTurnId: "",
+        codexResponseTurnStatus: "",
+        codexResponseCheckedAt: 0,
+        codexResponseError: "",
       }, { merge: true });
     });
   } catch (error) {
@@ -2389,11 +2457,16 @@ function markSettingsDirty() {
 function renderSettingsStatus() {
   const data = selectedClientData();
   if (!data) {
+    document.getElementById("settingsEffectiveSummary").textContent = "目前實際生效值：—";
     setSettingsStatus("idle", "尚未選擇裝置", "請先選擇一台電腦。");
     return;
   }
 
   const settings = readRemoteSettings(data, !settingsPreferEffective);
+  const effective = readRemoteSettings(data, false);
+  document.getElementById("settingsEffectiveSummary").textContent = effective.supported
+    ? `目前實際生效值（revision ${effective.effectiveRevision || "—"}）：排程 ${effective.serverScheduleEnabled ? "開" : "關"}（${effective.serverScheduleList.join(" → ") || "未設定"}）｜重啟上限 ${effective.maxRestartCount}｜診斷 ${effective.runtimeDiagnosticsEnabled ? "開" : "關"}/${effective.runtimeDiagnosticsIntervalSec} 秒｜郵件 ${effective.mailNotifyEnabled ? "開" : "關"}`
+    : "目前實際生效值：裝置尚未支援回報";
   if (!settings.supported) {
     setSettingsStatus("rejected", "此裝置尚不支援網頁設定", "需更新執行端 Payload；舊版裝置仍可使用總覽控制功能。");
     return;

@@ -41,7 +41,17 @@ if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) { throw "找不到
 $installRoot = Split-Path -Parent $bridgeFull
 $logPath = Join-Path $installRoot 'watchdog.log'
 $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-if (-not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) { throw '找不到 Windows PowerShell。' }
+try {
+    $runtimeConfig = Get-Content -LiteralPath $configFull -Raw -Encoding UTF8 | ConvertFrom-Json
+    $runtimeProperty = $runtimeConfig.PSObject.Properties['BridgePowerShellPath']
+    if ($null -ne $runtimeProperty -and
+        (Test-Path -LiteralPath ([string]$runtimeProperty.Value) -PathType Leaf)) {
+        $powershellPath = [string]$runtimeProperty.Value
+    }
+} catch {
+    # 舊設定或損壞設定仍交由 bridge 自己輸出精確錯誤；watchdog 先用 5.1 回退。
+}
+if (-not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) { throw '找不到可用的 PowerShell。' }
 
 if ($ValidateOnly) {
     [pscustomobject]@{
@@ -77,7 +87,7 @@ try {
 
         $quotedBridge = '"' + $bridgeFull.Replace('"', '""') + '"'
         $quotedConfig = '"' + $configFull.Replace('"', '""') + '"'
-        $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $quotedBridge -ConfigPath $quotedConfig"
+        $arguments = "-NoProfile -NoLogo -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $quotedBridge -ConfigPath $quotedConfig"
         $startedAt = [DateTimeOffset]::UtcNow
         try {
             $process = Start-Process -FilePath $powershellPath -ArgumentList $arguments `

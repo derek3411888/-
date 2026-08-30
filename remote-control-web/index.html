@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260829-support-recovery-v2" />
+  <link rel="stylesheet" href="styles.css?v=20260830-codex-response-v1" />
 </head>
 <body>
   <main class="wrap">
@@ -82,7 +82,17 @@
           <li id="codexStageValidated" data-state="waiting"><span>3</span><div><strong>訊息驗證完成</strong><small>檢查動作、長度與內容</small></div></li>
           <li id="codexStageAttempted" data-state="waiting"><span>4</span><div><strong>送往 Codex</strong><small>等待佇列嘗試</small></div></li>
           <li id="codexStageQueued" data-state="waiting"><span>5</span><div><strong>Codex 已接收佇列</strong><small>不代表已開始或已完成</small></div></li>
+          <li id="codexStageResponse" data-state="waiting"><span>6</span><div><strong>Codex 處理與回覆</strong><small>等待最終回覆</small></div></li>
         </ol>
+      </section>
+
+      <section id="codexResponseCard" class="codex-response-card waiting" aria-labelledby="codexResponseTitle">
+        <div class="codex-response-heading">
+          <div><span id="codexResponseBadge" class="badge muted">等待</span><h3 id="codexResponseTitle">Codex 回覆</h3></div>
+          <time id="codexResponseAt">—</time>
+        </div>
+        <p id="codexResponseHint">請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。</p>
+        <pre id="codexResponseText" hidden></pre>
       </section>
 
       <details class="codex-request-details" open>
@@ -294,6 +304,7 @@
         <div id="settingsStatus" class="settings-status" data-status="idle" role="status" aria-live="polite">
           <strong id="settingsStatusTitle">尚未讀取設定</strong>
           <span id="settingsStatusDetail">請先選擇支援遠端設定的裝置。</span>
+          <small id="settingsEffectiveSummary">目前實際生效值：—</small>
         </div>
       </section>
 
@@ -361,6 +372,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=20260829-support-recovery-v2"></script>
+  <script type="module" src="app.js?v=20260830-codex-response-v1"></script>
 </body>
 </html>

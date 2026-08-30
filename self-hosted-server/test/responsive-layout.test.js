@@ -6,13 +6,18 @@ const publicDirectory = new URL("../public/", import.meta.url);
 const companyControlDirectory = new URL("../../remote-control-web/", import.meta.url);
 
 test("recording status uses an isolated responsive layout", async () => {
-  const [html, css, script, server, bridge, supportQueue] = await Promise.all([
+  const [html, css, script, server, bridge, supportQueue, supportResponseMigration, codexBridge,
+    codexBridgeInstaller, codexBridgeWatchdog] = await Promise.all([
     readFile(new URL("index.html", publicDirectory), "utf8"),
     readFile(new URL("styles.css", publicDirectory), "utf8"),
     readFile(new URL("app.js", publicDirectory), "utf8"),
     readFile(new URL("../src/app.js", import.meta.url), "utf8"),
     readFile(new URL("../src/firestore-bridge.js", import.meta.url), "utf8"),
     readFile(new URL("../src/codex-support-queue.js", import.meta.url), "utf8"),
+    readFile(new URL("../migrations/008_codex_support_responses.sql", import.meta.url), "utf8"),
+    readFile(new URL("../windows/CodexSupportBridge.ps1", import.meta.url), "utf8"),
+    readFile(new URL("../windows/Install-CodexSupportBridge.ps1", import.meta.url), "utf8"),
+    readFile(new URL("../windows/CodexSupportWatchdog.ps1", import.meta.url), "utf8"),
   ]);
 
   assert.match(html, /id="recordingStatus" class="recording-status"/);
@@ -39,6 +44,8 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(html, /id="codexSupportDialog"/);
   assert.match(html, /id="codexCustomMessage"[^>]*maxlength="1000"/);
   assert.match(html, /id="codexStageQueued"/);
+  assert.match(html, /id="codexStageResponse"/);
+  assert.match(html, /id="codexResponseText"/);
   assert.match(html, /data-panel="videos"/);
   assert.match(html, /id="liveVideo"/);
   assert.match(html, /id="recordingList"/);
@@ -58,11 +65,25 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(server, /pathname === "\/api\/v1\/codex-support\/cancel"/);
   assert.match(server, /pathname === "\/api\/v1\/codex-support\/retry"/);
   assert.match(server, /\/internal\/codex-support\/next/);
+  assert.match(server, /\/internal\/codex-support\/responses\/pending/);
+  assert.match(server, /\/internal\/codex-support\/:nonce\/response/);
   assert.match(bridge, /currentDocument\.updateTime/);
   assert.match(bridge, /CODEX_SUPPORT_DOCUMENT_ID\s*=\s*"__codex_support"/);
   assert.match(supportQueue, /FOR UPDATE SKIP LOCKED/);
   assert.match(supportQueue, /WHERE id=\$1 AND state=\$14 AND claim_generation=\$15 AND claimed_by=\$16 RETURNING/);
   assert.match(supportQueue, /retry_of_id/);
+  assert.match(supportQueue, /responseText:\s*String\(row\.codex_response/);
+  assert.match(supportQueue, /updateCodexResponse/);
+  assert.match(supportResponseMigration, /response_state text NOT NULL DEFAULT 'WAITING'/);
+  assert.match(supportResponseMigration, /codex_response text NOT NULL DEFAULT ''/);
+  assert.match(codexBridge, /thread\/turns\/list/);
+  assert.match(codexBridge, /phase' ''\) -eq 'final_answer'/);
+  assert.match(codexBridge, /Find-CodexResponseByMessageHash/);
+  assert.match(codexBridge, /Find-CodexResponseFromSessionLog \$Config \$target/);
+  assert.match(codexBridge, /rollout-\*-\$\(\[string\]\$Config\.ThreadId\)\.jsonl/);
+  assert.match(codexBridge, /\$script:CodexResponseCursors/);
+  assert.match(codexBridgeInstaller, /BridgePowerShellPath = \$bridgePowerShellPath/);
+  assert.match(codexBridgeWatchdog, /PSObject\.Properties\['BridgePowerShellPath'\]/);
 });
 
 test("GitHub Pages company mode supports preset or custom Codex messages with detailed status", async () => {
@@ -85,6 +106,8 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(html, /id="btnCancelCodexSupport"/);
   assert.match(html, /id="btnRetryCodexSupport"/);
   assert.match(html, /id="codexStageQueued"/);
+  assert.match(html, /id="codexStageResponse"/);
+  assert.match(html, /id="codexResponseText"/);
   assert.match(html, /id="codexDetailAttemptCount"/);
   assert.match(html, /id="codexDetailError"/);
   assert.doesNotMatch(html, /chatgpt\.com/i);
@@ -97,6 +120,8 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(script, /transaction\.set\(supportRef,[\s\S]*supportRequestAction:\s*CODEX_SUPPORT_ACTION[\s\S]*supportRequestMessage:\s*selection\.message/);
   assert.match(script, /bridgeAttemptCount:\s*0/);
   assert.match(script, /bridgeNextRetryAt:\s*0/);
+  assert.match(script, /codexResponseState:\s*"WAITING"/);
+  assert.match(script, /codexResponseText:\s*""/);
   assert.match(script, /async function cancelCodexSupport/);
   assert.match(script, /async function retryCodexSupport/);
   assert.match(script, /supportRetryOfNonce:\s*currentNonce/);
@@ -113,6 +138,8 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(bridge, /supportRequestContext/);
   assert.match(bridge, /currentDocument\.updateTime/);
   assert.match(bridge, /Invoke-SelfHostedQueue/);
+  assert.match(bridge, /Sync-CodexResponses/);
+  assert.match(bridge, /Publish-FirestoreCodexResponse/);
   assert.match(bridge, /Queued Firestore support message nonce=\$nonce length=\$\(\$queuedMessage\.Length\) sha256=\$messageHash/);
   assert.doesNotMatch(bridge, /\[[^\]]+\]\(if\s*\(/);
   assert.match(script, /startClientListener\(\)/);
