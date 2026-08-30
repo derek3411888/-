@@ -24,8 +24,8 @@ test("company console exposes performance dashboard without another Firestore li
   assert.match(script, /readField\(data \|\| \{\}, "performanceJson"/);
   assert.match(script, /slice\(-60\)/);
   assert.match(script, /function renderPerformance\(/);
-  assert.match(html, /app\.js\?v=20260830-codex-response-v1/);
-  assert.match(html, /styles\.css\?v=20260830-codex-response-v1/);
+  assert.match(html, /app\.js\?v=20260831-diagnostics-recovery-v1/);
+  assert.match(html, /styles\.css\?v=20260831-diagnostics-recovery-v1/);
   assert.match(script, /效能資料部分可用；遊戲 FPS 採集異常/);
   assert.doesNotMatch(script, /基礎效能監測正常；遊戲 FPS 採集異常/);
   assert.equal((script.match(/\bonSnapshot\s*\(/g) || []).length, 3,

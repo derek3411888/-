@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 
+#Include TestRuntimePaths.ahk
 #Include ..\payload\RuntimeFilePaths.ahk
 
 AssertTrue(condition, message) {
@@ -8,7 +9,7 @@ AssertTrue(condition, message) {
         throw Error(message)
 }
 
-testParent := A_ScriptDir "\.runtime"
+testParent := TestRuntime_EnsureDir("runtime-paths")
 testRoot := testParent "\wuthering_runtime_paths_test_" DllCall("GetCurrentProcessId") "_" A_TickCount
 programRoot := testRoot "\程式"
 diagnosticsDir := programRoot "\診斷快照"
@@ -30,6 +31,31 @@ try {
     AssertTrue(StrLower(RuntimeFiles_LogDir("單元測試")) = StrLower(programRoot "\log\單元測試"), "Log 未固定在程式根目錄")
     AssertTrue(StrLower(RuntimeFiles_RecordingsDir()) = StrLower(programRoot "\操作過程"), "錄影成品未固定在程式根目錄")
     AssertTrue(StrLower(RuntimeFiles_RecordingStagingDir()) = StrLower(programRoot "\操作過程\錄影暫存"), "錄影暫存未固定在程式根目錄")
+
+    deleteGuardBlocked := false
+    try TestRuntime_DeleteCaseDir(TestRuntime_DevelopmentRoot())
+    catch
+        deleteGuardBlocked := true
+    AssertTrue(deleteGuardBlocked, "測試刪除 guard 不得允許刪除 .dev-runtime 根目錄")
+
+    deleteGuardBlocked := false
+    try TestRuntime_DeleteCaseDir(TestRuntime_RepoRoot())
+    catch
+        deleteGuardBlocked := true
+    AssertTrue(deleteGuardBlocked, "測試刪除 guard 不得允許刪除 repo 根目錄")
+
+    escapedExtensionPath := TestRuntime_NewFile("runtime-paths", "extension_guard",
+        ".\..\..\outside.txt")
+    AssertTrue(TestRuntime_IsWithinDevelopmentRoot(escapedExtensionPath),
+        "測試副檔名不得將輸出帶離 .dev-runtime")
+    AssertTrue(!InStr(escapedExtensionPath, "\..\"),
+        "測試副檔名未正確移除路徑跳脫字元")
+
+    EnvSet("PACK_APP_DIR", TestRuntime_RepoRoot() "\payload")
+    AssertTrue(StrLower(RuntimeFiles_ProgramRoot())
+        = StrLower(TestRuntime_RepoRoot() "\.dev-runtime\runtime"),
+        "原始碼執行產物未導向 .dev-runtime")
+    EnvSet("PACK_APP_DIR", programRoot "\payload")
 
     legacyConfig := testRoot "\legacy_config"
     DirCreate(legacyConfig)
@@ -99,8 +125,7 @@ try {
     EnvSet("LOCALAPPDATA", oldLocalAppData)
     EnvSet("PACK_APP_DIR", oldPackAppDir)
     EnvSet("PACK_DATA_DIR", oldPackDataDir)
-    try DirDelete(testRoot, 1)
-    try DirDelete(testParent)
+    try TestRuntime_DeleteCaseDir(testRoot)
 }
 
 ExitApp(0)

@@ -1,9 +1,10 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [Parameter(Mandatory = $true)][int]$ParentPid,
     [int]$SampleIntervalSeconds = 2,
-    [string]$ConfigPath = ''
+    [string]$ConfigPath = '',
+    [switch]$CollectionRegressionTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,6 +124,15 @@ function Convert-Number($Value, [double]$Minimum = -1.0e12, [double]$Maximum = 1
         [Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { return $null }
     if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $null }
     return [Math]::Round([Math]::Max($Minimum, [Math]::Min($Maximum, $number)), 3)
+}
+
+function Get-SafeCollectionSnapshot($Value) {
+    if ($null -eq $Value) { return }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        foreach ($item in $Value) { Write-Output $item }
+        return
+    }
+    Write-Output $Value
 }
 
 function Get-Percentile([double[]]$Values, [double]$Percentile) {
@@ -308,7 +318,7 @@ function Read-PresentMonStderr {
         if (-not [string]::IsNullOrWhiteSpace($line)) { $messages.Add($line.Trim()) }
     }
     if ($script:presentStderrPump.Error) { $messages.Add("stderr pump: $($script:presentStderrPump.Error)") }
-    return [string]::Join(' | ', $messages.ToArray())
+    return ($messages -join ' | ')
 }
 
 function Test-PresentMonFatalMessage([string]$Message) {
@@ -410,6 +420,38 @@ function Prune-LocalTelemetry {
     }
 }
 
+if ($CollectionRegressionTest) {
+    $emptyHistory = [Collections.Generic.List[object]]::new()
+    $singletonHistory = [Collections.Generic.List[object]]::new()
+    $singletonHistory.Add([pscustomobject]@{
+        bucketStart = 1L
+        metrics = [pscustomobject]@{ fps = 60.0; fps1Low = 55.0 }
+    })
+    $singletonMessage = [Collections.Generic.List[string]]::new()
+    $singletonMessage.Add('only-message')
+    $emptySnapshot = @(Get-SafeCollectionSnapshot $emptyHistory)
+    $doubleSnapshot = @(Get-SafeCollectionSnapshot ([double]42.5))
+    $historySnapshot = @(Get-SafeCollectionSnapshot $singletonHistory)
+    if ($emptySnapshot.Count -ne 0) { throw 'empty collection snapshot must be empty' }
+    if ($doubleSnapshot.Count -ne 1 -or [double]($doubleSnapshot[0]) -ne 42.5) {
+        throw 'singleton double snapshot failed'
+    }
+    if ($historySnapshot.Count -ne 1 -or [long]($historySnapshot[0].bucketStart) -ne 1L) {
+        throw 'singleton history snapshot failed'
+    }
+    if (($singletonMessage -join ' | ') -ne 'only-message') {
+        throw 'singleton message join failed'
+    }
+    [pscustomobject]@{
+        Ok = $true
+        EmptyCount = $emptySnapshot.Count
+        SingletonDoubleCount = $doubleSnapshot.Count
+        SingletonHistoryCount = $historySnapshot.Count
+        SingletonMessageJoined = $true
+    } | ConvertTo-Json -Compress
+    return
+}
+
 $rootHash = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash(
     [Text.Encoding]::UTF8.GetBytes($OutputRoot.ToLowerInvariant()))).Replace('-', '').Substring(0, 20)
 $mutex = New-Object Threading.Mutex($false, "Local\WutheringPerformanceTelemetry_$rootHash")
@@ -426,7 +468,7 @@ $lastPresentAttempt = [DateTime]::MinValue
 $lastPresentFrameAt = [DateTime]::MinValue
 $previousProcessCpu = @{}
 $logicalProcessors = [Environment]::ProcessorCount
-$minuteHistory = New-Object 'System.Collections.Generic.List[object]'
+$minuteHistory = [Collections.Generic.List[object]]::new()
 $minuteAccumulator = $null
 $lastSampleAt = Get-Date
 $extended = @{}
@@ -440,6 +482,42 @@ try {
     try { $hasMutex = $mutex.WaitOne([TimeSpan]::FromSeconds(20)) } catch [Threading.AbandonedMutexException] { $hasMutex = $true }
     if (-not $hasMutex) { exit 0 }
     Load-MinuteHistory
+
+    # The previous worker may have left an error payload that the AHK heartbeat
+    # keeps publishing.  Claim the collector immediately after mutex ownership
+    # and replace that stale error before the first hardware sample completes.
+    $startupAt = Get-UnixMilliseconds
+    $startupHistory = @(Get-SafeCollectionSnapshot $minuteHistory)
+    $startupHeartbeatMinutes = if ($startupHistory.Count -gt 10) {
+        @($startupHistory[($startupHistory.Count - 10)..($startupHistory.Count - 1)])
+    } else {
+        $startupHistory
+    }
+    $startupCollector = [ordered]@{
+        state = 'starting'; version = 1; updatedAt = $startupAt
+        sampleIntervalSec = $SampleIntervalSeconds; presentMon = 'starting'
+        presentMonVersion = $presentMonVersion; fpsAvailable = $false
+        nvidiaTelemetry = [bool]$nvidiaSmi; error = ''
+    }
+    Write-AtomicUtf8 $heartbeatPath (([ordered]@{
+        collector = $startupCollector; current = $null; minutes = $startupHeartbeatMinutes
+    }) | ConvertTo-Json -Depth 8 -Compress)
+    $startupPoints = @(
+        foreach ($minute in $startupHistory) {
+            if ($null -eq $minute -or
+                $null -eq $minute.PSObject.Properties['bucketStart'] -or
+                $null -eq $minute.PSObject.Properties['metrics']) { continue }
+            [ordered]@{
+                at = [long]$minute.bucketStart
+                fps = $minute.metrics.fps
+                fps1Low = $minute.metrics.fps1Low
+            }
+        }
+    )
+    Write-AtomicUtf8 $firestorePath (([ordered]@{
+        schemaVersion = 1; collector = $startupCollector; current = $null; points = $startupPoints
+    }) | ConvertTo-Json -Depth 7 -Compress)
+    Remove-Item -LiteralPath (Join-Path $OutputRoot 'collector_error.log') -Force -ErrorAction SilentlyContinue
 
     while ($true) {
         if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
@@ -609,7 +687,7 @@ try {
             nvidiaTelemetry = [bool]$nvidiaSmi
             error = [string]$lastCollectorError
         }
-        $historyArray = @($minuteHistory.ToArray())
+        $historyArray = @(Get-SafeCollectionSnapshot $minuteHistory)
         $heartbeatMinutes = if ($historyArray.Count -gt 10) {
             @($historyArray[($historyArray.Count - 10)..($historyArray.Count - 1)])
         } else {
@@ -671,18 +749,28 @@ try {
             ($_ | Out-String), $utf8)
     } catch {}
     try {
+        $failureHistory = @(Get-SafeCollectionSnapshot $minuteHistory)
         $failed = [ordered]@{
             collector = [ordered]@{ state='error'; version=1; updatedAt=(Get-UnixMilliseconds); error=$lastCollectorError }
-            current = $null; minutes = $minuteHistory.ToArray()
+            current = $null; minutes = $failureHistory
         }
         Write-AtomicUtf8 $heartbeatPath ($failed | ConvertTo-Json -Depth 8 -Compress)
         $failedFirestore = [ordered]@{
             schemaVersion = 1
             collector = $failed.collector
             current = $null
-            points = @($minuteHistory.ToArray() | ForEach-Object {
-                [ordered]@{ at = [long]$_.bucketStart; fps = $_.metrics.fps; fps1Low = $_.metrics.fps1Low }
-            })
+            points = @(
+                foreach ($minute in $failureHistory) {
+                    if ($null -eq $minute -or
+                        $null -eq $minute.PSObject.Properties['bucketStart'] -or
+                        $null -eq $minute.PSObject.Properties['metrics']) { continue }
+                    [ordered]@{
+                        at = [long]$minute.bucketStart
+                        fps = $minute.metrics.fps
+                        fps1Low = $minute.metrics.fps1Low
+                    }
+                }
+            )
         }
         Write-AtomicUtf8 $firestorePath ($failedFirestore | ConvertTo-Json -Depth 7 -Compress)
     } catch {}

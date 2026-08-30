@@ -144,7 +144,7 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
 .recording-list, .session-list, .alerts { display: grid; gap: 8px; }
 .recording-item, .session-item, .alert-item { border: 1px solid var(--line); border-radius: 9px; padding: 10px; display: grid; gap: 4px; }
 .recording-item button { justify-self: start; }
-.recording-item small, .session-item small { color: var(--muted); }
+.recording-item small, .session-item small, .progress-block > small { min-width: 0; color: var(--muted); overflow-wrap: anywhere; word-break: break-word; }
 .progress-block { display: grid; min-width: 0; gap: 5px; margin: 5px 0; }
 .progress-summary { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 10px; color: #496477; font-size: .86rem; }
 .progress-summary strong { min-width: 0; overflow-wrap: anywhere; }
@@ -157,8 +157,8 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
 .recording-status-card .state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .recording-status-card .state-line strong { min-width: 0; overflow-wrap: anywhere; }
 .recording-paths { display: grid; min-width: 0; gap: 4px; color: var(--muted); font-size: .84rem; }
-.recording-paths > span { display: block; min-width: 0; overflow-wrap: anywhere; }
-.performance-card { display: grid; gap: 14px; }
+.recording-paths > span { display: block; min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.performance-card { display: grid; min-width: 0; max-width: 100%; gap: 14px; }
 .performance-title { margin-bottom: 0; }
 .performance-range { display: grid; min-width: 130px; gap: 4px; color: var(--muted); font-size: .82rem; }
 .performance-range select { border: 1px solid var(--line); border-radius: 8px; padding: .55rem .65rem; color: var(--ink); background: #fff; }
@@ -182,7 +182,7 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
 .recording-details > summary small { color: var(--muted); font-weight: 400; }
 .recording-details[open] > summary { margin-bottom: 12px; }
 .recording-details > .hint { margin-bottom: 10px; }
-.transport-status { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: #f5f8fa; color: #506a7b; }
+.transport-status { min-width: 0; max-width: 100%; margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: #f5f8fa; color: #506a7b; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .transport-status.warning { color: var(--warn); background: #fff7eb; }
 .transport-status.danger { color: var(--danger); background: #fff1f2; }
 @keyframes progress-sweep { from { transform: translateX(-110%); } to { transform: translateX(290%); } }
@@ -235,4 +235,5 @@ video { width: 100%; max-height: 70vh; background: #10161b; border-radius: 10px;
   .performance-range { width: 100%; }
   .performance-kpis { grid-template-columns: minmax(0, 1fr); }
   .performance-chart-grid canvas { height: 185px; }
+  .recording-status-card .badge { justify-self: start; max-width: 100%; white-space: normal; }
 }

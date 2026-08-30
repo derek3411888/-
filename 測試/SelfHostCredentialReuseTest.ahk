@@ -1,10 +1,10 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 #Warn VarUnset, Off
+#Include TestRuntimePaths.ahk
 #Include ..\payload\RemoteControlSelfHost.ahk
 
-testRoot := A_Temp "\WutheringSelfHostCredential_" A_TickCount
-DirCreate(testRoot)
+testRoot := TestRuntime_NewCaseDir("self-host-credential", "credential_reuse")
 cfgPath := testRoot "\config.ini"
 expectedToken := RCSH_RandomToken(48)
 
@@ -32,7 +32,7 @@ try {
     if (RCSH_DEVICE_TOKEN != "" || RCSH_ENROLLED)
         throw Error("Blank config did not clear the previous credential state")
 } finally {
-    try DirDelete(testRoot, true)
+    try TestRuntime_DeleteCaseDir(testRoot)
 }
 
 FileAppend("self-host-credential-reuse=ok`n", "*")

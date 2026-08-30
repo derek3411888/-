@@ -3,7 +3,35 @@
 ; 所有由執行端產生、且應由使用者管理的檔案，都集中到程式根目錄。
 ; 只有 Windows 保護的憑證、Docker named volume 與使用者明確指定的外部
 ; 錄影目的地不受這個模組管理。
-RuntimeFiles_ProgramRoot() {
+RuntimeFiles_CanonicalDir(path) {
+    path := RTrim(StrReplace(Trim(String(path), ' "`t`r`n'), "/", "\"), "\")
+    if (path = "")
+        return ""
+    buf := Buffer(32768 * 2, 0)
+    len := DllCall("Kernel32\GetFullPathNameW", "str", path, "uint", 32768,
+        "ptr", buf, "ptr", 0, "uint")
+    if (len > 0 && len < 32768)
+        return RTrim(StrGet(buf, len, "UTF-16"), "\")
+    return path
+}
+
+RuntimeFiles_FindDevelopmentRepoRoot(startDir) {
+    current := RuntimeFiles_CanonicalDir(startDir)
+    parent := ""
+    Loop 10 {
+        if ((DirExist(current "\.git") || FileExist(current "\.git"))
+            && FileExist(current "\payload\RuntimeFilePaths.ahk")
+            && FileExist(current "\打包更新.ps1"))
+            return current
+        SplitPath(current, , &parent)
+        if (parent = "" || StrLower(parent) = StrLower(current))
+            break
+        current := parent
+    }
+    return ""
+}
+
+RuntimeFiles_InstallRoot() {
     root := Trim(EnvGet("PACK_APP_DIR"), ' "`t`r`n')
     if (root = "")
         root := A_ScriptDir
@@ -13,12 +41,17 @@ RuntimeFiles_ProgramRoot() {
     if RegExMatch(root, "i)\\payload$")
         root := RegExReplace(root, "i)\\payload$", "")
 
-    buf := Buffer(32768 * 2, 0)
-    len := DllCall("Kernel32\GetFullPathNameW", "str", root, "uint", 32768,
-        "ptr", buf, "ptr", 0, "uint")
-    if (len > 0 && len < 32768)
-        return RTrim(StrGet(buf, len, "UTF-16"), "\")
-    return root
+    return RuntimeFiles_CanonicalDir(root)
+}
+
+RuntimeFiles_ProgramRoot() {
+    installRoot := RuntimeFiles_InstallRoot()
+    repoRoot := RuntimeFiles_FindDevelopmentRepoRoot(installRoot)
+    ; 只有直接從 repo 的 payload 執行時才改用開發區。安裝版以及測試
+    ; 建立的虛擬程式根目錄仍保持原本語意。
+    if (repoRoot != "" && StrLower(repoRoot) = StrLower(installRoot))
+        return repoRoot "\.dev-runtime\runtime"
+    return installRoot
 }
 
 RuntimeFiles_EnsureProgramSubdir(relativePath) {

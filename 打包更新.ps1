@@ -1,33 +1,52 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.79',
-    [string]$LauncherVersion = '4.90',
-    [string]$ServerVersion = '1.0.39'
+    [string]$PayloadVersion = '4.80',
+    [string]$LauncherVersion = '4.91',
+    [string]$ServerVersion = '1.0.40'
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $projectRoot
+. (Join-Path $projectRoot 'ProjectDevelopmentPaths.ps1')
+$developmentPaths = Initialize-ProjectDevelopmentPaths -ProjectRoot $projectRoot -RunName 'package'
+$developmentSucceeded = $false
 
 function Assert-ExitCode([string]$Task) {
     if ($LASTEXITCODE -ne 0) { throw "$Task 失敗，exit=$LASTEXITCODE" }
 }
 
+function Wait-HiddenProcess([Diagnostics.Process]$Process, [string]$Task,
+    [int]$TimeoutSeconds) {
+    if ($null -eq $Process) { throw "$Task 未能啟動程序。" }
+    if (-not $Process.WaitForExit([Math]::Max(1, $TimeoutSeconds) * 1000)) {
+        # 只終止這次驗證建立的精確 PID，不用名稱掃描，
+        # 避免影響正式運行中的 AutoHotkey 或其他測試。
+        try { Stop-Process -Id $Process.Id -Force -ErrorAction Stop } catch {}
+        try { $Process.WaitForExit() } catch {}
+        throw "$Task 超過 $TimeoutSeconds 秒，已關閉該無視窗測試程序。"
+    }
+    # 等待 stdout/stderr 非同步重定向完全排空。
+    $Process.WaitForExit()
+    return $Process.ExitCode
+}
+
 function Invoke-AhkValidate([string]$RuntimePath, [string]$ScriptPath, [string]$Task) {
     # AutoHotkey 是 GUI 子系統程式；直接用 & 執行時 Windows PowerShell 不一定
     # 會可靠等待或填入 LASTEXITCODE。Start-Process -Wait 才能取得真正驗證結果。
-    $captureRoot = Join-Path ([IO.Path]::GetTempPath()) ("wuthering-ahk-" + [Guid]::NewGuid().ToString('N'))
+    $captureRoot = Join-Path $script:developmentPaths.RunRoot ("ahk-validate-" + [Guid]::NewGuid().ToString('N'))
     $stdoutPath = "$captureRoot.out.txt"
     $stderrPath = "$captureRoot.err.txt"
     try {
         $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
             '/ErrorStdOut', '/Validate', $ScriptPath
-        ) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $exitCode = Wait-HiddenProcess $process $Task 45
         $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
         $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
-        if ($process.ExitCode -ne 0) {
+        if ($exitCode -ne 0) {
             $details = [string]::Concat($stderr, $stdout).Trim()
-            throw "$Task 失敗，exit=$($process.ExitCode)：$details"
+            throw "$Task 失敗，exit=$exitCode：$details"
         }
     } finally {
         Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
@@ -38,8 +57,9 @@ function Invoke-AhkCompile([string]$CompilerPath, [string]$SourcePath,
     [string]$OutputPath, [string]$BasePath, [string]$Task) {
     $process = Start-Process -FilePath $CompilerPath -ArgumentList @(
         '/in', $SourcePath, '/out', $OutputPath, '/base', $BasePath, '/silent', 'verbose'
-    ) -NoNewWindow -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "$Task 失敗，exit=$($process.ExitCode)" }
+    ) -WindowStyle Hidden -PassThru
+    $exitCode = Wait-HiddenProcess $process $Task 180
+    if ($exitCode -ne 0) { throw "$Task 失敗，exit=$exitCode" }
     if (-not (Test-Path -LiteralPath $OutputPath)) { throw "$Task 未產生輸出檔：$OutputPath" }
     if ((Get-Item -LiteralPath $OutputPath).Length -le 0) { throw "$Task 產生空白輸出檔：$OutputPath" }
 }
@@ -47,19 +67,20 @@ function Invoke-AhkCompile([string]$CompilerPath, [string]$SourcePath,
 function Invoke-AhkTest([string]$RuntimePath, [string]$ScriptPath, [string]$Task) {
     # AHK 是 GUI 子系統，沒有重導向時 FileAppend("*"/"**") 可能取得無效控制碼
     # 而跳出錯誤視窗。每次測試提供獨立檔案控制碼，並把結果讀回發布紀錄。
-    $captureRoot = Join-Path ([IO.Path]::GetTempPath()) ("wuthering-ahk-" + [Guid]::NewGuid().ToString('N'))
+    $captureRoot = Join-Path $script:developmentPaths.RunRoot ("ahk-test-" + [Guid]::NewGuid().ToString('N'))
     $stdoutPath = "$captureRoot.out.txt"
     $stderrPath = "$captureRoot.err.txt"
     try {
         $process = Start-Process -FilePath $RuntimePath -ArgumentList @(
             '/ErrorStdOut', $ScriptPath
-        ) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $exitCode = Wait-HiddenProcess $process $Task 120
         $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
         $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
         if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host $stdout.Trim() }
-        if ($process.ExitCode -ne 0) {
+        if ($exitCode -ne 0) {
             $details = [string]::Concat($stderr, $stdout).Trim()
-            throw "$Task 失敗，exit=$($process.ExitCode)：$details"
+            throw "$Task 失敗，exit=$exitCode：$details"
         }
     } finally {
         Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
@@ -125,6 +146,7 @@ function Get-WebAssetHash([string]$Root) {
     try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') } finally { $sha.Dispose() }
 }
 
+try {
 $compiler = Find-AhkCompiler
 $runtime = Join-Path $projectRoot 'AutoHotkey64.exe'
 $payloadRuntime = Join-Path $projectRoot 'payload\AutoHotkey64.exe'
@@ -159,6 +181,11 @@ $package = Get-Content -LiteralPath 'self-hosted-server\package.json' -Raw -Enco
 if ([string]$package.version -ne $ServerVersion) { throw "server package 版本不是 $ServerVersion" }
 
 Write-Host '執行語法與單元測試…'
+& (Join-Path $projectRoot '測試\PowerShellDevelopmentPathPolicyTest.ps1')
+Invoke-AhkValidate $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\PerformanceTelemetryWatchdogTest.ahk' '效能採集 watchdog 語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\PerformanceTelemetryWatchdogTest.ahk' '效能採集 watchdog 回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑回歸測試'
@@ -202,6 +229,17 @@ foreach ($payloadUtilityScript in @(
         throw "Payload PowerShell 語法錯誤 ($payloadUtilityScript)：$($utilityParseErrors[0].Message)"
     }
 }
+$telemetryRegressionRoot = Join-Path $developmentPaths.RunRoot 'performance-telemetry-collection-test'
+$telemetryRegressionOutput = @(& (Join-Path $projectRoot 'payload\PerformanceTelemetryWorker.ps1') `
+    -OutputRoot $telemetryRegressionRoot -ParentPid $PID -CollectionRegressionTest)
+$telemetryRegression = ($telemetryRegressionOutput -join "`n") | ConvertFrom-Json
+if (-not [bool]$telemetryRegression.Ok -or
+    [int]$telemetryRegression.EmptyCount -ne 0 -or
+    [int]$telemetryRegression.SingletonDoubleCount -ne 1 -or
+    [int]$telemetryRegression.SingletonHistoryCount -ne 1 -or
+    -not [bool]$telemetryRegression.SingletonMessageJoined) {
+    throw '效能採集集合回歸測試失敗。'
+}
 foreach ($bridgeScript in @(
     'self-hosted-server\Install-Server.ps1',
     'self-hosted-server\Update-Server.ps1',
@@ -224,10 +262,15 @@ Add-Type -AssemblyName System.Security
 if (-not ('System.Security.Cryptography.ProtectedData' -as [type])) {
     throw '目前 PowerShell 無法載入 DPAPI ProtectedData 型別。'
 }
-& npm.cmd --prefix self-hosted-server run check
-Assert-ExitCode 'Server 靜態檢查'
-& npm.cmd --prefix self-hosted-server test
-Assert-ExitCode 'Server 單元測試'
+Push-Location -LiteralPath (Join-Path $projectRoot 'self-hosted-server')
+try {
+    & npm.cmd run check
+    Assert-ExitCode 'Server 靜態檢查'
+    & npm.cmd test
+    Assert-ExitCode 'Server 單元測試'
+} finally {
+    Pop-Location
+}
 & node.exe --check 'remote-control-web\app.js'
 Assert-ExitCode '舊控制台靜態檢查'
 
@@ -260,12 +303,13 @@ New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
     'node_modules/*', '.update-work/*', '.env', '*.log', '*.partial'
 )
 Assert-ZipContains 'self-hosted-server.zip' @(
-    'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
+    '.npmrc', 'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
     'public/index.html', 'public/app.js', 'public/styles.css',
     'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
     'migrations/006_codex_support_queue.sql', 'migrations/007_effective_settings_revision.sql',
     'src/performance.js', 'src/settings.js',
     'src/codex-support.js', 'src/codex-support-queue.js', 'Update-Server.ps1',
+    'test/dev-runtime.js', 'test/development-paths.test.js', 'test/run-tests.mjs',
     'test/integration-smoke.mjs', 'test/media-stream.test.js',
     'test/company-performance-web.test.js',
     'windows/CodexSupportBridge.ps1', 'windows/CodexSupportWatchdog.ps1', 'windows/CodexSupportBootstrap.ps1', 'windows/Install-CodexSupportBridge.ps1',
@@ -301,3 +345,7 @@ Write-Host "payload.zip SHA256=$payloadHash"
 Write-Host "launcher SHA256=$launcherHash"
 Write-Host "server bundle SHA256=$serverHash"
 Write-Host "web SHA256=$webHash"
+$developmentSucceeded = $true
+} finally {
+    Complete-ProjectDevelopmentPaths -Context $developmentPaths -RemoveRunDirectory:$developmentSucceeded
+}

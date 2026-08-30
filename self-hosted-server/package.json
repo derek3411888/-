@@ -1,6 +1,6 @@
 {
   "name": "wuthering-self-hosted-control",
-  "version": "1.0.39",
+  "version": "1.0.40",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,8 +8,9 @@
   },
   "scripts": {
     "start": "node src/app.js",
-    "check": "node --check src/app.js && node --check src/performance.js && node --check src/media.js && node --check src/firestore-bridge.js && node --check src/settings.js && node --check src/codex-support.js && node --check src/codex-support-queue.js && node --check src/migration-baseline.js && node --check src/internal-smoke.js && node --check src/logger.js && node --check src/cli.js && node --check test/integration-smoke.mjs && node --check public/app.js",
-    "test": "node --test test/*.test.js"
+    "check": "node --check src/app.js && node --check src/performance.js && node --check src/media.js && node --check src/firestore-bridge.js && node --check src/settings.js && node --check src/codex-support.js && node --check src/codex-support-queue.js && node --check src/migration-baseline.js && node --check src/internal-smoke.js && node --check src/logger.js && node --check src/cli.js && node --check test/dev-runtime.js && node --check test/run-tests.mjs && node --check test/integration-smoke.mjs && node --check public/app.js",
+    "test": "node test/run-tests.mjs",
+    "test:coverage": "node test/run-tests.mjs --coverage"
   },
   "dependencies": {
     "hls.js": "^1.6.13",

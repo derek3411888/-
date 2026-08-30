@@ -88,6 +88,27 @@ function metric(value, digits = 1, suffix = "") {
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "—";
 }
 
+function performanceCollectorHealth(collector = {}) {
+  const state = String(collector.state || "").trim().toLowerCase();
+  const presentMon = String(collector.presentMon || "").trim().toLowerCase();
+  const recovered = state === "running"
+    && ((presentMon === "capturing" && Boolean(collector.fpsAvailable)) || presentMon === "waiting_game");
+  const activeError = recovered ? "" : String(collector.error || "").trim();
+  const problem = Boolean(activeError) || ["degraded", "error"].includes(state)
+    || ["retry_wait", "error"].includes(presentMon);
+  return { state, presentMon, recovered, activeError, problem };
+}
+
+function freshestPerformanceSnapshot(primary = null, fallback = null) {
+  const timestamp = (value) => Math.max(
+    Number.isFinite(Number(value?.current?.at)) ? Number(value.current.at) : 0,
+    Number.isFinite(Number(value?.collector?.updatedAt)) ? Number(value.collector.updatedAt) : 0,
+  );
+  if (!primary) return fallback || {};
+  if (!fallback) return primary;
+  return timestamp(fallback) > timestamp(primary) ? fallback : primary;
+}
+
 function performancePoints() {
   return (state.performance?.points || []).map((row) => ({
     at: new Date(row.bucket_start).valueOf(),
@@ -149,9 +170,10 @@ function drawPerformanceChart(canvas, points, series, { fixedMax = 0, suffix = "
 }
 
 function renderPerformance(fallback = null) {
-  const wrapped = state.performance?.current || fallback || {};
+  const wrapped = freshestPerformanceSnapshot(state.performance?.current, fallback);
   const current = wrapped.current || {};
   const collector = wrapped.collector || {};
+  const collectorHealth = performanceCollectorHealth(collector);
   setText("perfFps", metric(current.fps, 1));
   setText("perfFpsLow", `1% Low ${metric(current.fps1Low, 1)}`);
   setText("perfFrameTime", metric(current.frameTimeMs, 1, " ms"));
@@ -178,16 +200,16 @@ function renderPerformance(fallback = null) {
     retry_wait: "FPS 工具等待權限或稍後重試",
     error: "FPS 工具暫時失敗",
   }[collector.presentMon] || "FPS 工具尚未回報";
-  const collectorText = collector.error || collector.state === "degraded"
+  const collectorText = collectorHealth.problem
     ? "效能資料部分可用；遊戲 FPS 採集異常"
-    : collector.state === "running"
+    : collectorHealth.state === "running"
       ? "效能採集正常"
       : `採集器：${collector.state || "尚無資料"}`;
   const noticeParts = [collectorText, presentMonText];
   if (ageSeconds !== null) noticeParts.push(`${ageSeconds} 秒前更新`);
-  if (collector.error) noticeParts.push(`最近錯誤：${collector.error}`);
+  if (collectorHealth.activeError) noticeParts.push(`目前錯誤：${collectorHealth.activeError}`);
   setText("performanceNotice", noticeParts.join("｜"));
-  $("performanceNotice").className = `transport-status ${collector.error || (ageSeconds !== null && ageSeconds > 30) ? "warning" : "muted"}`;
+  $("performanceNotice").className = `transport-status ${collectorHealth.problem || (ageSeconds !== null && ageSeconds > 30) ? "warning" : "muted"}`;
 
   const points = performancePoints();
   drawPerformanceChart($("perfFpsChart"), points, [

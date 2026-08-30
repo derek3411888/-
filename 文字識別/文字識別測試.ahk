@@ -2,9 +2,12 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
+#Include ..\測試\TestRuntimePaths.ahk
+
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 6
+global OCR_TEXT_TEST_RUNTIME_DIR := TestRuntime_EnsureDir("text-ocr")
 
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT
@@ -16,10 +19,10 @@ ShowTip(msg, duration := 5000) {
 }
 
 WriteLog(msg, level := "INFO") {
-    global RUN_ID
+    global RUN_ID, OCR_TEXT_TEST_RUNTIME_DIR
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
-    try FileAppend(line, A_ScriptDir "\文字識別測試.log", "UTF-8")
+    try FileAppend(line, OCR_TEXT_TEST_RUNTIME_DIR "\文字識別測試.log", "UTF-8")
 }
 
 JoinArray(items, sep := ",") {
@@ -66,7 +69,7 @@ OnExit(LifecycleOnExit)
 Main()
 
 Main() {
-    global FIXED_LOG_FILE, LOG_OUTPUT_LAST_LINES
+    global FIXED_LOG_FILE, LOG_OUTPUT_LAST_LINES, OCR_TEXT_TEST_RUNTIME_DIR
     WriteStep("啟動", "腳本=" A_ScriptFullPath)
 
     logPath := Trim(FIXED_LOG_FILE, " `t`r`n")
@@ -93,7 +96,7 @@ Main() {
     }
 
     outText := "[來源檔案] " logPath "`n`n" FormatLogOutput(logText, LOG_OUTPUT_LAST_LINES)
-    outPath := A_ScriptDir "\\lrmcai_logtext_" A_Now ".txt"
+    outPath := OCR_TEXT_TEST_RUNTIME_DIR "\lrmcai_logtext_" A_Now ".txt"
     WriteStep("輸出整理", "outPath=" outPath)
 
     try FileDelete outPath

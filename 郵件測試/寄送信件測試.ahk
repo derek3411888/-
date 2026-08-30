@@ -2,9 +2,12 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
+#Include ..\測試\TestRuntimePaths.ahk
+
 global RUN_ID := A_Now "@" A_TickCount
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 7
+global MAIL_TEST_RUNTIME_DIR := TestRuntime_EnsureDir("mail")
 
 ShowTip(msg, duration := 5000) {
     global TOOLTIP_SLOT
@@ -16,10 +19,10 @@ ShowTip(msg, duration := 5000) {
 }
 
 WriteLog(msg, level := "INFO") {
-    global RUN_ID
+    global RUN_ID, MAIL_TEST_RUNTIME_DIR
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
-    try FileAppend(line, A_ScriptDir "\寄送信件測試.log", "UTF-8")
+    try FileAppend(line, MAIL_TEST_RUNTIME_DIR "\寄送信件測試.log", "UTF-8")
 }
 
 JoinArray(items, sep := ",") {
@@ -123,8 +126,8 @@ if sendResult.ok {
 }
 
 SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl := "1") {
-    psFile := A_Temp "\send_mail_test_" A_TickCount ".ps1"
-    errFile := A_Temp "\send_mail_test_err_" A_TickCount ".txt"
+    psFile := TestRuntime_NewFile("mail", "send_mail", ".ps1")
+    errFile := TestRuntime_NewFile("mail", "send_mail_error", ".txt")
 
     escHost := PsEsc(smtpHost)
     escUser := PsEsc(smtpUser)

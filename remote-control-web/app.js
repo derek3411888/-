@@ -1179,6 +1179,17 @@ function setPerformanceField(name, value) {
   if (performanceFields[name]) performanceFields[name].textContent = value;
 }
 
+function performanceCollectorHealth(collector = {}) {
+  const state = String(collector.state || "").trim().toLowerCase();
+  const presentMon = String(collector.presentMon || "").trim().toLowerCase();
+  const recovered = state === "running"
+    && ((presentMon === "capturing" && Boolean(collector.fpsAvailable)) || presentMon === "waiting_game");
+  const activeError = recovered ? "" : String(collector.error || "").trim();
+  const problem = Boolean(activeError) || ["degraded", "error"].includes(state)
+    || ["retry_wait", "error"].includes(presentMon);
+  return { state, presentMon, recovered, activeError, problem };
+}
+
 function drawPerformanceChart(canvas, points, series, { fixedMax = 0, suffix = "" } = {}) {
   if (!canvas) return;
   const width = Math.max(300, Math.round(canvas.getBoundingClientRect().width || canvas.clientWidth || 480));
@@ -1271,6 +1282,7 @@ function renderPerformance() {
   const snapshot = readPerformanceSnapshot(data || {});
   const current = snapshot.current;
   const collector = snapshot.collector;
+  const collectorHealth = performanceCollectorHealth(collector);
 
   setPerformanceField("fps", performanceMetric(current.fps, 1));
   setPerformanceField("fpsLow", `1% Low ${performanceMetric(current.fps1Low, 1)}`);
@@ -1316,17 +1328,17 @@ function renderPerformance() {
       retry_wait: "FPS 工具等待權限或稍後重試",
       error: "FPS 工具暫時失敗",
     }[collector.presentMon] || "FPS 工具尚未回報";
-    const collectorText = collector.error || collector.state === "degraded"
+    const collectorText = collectorHealth.problem
       ? "效能資料部分可用；遊戲 FPS 採集異常"
-      : collector.state === "running"
+      : collectorHealth.state === "running"
         ? "效能採集正常"
         : `採集器：${collector.state || "未知"}`;
     const parts = [collectorText, presentMonText];
     if (updatedAt) parts.push(`${fmtAge(updatedAt)}更新`);
     if (snapshot.points.length) parts.push(`最近 ${snapshot.points.length} 分鐘彙整`);
-    if (collector.error) parts.push(`最近錯誤：${collector.error}`);
+    if (collectorHealth.activeError) parts.push(`目前錯誤：${collectorHealth.activeError}`);
     performanceNotice.textContent = parts.join("｜");
-    if (collector.error) {
+    if (collectorHealth.problem) {
       performanceNotice.classList.add("error");
       performanceFreshnessBadge.classList.add("error");
       performanceFreshnessBadge.textContent = "採集異常";

@@ -32,6 +32,8 @@ function publicUrl() {
 }
 
 const publicBase = publicUrl();
+const serverRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const localDevelopmentRoot = path.resolve(serverRoot, "..", ".dev-runtime", "self-hosted-runtime");
 const staticRoot = path.resolve(process.env.STATIC_ROOT ?? fileURLToPath(new URL("../public", import.meta.url)));
 const packageInfo = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -61,9 +63,12 @@ export const config = Object.freeze({
   codexBridgeToken: requiredSecret("CODEX_BRIDGE_TOKEN"),
   liveSecret: requiredSecret("LIVE_TOKEN_SECRET"),
   liveSrtPassphrase: requiredSecret("LIVE_SRT_PASSPHRASE"),
-  mediaRoot: path.resolve(process.env.MEDIA_ROOT ?? "/data/media"),
-  snapshotRoot: path.resolve(process.env.SNAPSHOT_ROOT ?? "/data/snapshots"),
-  serverLogRoot: path.resolve(process.env.SERVER_LOG_ROOT ?? "/data/logs"),
+  // Compose always supplies /data mounts. These repository-local fallbacks are
+  // only for direct Node development, so a local `npm start` cannot write to a
+  // drive root or the user's profile by accident.
+  mediaRoot: path.resolve(process.env.MEDIA_ROOT ?? path.join(localDevelopmentRoot, "media")),
+  snapshotRoot: path.resolve(process.env.SNAPSHOT_ROOT ?? path.join(localDevelopmentRoot, "snapshots")),
+  serverLogRoot: path.resolve(process.env.SERVER_LOG_ROOT ?? path.join(localDevelopmentRoot, "logs")),
   staticRoot,
   migrationDir: path.resolve(process.env.MIGRATION_DIR ?? fileURLToPath(new URL("../migrations", import.meta.url))),
   minFreeBytes: BigInt(integer("MIN_FREE_GB", 20, 1, 10_000)) * 1024n * 1024n * 1024n,

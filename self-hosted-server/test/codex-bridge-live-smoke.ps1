@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ConfigPath = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\config.json'),
     [string]$InstalledScript = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\CodexSupportBridge.ps1')
@@ -85,7 +85,13 @@ foreach ($name in $fieldDefaults.Keys) {
 $installRoot = Split-Path -Parent $InstalledScript
 $running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
     Where-Object { [string]$_.CommandLine -like "*$InstalledScript*" })
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("codex-bridge-live-smoke-" + [guid]::NewGuid().ToString('N'))
+$projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$testRuntimeRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.dev-runtime\tests\codex-bridge-live-smoke')).TrimEnd('\', '/')
+$tempRoot = [IO.Path]::GetFullPath((Join-Path $testRuntimeRoot ([guid]::NewGuid().ToString('N'))))
+$tempRootIsSafe = $tempRoot.StartsWith(
+    $testRuntimeRoot + [IO.Path]::DirectorySeparatorChar,
+    [StringComparison]::OrdinalIgnoreCase)
+if (-not $tempRootIsSafe) { throw "測試暫存路徑超出專案範圍：$tempRoot" }
 $tempConfig = Join-Path $tempRoot 'config.json'
 $result = $null
 
@@ -127,7 +133,14 @@ try {
         $path = Join-Path $tempRoot $name
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
     }
-    if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Force }
+    if (Test-Path -LiteralPath $tempRoot) {
+        $resolvedDeleteTarget = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $tempRoot).Path)
+        $deleteTargetIsSafe = $resolvedDeleteTarget.StartsWith(
+            $testRuntimeRoot + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)
+        if (-not $deleteTargetIsSafe) { throw "拒絕清除專案外的測試暫存：$resolvedDeleteTarget" }
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    }
 
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstalledScript`" -ConfigPath `"$ConfigPath`""

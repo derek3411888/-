@@ -54,16 +54,23 @@ function normalizeCurrent(value, now) {
 
 function normalizeCollector(value, now) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const state = boundedText(value.state, 40) || "unknown";
+  const presentMon = boundedText(value.presentMon, 80);
+  const fpsAvailable = Boolean(value.fpsAvailable);
+  const recovered = state === "running"
+    && ((presentMon === "capturing" && fpsAvailable) || presentMon === "waiting_game");
   return {
-    state: boundedText(value.state, 40) || "unknown",
+    state,
     version: integer(value.version, 1, 1, 100),
     updatedAt: integer(value.updatedAt, now, now - 48 * 60 * 60_000, now + 5 * 60_000),
     sampleIntervalSec: integer(value.sampleIntervalSec, 2, 1, 60),
-    presentMon: boundedText(value.presentMon, 80),
+    presentMon,
     presentMonVersion: boundedText(value.presentMonVersion, 40),
-    fpsAvailable: Boolean(value.fpsAvailable),
+    fpsAvailable,
     nvidiaTelemetry: Boolean(value.nvidiaTelemetry),
-    error: boundedText(value.error, 500),
+    // A restarted worker can race one old error field with a fresh healthy
+    // state. The current state wins so the stale text cannot remain visible.
+    error: recovered ? "" : boundedText(value.error, 500),
   };
 }
 

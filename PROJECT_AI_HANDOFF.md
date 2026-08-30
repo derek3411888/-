@@ -214,6 +214,7 @@
 - 視窗座標行為需區分 Screen/Client，避免誤點。
 - hotkey 模式通常來自重啟/恢復路徑，不一定是手動啟動。
 - #SingleInstance Force 會導致同秒二次啟動時前者被 Single 結束。
+- 所有開發、測試、編譯、打包、診斷與人工分析產物必須放在 repository 內；一次性內容統一使用 `.dev-runtime`。禁止把截圖、影片抽幀、contact sheet、stdout/stderr、測試 fixture 或下載快取寫到 Windows Temp、AppData、桌面或其他專案外資料夾。完整規則見 `DEVELOPMENT_ARTIFACTS.md`。
 
 ## 8) 推版流程（維運）
 1. 修改腳本後先做語法/錯誤檢查

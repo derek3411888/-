@@ -1,10 +1,10 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 #Warn VarUnset, Off
+#Include TestRuntimePaths.ahk
 #Include ..\payload\RemoteControlSelfHost.ahk
 
-testRoot := A_Temp "\WutheringFreshDeviceDefault_" A_TickCount
-DirCreate(testRoot)
+testRoot := TestRuntime_NewCaseDir("self-host-device", "fresh_device")
 cfgPath := testRoot "\config.ini"
 try {
     RCSH_EnsureDefaults(cfgPath)
@@ -14,7 +14,7 @@ try {
     if (RCSH_NormalizeServerUrl(actual) != actual)
         throw Error("Fresh device server URL was rejected by the HTTPS validator")
 } finally {
-    try DirDelete(testRoot, true)
+    try TestRuntime_DeleteCaseDir(testRoot)
 }
 ExitApp(0)
 

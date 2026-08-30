@@ -7,6 +7,43 @@
 
 #Requires AutoHotkey v2.0-beta.13+
 
+; Upstream defaults clipboard backing files to %TEMP%\ImagePut.  Keep those
+; generated files beside the installed application, or under repo\.dev-runtime
+; when the library is exercised from this source checkout.
+ImagePutRuntimeTempDir() {
+   start := Trim(EnvGet("PACK_APP_DIR"), ' "`t`r`n')
+   if (start = "")
+      start := A_ScriptDir
+   start := RTrim(StrReplace(start, "/", "\"), "\")
+   if RegExMatch(start, "i)\\payload$")
+      start := RegExReplace(start, "i)\\payload$", "")
+
+   current := start
+   repoRoot := ""
+   parent := ""
+   dir := ""
+   Loop 10 {
+      if ((DirExist(current "\.git") || FileExist(current "\.git"))
+         && FileExist(current "\payload\RuntimeFilePaths.ahk")
+         && FileExist(current "\打包更新.ps1")) {
+         repoRoot := current
+         break
+      }
+      SplitPath(current, , &parent)
+      if (parent = "" || StrLower(parent) = StrLower(current))
+         break
+      current := parent
+   }
+
+   if (repoRoot != "")
+      dir := repoRoot "\.dev-runtime\runtime\執行暫存\ImagePut"
+   else
+      dir := start "\執行暫存\ImagePut"
+   if !DirExist(dir)
+      DirCreate(dir)
+   return dir
+}
+
 
 ; Puts the image into a file format and returns a base64 encoded string.
 ;   extension  -  File Encoding           |  string   ->   bmp, gif, jpg, png, tiff
@@ -2377,9 +2414,9 @@ class ImagePut {
 
       ; #3 - Copy other formats to a file and pass a (15) DROPFILES struct.
       if (extension) {
-         filepath := A_Temp "\ImagePut\clipboard." extension
+         imagePutTempDir := ImagePutRuntimeTempDir()
+         filepath := imagePutTempDir "\clipboard." extension
          filepath := RTrim(filepath, ".") ; Remove trailing periods.
-         DirCreate(A_Temp "\ImagePut")
 
          ; For compatibility with SHCreateMemStream do not use GetHGlobalFromStream.
          DllCall("shlwapi\SHCreateStreamOnFileEx"

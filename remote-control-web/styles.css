@@ -652,6 +652,8 @@ button:disabled { cursor: wait; opacity: 0.55; }
 
 .performance-card {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 14px;
 }
 
@@ -674,12 +676,15 @@ button:disabled { cursor: wait; opacity: 0.55; }
 .performance-freshness-badge.error { color: var(--danger); border-color: #e6a6a6; background: #fff5f5; }
 
 .performance-notice {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   border-radius: 8px;
   padding: 8px 10px;
   color: var(--muted);
   background: #f5f8fa;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .performance-notice.warning { color: var(--warn); background: #fff7eb; }
@@ -822,12 +827,16 @@ button:disabled { cursor: wait; opacity: 0.55; }
 
 .recording-paths {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   margin-top: 12px;
 }
 
 .recording-path-row {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
@@ -848,7 +857,10 @@ button:disabled { cursor: wait; opacity: 0.55; }
 }
 
 .recording-path-row code {
+  max-width: 100%;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+  word-break: break-word;
   margin-top: 3px;
   color: var(--ink);
   font-family: Consolas, "Microsoft JhengHei UI", monospace;
@@ -859,10 +871,13 @@ button:disabled { cursor: wait; opacity: 0.55; }
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .recording-status-note {
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .runtime-events-table {
@@ -1254,6 +1269,13 @@ select:disabled {
 
   .recording-path-row button {
     width: 100%;
+  }
+
+  .recording-status-badge,
+  .performance-freshness-badge {
+    justify-self: start;
+    max-width: 100%;
+    white-space: normal;
   }
 
   .settings-save-bar {

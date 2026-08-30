@@ -21,6 +21,8 @@ test("recording status uses an isolated responsive layout", async () => {
   ]);
 
   assert.match(html, /id="recordingStatus" class="recording-status"/);
+  assert.match(html, /styles\.css\?v=__SERVER_VERSION__-diagnostics-recovery-20260831/);
+  assert.match(html, /app\.js\?v=__SERVER_VERSION__-diagnostics-recovery-20260831/);
   assert.match(html, /<details class="card recording-details">/);
   assert.doesNotMatch(html, /<details class="card recording-details"\s+open/);
   assert.match(html, /id="performanceRange"/);

@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Off
 
+#Include TestRuntimePaths.ahk
 #Include ..\payload\plugin\RapidOcr\RapidOcr.ahk
 
 if (A_Args.Length < 3)
@@ -8,7 +9,7 @@ if (A_Args.Length < 3)
 
 modelDir := A_Args[1]
 imagePath := A_Args[2]
-outputPath := A_Args[3]
+outputPath := TestRuntime_ResolveOutputPath(A_Args[3], "ocr-model", "ocr_model_result.txt")
 
 try {
     ocr := RapidOcr({models: modelDir})

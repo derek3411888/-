@@ -35,6 +35,13 @@ test("valid frames win over warnings and a stalled stream is restarted", () => {
   assert.match(worker, /Stop-PresentMon\s*\r?\n\s*\$presentMonState\s*=\s*'retry_wait'/);
 });
 
+test("worker startup and recovered frames actively clear an earlier error", () => {
+  assert.match(worker, /\$startupCollector\s*=\s*\[ordered\]@\{[\s\S]*?error\s*=\s*''/);
+  assert.match(worker, /Write-AtomicUtf8\s+\$heartbeatPath[\s\S]*?\$startupCollector/);
+  assert.match(worker, /Remove-Item\s+-LiteralPath\s+\(Join-Path\s+\$OutputRoot\s+'collector_error\.log'\)/);
+  assert.match(worker, /if\s*\(\$null\s+-ne\s+\$fps\.Fps\)\s*\{[\s\S]*?\$lastCollectorError\s*=\s*''[\s\S]*?\$presentMonState\s*=\s*'capturing'/);
+});
+
 test("a single FPS sample stays an array and FPS errors do not erase other metrics", () => {
   assert.match(worker, /\$values\s*=\s*\[double\[\]\]@\(\$Frames\)/);
   assert.doesNotMatch(worker, /\$values\s*=\s*\[double\[\]\]\$Frames\.ToArray\(\)/);

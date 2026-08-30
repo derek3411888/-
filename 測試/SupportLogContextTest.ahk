@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 global logger := ""
+#Include TestRuntimePaths.ahk
 #Include ..\payload\RuntimeFilePaths.ahk
 #Include ..\payload\SupportLogContext.ahk
 
@@ -9,8 +10,7 @@ AssertTrue(condition, message) {
         throw Error(message)
 }
 
-testParent := A_ScriptDir "\.runtime"
-testRoot := testParent "\support_log_" DllCall("GetCurrentProcessId") "_" A_TickCount
+testRoot := TestRuntime_NewCaseDir("support-log", "support_log")
 oldPackAppDir := EnvGet("PACK_APP_DIR")
 EnvSet("PACK_APP_DIR", testRoot "\程式\payload")
 tempPath := RuntimeFiles_NewTempPath("support_log", ".log", "測試")
@@ -31,8 +31,7 @@ try {
 } finally {
     try FileDelete(tempPath)
     EnvSet("PACK_APP_DIR", oldPackAppDir)
-    try DirDelete(testRoot, 1)
-    try DirDelete(testParent)
+    try TestRuntime_DeleteCaseDir(testRoot)
 }
 
 ExitApp(0)

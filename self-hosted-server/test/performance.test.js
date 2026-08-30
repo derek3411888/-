@@ -42,3 +42,20 @@ test("performance telemetry limits history and normalizes ranges", () => {
   assert.equal(normalizePerformanceRange("anything"), "6h");
   assert.equal(performanceRangeInterval("7d"), "7 days");
 });
+
+test("fresh healthy collector state clears a stale worker error", () => {
+  const now = Date.now();
+  const recovered = normalizePerformancePayload({
+    collector: {
+      state: "running", presentMon: "capturing", fpsAvailable: true,
+      updatedAt: now, error: "old PresentMon failure that has already recovered",
+    },
+    current: { at: now, fps: 60 },
+  }, {}, now);
+  assert.equal(recovered.collector.error, "");
+
+  const degraded = normalizePerformancePayload({
+    collector: { state: "degraded", presentMon: "retry_wait", fpsAvailable: false, error: "active failure" },
+  }, {}, now);
+  assert.equal(degraded.collector.error, "active failure");
+});

@@ -5,6 +5,8 @@ SetWorkingDir A_ScriptDir
 CoordMode "Pixel", "Screen"
 CoordMode "Mouse", "Screen"
 
+#Include ..\TestRuntimePaths.ahk
+
 ; 若遊戲是管理員權限，腳本也需提權才能接收到全域熱鍵
 if !A_IsAdmin {
     try Run('*RunAs "' A_ScriptFullPath '"')
@@ -19,7 +21,10 @@ global ROI_HEIGHT := 140
 global ROI_RIGHT_MARGIN := 0
 global ROI_BOTTOM_MARGIN := 0
 
-global TEMPLATE_PNG := A_ScriptDir "\\icon_main.png"
+global MAIN_SCREEN_TEST_RUNTIME_DIR := TestRuntime_EnsureDir("main-screen-template")
+global SOURCE_TEMPLATE_PNG := A_ScriptDir "\icon_main.png"
+global TEMPLATE_PNG := FileExist(MAIN_SCREEN_TEST_RUNTIME_DIR "\icon_main.png")
+    ? MAIN_SCREEN_TEST_RUNTIME_DIR "\icon_main.png" : SOURCE_TEMPLATE_PNG
 
 global VARIATIONS := [30, 40, 50, 60, 80, 100]
 global CHECK_INTERVAL_MS := 500
@@ -32,7 +37,7 @@ global STAT_MISS := 0
 global STAT_SKIP := 0
 global STAT_LAST_VAR := "-"
 global STAT_START_TICK := 0
-global LOG_FILE := A_ScriptDir "\\test_log.txt"
+global LOG_FILE := MAIN_SCREEN_TEST_RUNTIME_DIR "\test_log.txt"
 global TOOLTIP_SLOT := 8
 global ACTIVE_BOX := 0  ; 目前活動的邊框 GUI
 
@@ -188,16 +193,18 @@ GetRoiByWindow(&x1, &y1, &x2, &y2) {
 }
 
 CaptureTemplate() {
+    global TEMPLATE_PNG, MAIN_SCREEN_TEST_RUNTIME_DIR
     if !GetRoiByWindow(&x1, &y1, &x2, &y2) {
         ShowTip("找不到遊戲視窗（鳴潮/鸣潮）", 2200)
         return
     }
 
-    target := TEMPLATE_PNG
+    target := MAIN_SCREEN_TEST_RUNTIME_DIR "\icon_main.png"
 
     try {
         ; ImagePutFile 支援 [x,y,w,h] 區域擷取
         ImagePutFile([x1, y1, x2 - x1, y2 - y1], target)
+        TEMPLATE_PNG := target
     } catch as e {
         ShowTip("擷取模板失敗: " e.Message, 2600)
         return
@@ -299,6 +306,7 @@ DestroyPendingBox() {
 }
 
 TestMainScreenOnce() {
+    global MAIN_SCREEN_TEST_RUNTIME_DIR
     if !FindGameWindow() {
         ShowTip("找不到遊戲視窗（鳴潮/鸣潮）", 2200)
         return
@@ -326,7 +334,8 @@ TestMainScreenOnce() {
     } else {
         ; 失敗時保存 ROI 截圖，方便檢查
         if GetRoiByWindow(&x1, &y1, &x2, &y2) {
-            try ImagePutFile([x1, y1, x2 - x1, y2 - y1], A_ScriptDir "\\roi_debug.png")
+            try ImagePutFile([x1, y1, x2 - x1, y2 - y1],
+                MAIN_SCREEN_TEST_RUNTIME_DIR "\roi_debug.png")
         }
         ShowTip("❌ 不在主畫面（或模板不吻合）", 2200)
         MsgBox "判定結果：不在主畫面。`n若你確實在主畫面，請重擷取模板後再試。"

@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Off
 
+#Include TestRuntimePaths.ahk
 #Include ..\payload\plugin\RapidOcr\RapidOcr.ahk
 #Include ..\payload\plugin\ImagePut-1.11\ImagePut.ahk
 #Include ..\payload\WutheringServerNames.ahk
@@ -14,7 +15,7 @@ if (!FileExist(imagePath) || expected = "")
     ExitApp(2)
 
 windowHwnd := 0
-tempFile := A_Temp "\server_login_label_test_" A_TickCount ".png"
+tempFile := TestRuntime_NewFile("server-login-ocr", "server_login_label", ".png")
 try {
     ; 用實際 Window 擷取路徑驗證正式程式採用的裁切與放大參數，避免只測
     ; 已預先裁好的圖片，卻漏掉 PrintWindow 客戶區座標差異。

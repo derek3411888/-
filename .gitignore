@@ -8,6 +8,10 @@ payload/temp*.png
 payload/ue4crash*.png
 payload/menu*.png
 
+# Repository-local development, test, build, and tool caches
+.dev-runtime/
+.codex_tmp/
+
 # Self-hosted server local dependencies, secrets, and disposable smoke data
 self-hosted-server/node_modules/
 self-hosted-server/.env

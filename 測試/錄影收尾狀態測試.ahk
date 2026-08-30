@@ -1,14 +1,17 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Off
 
-if (A_Args.Length < 1)
-    ExitApp(2)
+#Include TestRuntimePaths.ahk
 
-outputPath := A_Args[1]
-repoRoot := A_Args.Length >= 2 ? RTrim(A_Args[2], "\/") : A_WorkingDir
+requestedOutput := A_Args.Length >= 1 ? A_Args[1] : ""
+outputPath := TestRuntime_ResolveOutputPath(requestedOutput,
+    "recording-finalize", "recording_finalize_result.ini")
+repoRoot := TestRuntime_RepoRoot()
+if (A_Args.Length >= 2 && TestRuntime_CanonicalPath(A_Args[2]) != TestRuntime_CanonicalPath(repoRoot))
+    throw Error("錄影收尾測試只能使用當前 repo")
 workerPath := repoRoot "\payload\RecordingFinalizeWorker.ahk"
 ahkExe := repoRoot "\payload\AutoHotkey64.exe"
-testRoot := A_Temp "\wuthering_recording_worker_test_" DllCall("GetCurrentProcessId") "_" A_TickCount
+testRoot := TestRuntime_NewCaseDir("recording-finalize", "recording_worker")
 sessionBase := "wuthering_auto_recording_20260822_123456"
 sessionDir := testRoot "\" sessionBase "_1"
 destinationDir := testRoot "\destination"
@@ -55,8 +58,5 @@ try {
 }
 
 CleanupRecordingWorkerTest(path) {
-    leaf := ""
-    SplitPath(path, &leaf)
-    if RegExMatch(leaf, "^wuthering_recording_worker_test_\d+_\d+$") && DirExist(path)
-        try DirDelete(path, true)
+    try TestRuntime_DeleteCaseDir(path)
 }

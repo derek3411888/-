@@ -3,14 +3,25 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.90"
+global PACK_LAUNCHER_BUILD_VERSION := "4.91"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
 global PACK_MAIN_MUTEX_HANDLE := 0
 
+LauncherIsDevelopmentCheckout() {
+    root := RTrim(StrReplace(A_ScriptDir, "/", "\"), "\")
+    return (DirExist(root "\.git") || FileExist(root "\.git"))
+        && FileExist(root "\payload\RuntimeFilePaths.ahk")
+        && FileExist(root "\打包更新.ps1")
+}
+
 LauncherProjectRoot() {
     dir := RTrim(StrReplace(A_ScriptDir, "/", "\"), "\")
+    ; 直接執行 repo 內的原始碼時，所有下載、解壓、設定、Log 與
+    ; 暫存都隔離到 .dev-runtime，不改寫原始碼樹。
+    if LauncherIsDevelopmentCheckout()
+        return dir "\.dev-runtime\launcher-app"
     SplitPath(dir, &leaf)
     ; 已安裝資料夾與原始碼工作區都直接視為專案根目錄；只有首次下載、
     ; 同層尚無 payload/config 時才使用「自動鋤地」子資料夾。
@@ -161,6 +172,17 @@ LauncherArgValue(name, defaultValue := "") {
             return A_Args[idx + 1]
     }
     return defaultValue
+}
+
+LauncherAdminForwardArgs() {
+    ; 主啟動器只轉送自己理解、且不含使用者輸入值的旗標。
+    ; 資料夾 picker 在提權前已結束，不會進入這裡。
+    args := ""
+    for _, flag in ["--force-update", "--resume-current-task"] {
+        if LauncherHasArg(flag)
+            args .= " " flag
+    }
+    return args
 }
 
 LauncherNormalizePath(pathValue) {
@@ -943,13 +965,14 @@ try {
 ; 需要系統管理員（若無權限，提權後結束當前執行）
 if !A_IsAdmin {
     WriteLog("需要管理員權限，嘗試提權...")
+    forwardArgs := LauncherAdminForwardArgs()
     if A_IsCompiled {
         ; EXE 直接提權重啟自身，不依賴 .ahk 關聯。
-        try Run('*RunAs "' A_ScriptFullPath '"')
+        try Run('*RunAs "' A_ScriptFullPath '"' forwardArgs)
     } else {
         bundledAhk := ResolveBundledAhkExeForLauncher()
         if FileExist(bundledAhk) {
-            try Run('*RunAs "' bundledAhk '" "' A_ScriptFullPath '"')
+            try Run('*RunAs "' bundledAhk '" "' A_ScriptFullPath '"' forwardArgs)
         } else {
             MsgBox("錯誤：找不到 AutoHotkey64.exe！`n`n請確認程式檔案完整（需包含內附 AutoHotkey64.exe）。", "缺少AutoHotkey", 16)
         }
@@ -979,7 +1002,7 @@ currentExePath := A_ScriptFullPath
 SplitPath(currentExePath, &exeFileName)
 
 ; 檢查是否已經在「自動鋤地」資料夾內
-if !InStr(currentDir, autoFolderName) {
+if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
     WriteLog("開始自我組織：建立專用資料夾並複製所有程式檔案...")
     
     ; 建立「自動鋤地」資料夾
@@ -1086,7 +1109,9 @@ if !InStr(currentDir, autoFolderName) {
 MAIN_FILE := "全自動.ahk"            ; 主程式（全自動負責啟動前檢查並協調所有輔助腳本）
 
 ; 確保在「自動鋤地」資料夾內工作
-if InStr(A_ScriptDir, "自動鋤地") {
+if LauncherIsDevelopmentCheckout() {
+    WORK_DIR := LauncherProjectRoot()
+} else if InStr(A_ScriptDir, "自動鋤地") {
     ; 已經在專用資料夾內
     WORK_DIR := A_ScriptDir
 } else {
@@ -1556,7 +1581,10 @@ WriteLog("工作目錄: " APP_DIR)
 
 mainLaunchSucceeded := false
 try {
-    Run('"' ahkPath '" "' MAIN_PATH '"', APP_DIR)
+    payloadArgs := LauncherHasArg("--resume-current-task") ? " restart resume" : ""
+    if (payloadArgs != "")
+        WriteLog("主腳本將以 restart resume 接續中斷任務")
+    Run('"' ahkPath '" "' MAIN_PATH '"' payloadArgs, APP_DIR)
     mainLaunchSucceeded := true
     WriteLog("主腳本已成功啟動")
     

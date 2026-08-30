@@ -1,8 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.79',
-    [string]$LauncherVersion = '4.90',
-    [string]$ServerVersion = '1.0.39',
+    [string]$PayloadVersion = '4.80',
+    [string]$LauncherVersion = '4.91',
+    [string]$ServerVersion = '1.0.40',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -12,6 +12,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $projectRoot
+. (Join-Path $projectRoot 'ProjectDevelopmentPaths.ps1')
+$developmentPaths = Initialize-ProjectDevelopmentPaths -ProjectRoot $projectRoot -RunName 'release'
+$developmentSucceeded = $false
 
 function Assert-ExitCode([string]$Task) {
     if ($LASTEXITCODE -ne 0) { throw "$Task 失敗，exit=$LASTEXITCODE" }
@@ -66,6 +69,7 @@ function Wait-RemoteManifest($Expected, [string]$CommitSha, [int]$TimeoutSeconds
     throw "GitHub 在 $TimeoutSeconds 秒內仍未提供 release_id=$releaseId 且四份雜湊一致的 manifest。"
 }
 
+try {
 Write-Host "建立完整釋出：Payload $PayloadVersion / Launcher $LauncherVersion / Server $ServerVersion"
 & (Join-Path $projectRoot '打包更新.ps1') -PayloadVersion $PayloadVersion `
     -LauncherVersion $LauncherVersion -ServerVersion $ServerVersion
@@ -79,21 +83,19 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 }
 
 $releasePaths = @(
-    '.gitignore', 'PROJECT_AI_HANDOFF.md', '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
-    'payload', '測試/InteractiveDesktopGuardTest.ahk', '測試/SelfHealingPolicyTest.ahk',
-    '測試/ScreenRecordingEncoderPolicyTest.ahk', '測試/SelfHostLiveCandidatesTest.ahk',
-    '測試/SelfHostCredentialReuseTest.ahk', '測試/SelfHostBufferRegressionTest.ahk',
-    '測試/SupportLogContextTest.ahk', '測試/RuntimeFilePaths測試.ahk',
-    '測試/伺服器名稱與切服判斷測試.ahk', '測試/伺服器登入標籤OCR影像測試.ahk',
-    '測試/實機伺服器切換壓力測試.ahk', '測試/實機伺服器切換50次驗證報告.md',
+    '.gitignore', 'PROJECT_AI_HANDOFF.md', 'DEVELOPMENT_ARTIFACTS.md',
+    'ProjectDevelopmentPaths.ps1', '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
+    'payload', '測試', '文字識別/文字識別測試.ahk', '郵件測試/寄送信件測試.ahk',
     'self-hosted-server', 'remote-control-web',
     'payload.zip', 'self-hosted-server.zip', '全自動鋤地.exe', 'update_manifest.example.json'
 )
 & git add -- $releasePaths
 Assert-ExitCode '建立發布提交暫存區'
-$stagedPaths = @(& git diff --cached --name-only)
-if ($stagedPaths | Where-Object { $_ -match '^(\.vscode/|文字識別/)' }) {
-    throw '安全檢查失敗：發布暫存區包含使用者保留的 VS Code 或 OCR 測試檔。'
+$stagedPaths = @(& git -c core.quotepath=false diff --cached --name-only)
+if ($stagedPaths | Where-Object {
+    $_ -match '^\.vscode/' -or $_ -eq '文字識別/LRMCAI主視窗OCR測試.ahk'
+}) {
+    throw '安全檢查失敗：發布暫存區包含使用者保留的 VS Code 或 LRMCAI OCR 測試檔。'
 }
 if (-not $stagedPaths.Count) { Write-Host '沒有新的發布差異，沿用目前提交。' }
 else {
@@ -153,3 +155,7 @@ if (-not $SkipDocker) {
 
 Write-Host "完整發布完成：$($manifest.release_id)"
 Write-Host "Git=$(git rev-parse --short HEAD)｜Payload=$PayloadVersion｜Launcher=$LauncherVersion｜Server=$ServerVersion｜Web=$($manifest.web_sha256)"
+$developmentSucceeded = $true
+} finally {
+    Complete-ProjectDevelopmentPaths -Context $developmentPaths -RemoveRunDirectory:$developmentSucceeded
+}

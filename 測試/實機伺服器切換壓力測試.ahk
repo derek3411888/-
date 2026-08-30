@@ -2,6 +2,7 @@
 #SingleInstance Off
 #WinActivateForce
 
+#Include TestRuntimePaths.ahk
 #Include ..\payload\plugin\RapidOcr\RapidOcr.ahk
 #Include ..\payload\plugin\ImagePut-1.11\ImagePut.ahk
 #Include ..\payload\WutheringServerNames.ahk
@@ -21,9 +22,8 @@ if !A_IsAdmin {
 }
 
 global LIVE_TEST_OCR := RapidOcr()
-global LIVE_TEST_ROOT := A_Args.Length >= 2 && Trim(A_Args[2]) != ""
-    ? Trim(A_Args[2], ' "')
-    : A_Temp "\wuthering_live_server_switch_" A_Now "_" A_TickCount
+global LIVE_TEST_ROOT := TestRuntime_ResolveOutputDir(
+    A_Args.Length >= 2 ? A_Args[2] : "", "live-server-switch")
 global LIVE_TEST_LOG := LIVE_TEST_ROOT "\result.log"
 global LIVE_TEST_CASES := LIVE_TEST_ROOT "\cases"
 

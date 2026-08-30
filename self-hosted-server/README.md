@@ -103,6 +103,16 @@ GitHub Pages 公司控制台與自架一般控制台都有「通知目前 Codex 
 
 ## 驗證
 
+所有 Node/npm 開發產物固定放在 repository 根目錄的 `.dev-runtime`：
+
+- Node 測試 fixture 與程序暫存：`.dev-runtime/node-tests`
+- npm 套件下載快取：`.dev-runtime/npm-cache`
+- npm 診斷 Log：`.dev-runtime/npm-logs`（最多 15 份）
+- 額外啟用的 V8 raw coverage：`.dev-runtime/node-coverage`
+- 直接在主機執行 Node 伺服器時的本機資料：`.dev-runtime/self-hosted-runtime`
+
+`npm test` 會先把 `TEMP`、`TMP`、`TMPDIR`、Node cache 與 REPL history 指向上述範圍，再啟動測試；路徑防回歸測試也會實際執行 `npm config get cache`／`logs-dir`，拒絕落到使用者 AppData 或系統 Temp。正式 Docker runtime 的 D 槽資料、E 槽備份、Docker named volumes 與 Windows bridge 的 ProgramData 則屬部署資料，不是開發產物，維持原設計。
+
 ```powershell
 npm.cmd install
 npm.cmd run check

@@ -2,13 +2,15 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { config } from "../src/config.js";
+import { assertChildPath, config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
 import { repairStalledMediaJobs } from "../src/media.js";
 
 const base = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
 const uid = `smoke-device-${Date.now()}`;
 const deviceToken = crypto.randomBytes(48).toString("base64url");
+const smokeFixtureRoot = assertChildPath(config.mediaRoot, path.join(config.mediaRoot, ".integration-smoke"));
+const mediaPath = assertChildPath(config.mediaRoot, path.join(smokeFixtureRoot, `${uid}.mkv`));
 let cookie = "";
 let originalMigrationMode = "";
 let originalMigrationEpoch = "";
@@ -243,7 +245,7 @@ async function main() {
   const snapshot = await request(`/api/v1/devices/${encodeURIComponent(uid)}/snapshot`, { browser: true, raw: true });
   assert((await snapshot.arrayBuffer()).byteLength === jpeg.length, "snapshot round-trip failed");
 
-  const mediaPath = `/tmp/${uid}.mkv`;
+  await fs.mkdir(smokeFixtureRoot, { recursive: true });
   const ffmpeg = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
     "-i", "testsrc=size=320x180:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
     "-f", "matroska", mediaPath], { encoding: "utf8" });
@@ -421,6 +423,8 @@ async function cleanup() {
   }
   await fs.rm(path.join(config.mediaRoot, uid), { recursive: true, force: true }).catch(() => {});
   await fs.rm(path.join(config.snapshotRoot, uid), { recursive: true, force: true }).catch(() => {});
+  await fs.rm(mediaPath, { force: true }).catch(() => {});
+  await fs.rmdir(smokeFixtureRoot).catch(() => {});
 }
 
 try { await main(); }

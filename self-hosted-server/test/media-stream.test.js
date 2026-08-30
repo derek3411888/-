@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
+import { createNodeTestDirectory } from "./dev-runtime.js";
 
 process.env.SESSION_SECRET ||= "test-session-secret-abcdefghijklmnopqrstuvwxyz";
 process.env.CODEX_BRIDGE_TOKEN ||= "test-codex-bridge-token-abcdefghijklmnopqrstuvwxyz";
@@ -48,7 +48,7 @@ class MemoryResponse extends Writable {
 }
 
 async function withVideo(callback) {
-  const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "wuthering-video-test-"));
+  const directory = await createNodeTestDirectory("wuthering-video");
   const filePath = path.join(directory, "sample.mp4");
   const content = Buffer.from("0123456789abcdef", "utf8");
   await fsp.writeFile(filePath, content);
