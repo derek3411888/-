@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.80',
-    [string]$LauncherVersion = '4.91',
-    [string]$ServerVersion = '1.0.40'
+    [string]$PayloadVersion = '4.81',
+    [string]$LauncherVersion = '4.92',
+    [string]$ServerVersion = '1.0.41'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,7 +157,8 @@ if (-not (Test-Path -LiteralPath $runtime) -or -not (Test-Path -LiteralPath $pay
 $launcherSource = Get-Content -LiteralPath '打包啟動器.ahk' -Raw -Encoding UTF8
 $payloadSource = Get-Content -LiteralPath 'payload\全自動.ahk' -Raw -Encoding UTF8
 $runtimeSources = @(
-    '打包啟動器.ahk', 'payload\全自動.ahk', 'payload\開啟LRMC.ahk',
+    '打包啟動器.ahk', 'LauncherProcessCleanupPolicy.ahk',
+    'payload\全自動.ahk', 'payload\開啟LRMC.ahk',
     'payload\自動開啟OKWW.ahk', 'payload\聲骸合成.ahk',
     'payload\RecordingFinalizeWorker.ahk', 'payload\RemoteControlFirestore.ahk'
 )
@@ -186,6 +187,8 @@ Invoke-AhkValidate $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 
 Invoke-AhkTest $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\PerformanceTelemetryWatchdogTest.ahk' '效能採集 watchdog 語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\PerformanceTelemetryWatchdogTest.ahk' '效能採集 watchdog 回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑回歸測試'

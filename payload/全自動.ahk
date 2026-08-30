@@ -117,7 +117,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.91"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.92"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -11246,7 +11246,10 @@ LaunchRecordingWorker(mode, sessionDir) {
     cmd := '"' BUNDLED_AHK_EXE '" "' workerPath '" --mode ' normalizedMode
     cmd .= ' --session "' sessionDir '"'
     try {
-        Run(cmd, A_ScriptDir, "Hide", &workerPid)
+        ; worker 必須能跨 payload 更新繼續執行。工作目錄放在它所管理、已有
+        ; 安全標記的 session，而不是 payload；如此 Launcher 可替換程式檔，
+        ; 不需終止仍在 sync/finalize 的正式錄影工具。
+        Run(cmd, sessionDir, "Hide", &workerPid)
         if (workerPid <= 0)
             throw Error("背景工具未回傳有效 PID")
         if (normalizedMode = "sync")

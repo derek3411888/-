@@ -62,6 +62,7 @@
 - 錄影預設每 5 分鐘寫入本機 `<程式根目錄>\操作過程\錄影暫存` 的獨立 MKV 分段。進行中只補傳已封口分段，不直接把尚在寫入的檔案放到網路分享。
 - 正常結束後由 `RecordingFinalizeWorker.ahk` 補傳全部分段、以 FFmpeg stream copy 無損合併，再用精確檔案大小驗證目的端成品。只有驗證成功，才刪除本機工作階段與帶安全標記的目的端分段資料夾。
 - 網路離線時本機錄影不中斷；收尾工具每分鐘重試最多 2 小時，之後仍保留資料並由下次主程式啟動恢復。
+- Launcher 更新 payload 時只可終止目前 `payload` 目錄內、名稱完整相符的主／管理 AHK；`RecordingFinalizeWorker.ahk --mode sync|finalize` 與其 PowerShell／FFmpeg child 必須保留。worker 與上傳 child 的工作目錄都使用錄影 session，不得持有 `payload` 目錄；禁止再以命令列含 `payload`、`LRMC` 或 `全自動` 等子字串作為終止條件。
 
 ### 3.9 聲骸合成前的月相觀測卡畫面
 - `payload/聲骸合成.ahk` 在第一次按 Esc 前，會 OCR 遊戲畫面下半部。

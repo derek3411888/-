@@ -448,7 +448,10 @@ WorkerTrySelfHostedUpload(sessionDir, mode) {
     cmd := '"' powershell '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'
         . uploader '" -Mode "' mode '" -SessionDir "' sessionDir '"'
     exitCode := -1
-    try exitCode := RunWait(cmd, A_ScriptDir, "Hide")
+    ; 上傳 child 也不可把 payload 當工作目錄，否則 Launcher 即使正確保留
+    ; finalize/sync parent，仍會因 child 持有舊 payload 目錄而刪除失敗。
+    ; -File 使用絕對路徑，切到 sessionDir 不改變腳本解析。
+    try exitCode := RunWait(cmd, sessionDir, "Hide")
     catch as e {
         WorkerLog(sessionDir, "啟動中央上傳工具失敗: " e.Message, "WARN")
     }

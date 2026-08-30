@@ -1,9 +1,10 @@
 ﻿#Requires AutoHotkey v2.0+
 #SingleInstance Off
+#Include LauncherProcessCleanupPolicy.ahk
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.91"
+global PACK_LAUNCHER_BUILD_VERSION := "4.92"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -1249,27 +1250,33 @@ if needUnpack {
     ; --- 強制結束正在運行的相關進程，避免檔案鎖定導致無法刪除/覆蓋 ---
     WriteLog("正在檢查並終止舊的進程以釋放檔案鎖定...")
     try {
-        ; 使用 WMI 查詢來精確匹配命令行，避免誤殺其他 AHK 腳本
+        ; 使用 WMI 取得命令列後交給 fail-safe 精確策略。正式錄影的
+        ; RecordingFinalizeWorker（sync/finalize）必須跨主程式與 payload 更新
+        ; 繼續工作；不可再因路徑含有 `payload` 就連同收尾 worker 一起強殺。
         wmi := ComObjGet("winmgmts:")
         query := "Select * from Win32_Process Where Name LIKE 'AutoHotkey%'"
         
         for process in wmi.ExecQuery(query) {
             try {
                 cmdLine := process.CommandLine
-                ; 檢查命令行是否包含我們的關鍵字或路徑
-                if (cmdLine && (InStr(cmdLine, "全自動") || InStr(cmdLine, "進程管理器") || InStr(cmdLine, "LRMC") || InStr(cmdLine, "payload"))) {
+                decision := LauncherCleanup_ProcessDecision(process.Name, cmdLine, APP_DIR)
+                if decision.stop {
                     pid := process.ProcessId
                     ProcessClose(pid)
-                    WriteLog("已終止舊進程 PID: " pid)
+                    WriteLog("已終止精確命中的舊進程 PID: " pid " | role=" decision.role)
+                } else if InStr(decision.role, "recording-worker-") = 1 {
+                    WriteLog("保留正式錄影背景工具 PID=" process.ProcessId
+                        " | role=" decision.role "；payload 更新不得中斷收尾／續傳")
                 }
             } catch {
                 continue
             }
         }
         
-        ; 額外保險：如果使用了 taskkill
-        RunWait("taskkill /F /IM 全自動.exe", , "Hide")
-        
+        ; 不使用 taskkill /T 或依映像名稱全殺；前者會連正式 worker child
+        ; 一起終止，後者可能命中其他位置的同名程式。上方完整路徑白名單
+        ; 是唯一允許的清理入口。
+
         ; 等待進程完全釋放資源
         Sleep(1000)
     } catch as e {

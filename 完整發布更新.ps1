@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.80',
-    [string]$LauncherVersion = '4.91',
-    [string]$ServerVersion = '1.0.40',
+    [string]$PayloadVersion = '4.81',
+    [string]$LauncherVersion = '4.92',
+    [string]$ServerVersion = '1.0.41',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -84,7 +84,8 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 
 $releasePaths = @(
     '.gitignore', 'PROJECT_AI_HANDOFF.md', 'DEVELOPMENT_ARTIFACTS.md',
-    'ProjectDevelopmentPaths.ps1', '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
+    'ProjectDevelopmentPaths.ps1', 'LauncherProcessCleanupPolicy.ahk',
+    '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
     'payload', '測試', '文字識別/文字識別測試.ahk', '郵件測試/寄送信件測試.ahk',
     'self-hosted-server', 'remote-control-web',
     'payload.zip', 'self-hosted-server.zip', '全自動鋤地.exe', 'update_manifest.example.json'
