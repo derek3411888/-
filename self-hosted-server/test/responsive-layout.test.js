@@ -82,6 +82,8 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(codexBridge, /Find-CodexResponseFromSessionLog \$Config \$target/);
   assert.match(codexBridge, /rollout-\*-\$\(\[string\]\$Config\.ThreadId\)\.jsonl/);
   assert.match(codexBridge, /\$script:CodexResponseCursors/);
+  assert.match(codexBridge, /Get-CodexDisplayResponseText/);
+  assert.match(codexBridge, /<oai-mem-citation>/);
   assert.match(codexBridgeInstaller, /BridgePowerShellPath = \$bridgePowerShellPath/);
   assert.match(codexBridgeWatchdog, /PSObject\.Properties\['BridgePowerShellPath'\]/);
 });

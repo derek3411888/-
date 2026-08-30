@@ -776,6 +776,19 @@ function Get-CodexUserMessageText($Item) {
     return [string]::Join("`n", $parts.ToArray())
 }
 
+function Get-CodexDisplayResponseText($Item) {
+    $text = (Get-CodexUserMessageText $Item).Trim()
+    if (-not $text) { return '' }
+    # Codex session JSONL 會保留供桌面端解析的記憶引用 trailer；這不是
+    # 使用者在聊天室看到的回答。網站只同步真正可見的 final_answer。
+    $text = [Regex]::Replace(
+        $text,
+        '(?s)\s*<oai-mem-citation>.*?</oai-mem-citation>\s*$',
+        ''
+    ).Trim()
+    return $text
+}
+
 function Find-CodexSessionLog($Config) {
     if ($script:CodexSessionLogPath -and
         (Test-Path -LiteralPath $script:CodexSessionLogPath -PathType Leaf)) {
@@ -895,7 +908,7 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
             if ($role -ne 'assistant' -or -not $targetSeen -or -not $targetActive) { continue }
             if ($targetTurnId -and $currentTurnId -and $currentTurnId -ne $targetTurnId) { continue }
             if ([string](Read-OptionalProperty $payload 'phase' '') -ne 'final_answer') { continue }
-            $candidate = (Get-CodexUserMessageText $payload).Trim()
+            $candidate = Get-CodexDisplayResponseText $payload
             if (-not $candidate) { continue }
             if ($candidate.Length -gt 30000) { $candidate = $candidate.Substring(0, 30000) }
             $finalText = $candidate
