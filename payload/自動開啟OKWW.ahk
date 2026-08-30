@@ -48,7 +48,7 @@ WriteLog(msg, level := "INFO") {
         ; 備用方案
         ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
         line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
-        try FileAppend(line, A_ScriptDir "\okww_fallback.log", "UTF-8")
+        try FileAppend(line, RuntimeFiles_LogFallbackPath("自動開啟OKWW"), "UTF-8")
     }
 }
 
@@ -97,16 +97,8 @@ if !A_IsAdmin {
 ProcessSetPriority("Normal")
 
 ; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
-dataDir := EnvGet("PACK_DATA_DIR")
-if (dataDir = "") {
-    ; 如果沒有環境變數，嘗試使用新的位置
-    dataDir := A_ScriptDir "\..\config"
-    if !DirExist(dataDir) {
-        ; 向後兼容舊位置
-        dataDir := A_Temp "\okww_runtime\config"
-    }
-}
-DirCreate dataDir
+dataDir := RuntimeFiles_ConfigDir()
+try RuntimeFiles_MigrateLegacyConfig()
 global CFG_FILE := dataDir "\config.ini"
 Log("dataDir=" dataDir)
 Log("CFG_FILE=" CFG_FILE)

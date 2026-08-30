@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 global logger := ""
+#Include ..\payload\RuntimeFilePaths.ahk
 #Include ..\payload\SupportLogContext.ahk
 
 AssertTrue(condition, message) {
@@ -8,7 +9,11 @@ AssertTrue(condition, message) {
         throw Error(message)
 }
 
-tempPath := A_Temp "\WutheringSupportLogContextTest_" A_TickCount ".log"
+testParent := A_ScriptDir "\.runtime"
+testRoot := testParent "\support_log_" DllCall("GetCurrentProcessId") "_" A_TickCount
+oldPackAppDir := EnvGet("PACK_APP_DIR")
+EnvSet("PACK_APP_DIR", testRoot "\程式\payload")
+tempPath := RuntimeFiles_NewTempPath("support_log", ".log", "測試")
 try {
     Loop 140
         FileAppend("line " A_Index "`n", tempPath, "UTF-8")
@@ -25,6 +30,9 @@ try {
     AssertTrue(InStr(result.excerpt, "[REDACTED]") > 0, "應顯示已遮蔽標記")
 } finally {
     try FileDelete(tempPath)
+    EnvSet("PACK_APP_DIR", oldPackAppDir)
+    try DirDelete(testRoot, 1)
+    try DirDelete(testParent)
 }
 
 ExitApp(0)

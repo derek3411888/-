@@ -8,7 +8,8 @@ $ErrorActionPreference = 'Stop'
 $originalLocation = (Get-Location).Path
 $serverRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $envPath = Join-Path $serverRoot '.env'
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("wuthering-control-update-" + [Guid]::NewGuid().ToString('N'))
+$tempBase = Join-Path $serverRoot '.update-work'
+$tempRoot = Join-Path $tempBase ("wuthering-control-update-" + [Guid]::NewGuid().ToString('N'))
 $rollbackRoot = Join-Path $tempRoot 'rollback-source'
 $stagingRoot = Join-Path $tempRoot 'staging'
 $bundlePath = Join-Path $tempRoot 'self-hosted-server.zip'
@@ -307,7 +308,7 @@ try {
     $rollbackReady = $true
 
     if (-not $UseLocalFiles) {
-        Copy-Tree $serverRoot $rollbackRoot @('.env', 'node_modules')
+        Copy-Tree $serverRoot $rollbackRoot @('.env', 'node_modules', '.update-work')
         Copy-Tree $stagingRoot $serverRoot
         $sourceChanged = $true
     }
@@ -346,4 +347,8 @@ try {
 } finally {
     Set-Location -LiteralPath $originalLocation
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
+    if (Test-Path -LiteralPath $tempBase) {
+        $remaining = @(Get-ChildItem -LiteralPath $tempBase -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $tempBase -Force -ErrorAction SilentlyContinue }
+    }
 }

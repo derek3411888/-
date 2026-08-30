@@ -1,5 +1,6 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Off
+#Include RuntimeFilePaths.ahk
 
 ; 錄影分段的背景同步／收尾工具。
 ; --mode sync     ：錄影進行中，只複製已封口的分段（略過最新一段）。
@@ -117,7 +118,7 @@ WorkerLog(sessionDir, message, level := "INFO") {
     root := ""
     SplitPath(sessionDir, , &root)
     if (root = "")
-        root := A_Temp
+        root := RuntimeFiles_RecordingStagingDir()
     line := FormatTime(, "yyyy-MM-dd HH:mm:ss") " [" level "] " message "`r`n"
     try FileAppend(line, root "\recording_worker.log", "UTF-8")
 }

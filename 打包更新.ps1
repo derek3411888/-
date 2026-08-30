@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.78',
-    [string]$LauncherVersion = '4.89',
-    [string]$ServerVersion = '1.0.38'
+    [string]$PayloadVersion = '4.79',
+    [string]$LauncherVersion = '4.90',
+    [string]$ServerVersion = '1.0.39'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +26,8 @@ function Invoke-AhkValidate([string]$RuntimePath, [string]$ScriptPath, [string]$
         $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
         $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
         if ($process.ExitCode -ne 0) {
-            throw "$Task 失敗，exit=$($process.ExitCode)：$(($stderr + $stdout).Trim())"
+            $details = [string]::Concat($stderr, $stdout).Trim()
+            throw "$Task 失敗，exit=$($process.ExitCode)：$details"
         }
     } finally {
         Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
@@ -57,7 +58,8 @@ function Invoke-AhkTest([string]$RuntimePath, [string]$ScriptPath, [string]$Task
         $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
         if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host $stdout.Trim() }
         if ($process.ExitCode -ne 0) {
-            throw "$Task 失敗，exit=$($process.ExitCode)：$(($stderr + $stdout).Trim())"
+            $details = [string]::Concat($stderr, $stdout).Trim()
+            throw "$Task 失敗，exit=$($process.ExitCode)：$details"
         }
     } finally {
         Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
@@ -132,6 +134,21 @@ if (-not (Test-Path -LiteralPath $runtime) -or -not (Test-Path -LiteralPath $pay
 
 $launcherSource = Get-Content -LiteralPath '打包啟動器.ahk' -Raw -Encoding UTF8
 $payloadSource = Get-Content -LiteralPath 'payload\全自動.ahk' -Raw -Encoding UTF8
+$runtimeSources = @(
+    '打包啟動器.ahk', 'payload\全自動.ahk', 'payload\開啟LRMC.ahk',
+    'payload\自動開啟OKWW.ahk', 'payload\聲骸合成.ahk',
+    'payload\RecordingFinalizeWorker.ahk', 'payload\RemoteControlFirestore.ahk'
+)
+foreach ($runtimeSourcePath in $runtimeSources) {
+    $runtimeText = Get-Content -LiteralPath $runtimeSourcePath -Raw -Encoding UTF8
+    if ($runtimeText -match 'A_Temp\s+"\\') {
+        throw "執行路徑政策失敗：$runtimeSourcePath 仍會直接在 Windows Temp 產生檔案。"
+    }
+    if ($runtimeSourcePath -ne '打包啟動器.ahk' -and
+        $runtimeText -match 'A_ScriptDir\s*"[^"\r\n]*_fallback\.log') {
+        throw "執行路徑政策失敗：$runtimeSourcePath 仍會把 fallback Log 寫在 payload。"
+    }
+}
 if ($launcherSource -notmatch ('PACK_LAUNCHER_BUILD_VERSION\s*:=\s*"' + [regex]::Escape($LauncherVersion) + '"')) {
     throw "打包啟動器.ahk 版本不是 $LauncherVersion"
 }
@@ -143,6 +160,8 @@ if ([string]$package.version -ne $ServerVersion) { throw "server package 版本�
 
 Write-Host '執行語法與單元測試…'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
+Invoke-AhkValidate $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門測試語法 validate'
@@ -238,7 +257,7 @@ Move-Item -LiteralPath $launcherTemp -Destination '全自動鋤地.exe' -Force
 
 Write-Host '建立同版 self-hosted-server.zip…'
 New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
-    'node_modules/*', '.env', '*.log', '*.partial'
+    'node_modules/*', '.update-work/*', '.env', '*.log', '*.partial'
 )
 Assert-ZipContains 'self-hosted-server.zip' @(
     'package.json', 'compose.yml', 'src/app.js', 'src/media.js',

@@ -70,7 +70,7 @@ global SCREEN_RECORDING_SECTION := "screen_recording"
 global SCREEN_RECORDING_ENGINE := "ffmpeg"
 global SCREEN_RECORDING_FFMPEG_EXE := ""
 global SCREEN_RECORDING_FFMPEG_ARGS := ScreenRecordingBuildFfmpegArgsForEncoder("libx264", 30, 23)
-global SCREEN_RECORDING_OUTPUT_DIR := "recordings"
+global SCREEN_RECORDING_OUTPUT_DIR := "操作過程"
 global SCREEN_RECORDING_SEGMENT_MINUTES := 5
 global SCREEN_RECORDING_AUTO_MERGE := 1
 global SCREEN_RECORDING_KEEP_FINAL_COUNT := 5
@@ -117,7 +117,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.89"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.90"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -253,8 +253,8 @@ GetBootstrapFileSha256(filePath) {
         return ""
 
     token := A_TickCount "_" DllCall("GetCurrentProcessId")
-    scriptPath := A_Temp "\launcher_bootstrap_hash_" token ".ps1"
-    outputPath := A_Temp "\launcher_bootstrap_hash_" token ".txt"
+    scriptPath := RuntimeFiles_NewTempPath("launcher_bootstrap_hash", ".ps1", "更新")
+    outputPath := RuntimeFiles_NewTempPath("launcher_bootstrap_hash", ".txt", "更新")
     try {
         scriptLines := [
             "param([string]$InputPath,[string]$OutputPath)",
@@ -793,7 +793,7 @@ TryBootstrapBundledFfmpeg() {
     if FileExist(targetExe)
         return targetExe
 
-    tmpRoot := A_Temp "\\wuthering_ffmpeg_bootstrap"
+    tmpRoot := RuntimeFiles_RuntimeDir("FFmpeg下載")
     zipPath := tmpRoot "\\ffmpeg-release-essentials.zip"
     extractDir := tmpRoot "\\extract"
 
@@ -1821,7 +1821,7 @@ GetWutheringAudioTargets() {
 TrySetWutheringProcessMute(mute := true) {
     global WUTHERING_PROCESS_EXE, __WUTHERING_AUDIO_MUTED
 
-    psFile := A_Temp "\\mute_wuthering_" A_TickCount ".ps1"
+    psFile := RuntimeFiles_NewTempPath("mute_wuthering", ".ps1", "音訊控制")
     targets := GetWutheringAudioTargets()
     pidCsv := StrReplace(targets.pids, "'", "''")
     nameCsv := StrReplace(targets.names, "'", "''")
@@ -2041,7 +2041,7 @@ WriteLog(msg, level := "INFO") {
         ; 備用方案
         ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
         line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
-        try FileAppend(line, A_ScriptDir "\main_fallback.log", "UTF-8")
+        try FileAppend(line, RuntimeFiles_LogFallbackPath("全自動"), "UTF-8")
     }
 
     normalizedLevel := StrUpper(Trim(level, " `t`r`n"))
@@ -2450,16 +2450,21 @@ WriteLog("成功找到 AutoHotkey: " AhkExe)
 okwwExe := "OK-WW.exe"   ; 由工作管理員確認
 
 ; ===== 路徑處理（優先使用打包啟動器設定的環境變數）=====
-dataDir := EnvGet("PACK_DATA_DIR")
-if (dataDir = "") {
-    ; 如果沒有環境變數，嘗試使用新的位置
-    dataDir := A_ScriptDir "\..\config"
-    if !DirExist(dataDir) {
-        ; 向後兼容舊位置
-        dataDir := A_Temp "\okww_runtime\config"
-    }
-}
-DirCreate dataDir
+dataDir := RuntimeFiles_ConfigDir()
+legacyConfigMoved := 0
+try legacyConfigMoved := RuntimeFiles_MigrateLegacyConfig()
+if (legacyConfigMoved > 0)
+    WriteLog("已把舊 Temp 設定檔搬回程式資料夾，共 " legacyConfigMoved " 個")
+legacyRecordingMigration := RuntimeFiles_MigrateLegacyRecordingMetadata()
+if (legacyRecordingMigration.moved > 0)
+    WriteLog("已把舊錄影狀態／Log 搬回程式資料夾，共 " legacyRecordingMigration.moved " 個")
+if (legacyRecordingMigration.deferredSessions > 0)
+    WriteLog("舊位置仍有 " legacyRecordingMigration.deferredSessions
+        " 個錄影工作階段；先完成安全收尾，之後再搬回程式資料夾", "WARN")
+staleRuntimeDeleted := 0
+try staleRuntimeDeleted := RuntimeFiles_DeleteStaleRuntimeFiles(24)
+if (staleRuntimeDeleted > 0)
+    WriteLog("已清理程式資料夾內逾期執行暫存 " staleRuntimeDeleted " 個")
 RepairPendingLauncherUpdateFromPayload(dataDir)
 global CFG_FILE := dataDir "\config.ini"
 WriteLog("dataDir=" dataDir)
@@ -9220,9 +9225,9 @@ ReadCombinedConfigState() {
     state.screenRecordingQualityPreset := NormalizeScreenRecordingQualityPreset(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "quality_preset", parsedSimple.quality))
     state.screenRecordingFps := ToIntRange(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "fps", parsedSimple.fps), parsedSimple.fps, 10, 120)
     state.screenRecordingCrf := ToIntRange(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "crf", parsedSimple.crf), parsedSimple.crf, 0, 51)
-    state.screenRecordingOutputDir := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings"))
+    state.screenRecordingOutputDir := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "操作過程"))
     if (state.screenRecordingOutputDir = "")
-        state.screenRecordingOutputDir := "recordings"
+        state.screenRecordingOutputDir := "操作過程"
     state.screenRecordingSegmentMinutes := ToIntRange(
         IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "segment_minutes", "5"), 5, 1, 60)
     state.screenRecordingAutoMerge := ParseBool01(
@@ -10038,7 +10043,7 @@ OnCombinedSetupSave(*) {
         "balanced", 30, 23, resolvedFfmpegForSettings)
     IniWrite resolvedFfmpegForSettings, st.cfgPath, "screen_recording", "ffmpeg_exe"
     IniWrite (ffmpegArgsVal = "" ? defaultRecordingArgs : ffmpegArgsVal), st.cfgPath, "screen_recording", "ffmpeg_args"
-    IniWrite (outputDirVal = "" ? "recordings" : outputDirVal), st.cfgPath, "screen_recording", "output_dir"
+    IniWrite (outputDirVal = "" ? "操作過程" : outputDirVal), st.cfgPath, "screen_recording", "output_dir"
     IniWrite segmentMinutesVal, st.cfgPath, "screen_recording", "segment_minutes"
     IniWrite autoMergeVal, st.cfgPath, "screen_recording", "auto_merge"
     IniWrite keepFinalCountVal, st.cfgPath, "screen_recording", "keep_final_count"
@@ -10059,7 +10064,7 @@ OnCombinedSetupSave(*) {
     SCREEN_RECORDING_ALLOW_HOTKEY_FALLBACK := 0
     SCREEN_RECORDING_FFMPEG_EXE := resolvedFfmpegForSettings
     SCREEN_RECORDING_FFMPEG_ARGS := (ffmpegArgsVal = "" ? defaultRecordingArgs : ffmpegArgsVal)
-    SCREEN_RECORDING_OUTPUT_DIR := (outputDirVal = "" ? "recordings" : outputDirVal)
+    SCREEN_RECORDING_OUTPUT_DIR := (outputDirVal = "" ? "操作過程" : outputDirVal)
     SCREEN_RECORDING_SEGMENT_MINUTES := segmentMinutesVal
     SCREEN_RECORDING_AUTO_MERGE := autoMergeVal
     SCREEN_RECORDING_KEEP_FINAL_COUNT := keepFinalCountVal
@@ -10185,7 +10190,7 @@ SelectRecordingOutputFolderWithUserToken(initialPath := "") {
     if ((!FileExist(helperScript) || !FileExist(BUNDLED_AHK_EXE)) && !FileExist(launcherPath))
         return {ok: false, cancelled: false, path: "", message: "找不到資料夾選擇 helper／啟動器"}
 
-    replyPath := A_Temp "\wuthering_folder_picker_" DllCall("GetCurrentProcessId") "_" A_TickCount ".ini"
+    replyPath := RuntimeFiles_NewTempPath("wuthering_folder_picker", ".ini", "資料夾選擇")
     try FileDelete(replyPath)
     initialResolved := ResolveConfiguredDirectoryPath(initialPath)
     if (FileExist(helperScript) && FileExist(BUNDLED_AHK_EXE)) {
@@ -10798,9 +10803,9 @@ LoadScreenRecordingEnabled() {
         WriteLog("未找到可用的顯卡 H.264 編碼器；本次保留 CPU 後備以避免錄影完全失敗", "WARN")
     }
     SCREEN_RECORDING_AUTO_STOP_EXTERNAL_FFMPEG := ParseBool01(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "auto_stop_external_ffmpeg", "1"), 1)
-    SCREEN_RECORDING_OUTPUT_DIR := ConvertMappedPathToUnc(NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "recordings")))
+    SCREEN_RECORDING_OUTPUT_DIR := ConvertMappedPathToUnc(NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "操作過程")))
     if (SCREEN_RECORDING_OUTPUT_DIR = "")
-        SCREEN_RECORDING_OUTPUT_DIR := "recordings"
+        SCREEN_RECORDING_OUTPUT_DIR := "操作過程"
     SCREEN_RECORDING_SEGMENT_MINUTES := ToIntRange(
         IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "segment_minutes", "5"), 5, 1, 60)
     SCREEN_RECORDING_AUTO_MERGE := ParseBool01(
@@ -11054,21 +11059,18 @@ ResolveScreenRecordingOutputDir() {
     global SCREEN_RECORDING_OUTPUT_DIR
 
     p := ConvertMappedPathToUnc(NormalizePath(SCREEN_RECORDING_OUTPUT_DIR))
-    if (p = "")
-        p := "recordings"
+    if (p = "" || StrLower(p) = "recordings" || p = "操作過程")
+        return RuntimeFiles_RecordingsDir()
 
     if RegExMatch(p, "i)^[a-z]:\\")
         return p
     if (SubStr(p, 1, 2) = "\\")
         return p
-    return A_ScriptDir "\" p
+    return RuntimeFiles_ProgramRoot() "\" p
 }
 
 ResolveRecordingStagingRoot() {
-    localBase := NormalizePath(EnvGet("LOCALAPPDATA"))
-    if (localBase = "")
-        localBase := A_Temp
-    return localBase "\WutheringAuto\recording_staging"
+    return RuntimeFiles_RecordingStagingDir()
 }
 
 RecordingUnixMs() {
@@ -11260,9 +11262,10 @@ LaunchRecordingWorker(mode, sessionDir) {
 }
 
 RecoverPendingRecordingSessions() {
-    stagingRoot := ResolveRecordingStagingRoot()
-    if !DirExist(stagingRoot)
-        return 0
+    stagingRoots := [ResolveRecordingStagingRoot()]
+    legacyRoot := RuntimeFiles_LegacyRecordingStagingDir()
+    if (legacyRoot != "" && StrLower(legacyRoot) != StrLower(stagingRoots[1]) && DirExist(legacyRoot))
+        stagingRoots.Push(legacyRoot)
 
     activeDirs := Map()
     for item in EnumerateRunningFfmpegProcesses() {
@@ -11274,18 +11277,20 @@ RecoverPendingRecordingSessions() {
     }
 
     launched := 0
-    Loop Files, stagingRoot "\wuthering_auto_recording_*", "D" {
-        sessionDir := A_LoopFileFullPath
-        if !FileExist(sessionDir "\.wuthering_recording_session")
-            continue
-        if activeDirs.Has(StrLower(sessionDir))
-            continue
-        state := ""
-        try state := IniRead(sessionDir "\session.ini", "recording", "state", "")
-        if (state = "complete")
-            continue
-        if LaunchRecordingWorker("finalize", sessionDir)
-            launched += 1
+    for _, stagingRoot in stagingRoots {
+        Loop Files, stagingRoot "\wuthering_auto_recording_*", "D" {
+            sessionDir := A_LoopFileFullPath
+            if !FileExist(sessionDir "\.wuthering_recording_session")
+                continue
+            if activeDirs.Has(StrLower(sessionDir))
+                continue
+            state := ""
+            try state := IniRead(sessionDir "\session.ini", "recording", "state", "")
+            if (state = "complete")
+                continue
+            if LaunchRecordingWorker("finalize", sessionDir)
+                launched += 1
+        }
     }
     if (launched > 0)
         WriteLog("已恢復待收尾錄影工作階段 " launched " 個", "WARN")
@@ -12558,7 +12563,7 @@ MaybeRunServerSwitchLiveStressTest() {
 
     evidenceRoot := A_Args.Length >= 3 && Trim(A_Args[3], ' "') != ""
         ? Trim(A_Args[3], ' "')
-        : A_Temp "\wuthering_production_server_switch_" A_Now "_" A_TickCount
+        : RuntimeFiles_RuntimeDir("實機切服測試") "\wuthering_production_server_switch_" A_Now "_" A_TickCount
     casesDir := evidenceRoot "\cases"
     DirCreate(casesDir)
     resultLog := evidenceRoot "\result.log"
@@ -12791,8 +12796,8 @@ OnCombinedSetupClose(*) {
 }
 
 SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl := "1") {
-    psFile := A_Temp "\send_mail_main_" A_TickCount ".ps1"
-    errFile := A_Temp "\send_mail_main_err_" A_TickCount ".txt"
+    psFile := RuntimeFiles_NewTempPath("send_mail_main", ".ps1", "郵件")
+    errFile := RuntimeFiles_NewTempPath("send_mail_main_err", ".txt", "郵件")
     recipients := ParseMailRecipients(mailTo)
     if (recipients.Length = 0)
         return { ok: false, message: "收件者為空，請在 to 填入至少一位收件者" }

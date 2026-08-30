@@ -3,11 +3,80 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.89"
+global PACK_LAUNCHER_BUILD_VERSION := "4.90"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
 global PACK_MAIN_MUTEX_HANDLE := 0
+
+LauncherProjectRoot() {
+    dir := RTrim(StrReplace(A_ScriptDir, "/", "\"), "\")
+    SplitPath(dir, &leaf)
+    ; 已安裝資料夾與原始碼工作區都直接視為專案根目錄；只有首次下載、
+    ; 同層尚無 payload/config 時才使用「自動鋤地」子資料夾。
+    if (DirExist(dir "\payload") || DirExist(dir "\config")
+        || InStr(leaf, "自動鋤地"))
+        return dir
+    return dir "\自動鋤地"
+}
+
+LauncherRuntimeDir(category := "") {
+    dir := LauncherProjectRoot() "\執行暫存"
+    safeCategory := Trim(String(category), " `t`r`n\")
+    if (safeCategory != "") {
+        safeCategory := RegExReplace(safeCategory, '[<>:"/\\|?*]', "_")
+        dir .= "\" safeCategory
+    }
+    if !DirExist(dir)
+        DirCreate(dir)
+    return dir
+}
+
+LauncherNewTempPath(prefix, extension := ".tmp", category := "更新") {
+    safePrefix := RegExReplace(Trim(String(prefix)), "[^0-9A-Za-z_-]", "_")
+    if (safePrefix = "")
+        safePrefix := "launcher"
+    ext := Trim(String(extension))
+    if (SubStr(ext, 1, 1) != ".")
+        ext := "." ext
+    return LauncherRuntimeDir(category) "\" safePrefix "_" DllCall("GetCurrentProcessId") "_" A_TickCount ext
+}
+
+LauncherPruneLogs(logDir, keepCount := 15) {
+    logs := []
+    Loop Files, logDir "\打包啟動器_*.log", "F"
+        logs.Push({path: A_LoopFileFullPath, modified: A_LoopFileTimeModified})
+    while (logs.Length > Max(1, keepCount)) {
+        oldestIndex := 1
+        Loop logs.Length {
+            if (logs[A_Index].modified < logs[oldestIndex].modified)
+                oldestIndex := A_Index
+        }
+        try FileDelete(logs[oldestIndex].path)
+        logs.RemoveAt(oldestIndex)
+    }
+}
+
+LauncherLogPath() {
+    static logPath := ""
+    if (logPath != "")
+        return logPath
+    logDir := LauncherProjectRoot() "\log\打包啟動器"
+    if !DirExist(logDir)
+        DirCreate(logDir)
+    logPath := logDir "\打包啟動器_" FormatTime(, "yyyyMMdd_HHmmss") "_" DllCall("GetCurrentProcessId") ".log"
+    LauncherPruneLogs(logDir, 15)
+
+    ; 舊版單一巨大 fallback log 搬入同一資料夾保存，不留在根目錄。
+    legacyLog := A_ScriptDir "\打包啟動器_fallback.log"
+    if FileExist(legacyLog) && StrLower(legacyLog) != StrLower(logPath) {
+        legacyDest := logDir "\打包啟動器_legacy_" FormatTime(FileGetTime(legacyLog, "M"), "yyyyMMdd_HHmmss") ".log"
+        if FileExist(legacyDest)
+            legacyDest := logDir "\打包啟動器_legacy_" A_TickCount ".log"
+        try FileMove(legacyLog, legacyDest, 1)
+    }
+    return logPath
+}
 
 ; payload 內的 FolderPickerHelper 是主要資料夾選擇器；此模式只作為舊 payload
 ; 或 helper 遺失時的相容後備，且必須在提權、自我更新與主 mutex 之前執行。
@@ -40,7 +109,7 @@ WriteLog(msg, level := "INFO") {
     global RUN_ID
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     line := ts " [" level "] [" RUN_ID "] " msg "`r`n"
-    try FileAppend(line, A_ScriptDir "\打包啟動器_fallback.log", "UTF-8")
+    try FileAppend(line, LauncherLogPath(), "UTF-8")
 }
 
 ResolveBundledAhkExeForLauncher() {
@@ -265,7 +334,7 @@ JsonGetString(jsonText, key) {
 }
 
 GetFileSha256(filePath) {
-    outFile := A_Temp "\\hash_" A_TickCount ".txt"
+    outFile := LauncherNewTempPath("hash", ".txt", "更新")
     try {
         cmd := 'cmd /c certutil -hashfile "' filePath '" SHA256 > "' outFile '"'
         rc := RunWait(cmd, , "Hide")
@@ -442,7 +511,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
             WriteLog("遠端版本相同，但本地 payload 缺失，改為重新下載：" remoteVer)
 
         WriteLog("檢測到新版本：" currentVer " -> " remoteVer)
-        zipTmp := A_Temp "\\payload_update_" A_TickCount ".zip"
+        zipTmp := LauncherNewTempPath("payload_update", ".zip", "更新")
         verified := false
         lastSha := ""
 
@@ -679,7 +748,7 @@ ApplyPendingLauncherUpdateLegacyUnused(workDir, dataDir) {
         
         ; 嘗試直接替換（如果當前 exe 能被關閉）
         WriteLog("準備替換 launcher exe...")
-        replaceBat := A_Temp "\\launcher_replace_" A_TickCount ".bat"
+        replaceBat := LauncherNewTempPath("launcher_replace", ".bat", "更新")
         
         ; 使用更清晰的字符串拼接方式，避免複雜的雙引號
         batLines := []
@@ -783,7 +852,7 @@ ApplyPendingLauncherUpdateV2(workDir, dataDir) {
             return false
         }
 
-        replacePs1 := A_Temp "\\launcher_replace_" A_TickCount "_" DllCall("GetCurrentProcessId") ".ps1"
+        replacePs1 := LauncherNewTempPath("launcher_replace", ".ps1", "更新")
         outcomeFile := dataDir "\\launcher_update_outcome.log"
         currentVerFile := dataDir "\\launcher_current_version.txt"
         helperLines := [
@@ -1032,7 +1101,7 @@ REMOTE_VER_FILE := DATA_DIR "\payload_remote_version.txt"
 
 WriteLog("工作目錄設定為：" WORK_DIR)
 
-oldReplaceBatCount := CleanupLauncherReplaceBatFiles(A_ScriptDir)
+oldReplaceBatCount := CleanupLauncherReplaceBatFiles(LauncherRuntimeDir("更新"))
 
 if (oldReplaceBatCount > 0)
     WriteLog("已清理程式所在資料夾殘留的 launcher_replace 批次檔: " oldReplaceBatCount " 個")
@@ -1183,7 +1252,7 @@ if needUnpack {
     }
 
     ; --- 1) 備份現有 config（保留的副檔名可擴充） ---
-    cfgTmp := A_ScriptDir "\cfg_backup"
+    cfgTmp := LauncherRuntimeDir("設定備份") "\cfg_backup"
     if DirExist(cfgTmp)
         DirDelete cfgTmp, 1
     DirCreate(cfgTmp)
@@ -1299,7 +1368,7 @@ if needUnpack {
                 ; 使用逐檔案複製方式替代 DirMove，更可靠
                 try {
                     ; 1. 複製所有檔案到臨時目錄
-                    tempFix := A_ScriptDir "\temp_fix_" A_TickCount
+                    tempFix := LauncherRuntimeDir("更新") "\temp_fix_" A_TickCount
                     DirCreate(tempFix)
                     
                     Loop Files, correctDir "\*.*", "R" {

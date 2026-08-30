@@ -90,7 +90,7 @@ SupportLog_CurrentSummary(maxChars := 12000, maxBytes := 65536, maxLines := 120)
             logPath := logger.logFile
     }
     if (Trim(String(logPath), " `t`r`n") = "") {
-        fallbackPath := A_ScriptDir "\全自動_fallback.log"
+        fallbackPath := RuntimeFiles_LogFallbackPath("全自動")
         if FileExist(fallbackPath)
             logPath := fallbackPath
     }

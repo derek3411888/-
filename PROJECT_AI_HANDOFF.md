@@ -9,7 +9,7 @@
 
 ## 2) 目前主流程重點（payload/全自動.ahk）
 - 啟動前：
-  - 讀取 CFG_FILE（優先 PACK_DATA_DIR，否則 fallback 到 ../config，再否則 Temp）
+  - CFG_FILE 唯一正式位置為 `<程式根目錄>\config\config.ini`；舊 Temp 設定只作一次性驗證搬移，不再作執行後備
   - 前置檢查與清場
   - 啟動崩潰監看
 - 執行中：
@@ -59,7 +59,7 @@
 - 一般重啟會保留既有 FFmpeg，讓下一個腳本接管同一段錄影。
 - 超過 `MAX_RESTART_COUNT` 已是終止流程，不可再沿用重啟旗標。
 - 達上限時會先停止崩潰監看、清除重啟旗標並向受管 FFmpeg 送出 Ctrl+C，最多等待 15 秒完成 MKV 封口；只有逾時才強制停止。
-- 錄影預設每 5 分鐘寫入本機 `%LOCALAPPDATA%\WutheringAuto\recording_staging` 的獨立 MKV 分段。進行中只補傳已封口分段，不直接把尚在寫入的檔案放到網路分享。
+- 錄影預設每 5 分鐘寫入本機 `<程式根目錄>\操作過程\錄影暫存` 的獨立 MKV 分段。進行中只補傳已封口分段，不直接把尚在寫入的檔案放到網路分享。
 - 正常結束後由 `RecordingFinalizeWorker.ahk` 補傳全部分段、以 FFmpeg stream copy 無損合併，再用精確檔案大小驗證目的端成品。只有驗證成功，才刪除本機工作階段與帶安全標記的目的端分段資料夾。
 - 網路離線時本機錄影不中斷；收尾工具每分鐘重試最多 2 小時，之後仍保留資料並由下次主程式啟動恢復。
 
@@ -153,7 +153,8 @@
 - 舊 Firestore Base64「網路短影片」目前停用：`video_preview_enabled` 啟動時會強制遷移為 `0`，舊網站不顯示播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。這不包含自架平台的按需 SRT／HLS 近即時畫面；自架直播使用獨立 FFmpeg marker，也不得被正式錄影接管或停止邏輯誤殺。
 - Firestore 控制文件為 `ahk_clients/{UID}`；JPEG 放在同集合的 `{UID}__media`。為相容缺少 `docKind` 的舊 client，網頁主查詢使用 `uid != ""`（media 只有 `clientUid`），並只為目前選取裝置訂閱一份 media 文件。正常完整結束會 PATCH client 為 `OFFLINE` 後刪除 media 文件；錯誤、系統關機、強制終止與重啟交接保留最後快照。網頁開啟期間會交易式刪除最後心跳超過 7 天、且再連續觀察 10 分鐘沒有 listener 更新的 client 與 media，避免誤刪時鐘錯誤但仍持續心跳的裝置。
 - AHK 命令輪詢至少 10 秒且 GET 只取命令欄位與 `desiredSettings*` 欄位；心跳至少 60 秒（預設 90 秒）。心跳、命令 ACK、設定 ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
-- 錄影工作階段持久狀態在 `%LOCALAPPDATA%\WutheringAuto\recording_staging\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。
+- 錄影工作階段持久狀態在 `<程式根目錄>\操作過程\錄影暫存\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。舊 LocalAppData 工作階段仍在收尾時只讀相容並繼續恢復，清空後才搬回，不能為了路徑整齊而破壞正在寫入的影片。
+- 執行端可管理輸出統一為 `<程式根目錄>\{config,log,診斷快照,效能分析,操作過程,執行暫存}`。相對錄影輸出也以程式根目錄解析；只有使用者明確選擇的外部／網路成品位置例外。Windows DPAPI 憑證、中央 PostgreSQL named volume、D 槽媒體與 E 槽備份屬安全／中央基礎設施，不得誤搬進 Payload。
 - `RecordingFinalizeWorker.ahk` 必須在主程式已退出後仍直接 PATCH 錄影欄位；網路回報失敗不可影響本機保全，下一次主程式心跳會再從 `recording_status.ini` 補報。
 - `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
 

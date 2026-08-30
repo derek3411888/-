@@ -1088,13 +1088,8 @@ ActivateGame() {
 }
 
 GetDataDir() {
-    dataDir := EnvGet("PACK_DATA_DIR")
-    if (dataDir = "") {
-        dataDir := A_ScriptDir "\..\config"
-        if !DirExist(dataDir)
-            dataDir := A_Temp "\okww_runtime\config"
-    }
-    DirCreate dataDir
+    dataDir := RuntimeFiles_ConfigDir()
+    try RuntimeFiles_MigrateLegacyConfig()
     return dataDir
 }
 

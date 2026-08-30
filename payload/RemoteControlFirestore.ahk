@@ -1283,11 +1283,20 @@ RC_GetPrimaryMacAddress() {
 }
 
 RC_ReadRecordingStatus() {
-    localBase := Trim(EnvGet("LOCALAPPDATA"), ' "`t`r`n')
-    if (localBase = "")
-        localBase := A_Temp
-    stagingRoot := RTrim(StrReplace(localBase, "/", "\"), "\") "\WutheringAuto\recording_staging"
+    stagingRoot := RuntimeFiles_RecordingStagingDir()
     statusPath := stagingRoot "\recording_status.ini"
+    legacyRoot := RuntimeFiles_LegacyRecordingStagingDir()
+    legacyStatus := legacyRoot != "" ? legacyRoot "\recording_status.ini" : ""
+    if (legacyStatus != "" && FileExist(legacyStatus)) {
+        useLegacy := !FileExist(statusPath)
+        if !useLegacy {
+            try useLegacy := FileGetTime(legacyStatus, "M") > FileGetTime(statusPath, "M")
+        }
+        if useLegacy {
+            stagingRoot := legacyRoot
+            statusPath := legacyStatus
+        }
+    }
     available := FileExist(statusPath) ? true : false
     if !available {
         return {
@@ -2520,6 +2529,6 @@ RC_Log(msg, level := "INFO") {
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     try WriteLog("[RemoteControl] " msg, level)
     catch {
-        try FileAppend(ts " [" level "] [RemoteControl] " msg "`r`n", A_ScriptDir "\\remote_fallback.log", "UTF-8")
+        try FileAppend(ts " [" level "] [RemoteControl] " msg "`r`n", RuntimeFiles_LogFallbackPath("RemoteControl"), "UTF-8")
     }
 }

@@ -21,37 +21,15 @@ class LogManager {
     }
     
     setupLogPath() {
-        ; 確定主日誌目錄，優先使用自動鋤地資料夾
-        baseDir := ""
-        
-        ; 首先檢查是否已在自動鋤地資料夾內（payload子目錄）
-        if InStr(A_ScriptDir, "自動鋤地") && InStr(A_ScriptDir, "payload") {
-            ; 在自動鋤地/payload內，日誌放在自動鋤地/log
-            baseDir := RegExReplace(A_ScriptDir, "\\payload$", "")
-        } else if InStr(A_ScriptDir, "自動鋤地") {
-            ; 直接在自動鋤地資料夾內
-            baseDir := A_ScriptDir
-        } else {
-            ; 不在自動鋤地資料夾內，檢查是否有自動鋤地子資料夾
-            if DirExist(A_ScriptDir "\自動鋤地") {
-                baseDir := A_ScriptDir "\自動鋤地"
-            } else {
-                ; 沒有自動鋤地資料夾，暫時不創建日誌
-                ; 等待自我組織完成後再創建
-                return
-            }
-        }
-        
-        ; 為每個腳本創建獨立的log資料夾
-        this.logDir := baseDir "\log\" this.scriptName
+        ; 所有主／子流程一律使用 <程式根目錄>\log，不能回退到 payload、
+        ; %TEMP% 或其他使用者目錄。
+        this.logDir := RuntimeFiles_LogDir(this.scriptName)
         
         ; 建立日誌目錄
         try {
             DirCreate(this.logDir)
         } catch as e {
-            ; 如果無法建立，使用腳本所在目錄作為備選
-            this.logDir := A_ScriptDir "\log_" this.scriptName
-            try DirCreate(this.logDir)
+            this.logDir := RuntimeFiles_LogDir("fallback")
         }
         
         ; 生成時間戳日誌檔名（以腳本名稱為前綴）
@@ -137,8 +115,8 @@ class LogManager {
             }
         }
         
-        ; 備份方案：在腳本目錄創建日誌
-        fallbackFile := A_ScriptDir "\" this.scriptName "_fallback.log"
+        ; 備份方案仍須留在程式根目錄的 log 內。
+        fallbackFile := RuntimeFiles_LogFallbackPath(this.scriptName)
         try FileAppend(line, fallbackFile, "UTF-8")
     }
     
