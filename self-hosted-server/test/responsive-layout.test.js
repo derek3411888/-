@@ -128,6 +128,14 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(script, /codexResponseText:\s*""/);
   assert.match(script, /async function cancelCodexSupport/);
   assert.match(script, /async function retryCodexSupport/);
+  const cancelBlock = script.match(/async function cancelCodexSupport\(\)[\s\S]*?\n}\n\nasync function retryCodexSupport/)?.[0] ?? "";
+  const retryBlock = script.match(/async function retryCodexSupport\(\)[\s\S]*?\n}\n\nasync function requestCodexSupport/)?.[0] ?? "";
+  assert.doesNotMatch(cancelBlock, /codexResponseNonce:\s*nextNonce/);
+  assert.match(cancelBlock, /codexResponseNonce:\s*nonce/);
+  assert.match(cancelBlock, /codexResponseState:\s*"NONE"/);
+  assert.match(retryBlock, /codexResponseNonce:\s*nextNonce/);
+  assert.match(retryBlock, /codexResponseState:\s*"WAITING"/);
+  assert.match(retryBlock, /codexResponseText:\s*""/);
   assert.match(script, /supportRetryOfNonce:\s*currentNonce/);
   assert.match(script, /DISPATCH_RESULT_UNKNOWN/);
   assert.match(script, /為避免重複執行，禁止直接重送/);
@@ -141,6 +149,9 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(bridge, /bridgeAttemptCount/);
   assert.match(bridge, /supportRequestContext/);
   assert.match(bridge, /currentDocument\.updateTime/);
+  assert.match(bridge, /function ConvertFrom-FirestoreJson/);
+  assert.match(bridge, /Parameters\.ContainsKey\('DateKind'\)/);
+  assert.match(bridge, /Invoke-WebRequest[\s\S]*ConvertFrom-FirestoreJson/);
   assert.match(bridge, /Invoke-SelfHostedQueue/);
   assert.match(bridge, /Sync-CodexResponses/);
   assert.match(bridge, /Publish-FirestoreCodexResponse/);

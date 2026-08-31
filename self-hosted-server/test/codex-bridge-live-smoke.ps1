@@ -83,8 +83,11 @@ foreach ($name in $fieldDefaults.Keys) {
 }
 
 $installRoot = Split-Path -Parent $InstalledScript
-$running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { [string]$_.CommandLine -like "*$InstalledScript*" })
+$running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -in @('powershell.exe', 'pwsh.exe') -and
+        ([string]$_.CommandLine).Replace('"', '').Replace("'", '') -like "*$InstalledScript*"
+    })
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $testRuntimeRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.dev-runtime\tests\codex-bridge-live-smoke')).TrimEnd('\', '/')
 $tempRoot = [IO.Path]::GetFullPath((Join-Path $testRuntimeRoot ([guid]::NewGuid().ToString('N'))))
@@ -142,14 +145,23 @@ try {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force
     }
 
-    $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $runtimeProperty = $config.PSObject.Properties['BridgePowerShellPath']
+    $powershellPath = if ($null -ne $runtimeProperty -and
+        (Test-Path -LiteralPath ([string]$runtimeProperty.Value) -PathType Leaf)) {
+        [string]$runtimeProperty.Value
+    } else {
+        Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
     $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstalledScript`" -ConfigPath `"$ConfigPath`""
     Start-Process -FilePath $powershellPath -ArgumentList $arguments -WorkingDirectory $installRoot -WindowStyle Hidden
 }
 
 Start-Sleep -Seconds 3
-$processCount = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { [string]$_.CommandLine -like "*$InstalledScript*" }).Count
+$processCount = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -in @('powershell.exe', 'pwsh.exe') -and
+        ([string]$_.CommandLine).Replace('"', '').Replace("'", '') -like "*$InstalledScript*"
+    }).Count
 if ($processCount -ne 1) { throw "橋接測試後常駐程序數量不正確：$processCount" }
 $result.BridgeProcessCount = $processCount
 [pscustomobject]$result | ConvertTo-Json -Depth 4

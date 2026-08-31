@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.0.0'
+$BridgeVersion = '3.0.1'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
@@ -83,10 +83,32 @@ function Get-FirestoreBaseUrl($Config) {
     return "https://firestore.googleapis.com/v1/projects/$project/databases/(default)/documents/$collection/$document"
 }
 
+function ConvertFrom-FirestoreJson([string]$Json) {
+    # PowerShell 7.5+ 會把 RFC3339 欄位自動轉成 DateTime；再轉成字串時會變成
+    # 08/31/2026 13:19:45 之類的本地化格式，Firestore CAS 會以 400 拒絕。
+    # DateKind=String 可保留伺服器回傳的精確 updateTime；Windows PowerShell 5.1
+    # 沒有這個參數，所以用動態 splatting 保持安裝程式的回退相容性。
+    $parameters = @{ InputObject = $Json }
+    $convertCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
+    if ($convertCommand.Parameters.ContainsKey('DateKind')) {
+        $parameters.DateKind = 'String'
+    }
+    $document = ConvertFrom-Json @parameters
+    if ($null -ne $document -and $document.PSObject.Properties['updateTime'] -and
+        $document.updateTime -is [DateTime]) {
+        # 舊版 PowerShell 若仍自動轉型，使用 invariant round-trip 格式；時間點不變，
+        # Firestore 可正確解析並用於 currentDocument.updateTime。
+        $document.updateTime = $document.updateTime.ToUniversalTime().ToString(
+            'o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    return $document
+}
+
 function Get-FirestoreDocument($Config) {
     $url = "$(Get-FirestoreBaseUrl $Config)?key=$([Uri]::EscapeDataString([string]$Config.ApiKey))"
     try {
-        $document = Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 15
+        $response = Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 15
+        $document = ConvertFrom-FirestoreJson ([string]$response.Content)
         $script:LastFirestoreDocument = $document
         return $document
     } catch {

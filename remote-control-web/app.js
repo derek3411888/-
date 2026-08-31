@@ -602,8 +602,8 @@ async function cancelCodexSupport() {
         bridgeNextRetryAt: 0,
         bridgeErrorCode: "",
         bridgeErrorDetail: "",
-        codexResponseNonce: nextNonce,
-        codexResponseState: "WAITING",
+        codexResponseNonce: nonce,
+        codexResponseState: "NONE",
         codexResponseText: "",
         codexResponseAt: 0,
         codexResponseSha256: "",
@@ -668,6 +668,15 @@ async function retryCodexSupport() {
         bridgeContextLength: 0,
         bridgeErrorCode: "",
         bridgeErrorDetail: "",
+        codexResponseNonce: nextNonce,
+        codexResponseState: "WAITING",
+        codexResponseText: "",
+        codexResponseAt: 0,
+        codexResponseSha256: "",
+        codexResponseTurnId: "",
+        codexResponseTurnStatus: "",
+        codexResponseCheckedAt: 0,
+        codexResponseError: "",
       }, { merge: true });
     });
   } catch (error) {
