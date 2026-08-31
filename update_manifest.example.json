@@ -1,13 +1,13 @@
 {
   "release_id": "p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
   "version": "4.84",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip?release=p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/0debed6b73b63367b16737afd3007ba5c81d97d3/payload.zip?release=p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
   "payload_sha256": "8E3DECE94BDA7F99CFC8DCC92F702FE10C9B8966045D2C2B200913D5ECF90E7B",
   "launcher_version": "4.95",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/0debed6b73b63367b16737afd3007ba5c81d97d3/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
   "launcher_sha256": "16C912B68B1C9D4923FAB40EA9468F7BCD9B45BDD7BD010C1F168837E96A51AC",
   "server_version": "1.0.44",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip?release=p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/0debed6b73b63367b16737afd3007ba5c81d97d3/self-hosted-server.zip?release=p4.84-l4.95-s1.0.44-8E3DECE9-16C912B6-7950AA8F-313FBDD5",
   "server_sha256": "7950AA8F7440BF5C6BB2B90F22B878B6DE7C95FF8C70CF4158EFE869F07CDB97",
   "web_sha256": "313FBDD5F898366A9EFA5CF1944A48236F7456302703914CBD95EEB469A6D62D"
 }
