@@ -100,6 +100,10 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
 
   assert.doesNotMatch(html, /location\.(?:replace|href)/);
   assert.doesNotMatch(script, /SELF_HOSTED_CONTROL_URL|redirectToSelfHostedControl/);
+  const webBuild = script.match(/const WEB_BUILD = "([^"]+)";/)?.[1] ?? "";
+  const loadedBuild = html.match(/app\.js\?v=([^"']+)/)?.[1] ?? "";
+  assert.ok(webBuild, "company WEB_BUILD is missing");
+  assert.equal(loadedBuild, webBuild, "company index must cache-bust the exact app build");
   assert.match(html, /id="btnOpenCodexSupport"/);
   assert.match(html, /id="codexSupportDialog"/);
   assert.match(html, /id="codexMessagePreset"/);

@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.83',
-    [string]$LauncherVersion = '4.94',
-    [string]$ServerVersion = '1.0.43'
+    [string]$PayloadVersion = '4.84',
+    [string]$LauncherVersion = '4.95',
+    [string]$ServerVersion = '1.0.44'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -146,6 +146,26 @@ function Get-WebAssetHash([string]$Root) {
     try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') } finally { $sha.Dispose() }
 }
 
+function Set-CompanyWebBuildStamp([string]$Payload, [string]$Launcher, [string]$Server) {
+    $stamp = "p$Payload-l$Launcher-s$Server"
+    $appPath = Join-Path $projectRoot 'remote-control-web\app.js'
+    $indexPath = Join-Path $projectRoot 'remote-control-web\index.html'
+    $appText = Get-Content -LiteralPath $appPath -Raw -Encoding UTF8
+    $indexText = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
+    $appPattern = 'const WEB_BUILD = "[^"]+";'
+    $indexPattern = 'app\.js\?v=[^"'']+'
+    if ([regex]::Matches($appText, $appPattern).Count -ne 1) {
+        throw '公司網站 WEB_BUILD 標記不存在或不唯一。'
+    }
+    if ([regex]::Matches($indexText, $indexPattern).Count -ne 1) {
+        throw '公司網站 app.js 快取版號不存在或不唯一。'
+    }
+    $updatedApp = [regex]::Replace($appText, $appPattern, "const WEB_BUILD = `"$stamp`";", 1)
+    $updatedIndex = [regex]::Replace($indexText, $indexPattern, "app.js?v=$stamp", 1)
+    [IO.File]::WriteAllText($appPath, $updatedApp, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($indexPath, $updatedIndex, [Text.UTF8Encoding]::new($false))
+}
+
 try {
 $compiler = Find-AhkCompiler
 $runtime = Join-Path $projectRoot 'AutoHotkey64.exe'
@@ -154,6 +174,7 @@ if (-not (Test-Path -LiteralPath $runtime) -or -not (Test-Path -LiteralPath $pay
     throw '找不到 AutoHotkey64.exe。'
 }
 
+Set-CompanyWebBuildStamp $PayloadVersion $LauncherVersion $ServerVersion
 $launcherSource = Get-Content -LiteralPath '打包啟動器.ahk' -Raw -Encoding UTF8
 $payloadSource = Get-Content -LiteralPath 'payload\全自動.ahk' -Raw -Encoding UTF8
 $runtimeSources = @(

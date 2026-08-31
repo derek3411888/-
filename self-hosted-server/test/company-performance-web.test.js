@@ -24,7 +24,9 @@ test("company console exposes performance dashboard without another Firestore li
   assert.match(script, /readField\(data \|\| \{\}, "performanceJson"/);
   assert.match(script, /slice\(-60\)/);
   assert.match(script, /function renderPerformance\(/);
-  assert.match(html, /app\.js\?v=20260831-diagnostics-recovery-v1/);
+  const webBuild = script.match(/const WEB_BUILD = "([^"]+)";/)?.[1] ?? "";
+  assert.ok(webBuild, "company WEB_BUILD is missing");
+  assert.ok(html.includes(`app.js?v=${webBuild}`), "company index must load the exact app build");
   assert.match(html, /styles\.css\?v=20260831-diagnostics-recovery-v1/);
   assert.match(script, /效能資料部分可用；遊戲 FPS 採集異常/);
   assert.doesNotMatch(script, /基礎效能監測正常；遊戲 FPS 採集異常/);
