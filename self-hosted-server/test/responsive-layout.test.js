@@ -158,6 +158,7 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(bridge, /Queued Firestore support message nonce=\$nonce length=\$\(\$queuedMessage\.Length\) sha256=\$messageHash/);
   assert.doesNotMatch(bridge, /\[[^\]]+\]\(if\s*\(/);
   assert.match(script, /startClientListener\(\)/);
+  assert.match(script, /snap\.forEach\(\(s\) => cache\.set\(s\.id, s\.data\(\)\)\);[\s\S]*syncCodexLogDeviceOptions\(false\)/);
   assert.match(script, /startCodexSupportListener\(\)/);
   assert.match(css, /@media\s*\(max-width:\s*700px\)/);
   assert.match(css, /\.support-button\s*\{[^}]*white-space:\s*normal/s);

@@ -2797,6 +2797,9 @@ function startClientListener() {
       cache.clear();
       snap.forEach((s) => cache.set(s.id, s.data()));
       renderClients();
+      // 公司網路載入 Firestore 較慢時，使用者可能在第一批裝置抵達前就打開
+      // 回報視窗。每次 listener 更新都同步選單，避免永久停在「沒有可選裝置」。
+      syncCodexLogDeviceOptions(false);
       void cleanupStaleClients();
       const selectedId = pcDropdown.value;
       if (selectedId) void reconcileClientHistory(selectedId);
