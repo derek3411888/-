@@ -120,7 +120,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.96"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.97"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -9240,7 +9240,7 @@ ReadCombinedConfigState() {
     state.screenRecordingOutputDir := NormalizePath(IniReadSafe(CFG_FILE, SCREEN_RECORDING_SECTION, "output_dir", "操作過程"))
     if (state.screenRecordingOutputDir = "")
         state.screenRecordingOutputDir := "操作過程"
-    ; Payload 4.85 起正式錄影固定單檔直寫。舊版分段設定只讀取後遷移，
+    ; Payload 4.86 起正式錄影固定單檔直寫。舊版分段設定只讀取後遷移，
     ; 不再讓遠端或舊 config 重新開啟中央上傳／背景合併。
     state.screenRecordingSegmentMinutes := 0
     state.screenRecordingAutoMerge := 0

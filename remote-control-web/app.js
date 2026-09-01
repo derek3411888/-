@@ -29,7 +29,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p4.85-l4.96-s1.0.45";
+const WEB_BUILD = "p4.86-l4.97-s1.0.46";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -1967,7 +1967,19 @@ function renderSnapshot() {
   snapshotMeta.textContent = `${fmtTs(capturedAt)}（${fmtAge(capturedAt)}）｜${reason}${width && height ? `｜${width}×${height}` : ""}`;
 }
 
+const LEGACY_RECORDING_STATES = new Set([
+  "finalize_waiting", "finalize_accepted", "finalizing", "sync_waiting",
+  "copying_segments", "segments_synced", "merging", "merge_waiting",
+  "central_uploading", "complete_upload_pending", "copying_final", "copy_waiting",
+  "credential_waiting", "retry_pending", "uploader_missing", "uploading", "worker_error",
+]);
+
+function isLegacyRecordingState(state) {
+  return LEGACY_RECORDING_STATES.has(String(state || "").trim().toLowerCase());
+}
+
 function recordingStateLabel(state) {
+  if (isLegacyRecordingState(state)) return "舊版分段狀態已停用";
   const labels = {
     starting: "準備單檔錄影",
     recording: "單檔錄影中",
@@ -1984,6 +1996,7 @@ function recordingStateLabel(state) {
 }
 
 function recordingStateClass(state, active) {
+  if (isLegacyRecordingState(state)) return "idle";
   if (active || ["starting", "recording", "stopping"].includes(state)) {
     return "running";
   }
@@ -2060,6 +2073,7 @@ function renderRecordingStatus() {
   const state = String(readField(data, "recordingState", "") || "");
   const detail = String(readField(data, "recordingStateDetail", "") || "");
   const updatedAt = toMillis(readField(data, "recordingStateUpdatedAt", 0));
+  const legacyState = isLegacyRecordingState(state);
 
   if (!available && !state) {
     recordingStatusBadge.className = "recording-status-badge idle";
@@ -2068,6 +2082,17 @@ function renderRecordingStatus() {
     recordingStatusNote.textContent = enabled
       ? "首次開始錄影後，這裡會持續保留最後一次成功或失敗結果。"
       : "可在啟動器設定中啟用螢幕錄影。";
+    return;
+  }
+
+  if (legacyState) {
+    recordingStatusBadge.className = "recording-status-badge idle";
+    recordingStatusBadge.textContent = recordingStateLabel(state);
+    recordingStatusUpdated.textContent = updatedAt
+      ? `舊資料更新於：${fmtTs(updatedAt)}（${fmtAge(updatedAt)}）｜點此展開`
+      : "舊資料時間未知｜點此展開";
+    recordingStatusNote.textContent = "這是更新前留下的分段／合併紀錄，現在不會再合併或上傳；裝置更新至 4.86 並重新回報後，這裡會顯示單一 MKV 狀態。";
+    addRecordingPath("單檔設定位置", readField(data, "recordingDestinationDir", ""));
     return;
   }
 

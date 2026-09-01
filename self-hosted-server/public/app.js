@@ -218,7 +218,17 @@ function renderPerformance(fallback = null) {
     { key: "diskWriteMbps", color: "#1c9a70" }, { key: "networkUpMbps", color: "#d17b2b" },
   ], { suffix: "M" });
 }
+const LEGACY_RECORDING_STATES = new Set([
+  "finalize_waiting", "finalize_accepted", "finalizing", "sync_waiting",
+  "copying_segments", "segments_synced", "merging", "merge_waiting",
+  "central_uploading", "complete_upload_pending", "copying_final", "copy_waiting",
+  "credential_waiting", "retry_pending", "uploader_missing", "uploading", "worker_error",
+]);
+function isLegacyRecordingState(value) {
+  return LEGACY_RECORDING_STATES.has(String(value ?? "").trim().toLowerCase());
+}
 function recordingStageLabel(value) {
+  if (isLegacyRecordingState(value)) return "舊版分段狀態已停用";
   return {
     starting: "準備單檔錄影",
     recording: "單檔錄影中",
@@ -794,24 +804,32 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     setText("recordingSummaryBadge", "尚無資料");
     $("recordingSummaryBadge").className = "badge muted";
   } else {
+    const legacyState = isLegacyRecordingState(recording.state);
     const stateLine = document.createElement("div"); stateLine.className = "state-line";
-    const badge = document.createElement("span"); badge.className = `badge ${String(recording.state).includes("error") || String(recording.state).includes("waiting") ? "warning" : recording.state === "complete" ? "ok" : "muted"}`;
+    const badge = document.createElement("span"); badge.className = `badge ${legacyState ? "muted" : String(recording.state).includes("error") || String(recording.state).includes("waiting") ? "warning" : recording.state === "complete" ? "ok" : "muted"}`;
     badge.textContent = recordingStageLabel(recording.state);
-    const name = document.createElement("strong"); name.textContent = recording.baseName || "目前錄影工作";
+    const name = document.createElement("strong"); name.textContent = legacyState ? "等待新版單檔回報" : recording.baseName || "目前錄影工作";
     stateLine.append(badge, name); recordingCard.append(stateLine);
-    const progressValue = Number(recording.progressPercent);
-    const progress = Number.isFinite(progressValue) && progressValue >= 0 ? progressValue : null;
-    let progressDetail = recording.detail || "等待本機錄影狀態";
-    if (Number(recording.progressTotal) > 0) {
-      const unitDetail = recording.progressUnit === "segments"
-        ? `${recording.progressCurrent}/${recording.progressTotal} 段`
-        : `${formatBytes(recording.progressCurrent)}/${formatBytes(recording.progressTotal)}`;
-      progressDetail = `${progressDetail}｜${unitDetail}`;
-    }
-    appendProgress(recordingCard, progress, recordingStageLabel(recording.state), progressDetail);
     const paths = document.createElement("div"); paths.className = "recording-paths";
-    if (recording.resultPath) { const row = document.createElement("span"); row.textContent = `完成位置：${recording.resultPath}`; paths.append(row); }
-    if (recording.failureStorage && recording.state !== "complete") { const row = document.createElement("span"); row.textContent = `失敗保留：${recording.failureStorage}`; paths.append(row); }
+    if (legacyState) {
+      const note = document.createElement("p");
+      note.textContent = "這是更新前留下的分段／合併紀錄，現在不會再合併或上傳；裝置更新至 4.86 並重新回報後，這裡會顯示單一 MKV 狀態。";
+      recordingCard.append(note);
+      if (recording.destinationDir) { const row = document.createElement("span"); row.textContent = `單檔設定位置：${recording.destinationDir}`; paths.append(row); }
+    } else {
+      const progressValue = Number(recording.progressPercent);
+      const progress = Number.isFinite(progressValue) && progressValue >= 0 ? progressValue : null;
+      let progressDetail = recording.detail || "等待本機錄影狀態";
+      if (Number(recording.progressTotal) > 0) {
+        const unitDetail = recording.progressUnit === "segments"
+          ? `${recording.progressCurrent}/${recording.progressTotal} 段`
+          : `${formatBytes(recording.progressCurrent)}/${formatBytes(recording.progressTotal)}`;
+        progressDetail = `${progressDetail}｜${unitDetail}`;
+      }
+      appendProgress(recordingCard, progress, recordingStageLabel(recording.state), progressDetail);
+      if (recording.resultPath) { const row = document.createElement("span"); row.textContent = `完成位置：${recording.resultPath}`; paths.append(row); }
+      if (recording.failureStorage && recording.state !== "complete") { const row = document.createElement("span"); row.textContent = `失敗保留：${recording.failureStorage}`; paths.append(row); }
+    }
     recordingCard.append(paths);
     setText("recordingSummaryBadge", recordingStageLabel(recording.state));
     $("recordingSummaryBadge").className = badge.className;

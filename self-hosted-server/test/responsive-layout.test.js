@@ -62,6 +62,9 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(script, /stopCodexSupportPolling/);
   assert.match(script, /\/api\/v1\/devices\/\$\{encoded\}\/performance\?range=/);
   assert.match(script, /function renderPerformance/);
+  assert.match(script, /LEGACY_RECORDING_STATES/);
+  assert.match(script, /舊版分段狀態已停用/);
+  assert.match(script, /現在不會再合併或上傳/);
   assert.match(script, /效能資料部分可用；遊戲 FPS 採集異常/);
   assert.doesNotMatch(script, /基礎效能監測正常；遊戲 FPS 採集異常/);
   assert.match(server, /pathname === "\/api\/v1\/codex-support" && req\.method === "GET"/);
@@ -166,6 +169,9 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(script, /startClientListener\(\)/);
   assert.match(script, /snap\.forEach\(\(s\) => cache\.set\(s\.id, s\.data\(\)\)\);[\s\S]*syncCodexLogDeviceOptions\(false\)/);
   assert.match(script, /startCodexSupportListener\(\)/);
+  assert.match(script, /LEGACY_RECORDING_STATES/);
+  assert.match(script, /舊版分段狀態已停用/);
+  assert.match(script, /現在不會再合併或上傳/);
   assert.match(css, /@media\s*\(max-width:\s*700px\)/);
   assert.match(css, /\.support-button\s*\{[^}]*white-space:\s*normal/s);
   assert.match(css, /\.codex-support-dialog\s*\{/);
