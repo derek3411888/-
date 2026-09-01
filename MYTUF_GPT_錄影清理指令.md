@@ -5,14 +5,14 @@
 1. 唯一允許操作的安裝根目錄是 `C:\Users\derek\Downloads\自動鋤地`；先確認實際存在。另確認設定中的錄影目的地，預期可能是 `\\192.168.0.194\分享\MyTUF\操作過程`。
 2. 只關閉此專案精確命中的 `全自動.ahk`、正式錄影 FFmpeg 或舊錄影 worker。不得依映像名稱全殺 AutoHotkey、Python 或 FFmpeg，也不得碰其他程式。
 3. 從以下不變 manifest 取得正式發布，不可使用快取、舊 ZIP 或自行修改的檔案：
-   `https://raw.githubusercontent.com/derek3411888/-/23ee7d7d46df5f4dbdb10c0d6a806508acfaaf50/update_manifest.example.json`
+   `https://raw.githubusercontent.com/derek3411888/-/08fc7bba2f9141781391475090181077a16bf83d/update_manifest.example.json`
 4. 先將安裝版更新並驗證為：
-   - Payload `4.85`
-   - Launcher `4.96`
-   - Release ID `p4.85-l4.96-s1.0.45-E7347545-B99AB837-FB8AA968-E741D5F2`
-   - Launcher SHA-256 `B99AB837F24CF20B540EAFA4D513CC655E0AA574E7541B9C8A4D1401AB8E2418`
-   - Payload ZIP SHA-256 `E7347545BED8B44160512EBD216DE39C8D1D19940BB641A852B1DF5C7D068B22`
-5. 若目前 Launcher 已是 `4.96` 且雜湊正確，執行：
+   - Payload `4.86`
+   - Launcher `4.97`
+   - Release ID `p4.86-l4.97-s1.0.46-981DF8C2-55A91E1B-B0095F61-60E21A0F`
+   - Launcher SHA-256 `55A91E1B0BA0D67668105A5790F3E9417B624140498D4ED8924E333544BA7B3B`
+   - Payload ZIP SHA-256 `981DF8C21668F1136C5FEB277E1FF6C90B45A14A06C7F7B0A533657B3B289A14`
+5. 若目前 Launcher 已是 `4.97` 且雜湊正確，執行：
 
    ```powershell
    & "C:\Users\derek\Downloads\自動鋤地\全自動鋤地.exe" --cleanup-recordings
