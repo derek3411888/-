@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.86',
-    [string]$LauncherVersion = '4.97',
-    [string]$ServerVersion = '1.0.46'
+    [string]$PayloadVersion = '4.87',
+    [string]$LauncherVersion = '4.98',
+    [string]$ServerVersion = '1.0.47'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -221,6 +221,8 @@ Invoke-AhkValidate $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖
 Invoke-AhkTest $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHealingPolicyTest.ahk' '自動修復策略測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHealingPolicyTest.ahk' '自動修復策略回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\GameReadyLoadingGracePolicyTest.ahk' '遊戲載入寬限策略測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\GameReadyLoadingGracePolicyTest.ahk' '遊戲載入寬限策略回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\自動開啟OKWW.ahk' 'OKWW manager AHK validate'
 Invoke-AhkValidate $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\OKWW自動戰鬥OCR判斷測試.ahk' 'OKWW OCR 回歸測試'

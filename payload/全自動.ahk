@@ -120,7 +120,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.97"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.98"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2739,18 +2739,23 @@ if !okwwStarted {
 
 ; 3) 用主畫面模板比對驗證遊戲是否可操作（去抖動）。
 ;    登入畫面已在 OKWW 正確前景嘗試注入 F11 時：先背景等待 20 秒，未就緒才點一次遊戲客戶區正中央，
-;    再背景等待 30 秒；第二階段仍失敗才觸發重啟。
+;    再背景等待 30 秒。若遊戲視窗仍存在，代表可能已進入較慢的載入階段，追加 150 秒寬限；
+;    不可在載入畫面尚未完成時重啟，否則會反覆把載入進度歸零。
 gameHwnd := GetWutheringGameHwnd()
 gameReadyResult := {
     ok: false,
     centerClicked: false,
     phase: "not_started",
     clickFailureCode: "",
-    clickFailureDetail: ""
+    clickFailureDetail: "",
+    loadingGraceUsed: false,
+    loadingGraceSec: 0,
+    loadingState: "not_checked",
+    gameWindowAlive: false
 }
 if okwwStarted {
-    WriteLog("開始 OKWW F11 後兩階段主畫面驗證：背景等待 20 秒 → 必要時中心左鍵 → 再等待 30 秒")
-    gameReadyResult := WaitGameReadyAfterOkwwF11(gameHwnd, 20, 30)
+    WriteLog("開始 OKWW F11 後遊戲就緒驗證：背景等待 20 秒 → 必要時中心左鍵 → 再等待 30 秒；遊戲仍存活時追加 150 秒載入寬限")
+    gameReadyResult := WaitGameReadyAfterOkwwF11(gameHwnd, 20, 30, 150)
 } else {
     WriteLog("開始主畫面模板驗證（最多 90 秒）...")
     gameReadyResult.ok := WaitEscMenuOCR(gameHwnd, 90)
@@ -2775,11 +2780,20 @@ if !gameReadyResult.ok {
                 && gameReadyResult.clickFailureDetail != "")
                 activationDetail := "；輸入失敗細節=" gameReadyResult.clickFailureDetail
         }
+        graceDetail := ""
+        if (gameReadyResult.HasOwnProp("loadingGraceUsed") && gameReadyResult.loadingGraceUsed) {
+            graceDetail := "；第二階段後確認遊戲視窗仍存活，已追加 "
+                . gameReadyResult.loadingGraceSec . " 秒載入寬限"
+                . "；邊界畫面狀態=" . gameReadyResult.loadingState
+                . "；寬限結束視窗=" . (gameReadyResult.gameWindowAlive ? "仍存在" : "已消失")
+        }
+        if (gameReadyResult.phase = "game_window_missing_before_grace")
+            gameReadyCode := "GAME_WINDOW_MISSING_AFTER_OKWW_F11"
         gameReadyStage := !gameReadyResult.centerClicked
             ? "鳴潮中心點擊（OKWW F11 後）" : "OKWW F11 後遊戲就緒"
         RequestRestart(
             "已在驗證過的 OKWW 前景嘗試注入 F11；先等待 20 秒仍未檢測到主畫面，" clickDetail
-                "；其後再等待 30 秒仍未通過主畫面模板驗證" activationDetail,
+                "；其後再等待 30 秒仍未通過主畫面模板驗證" graceDetail activationDetail,
             "ERROR", CRASH_RESTART_MODE, gameReadyCode, gameReadyStage)
     } else {
         RequestRestart(
@@ -6281,8 +6295,10 @@ IsUsableOkwwFinalWindow(hwnd, &reason := "", allowMinimized := false,
     }
 }
 
-; C) OKWW F11 自動登入後的兩階段遊戲就緒驗證
-WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
+; C) OKWW F11 自動登入後的遊戲就緒驗證。
+;    20+30 秒只用來決定是否進入載入寬限，不可直接把仍存在的遊戲判為失敗。
+WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30,
+    loadingGraceSec := 150) {
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
 
     WriteStep("OKWW F11 後遊戲就緒", "第一階段背景等待 " firstWaitSec " 秒")
@@ -6293,7 +6309,11 @@ WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
             centerClicked: false,
             phase: "initial_ready",
             clickFailureCode: "",
-            clickFailureDetail: ""
+            clickFailureDetail: "",
+            loadingGraceUsed: false,
+            loadingGraceSec: 0,
+            loadingState: "not_checked",
+            gameWindowAlive: true
         }
     }
 
@@ -6332,18 +6352,80 @@ WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30) {
             centerClicked: centerClicked,
             phase: "after_click_ready",
             clickFailureCode: clickFailureCode,
-            clickFailureDetail: clickFailureDetail
+            clickFailureDetail: clickFailureDetail,
+            loadingGraceUsed: false,
+            loadingGraceSec: 0,
+            loadingState: "not_checked",
+            gameWindowAlive: true
         }
     }
 
+    ; 2026-09-02 MyTUF 實機影片證明：第二階段結束時遊戲已在 80% 載入畫面，
+    ; 舊邏輯立刻重啟會把載入進度歸零並形成重啟風暴。只要受驗證的遊戲視窗仍在，
+    ; 就追加載入寬限；登入頁 OCR 僅用於診斷，不用來中斷仍可能完成的載入。
+    hwnd := GetWutheringGameHwnd()
+    if !hwnd {
+        WriteStepResult("OKWW F11 後遊戲就緒", false,
+            "第二階段逾時且遊戲視窗已消失；中心左鍵=" (centerClicked ? "成功" : "失敗"))
+        return {
+            ok: false,
+            centerClicked: centerClicked,
+            phase: "game_window_missing_before_grace",
+            clickFailureCode: clickFailureCode,
+            clickFailureDetail: clickFailureDetail,
+            loadingGraceUsed: false,
+            loadingGraceSec: loadingGraceSec,
+            loadingState: "window_missing",
+            gameWindowAlive: false
+        }
+    }
+
+    loadingState := "transition_or_loading"
+    try {
+        if IsLoginScreenByOcr(hwnd)
+            loadingState := "login_screen_still_visible"
+    } catch as e {
+        loadingState := "ocr_unknown"
+        WriteLog("第二階段逾時後登入畫面狀態 OCR 失敗；仍保留載入寬限：" e.Message, "WARN")
+    }
+
+    WriteLog("第二階段 " afterClickWaitSec " 秒已到，但遊戲視窗仍存在"
+        "；邊界畫面狀態=" loadingState
+        "；為避免載入中誤重啟，追加 " loadingGraceSec " 秒背景載入寬限", "WARN")
+    WriteStep("OKWW F11 後遊戲就緒",
+        "遊戲仍存活，進入 " loadingGraceSec " 秒載入寬限；狀態=" loadingState, "WARN")
+    if WaitEscMenuOCR(hwnd, loadingGraceSec) {
+        WriteStepResult("OKWW F11 後遊戲就緒", true,
+            "載入寬限內檢測到主畫面；中心左鍵=" (centerClicked ? "成功" : "失敗")
+            "；邊界狀態=" loadingState)
+        return {
+            ok: true,
+            centerClicked: centerClicked,
+            phase: "loading_grace_ready",
+            clickFailureCode: clickFailureCode,
+            clickFailureDetail: clickFailureDetail,
+            loadingGraceUsed: true,
+            loadingGraceSec: loadingGraceSec,
+            loadingState: loadingState,
+            gameWindowAlive: true
+        }
+    }
+
+    gameWindowAlive := !!GetWutheringGameHwnd()
     WriteStepResult("OKWW F11 後遊戲就緒", false,
-        "第二階段逾時；中心左鍵=" (centerClicked ? "成功" : "失敗"))
+        "載入寬限仍逾時；中心左鍵=" (centerClicked ? "成功" : "失敗")
+        "；邊界狀態=" loadingState
+        "；遊戲視窗=" (gameWindowAlive ? "仍存在" : "已消失"))
     return {
         ok: false,
         centerClicked: centerClicked,
-        phase: "after_click_timeout",
+        phase: "loading_grace_timeout",
         clickFailureCode: clickFailureCode,
-        clickFailureDetail: clickFailureDetail
+        clickFailureDetail: clickFailureDetail,
+        loadingGraceUsed: true,
+        loadingGraceSec: loadingGraceSec,
+        loadingState: loadingState,
+        gameWindowAlive: gameWindowAlive
     }
 }
 
