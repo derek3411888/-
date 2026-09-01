@@ -56,13 +56,12 @@
 - 同一事件即使在腳本重啟後仍殘留，也只能消耗一次重啟額度；日誌與重啟原因會記錄 PID、HWND、EXE、視窗座標及 OCR 錯誤摘要供後續診斷。
 
 ### 3.8 重啟上限與錄影收尾
-- 一般重啟會保留既有 FFmpeg，讓下一個腳本接管同一段錄影。
+- 一般重啟會保留既有 FFmpeg，讓下一個腳本接管同一個 MKV。
 - 超過 `MAX_RESTART_COUNT` 已是終止流程，不可再沿用重啟旗標。
-- 達上限時會先停止崩潰監看、清除重啟旗標並向受管 FFmpeg 送出 Ctrl+C，最多等待 15 秒完成 MKV 封口；只有逾時才強制停止。
-- 錄影預設每 5 分鐘寫入本機 `<程式根目錄>\操作過程\錄影暫存` 的獨立 MKV 分段。進行中只補傳已封口分段，不直接把尚在寫入的檔案放到網路分享。
-- 正常結束後由 `RecordingFinalizeWorker.ahk` 補傳全部分段、以 FFmpeg stream copy 無損合併，再用精確檔案大小驗證目的端成品。只有驗證成功，才刪除本機工作階段與帶安全標記的目的端分段資料夾。
-- 網路離線時本機錄影不中斷；收尾工具每分鐘重試最多 2 小時，之後仍保留資料並由下次主程式啟動恢復。
-- Launcher 更新 payload 時只可終止目前 `payload` 目錄內、名稱完整相符的主／管理 AHK；`RecordingFinalizeWorker.ahk --mode sync|finalize` 與其 PowerShell／FFmpeg child 必須保留。worker 與上傳 child 的工作目錄都使用錄影 session，不得持有 `payload` 目錄；禁止再以命令列含 `payload`、`LRMC` 或 `全自動` 等子字串作為終止條件。
+- 達上限或正常停止時會先停止崩潰監看、清除重啟旗標並向受管 FFmpeg 送出 Ctrl+C，最多等待 30 秒完成 Matroska 索引；只有逾時才強制停止，並誠實回報該檔可能未完整封口。
+- 正式錄影固定為單一 MKV，從開始便直接寫入設定的本機、映射磁碟或 UNC 資料夾；不再產生五分鐘分段、背景補傳或結束後合併。
+- 指定位置無法建立與寫入時只略過本次錄影並記錄明確錯誤，鋤地主流程照常執行。直播使用另一個獨立 FFmpeg，兩者不得互相接管或停止。
+- Launcher 更新 payload 時只可終止目前 `payload` 目錄內、名稱完整相符的主／管理 AHK；禁止以命令列含 `payload`、`LRMC` 或 `全自動` 等寬鬆子字串終止其他程序。
 
 ### 3.9 聲骸合成前的月相觀測卡畫面
 - `payload/聲骸合成.ahk` 在第一次按 Esc 前，會 OCR 遊戲畫面下半部。
@@ -149,14 +148,14 @@
 - 主流程以管理員權限執行，通常看不到一般使用者的映射磁碟。主要選擇器為 `payload/FolderPickerHelper.ahk`，由桌面 Explorer 以一般權限啟動；它主動彙整目前權杖映射、WScript.Network、`HKCU\Network` 持久映射及檔案總管 Network Shortcuts，再把結果轉成 UNC 回傳。
 - 選擇器預設顯示「這台電腦」，並固定提供「瀏覽網路」及「直接輸入 UNC」，不再依賴 Windows 對話框左側欄。根目錄 launcher 的 `--pick-folder` 只作 helper 遺失時的後備，且固定從 CSIDL_DRIVES 開始。
 - Launcher 維持 `#SingleInstance Off`，正式主流程改由「完整 EXE 路徑雜湊」命名的 mutex 防止重複啟動，不可恢復成會關掉 helper 的 `#SingleInstance Force`。
-- 設定頁可立即做建立、寫入、讀回及刪除測試；執行時仍採本機優先，目的端暫時離線只記錄補傳等待，不中止錄影。
+- 設定頁可立即做建立、寫入、讀回及刪除測試；執行時直接寫入該位置，目的端暫時離線時略過本次正式錄影但不中止鋤地。
 - 即時診斷預設每 60 秒以 ImagePut 擷取低畫質 JPEG；所有主程式／子流程產生的圖片集中到 `<程式根目錄>\診斷快照`，OCR 暫存圖位於其下 `暫存` 且使用後刪除，啟動時會搬移舊 `%LOCALAPPDATA%\WutheringAuto\diagnostics` 圖片並清除超過 24 小時的殘留暫存。`latest.jpg` 原子覆寫；WARN／ERROR 仍依設定保留固定總份數，但 Firestore 上傳硬性限制最多每 60 秒一次。
 - 舊 Firestore Base64「網路短影片」目前停用：`video_preview_enabled` 啟動時會強制遷移為 `0`，舊網站不顯示播放器，`RC_PublishRuntimeVideoPreview()` 也固定拒絕上傳。這不包含自架平台的按需 SRT／HLS 近即時畫面；自架直播使用獨立 FFmpeg marker，也不得被正式錄影接管或停止邏輯誤殺。
 - Firestore 控制文件為 `ahk_clients/{UID}`；JPEG 放在同集合的 `{UID}__media`。為相容缺少 `docKind` 的舊 client，網頁主查詢使用 `uid != ""`（media 只有 `clientUid`），並只為目前選取裝置訂閱一份 media 文件。正常完整結束會 PATCH client 為 `OFFLINE` 後刪除 media 文件；錯誤、系統關機、強制終止與重啟交接保留最後快照。網頁開啟期間會交易式刪除最後心跳超過 7 天、且再連續觀察 10 分鐘沒有 listener 更新的 client 與 media，避免誤刪時鐘錯誤但仍持續心跳的裝置。
-- AHK 命令輪詢至少 10 秒且 GET 只取命令欄位與 `desiredSettings*` 欄位；心跳至少 60 秒（預設 90 秒）。心跳、命令 ACK、設定 ACK、截圖及錄影背景工具的 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
-- 錄影工作階段持久狀態在 `<程式根目錄>\操作過程\錄影暫存\recording_status.ini`，收尾 log 在同層 `recording_worker.log`；控制網頁顯示成功成品、目的端分段及本機失敗保留路徑並提供複製按鈕。舊 LocalAppData 工作階段仍在收尾時只讀相容並繼續恢復，清空後才搬回，不能為了路徑整齊而破壞正在寫入的影片。
+- AHK 命令輪詢至少 10 秒且 GET 只取命令欄位與 `desiredSettings*` 欄位；心跳至少 60 秒（預設 90 秒）。心跳、命令 ACK、設定 ACK 與截圖 PATCH 回應也必須用 response field mask，禁止回傳整份文件。
+- 錄影持久狀態在 `<程式根目錄>\操作過程\錄影暫存\recording_status.ini`；控制網頁只顯示目前單一 MKV、指定資料夾與正常封口／中斷結果。舊分段工作階段只標記 `legacy_retained`，不可再自動補傳或合併。
 - 執行端可管理輸出統一為 `<程式根目錄>\{config,log,診斷快照,效能分析,操作過程,執行暫存}`。相對錄影輸出也以程式根目錄解析；只有使用者明確選擇的外部／網路成品位置例外。Windows DPAPI 憑證、中央 PostgreSQL named volume、D 槽媒體與 E 槽備份屬安全／中央基礎設施，不得誤搬進 Payload。
-- `RecordingFinalizeWorker.ahk` 必須在主程式已退出後仍直接 PATCH 錄影欄位；網路回報失敗不可影響本機保全，下一次主程式心跳會再從 `recording_status.ini` 補報。
+- 主程式心跳會從 `recording_status.ini` 補報本機單檔狀態；中央網路故障不可影響正式錄影或鋤地。
 - `WriteStep()` 與警告／錯誤會維護最近 50 筆 runtime events；網頁只以 `textContent` 呈現。快照含桌面內容，部署端必須用 Firestore Rules／Authentication 限制讀取權限。
 
 ### 3.19 OCR 模型相容性
@@ -172,12 +171,12 @@
 - 程式啟動期間收到的新 nonce 必須排隊到伺服器排程 runtime ready，不可把它當成啟動基準吞掉。完整 claim journal 必須先於 `last_nonce` 與 callback 落盤；中斷後依相同 nonce/state/目標與 durable ACK 決定恢復或跳過。若排隊的 `COMPLETE_SERVER` 標記了剛載入的目前目標，`RefreshServerScheduleAfterStartupCommands()` 必須在主流程開始前重選下一個待執行目標或全部完成後退出；執行中收到完成命令才維持不中斷。
 
 
-### 3.21 自架 Docker 控制、直播與影片平台
-- `self-hosted-server/` 包含 PostgreSQL、Node API/網站、Caddy、MediaMTX、備份與一鍵安裝／更新工具。
+### 3.21 自架 Docker 控制與直播平台
+- `self-hosted-server/` 包含 PostgreSQL、Node API/網站、Caddy、MediaMTX、備份與一鍵安裝／更新工具；中央正式影片庫自 1.0.45 起停用。
 - `payload/RemoteControlSelfHost.ahk` 沿用既有 durable nonce／claim／ACK 狀態機；shadow 期間 Firestore 是唯一命令來源，primary 才切換到 PostgreSQL。裝置 token 只存伺服器雜湊，本機以 Windows DPAPI 保存。
-- `payload/SelfHostMediaUpload.ps1` 由錄影 worker 呼叫，以 SHA-256、Content-Range 續傳封口 MKV；中央故障不阻塞本機錄影，未完成前不得清除 staging。
+- 舊 `SelfHostMediaUpload.ps1`／`RecordingFinalizeWorker.ahk` 只為舊 Payload 相容保留，新主流程不得呼叫；中央錄影片段 API 固定回 `FORMAL_MEDIA_DISABLED`。
 - 直播使用獨立 `WUTHERING_RUNTIME_PREVIEW_V1` FFmpeg marker 與加密 SRT；正式錄影掃描會排除它，啟動時只清理由該 marker 識別的孤兒預覽程序。每台可由自架網站選擇 `economy=720p12/1.5Mbps`、預設 `balanced=720p30/3.5Mbps` 或 `smooth=720p60/6Mbps`；所有畫質以及正式錄影都會依序實測 NVENC、QSV、AMF 並優先使用 GPU，只有硬體編碼不可用時才回退 libx264。關鍵影格均為 2 秒。
-- 切換門檻會核對 Firestore 命令與設定 ACK、兩端 nonce、一致性錯誤、7 天時間及每台完整錄影。GitHub Pages 固定入口 `https://derek3411888.github.io/-/` 保留公司用 Firestore 控制、快照、效能與 Codex 回報，不轉址；自架完整影片／直播與中央 API 使用 `https://220.135.218.98/`，不依賴 DDNS。primary 模式的每次 device control 回應仍帶 `selfHostedServerUrl/mode/epoch/fallbackUntil`，讓已停止 Firestore 輪詢的舊裝置也能自行從 DDNS 遷移。
+- 切換門檻會核對 Firestore 命令與設定 ACK、兩端 nonce、裝置憑證、一致性錯誤及 7 天時間；正式發布的整合測試另驗證加密 SRT 到 HLS。GitHub Pages 固定入口 `https://derek3411888.github.io/-/` 保留公司用 Firestore 控制、快照、效能與 Codex 回報，不轉址；自架直播與中央 API 使用 `https://220.135.218.98/`，不依賴 DDNS。primary 模式的每次 device control 回應仍帶 `selfHostedServerUrl/mode/epoch/fallbackUntil`，讓已停止 Firestore 輪詢的舊裝置也能自行從 DDNS 遷移。
 - 完整部署、網路埠、備份／還原與維運指令見 `self-hosted-server/README.md`。
 
 ## 4) 伺服器排程與完成判定（高風險區）
@@ -202,9 +201,9 @@
 ## 6) 子腳本關係
 - payload/全自動.ahk：主控流程
 - payload/FolderPickerHelper.ahk：一般權限網路／映射磁碟／UNC 資料夾選擇器
-- payload/RecordingFinalizeWorker.ahk：錄影分段補傳、合併、驗證與安全清理
+- payload/RecordingFinalizeWorker.ahk：僅供舊版分段工作階段相容；新主流程不得呼叫
 - payload/RemoteControlSelfHost.ahk：自架 discovery、裝置憑證、命令傳輸、心跳、快照與直播 FFmpeg
-- payload/SelfHostMediaUpload.ps1：中央片段 SHA-256／Content-Range 續傳與完成通知
+- payload/SelfHostMediaUpload.ps1：僅供舊版相容；中央正式影片 API 已停用
 - payload/開啟LRMC.ahk：啟動並操作 LRMCAI
 - payload/自動開啟OKWW.ahk：OKWW 啟動管理
 - payload/聲骸合成.ahk：聲骸流程

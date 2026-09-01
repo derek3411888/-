@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.84',
-    [string]$LauncherVersion = '4.95',
-    [string]$ServerVersion = '1.0.44'
+    [string]$PayloadVersion = '4.85',
+    [string]$LauncherVersion = '4.96',
+    [string]$ServerVersion = '1.0.45'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -215,6 +215,8 @@ Invoke-AhkValidate $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式�
 Invoke-AhkTest $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\ScreenRecordingDirectOutputPolicyTest.ahk' '單檔錄影策略測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\ScreenRecordingDirectOutputPolicyTest.ahk' '單檔錄影策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHealingPolicyTest.ahk' '自動修復策略測試語法 validate'

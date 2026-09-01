@@ -9,6 +9,11 @@ function integer(name, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+function boolean(name, fallback = false) {
+  const raw = String(process.env[name] ?? (fallback ? "true" : "false")).trim().toLowerCase();
+  return ["1", "true", "yes", "on"].includes(raw);
+}
+
 function requiredSecret(name) {
   const value = String(process.env[name] ?? "").trim();
   if (value.length < 32) {
@@ -67,6 +72,9 @@ export const config = Object.freeze({
   // only for direct Node development, so a local `npm start` cannot write to a
   // drive root or the user's profile by accident.
   mediaRoot: path.resolve(process.env.MEDIA_ROOT ?? path.join(localDevelopmentRoot, "media")),
+  // 正式錄影自 1.0.45 起只留在執行端指定位置。中央媒體 API 預設關閉，
+  // 直播仍由 MediaMTX 的獨立 SRT/HLS 路徑提供。
+  formalMediaEnabled: boolean("FORMAL_MEDIA_ENABLED", false),
   snapshotRoot: path.resolve(process.env.SNAPSHOT_ROOT ?? path.join(localDevelopmentRoot, "snapshots")),
   serverLogRoot: path.resolve(process.env.SERVER_LOG_ROOT ?? path.join(localDevelopmentRoot, "logs")),
   staticRoot,

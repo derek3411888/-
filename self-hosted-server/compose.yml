@@ -43,6 +43,7 @@ services:
       LIVE_TOKEN_SECRET: ${LIVE_TOKEN_SECRET}
       LIVE_SRT_PASSPHRASE: ${LIVE_SRT_PASSPHRASE}
       MEDIA_ROOT: /data/media
+      FORMAL_MEDIA_ENABLED: ${FORMAL_MEDIA_ENABLED:-false}
       SNAPSHOT_ROOT: /data/snapshots
       SERVER_LOG_ROOT: /data/logs
       MIN_FREE_GB: ${MIN_FREE_GB:-20}

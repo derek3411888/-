@@ -32,7 +32,9 @@ test("直接執行 Node 伺服器時的資料預設值仍在 repository 內", as
   delete process.env.MEDIA_ROOT;
   delete process.env.SNAPSHOT_ROOT;
   delete process.env.SERVER_LOG_ROOT;
+  delete process.env.FORMAL_MEDIA_ENABLED;
   const { config } = await import("../src/config.js");
+  assert.equal(config.formalMediaEnabled, false, "中央正式影片預設必須停用");
   for (const [label, candidate] of [
     ["mediaRoot", config.mediaRoot],
     ["snapshotRoot", config.snapshotRoot],
@@ -49,11 +51,12 @@ test("環境變數與 Compose 仍覆蓋為正式 /data 掛載", async () => {
     MEDIA_ROOT: path.join(overrideRoot, "media"),
     SNAPSHOT_ROOT: path.join(overrideRoot, "snapshots"),
     SERVER_LOG_ROOT: path.join(overrideRoot, "logs"),
+    FORMAL_MEDIA_ENABLED: "true",
   };
   const probe = spawnSync(process.execPath, [
     "--input-type=module",
     "--eval",
-    "import { config } from './src/config.js'; console.log(JSON.stringify({mediaRoot:config.mediaRoot,snapshotRoot:config.snapshotRoot,serverLogRoot:config.serverLogRoot}));",
+    "import { config } from './src/config.js'; console.log(JSON.stringify({mediaRoot:config.mediaRoot,snapshotRoot:config.snapshotRoot,serverLogRoot:config.serverLogRoot,formalMediaEnabled:config.formalMediaEnabled}));",
   ], {
     cwd: serverRoot,
     encoding: "utf8",
@@ -74,10 +77,12 @@ test("環境變數與 Compose 仍覆蓋為正式 /data 掛載", async () => {
     mediaRoot: path.resolve(overrides.MEDIA_ROOT),
     snapshotRoot: path.resolve(overrides.SNAPSHOT_ROOT),
     serverLogRoot: path.resolve(overrides.SERVER_LOG_ROOT),
+    formalMediaEnabled: true,
   });
 
   const compose = await fsp.readFile(path.join(serverRoot, "compose.yml"), "utf8");
   assert.match(compose, /^\s+MEDIA_ROOT:\s*\/data\/media\s*$/m);
+  assert.match(compose, /^\s+FORMAL_MEDIA_ENABLED:\s*\$\{FORMAL_MEDIA_ENABLED:-false\}\s*$/m);
   assert.match(compose, /^\s+SNAPSHOT_ROOT:\s*\/data\/snapshots\s*$/m);
   assert.match(compose, /^\s+SERVER_LOG_ROOT:\s*\/data\/logs\s*$/m);
   assert.match(compose, /^\s+source:\s*\$\{DATA_ROOT_HOST\}\s*$/m);

@@ -134,7 +134,7 @@
     <nav class="tabs" aria-label="控制台頁面">
       <button class="active" data-tab="overview" type="button">總覽</button>
       <button data-tab="diagnostics" type="button">診斷記錄</button>
-      <button data-tab="videos" type="button">影片</button>
+      <button data-tab="videos" type="button">直播</button>
       <button data-tab="settings" type="button">設定</button>
     </nav>
 
@@ -218,14 +218,14 @@
         </article>
       </div>
       <details class="card recording-details">
-        <summary><span><strong>錄影與上傳狀態</strong><small>錄影位置、失敗保留路徑與詳細進度（預設收起）</small></span><span id="recordingSummaryBadge" class="badge muted">尚無資料</span></summary>
-        <p class="hint">本機正式錄影不受中央服務故障影響。</p>
+        <summary><span><strong>本機錄影狀態</strong><small>單一 MKV 的目前狀態與指定位置（預設收起）</small></span><span id="recordingSummaryBadge" class="badge muted">尚無資料</span></summary>
+        <p class="hint">正式錄影直接保存在執行端指定位置，不分段、不上傳中央，也不需合併。</p>
         <div id="recordingStatus" class="recording-status"></div>
       </details>
     </section>
 
     <section class="tab-panel" data-panel="videos">
-      <div class="grid video-grid">
+      <div class="grid">
         <article class="card">
           <div class="section-title"><div><h2>近即時畫面</h2><p id="liveProfileSummary">720p／30fps／3.5 Mbps；有人觀看時才推流。</p></div><span id="liveBadge" class="badge muted">未啟動</span></div>
           <video id="liveVideo" controls muted playsinline></video>
@@ -236,20 +236,7 @@
           <p id="liveMessage" class="hint">啟動後約 10 秒開始；離開後 90 秒自動停止推流。</p>
           <p id="liveDeviceStatus" class="transport-status muted">裝置尚未回報直播傳輸狀態。</p>
         </article>
-        <article class="card">
-          <div class="section-title"><div><h2>完整錄影與片段</h2><p>執行中可看已封口片段，結束後顯示單一 MP4。</p></div></div>
-          <div id="recordingList" class="recording-list"></div>
-        </article>
       </div>
-      <article id="playbackCard" class="card" hidden>
-        <div class="section-title"><div><h2 id="playbackTitle">影片回看</h2><p id="playbackMeta"></p></div></div>
-        <video id="playbackVideo" controls playsinline preload="metadata"></video>
-        <div class="playback-feedback">
-          <p id="playbackStatus" class="hint" aria-live="polite">請選擇要回看的錄影。</p>
-          <a id="playbackDirectLink" class="button-link" href="#" target="_blank" rel="noopener" hidden>直接開啟目前影片</a>
-        </div>
-        <div id="segmentList" class="segment-list"></div>
-      </article>
     </section>
 
     <section class="tab-panel" data-panel="settings">

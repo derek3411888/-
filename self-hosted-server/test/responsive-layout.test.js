@@ -50,7 +50,9 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(html, /id="codexResponseText"/);
   assert.match(html, /data-panel="videos"/);
   assert.match(html, /id="liveVideo"/);
-  assert.match(html, /id="recordingList"/);
+  assert.doesNotMatch(html, /id="recordingList"|id="playbackVideo"|完整錄影與片段/);
+  assert.match(html, /正式錄影直接保存在執行端指定位置，不分段、不上傳中央/);
+  assert.match(server, /FORMAL_MEDIA_DISABLED/);
   assert.match(css, /\.codex-field\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(css, /\.codex-progress-list\s*\{/);
   assert.match(css, /@media\s*\(max-width:\s*820px\)[\s\S]*\.codex-progress-list\s*\{\s*grid-template-columns:\s*1fr/);

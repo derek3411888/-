@@ -134,6 +134,30 @@ export async function ensureMediaRoots() {
   ]);
 }
 
+export async function purgeDisabledFormalMedia() {
+  if (config.formalMediaEnabled) return { disabled: false, removedEntries: 0, removedSessions: 0 };
+
+  const root = path.resolve(config.mediaRoot);
+  if (root === path.parse(root).root) {
+    throw new Error(`拒絕清理磁碟根目錄: ${root}`);
+  }
+  await fsp.mkdir(root, { recursive: true });
+  const entries = await fsp.readdir(root, { withFileTypes: true });
+  let removedEntries = 0;
+  for (const entry of entries) {
+    const candidate = assertChildPath(root, path.join(root, entry.name));
+    await fsp.rm(candidate, { recursive: true, force: true });
+    removedEntries += 1;
+  }
+
+  const removed = await query("DELETE FROM recording_sessions RETURNING id");
+  await query(
+    `DELETE FROM server_alerts
+     WHERE code IN ('MEDIA_PRESSURE','MEDIA_AUTO_REPAIR_EXHAUSTED')`,
+  );
+  return { disabled: true, removedEntries, removedSessions: removed.rowCount };
+}
+
 export async function upsertRecordingSession(uid, body) {
   const clientSessionId = boundedText(body.clientSessionId, 160);
   const baseName = boundedText(body.baseName, 160);

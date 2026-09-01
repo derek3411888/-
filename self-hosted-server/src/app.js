@@ -43,6 +43,7 @@ import {
   getSegmentUploadState,
   listRecordingSegments,
   listRecordings,
+  purgeDisabledFormalMedia,
   pruneMedia,
   receiveSegmentChunk,
   repairStalledMediaJobs,
@@ -763,6 +764,7 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       version: config.serverVersion, webSha256: config.webSha256,
+      formalMediaEnabled: config.formalMediaEnabled,
     });
     return;
   }
@@ -771,6 +773,7 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       ok: true, database: true, at: db.rows[0].now,
       version: config.serverVersion, webSha256: config.webSha256,
+      formalMediaEnabled: config.formalMediaEnabled,
     });
     return;
   }
@@ -865,6 +868,9 @@ async function handleRequest(req, res) {
       sendEmpty(res);
       return;
     }
+    if (!config.formalMediaEnabled && pathname.startsWith("/api/v1/device/recordings")) {
+      throw new HttpError(410, "中央正式影片已停用；錄影只保存在執行端指定位置", "FORMAL_MEDIA_DISABLED");
+    }
     if (pathname === "/api/v1/device/recordings/sessions" && req.method === "POST") {
       sendJson(res, 200, await upsertRecordingSession(uid, await readJson(req, config.maxJsonBytes)));
       return;
@@ -910,6 +916,7 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       session: browser, publicUrl: config.publicUrl, accessMode: "direct",
       serverVersion: config.serverVersion, webSha256: config.webSha256,
+      formalMediaEnabled: config.formalMediaEnabled,
     });
     return;
   }
@@ -984,8 +991,13 @@ async function handleRequest(req, res) {
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/recordings");
   if (params && req.method === "GET") {
-    sendJson(res, 200, { recordings: await listRecordings(normalizeUid(params.uid)) });
+    sendJson(res, 200, config.formalMediaEnabled
+      ? { recordings: await listRecordings(normalizeUid(params.uid)), disabled: false }
+      : { recordings: [], disabled: true });
     return;
+  }
+  if (!config.formalMediaEnabled && /^\/api\/v1\/devices\/[^/]+\/recordings\//.test(pathname)) {
+    throw new HttpError(410, "中央正式影片已停用；錄影只保存在執行端指定位置", "FORMAL_MEDIA_DISABLED");
   }
   params = routeMatch(pathname, "/api/v1/devices/:uid/recordings/:sessionId/segments");
   if (params && req.method === "GET") {
@@ -1078,15 +1090,20 @@ async function cleanupRuntimeData() {
   for (const [key, session] of liveHlsSessions) {
     if (session.touchedAt < staleTouchBefore) liveHlsSessions.delete(key);
   }
-  await pruneMedia();
+  if (config.formalMediaEnabled) await pruneMedia();
 }
 
 async function start() {
   await ensureMediaRoots();
   installFileLogger(config.serverLogRoot, { keep: 15 });
   await migrate();
-  await resumeMediaJobs();
-  await repairStalledMediaJobs();
+  if (config.formalMediaEnabled) {
+    await resumeMediaJobs();
+    await repairStalledMediaJobs();
+  } else {
+    const purge = await purgeDisabledFormalMedia();
+    console.log("Central formal media disabled; local recordings and live streaming remain active", purge);
+  }
   if (config.firestore.enabled) {
     importFirestoreDevices().catch((error) => console.error("Firestore import failed", error));
   }
@@ -1108,14 +1125,14 @@ async function start() {
   server.listen(config.port, "0.0.0.0", () => console.log(`Wuthering control API listening on :${config.port}`));
   const heartbeatTimer = setInterval(() => eventHub.heartbeat(), 20_000);
   const cleanupTimer = setInterval(() => cleanupRuntimeData().catch(console.error), 60 * 60_000);
-  const mediaRepairTimer = setInterval(() => {
-    repairStalledMediaJobs().then((summary) => {
-      if (summary.repairedSegments || summary.repairedSessions) {
-        console.warn("Media auto-repair applied", summary);
-        eventHub.emit("recording", { autoRepair: summary, at: Date.now() });
-      }
-    }).catch((error) => console.error("Media auto-repair failed", error));
-  }, 60_000);
+  const mediaRepairTimer = config.formalMediaEnabled ? setInterval(() => {
+      repairStalledMediaJobs().then((summary) => {
+        if (summary.repairedSegments || summary.repairedSessions) {
+          console.warn("Media auto-repair applied", summary);
+          eventHub.emit("recording", { autoRepair: summary, at: Date.now() });
+        }
+      }).catch((error) => console.error("Media auto-repair failed", error));
+    }, 60_000) : null;
   const discoveryTimer = setInterval(() => {
     const work = config.firestore.enabled ? importFirestoreDevices() : publishDiscovery();
     work.catch(console.error);

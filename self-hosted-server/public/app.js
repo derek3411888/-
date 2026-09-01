@@ -4,7 +4,6 @@ const state = {
   migration: null,
   selectedUid: localStorage.getItem("wuthering.selectedUid") || "",
   details: null,
-  recordings: [],
   performance: null,
   performanceRange: localStorage.getItem("wuthering.performanceRange") || "6h",
   eventSource: null,
@@ -68,12 +67,6 @@ function formatTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? "—" : date.toLocaleString("zh-TW", { hour12: false });
-}
-function duration(seconds) {
-  const total = Math.max(0, Math.round(Number(seconds) || 0));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  return `${hours ? `${hours} 小時 ` : ""}${minutes} 分`;
 }
 function formatBytes(value) {
   const bytes = Math.max(0, Number(value) || 0);
@@ -227,38 +220,16 @@ function renderPerformance(fallback = null) {
 }
 function recordingStageLabel(value) {
   return {
-    DEVICE_UPLOAD: "執行端續傳中央影片",
-    SEGMENT_PROCESSING: "中央轉換封口片段",
-    SERVER_MERGE: "中央無重編碼合併",
-    VERIFYING: "中央驗證完整影片",
-    COMPLETE: "完整影片已完成",
-    central_uploading: "執行端正在續傳中央影片",
-    central_processing: "中央正在轉換與合併",
-    copying_segments: "複製封口片段到設定位置",
-    merging: "本機無損合併",
-    copying_final: "複製完整影片到設定位置",
-    complete_upload_pending: "本機完成，中央仍待續傳",
-    finalize_waiting: "收尾等待中",
-    complete: "本機錄影收尾完成",
+    starting: "準備單檔錄影",
+    recording: "單檔錄影中",
+    stopping: "正在正常封口",
+    complete: "單一 MKV 已完成",
+    recording_interrupted: "錄影非預期中斷",
+    stop_forced: "強制停止，請檢查檔案",
+    stop_failed: "錄影停止失敗",
+    final_missing: "找不到有效單檔",
+    legacy_retained: "舊分段已原地保留",
   }[String(value ?? "")] || String(value || "等待錄影資料");
-}
-function centralRecordingProgress(item) {
-  if (item.state === "COMPLETE") return { percent: 100, stage: "COMPLETE" };
-  const expectedBytes = Number(item.expected_bytes) || 0;
-  const receivedBytes = Number(item.received_bytes) || 0;
-  const expectedSegments = Number(item.expected_segments) || 0;
-  const readySegments = Number(item.ready_segments) || 0;
-  if (expectedBytes > 0 && receivedBytes < expectedBytes) {
-    return { percent: Math.min(79, Math.floor(receivedBytes / expectedBytes * 80)), stage: "DEVICE_UPLOAD" };
-  }
-  if (expectedSegments > 0 && readySegments < expectedSegments) {
-    return { percent: Math.min(89, 80 + Math.floor(readySegments / expectedSegments * 10)), stage: "SEGMENT_PROCESSING" };
-  }
-  const stored = Number(item.progress_percent);
-  return {
-    percent: Number.isFinite(stored) && stored >= 0 ? Math.min(100, stored) : null,
-    stage: item.progress_stage || item.state,
-  };
 }
 function appendProgress(parent, percent, label, detail = "") {
   const block = document.createElement("div"); block.className = "progress-block";
@@ -830,7 +801,7 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     stateLine.append(badge, name); recordingCard.append(stateLine);
     const progressValue = Number(recording.progressPercent);
     const progress = Number.isFinite(progressValue) && progressValue >= 0 ? progressValue : null;
-    let progressDetail = recording.detail || "等待背景工具回報";
+    let progressDetail = recording.detail || "等待本機錄影狀態";
     if (Number(recording.progressTotal) > 0) {
       const unitDetail = recording.progressUnit === "segments"
         ? `${recording.progressCurrent}/${recording.progressTotal} 段`
@@ -849,7 +820,7 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
 
   const live = status.live || {};
   const liveDetail = live.detail || "裝置尚未回報直播傳輸狀態。";
-  setText("liveDeviceStatus", `${liveDetail}${/UDP/i.test(liveDetail) ? "；正式錄影仍會走 HTTPS 續傳，不影響鋤地。" : ""}`);
+  setText("liveDeviceStatus", `${liveDetail}${/UDP/i.test(liveDetail) ? "；正式錄影只寫入執行端指定位置，不會上傳中央。" : ""}`);
   $("liveDeviceStatus").className = `transport-status ${["error"].includes(live.state) ? "danger" : ["retrying"].includes(live.state) ? "warning" : "muted"}`;
 
   const eventsBody = $("eventsBody"); eventsBody.replaceChildren();
@@ -943,92 +914,10 @@ function renderSettings(settings) {
   setText("settingsMessage", message);
 }
 
-function renderRecordings() {
-  const list = $("recordingList"); list.replaceChildren();
-  if (!state.recordings.length) {
-    const empty = document.createElement("div"); empty.className = "empty"; empty.style.minHeight = "160px"; empty.textContent = "尚無中央影片副本。"; list.append(empty); return;
-  }
-  for (const item of state.recordings) {
-    const card = document.createElement("div"); card.className = "recording-item";
-    const title = document.createElement("strong"); title.textContent = item.base_name;
-    const meta = document.createElement("small"); meta.textContent = `${item.state}｜${formatTime(item.completed_at || item.created_at)}${item.duration_seconds ? `｜${duration(item.duration_seconds)}` : ""}`;
-    card.append(title, meta);
-    const progress = centralRecordingProgress(item);
-    const transfer = item.expected_bytes
-      ? `${formatBytes(item.received_bytes)}/${formatBytes(item.expected_bytes)}`
-      : item.expected_segments
-        ? `已收到 ${item.segment_count || 0}/${item.expected_segments} 段`
-        : `${item.ready_segments || 0}/${item.segment_count || 0} 段已可播放；尚待執行端回報總段數`;
-    appendProgress(card, progress.percent, recordingStageLabel(progress.stage),
-      `${item.detail || "中央錄影處理中"}｜${transfer}｜可播放 ${item.ready_segments || 0}/${item.expected_segments ?? "?"} 段`);
-    const button = document.createElement("button"); button.type = "button"; button.textContent = item.playable ? "播放完整影片" : "查看已完成片段";
-    button.addEventListener("click", () => openRecording(item));
-    card.append(button); list.append(card);
-  }
-}
-
-async function openRecording(recording) {
-  const uid = state.selectedUid;
-  if (!uid) return;
-  $("playbackCard").hidden = false;
-  setText("playbackTitle", recording.base_name);
-  setText("playbackMeta", `${recording.state}｜${recording.detail || ""}`);
-  const video = $("playbackVideo");
-  const status = $("playbackStatus");
-  const directLink = $("playbackDirectLink");
-  const segments = $("segmentList");
-  segments.replaceChildren();
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-  directLink.hidden = true;
-  status.textContent = "正在讀取可播放影片…";
-
-  const setPlaybackSource = (url, label, selectedButton = null) => {
-    for (const button of segments.querySelectorAll("button")) button.classList.toggle("active", button === selectedButton);
-    video.pause();
-    video.src = url;
-    video.load();
-    directLink.href = url;
-    directLink.hidden = false;
-    status.textContent = `${label}正在載入；若瀏覽器阻擋自動播放，請按影片上的播放鍵。`;
-    video.play().catch(() => {
-      status.textContent = `${label}已選取，請按影片上的播放鍵。`;
-    });
-  };
-  video.onloadedmetadata = () => { status.textContent = `影片已載入（${duration(video.duration)}），可以播放或拖曳進度。`; };
-  video.onplaying = () => { status.textContent = "正在播放。"; };
-  video.onerror = () => {
-    const mediaCode = video.error?.code ? `（錯誤 ${video.error.code}）` : "";
-    status.textContent = `影片載入失敗${mediaCode}；請按「直接開啟目前影片」，或稍後重試。`;
-  };
-
-  const encodedUid = encodeURIComponent(uid);
-  if (recording.playable) {
-    setPlaybackSource(`/api/v1/devices/${encodedUid}/recordings/${recording.id}/video`, "完整影片");
-  }
-  const payload = await api(`/api/v1/devices/${encodedUid}/recordings/${recording.id}/segments`);
-  let latestPlayable = null;
-  for (const item of payload.segments) {
-    const button = document.createElement("button"); button.type = "button"; button.disabled = !item.playable;
-    button.textContent = `${item.segment_index + 1}｜${item.state}`;
-    const url = `/api/v1/devices/${encodedUid}/recordings/${recording.id}/segments/${item.id}/video`;
-    button.addEventListener("click", () => setPlaybackSource(url, `第 ${item.segment_index + 1} 段`, button));
-    segments.append(button);
-    if (item.playable) latestPlayable = { url, label: `第 ${item.segment_index + 1} 段`, button };
-  }
-  if (!recording.playable && latestPlayable) {
-    setPlaybackSource(latestPlayable.url, latestPlayable.label, latestPlayable.button);
-  } else if (!recording.playable) {
-    status.textContent = "這場錄影尚未有完成上傳及轉換的片段，請稍後重讀。";
-  }
-  $("playbackCard").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
 function mergeRefreshOptions(left = {}, right = {}) {
   return {
     includeDevices: left.includeDevices !== false || right.includeDevices !== false,
-    includeRecordings: left.includeRecordings !== false || right.includeRecordings !== false,
+    includeRecordings: false,
     includePerformance: Boolean(left.includePerformance || right.includePerformance),
     reloadSnapshot: Boolean(left.reloadSnapshot || right.reloadSnapshot),
     reloadSettings: Boolean(left.reloadSettings || right.reloadSettings),
@@ -1039,7 +928,7 @@ function mergeRefreshOptions(left = {}, right = {}) {
 async function refresh(options = {}) {
   const requested = {
     includeDevices: options.includeDevices !== false,
-    includeRecordings: options.includeRecordings !== false,
+    includeRecordings: false,
     includePerformance: options.includePerformance ?? state.activeTab === "diagnostics",
     reloadSnapshot: Boolean(options.reloadSnapshot),
     reloadSettings: options.reloadSettings !== false,
@@ -1066,21 +955,17 @@ async function refresh(options = {}) {
     if (state.selectedUid) {
       const encoded = encodeURIComponent(state.selectedUid);
       const requests = [api(`/api/v1/devices/${encoded}`)];
-      if (requested.includeRecordings) requests.push(api(`/api/v1/devices/${encoded}/recordings`));
       if (requested.includePerformance) requests.push(api(`/api/v1/devices/${encoded}/performance?range=${encodeURIComponent(state.performanceRange)}`));
       const results = await Promise.all(requests);
       const details = results[0];
       let resultIndex = 1;
-      const recordings = requested.includeRecordings ? results[resultIndex++] : null;
       const performance = requested.includePerformance ? results[resultIndex++] : null;
       state.details = details;
-      if (recordings) state.recordings = recordings.recordings || [];
       if (performance) state.performance = performance;
       renderDetails({
         reloadSnapshot: requested.reloadSnapshot || selectedChanged,
         reloadSettings: requested.reloadSettings,
       });
-      if (requested.includeRecordings) renderRecordings();
       if (requested.includePerformance) renderPerformance(details.device?.status?.performance);
     }
     if (requested.admin) await refreshAdmin();
@@ -1128,7 +1013,7 @@ async function refreshAdmin() {
     ["待 ACK 命令", migration.pendingCommands],
     ["Firestore 待 ACK", migration.pendingFirestoreAcks],
     ["一致性錯誤", migration.consistencyErrors],
-    ["裝置完整流程", migration.devices.map((item) => `${item.display_name || item.uid}: ${item.completed_runs}`).join("；") || "尚無"],
+    ["裝置憑證", migration.devices.map((item) => `${item.display_name || item.uid}: ${item.credential_issued_at ? "已核發" : "等待"}`).join("；") || "尚無"],
   ];
   for (const [key, value] of rows) { const row = document.createElement("div"); const k = document.createElement("strong"); k.textContent = key; const v = document.createElement("span"); v.textContent = value; row.append(k, v); node.append(row); }
   $("cutoverButton").disabled = !migration.ready || migration.mode !== "shadow";
@@ -1270,7 +1155,7 @@ function bindEvents() {
     document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
     state.activeTab = button.dataset.tab;
     if (state.activeTab === "settings") refresh({ admin: true, reloadSettings: true }).catch((error) => toast(error.message));
-    else if (state.activeTab === "videos") refresh({ includeDevices: false, includeRecordings: true, reloadSettings: false }).catch((error) => toast(error.message));
+    else if (state.activeTab === "videos") refresh({ includeDevices: false, includeRecordings: false, reloadSettings: false }).catch((error) => toast(error.message));
     else if (state.activeTab === "diagnostics") refresh({ includeDevices: false, includeRecordings: false, includePerformance: true, reloadSettings: false }).catch((error) => toast(error.message));
   }));
   $("performanceRange").addEventListener("change", () => {
@@ -1322,7 +1207,7 @@ function bindEvents() {
   $("scheduleEnabled").addEventListener("change", refreshServerChoicesEnabled);
   $("startLiveButton").addEventListener("click", () => startLive().catch((error) => toast(error.message)));
   $("stopLiveButton").addEventListener("click", () => stopLive());
-  $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與影片均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
+  $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與直播均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
   });

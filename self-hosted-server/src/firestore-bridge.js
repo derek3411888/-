@@ -563,12 +563,8 @@ export async function migrationReadiness() {
     ? lastConsistencyErrorAt : shadowStartedAt;
   const elapsedDays = Math.max(0, (Date.now() - startedAt.valueOf()) / 86_400_000);
   const devices = await query(
-    `SELECT d.uid,d.display_name,d.last_seen,d.credential_issued_at,
-      count(rs.id) FILTER (WHERE rs.state='COMPLETE' AND rs.completed_at >= $1)::int AS completed_runs
-     FROM devices d LEFT JOIN recording_sessions rs ON rs.uid=d.uid
-     WHERE d.imported_from_firestore=true
-     GROUP BY d.uid ORDER BY d.uid`,
-    [startedAt],
+    `SELECT d.uid,d.display_name,d.last_seen,d.credential_issued_at
+     FROM devices d WHERE d.imported_from_firestore=true ORDER BY d.uid`,
   );
   const pending = await query("SELECT count(*)::int AS count FROM commands WHERE status='PENDING'");
   const firestorePending = await query(
@@ -585,7 +581,7 @@ export async function migrationReadiness() {
   const consistencyErrors = Math.max(Number(migration.consistencyErrors ?? 0), Number(shadowMismatch.rows[0].count));
   const ready = elapsedDays >= 7
     && devices.rows.length >= 1
-    && devices.rows.every((row) => row.credential_issued_at && Number(row.completed_runs) >= 1)
+    && devices.rows.every((row) => row.credential_issued_at)
     && Number(pending.rows[0].count) === 0
     && Number(firestorePending.rows[0].count) === 0
     && consistencyErrors === 0;

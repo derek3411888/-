@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.84',
-    [string]$LauncherVersion = '4.95',
-    [string]$ServerVersion = '1.0.44',
+    [string]$PayloadVersion = '4.85',
+    [string]$LauncherVersion = '4.96',
+    [string]$ServerVersion = '1.0.45',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -148,7 +148,7 @@ if (-not $SkipDocker) {
         $composeFilePath = Join-Path $projectRoot 'self-hosted-server\compose.yml'
         & docker compose --env-file $composeEnvPath -f $composeFilePath `
             exec -T api node test/integration-smoke.mjs
-        Assert-ExitCode 'Docker 控制、錄影、Range 播放與直播整合測試'
+        Assert-ExitCode 'Docker 控制、正式影片停用與直播整合測試'
     }
 } else {
     Write-Warning '已略過 Docker／網站更新；不得把本次結果視為所有元件同步完成。'

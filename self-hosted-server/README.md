@@ -1,11 +1,11 @@
 # 鳴潮自動鋤地自架控制平台
 
-這個資料夾是一套可在常開 Windows 電腦上用 Docker Desktop 執行的中央控制、診斷、直播與影片回看平台。PostgreSQL 只存索引與控制資料；影片、快照與 Log 預設放在 D 槽可直接管理的 Windows 資料夾，資料庫本體使用 Docker named volume；備份預設獨立放在 E 槽。
+這個資料夾是一套可在常開 Windows 電腦上用 Docker Desktop 執行的中央控制、診斷與直播平台。PostgreSQL 只存控制資料；快照與 Log 預設放在 D 槽可直接管理的 Windows 資料夾，資料庫本體使用 Docker named volume；備份預設獨立放在 E 槽。正式錄影不進中央主機，只保存在各執行端設定的位置。
 
 ## 服務與公開連接埠
 
 - `postgres`：PostgreSQL，只有 Compose 內部網路可用。
-- `api`：控制 API、手機版網站、影片處理與 HLS 保護代理，只有 Compose 內部網路可用。
+- `api`：控制 API、手機版網站與 HLS 保護代理，只有 Compose 內部網路可用。
 - `mediamtx`：接受裝置端加密 SRT，HLS 埠不公開。
 - `caddy`：公開 `TCP 80/443`，自動取得 HTTPS 憑證。
 - `backup`：每日與每週備份、實際還原測試工具。
@@ -27,7 +27,7 @@
 
 1. 確認固定公網 IPv4，並在路由器把上述連接埠轉發到這台常開電腦。`PUBLIC_HOSTNAME` 只為舊網址相容保留；新版裝置與主要網站不依賴 DDNS。
 2. 安裝並啟動 Docker Desktop（WSL 2 backend）。
-3. 準備兩個位置：預設中央影片／快照／Log 為 `D:\WutheringControlServer\data`，資料庫備份為 `E:\WutheringControlBackups`。
+3. 準備兩個位置：預設中央快照／Log 為 `D:\WutheringControlServer\data`，資料庫備份為 `E:\WutheringControlBackups`。
 4. Docker Desktop 的 PostgreSQL named volume 與容器映像位於 Docker 磁碟映像內。到 **Settings > Resources > Advanced > Disk image location** 將它移到 `D:\DockerDesktopData`，套用並等待 Docker 重啟；安裝工具會檢查，避免資料庫實際仍落在 E 或 C 槽。
 5. 在 PowerShell 執行：
 
@@ -46,25 +46,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - 安裝後執行 `Manage-Server.ps1 -Action ImportFirestore`；伺服器會匯入既有 UID、nonce、設定 revision 與實際設定，並把自架網址以 discovery 欄位寫回原 client 文件。
 - Payload 自動產生個別裝置 token，以目前 Windows 使用者的 DPAPI 加密保存，不需輸入配對碼。
-- `shadow` 期間 Firestore 是唯一命令與設定來源；自架端只接收鏡像心跳、事件、快照、影片與直播租約，網站控制按鈕停用。
-- 必須連續 7 天無一致性錯誤、Firestore 命令／設定均已 ACK，而且每台至少有一場完整中央影片，網站才允許切換。
+- `shadow` 期間 Firestore 是唯一命令與設定來源；自架端只接收鏡像心跳、事件、快照與直播租約，網站控制按鈕停用。
+- 必須連續 7 天無一致性錯誤、Firestore 命令／設定均已 ACK，且所有匯入裝置都已取得個別憑證，網站才允許切換；正式發布的整合測試會另驗證加密 SRT 到 HLS。
 - 切換後 7 天內每 15 分鐘保留一次低頻 Firestore 緊急通道；到期後固定 Firestore 讀寫停止。自架 API 本身仍能把裝置切回 `fallback`。
 
 新電腦第一次啟動 Payload 會直接自動註冊，不需要配對碼或註冊窗口。註冊後仍使用每台裝置各自的隨機憑證呼叫裝置 API，憑證由 Windows DPAPI 加密保存。
 
-新版 Payload 內建固定公網 HTTPS 入口 `https://220.135.218.98` 作為全新安裝預設，因此第三台電腦即使位於不同住家、行動網路或其他外網，也不必先匯入 Firestore、不必掛載 Windows 網路磁碟。裝置只會主動向中央主機連線：控制、快照與錄影片段使用 TCP 443；直播先嘗試家中 `LOCAL_SRT_HOST`，外網無法到達時自動改用 `PUBLIC_SRT_HOST` 的 UDP 8890。
+新版 Payload 內建固定公網 HTTPS 入口 `https://220.135.218.98` 作為全新安裝預設，因此第三台電腦即使位於不同住家、行動網路或其他外網，也不必先匯入 Firestore。裝置只會主動向中央主機連線：控制與快照使用 TCP 443；直播先嘗試家中 `LOCAL_SRT_HOST`，外網無法到達時自動改用 `PUBLIC_SRT_HOST` 的 UDP 8890。
 
-外部網路若封鎖 UDP 8890，正式影片的 HTTPS 續傳與網站回看仍會正常，只有即時畫面無法建立。網站會顯示裝置正在使用的直播路徑及「公網 UDP 可能被封鎖」，不再只顯示無限重新連線。執行端不需要任何入站連接埠；路由器轉發只設在中央 Docker 主機。
+外部網路若封鎖 UDP 8890，控制、快照與本機正式錄影仍會正常，只有即時畫面無法建立。網站會顯示裝置正在使用的直播路徑及「公網 UDP 可能被封鎖」，不再只顯示無限重新連線。執行端不需要任何入站連接埠；路由器轉發只設在中央 Docker 主機。
 
-## 影片與容量規則
+## 直播與本機錄影
 
-- 執行端仍以每 5 分鐘 MKV 安全封口，本機／網路目的地流程不變。
-- 封口片段以 HTTPS、SHA-256 與 1 MiB 可續傳區塊上傳，預設每台 8 Mbps；直播期間降為 2 Mbps。
-- 網站會顯示執行端續傳、中央片段轉換、中央無重編碼合併、驗證、本機分段複製與本機合併進度；主程式結束後由背景 worker 繼續回報。
+- 正式錄影固定為單一 MKV，從開始便直接寫入執行端設定的本機、映射磁碟或 UNC 資料夾。
+- 不再產生五分鐘分段、中央 HTTPS 上傳、MP4 轉換、背景合併或中央影片回看；`FORMAL_MEDIA_ENABLED` 預設且正式環境固定為 `false`。
+- 正常停止會向 FFmpeg 送出 Ctrl+C 並等待最多 30 秒完成 Matroska 索引。指定位置不可寫時只略過本次錄影，鋤地主流程照常執行。
+- 網站的診斷頁只顯示目前單一 MKV、指定位置與封口結果；「直播」頁只負責近即時畫面。
 - 直播畫質可逐台設定：省流量 `720p/12fps/1.5 Mbps`、預設平衡 `720p/30fps/3.5 Mbps`、流暢 `720p/60fps/6 Mbps`。所有畫質與正式錄影都優先自動選用 NVENC、QSV 或 AMF，無可用硬體編碼器時才回退 libx264，避免錄影完全失敗。
-- 中央以 `-c copy` 轉為 MP4；流程中可以逐段觀看，結束後原子發布單一 MP4。
-- 每台保留最近 5 場。中央可用空間低於 20 GB 時，先刪最舊的中央完整副本並產生警示，絕不刪執行端原檔。
-- 中央失聯、上傳中斷或轉檔失敗不會阻塞鋤地。本機 staging 會保留並在背景或下次啟動續傳。
+- 各執行端依本機設定保留最近數場；中央主機不保存正式影片。直播快取由 MediaMTX 管理，觀看租約結束後自動停止。
 
 ## 效能分析與保留
 
@@ -72,7 +71,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 - 採集 CPU、遊戲／OKWW／LRMCAI／FFmpeg 個別 CPU 與記憶體、GPU／VRAM／溫度／功耗／編碼器、RAM、磁碟、網路，以及正式錄影與直播的 FFmpeg fps／丟幀進度。
 - 2 秒原始資料只放在執行端 `<程式資料夾>\效能分析` 並保留 24 小時；心跳只把完成的每分鐘彙整送到自架 API，不寫入 Firestore。
 - PostgreSQL 效能分鐘資料保留 14 天；同一分鐘採 `(uid, bucket_start)` 原子 upsert，網路重送不會產生重複資料。網站圖上的紅色虛線對應最近錯誤事件，可直接查看故障前後趨勢。
-- 診斷頁預設以效能摘要與四張趨勢圖為主；錄影位置、失敗保留路徑及上傳進度預設收起，需要時才展開。
+- 診斷頁預設以效能摘要與四張趨勢圖為主；本機單檔錄影位置與封口狀態預設收起，需要時才展開。
 
 ## 日常管理與更新
 
@@ -99,7 +98,7 @@ GitHub Pages 公司控制台與自架一般控制台都有「通知目前 Codex 
 
 由於 GitHub Pages 控制台目前沒有登入驗證，自訂訊息會經過 Firestore，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。橋接 Log 只記錄 nonce、長度、指紋與結果，不記錄訊息本文。
 
-專案根目錄的 `完整發布更新.ps1` 是正式發布唯一入口；舊的 `編譯打包.bat` 也只會呼叫它。它會強制同次產生 Launcher、Payload、網站與 Docker 套件，推送 GitHub 後等待遠端 manifest 與雜湊一致，再從遠端套件部署 Docker、核對公開網站版本並執行控制／影片／直播整合測試。任何一段失敗都不會顯示「完整發布完成」。
+專案根目錄的 `完整發布更新.ps1` 是正式發布唯一入口；舊的 `編譯打包.bat` 也只會呼叫它。它會強制同次產生 Launcher、Payload、網站與 Docker 套件，推送 GitHub 後等待遠端 manifest 與雜湊一致，再從遠端套件部署 Docker、核對公開網站版本並執行控制／正式影片停用／直播整合測試。任何一段失敗都不會顯示「完整發布完成」。
 
 ## 驗證
 
@@ -120,4 +119,4 @@ npm.cmd test
 docker compose --env-file .env -f compose.yml config --quiet
 ```
 
-`test/integration-smoke.mjs` 供完整測試環境驗證註冊、命令、ACK、設定、快照、MKV 續傳、MP4 Range 播放，以及加密 SRT 到 HLS 的整條鏈路。
+`test/integration-smoke.mjs` 供完整測試環境驗證註冊、命令、ACK、設定、快照、中央錄影 API 拒絕上傳／播放，以及加密 SRT 到 HLS 的整條鏈路。

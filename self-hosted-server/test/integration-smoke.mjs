@@ -4,7 +4,6 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { assertChildPath, config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
-import { repairStalledMediaJobs } from "../src/media.js";
 
 const base = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
 const uid = `smoke-device-${Date.now()}`;
@@ -57,7 +56,14 @@ async function waitFor(check, message, timeoutMs = 30_000) {
 }
 
 async function main() {
-  assert((await request("/health/ready")).ok, "ready endpoint failed");
+  const ready = await request("/health/ready");
+  assert(ready.ok, "ready endpoint failed");
+  assert(ready.formalMediaEnabled === false, "central formal media is not disabled");
+  const staleRecordingRows = await query("SELECT count(*)::int AS count FROM recording_sessions");
+  assert(Number(staleRecordingRows.rows[0]?.count) === 0,
+    "disabled central media startup did not clear recording indexes");
+  assert((await fs.readdir(config.mediaRoot)).length === 0,
+    "disabled central media startup did not clear the media directory");
   const migration = await query(
     "SELECT value->>'mode' AS mode,value->>'epoch' AS epoch FROM system_settings WHERE key='migration'",
   );
@@ -245,91 +251,21 @@ async function main() {
   const snapshot = await request(`/api/v1/devices/${encodeURIComponent(uid)}/snapshot`, { browser: true, raw: true });
   assert((await snapshot.arrayBuffer()).byteLength === jpeg.length, "snapshot round-trip failed");
 
-  await fs.mkdir(smokeFixtureRoot, { recursive: true });
-  const ffmpeg = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-    "-i", "testsrc=size=320x180:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-    "-f", "matroska", mediaPath], { encoding: "utf8" });
-  assert(ffmpeg.status === 0, `fixture ffmpeg failed: ${ffmpeg.stderr}`);
-  const media = await fs.readFile(mediaPath);
-  const clientSessionId = `wuthering_auto_recording_20260825_151700_${Date.now()}`;
-  const recording = await request("/api/v1/device/recordings/sessions", {
-    method: "POST", device: true,
-    body: { clientSessionId, baseName: "wuthering_auto_recording_20260825_151700",
-      startedAt: new Date().toISOString(), expectedSegments: 1, expectedBytes: media.length },
+  assert(config.formalMediaEnabled === false, "formal media must be disabled by default");
+  const rejectedRecordingUpload = await fetch(`${base}/api/v1/device/recordings/sessions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${deviceToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ clientSessionId: `wuthering_auto_recording_20260825_151700_${Date.now()}`,
+      baseName: "wuthering_auto_recording_20260825_151700" }),
   });
-  const segment = await request(`/api/v1/device/recordings/sessions/${recording.id}/segments`, {
-    method: "POST", device: true,
-    body: { index: 0, name: "segment_00000.mkv", sizeBytes: media.length,
-      sha256: crypto.createHash("sha256").update(media).digest("hex") },
-  });
-  const duplicateSegment = await request(`/api/v1/device/recordings/sessions/${recording.id}/segments`, {
-    method: "POST", device: true,
-    body: { index: 0, name: "segment_00000.mkv", sizeBytes: media.length,
-      sha256: crypto.createHash("sha256").update(media).digest("hex") },
-  });
-  assert(duplicateSegment.id === segment.id, "identical duplicate segment was not idempotent");
-  const conflictingSegment = await fetch(`${base}/api/v1/device/recordings/sessions/${recording.id}/segments`, {
-    method: "POST", headers: { Authorization: `Bearer ${deviceToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ index: 0, name: "segment_00000.mkv", sizeBytes: media.length, sha256: "0".repeat(64) }),
-  });
-  assert(conflictingSegment.status === 409, "conflicting duplicate segment was accepted");
-
-  const corrupted = Buffer.from(media);
-  corrupted[corrupted.length - 1] ^= 0xff;
-  const corruptedUpload = await fetch(`${base}/api/v1/device/recordings/segments/${segment.id}`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${deviceToken}`, "Content-Type": "application/octet-stream",
-      "Content-Range": `bytes 0-${corrupted.length - 1}/${corrupted.length}` },
-    body: corrupted,
-  });
-  assert(corruptedUpload.status === 422, "corrupted segment did not fail SHA-256 validation");
-  const resetState = await request(`/api/v1/device/recordings/segments/${segment.id}`, { device: true });
-  assert(Number(resetState.received_bytes) === 0, "corrupted segment did not reset resumable offset");
-
-  const middle = Math.floor(media.length / 2);
-  await request(`/api/v1/device/recordings/segments/${segment.id}`, {
-    method: "PUT", device: true, body: media.subarray(0, middle),
-    headers: { "Content-Type": "application/octet-stream", "Content-Range": `bytes 0-${middle - 1}/${media.length}` },
-  });
-  const interruptedState = await request(`/api/v1/device/recordings/segments/${segment.id}`, { device: true });
-  assert(Number(interruptedState.received_bytes) === middle, "resumable offset was not persisted");
-  const wrongOffset = await fetch(`${base}/api/v1/device/recordings/segments/${segment.id}`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${deviceToken}`, "Content-Type": "application/octet-stream",
-      "Content-Range": `bytes 0-${middle - 1}/${media.length}` },
-    body: media.subarray(0, middle),
-  });
-  assert(wrongOffset.status === 409, "overlapping upload offset was accepted");
-  await request(`/api/v1/device/recordings/segments/${segment.id}`, {
-    method: "PUT", device: true, body: media.subarray(middle),
-    headers: { "Content-Type": "application/octet-stream",
-      "Content-Range": `bytes ${middle}-${media.length - 1}/${media.length}` },
-  });
-  await waitFor(async () => (await request(`/api/v1/device/recordings/segments/${segment.id}`, { device: true })).state === "READY",
-    "segment remux did not finish");
-  await query(
-    `UPDATE recording_sessions SET state='ERROR',detail='smoke forced stale error',
-       updated_at=now()-interval '3 minutes' WHERE id=$1`, [recording.id],
-  );
-  const repair = await repairStalledMediaJobs();
-  assert(repair.repairedSessions === 1, "stale recording session was not auto-repaired");
-  await waitFor(async () => (await request(`/api/v1/device/recordings/sessions/${recording.id}`, { device: true })).state === "COMPLETE",
-    "auto-repaired recording merge did not finish");
+  assert(rejectedRecordingUpload.status === 410, "disabled central recording upload was accepted");
   const recordingList = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings`, { browser: true });
-  const completedRecording = recordingList.recordings.find((item) => item.id === recording.id);
-  assert(completedRecording?.progress_percent === 100
-    && Number(completedRecording.expected_bytes) === media.length
-    && Number(completedRecording.received_bytes) === media.length,
-  "recording list did not expose complete progress and byte totals");
-  const video = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings/${recording.id}/video`, {
-    browser: true, raw: true, headers: { Range: "bytes=0-99" },
+  assert(recordingList.disabled === true && recordingList.recordings.length === 0,
+    "disabled central recording list did not return an explicit empty result");
+  const rejectedVideo = await fetch(`${base}/api/v1/devices/${encodeURIComponent(uid)}/recordings/disabled/video`, {
+    headers: { Cookie: cookie },
   });
-  assert(video.status === 206 && (await video.arrayBuffer()).byteLength === 100, "HTTP Range playback failed");
-  const videoHead = await request(`/api/v1/devices/${encodeURIComponent(uid)}/recordings/${recording.id}/video`, {
-    method: "HEAD", browser: true, raw: true,
-  });
-  assert(videoHead.status === 200 && Number(videoHead.headers.get("content-length")) > 0,
-    "HTTP HEAD playback probe failed");
+  assert(rejectedVideo.status === 410, "disabled central video playback did not return 410");
 
   const lease = await request(`/api/v1/live/${encodeURIComponent(uid)}/lease`, { method: "POST", browser: true, body: {} });
   const liveHeartbeat = await request("/api/v1/device/heartbeat", {
@@ -407,10 +343,10 @@ async function main() {
   assert(String(finalMigration.rows[0]?.mode ?? "") === originalMigrationMode
     && String(finalMigration.rows[0]?.epoch ?? "") === originalMigrationEpoch,
   "integration smoke changed the live migration mode or epoch");
-  console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), recordingId: recording.id,
+  console.log(JSON.stringify({ ok: true, uid, commandNonce: Number(stop.nonce), formalMediaDisabled: true,
     directBrowserAccess: true, automaticEnrollment: true, existingEnrollmentReuse: true, csrfRejected: true,
     codexSupportStatus: true, codexSupportInvalidModeRejected: true,
-    videoRange: true, recordingProgress: true, mediaAutoRepair: true, liveHls: true, liveHlsResources: true,
+    recordingUploadRejected: true, recordingPlaybackRejected: true, liveHls: true, liveHlsResources: true,
     invalidSrtRejected: true, serverLog: true, migrationIsolation: true }));
 }
 

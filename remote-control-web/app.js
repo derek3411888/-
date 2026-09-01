@@ -29,7 +29,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p4.84-l4.95-s1.0.44";
+const WEB_BUILD = "p4.85-l4.96-s1.0.45";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -1969,33 +1969,26 @@ function renderSnapshot() {
 
 function recordingStateLabel(state) {
   const labels = {
-    starting: "準備啟動錄影",
-    recording: "錄影中",
-    segments_synced: "錄影中（分段已同步）",
-    sync_waiting: "目的端暫時不可用",
-    stopping: "正在停止並封口",
-    finalize_pending: "等待背景收尾",
-    finalize_waiting: "收尾等待中",
-    merging: "正在無損合併",
-    merge_waiting: "合併失敗／等待處理",
-    copying_final: "正在複製完整影片",
-    copy_waiting: "目的端複製失敗／等待重試",
-    complete: "已成功完成",
+    starting: "準備單檔錄影",
+    recording: "單檔錄影中",
+    stopping: "正在正常封口",
+    complete: "單一 MKV 已完成",
+    recording_interrupted: "錄影非預期中斷",
+    stop_forced: "強制停止，請檢查檔案",
+    final_missing: "找不到有效單檔",
+    legacy_retained: "舊分段已原地保留",
     start_failed: "錄影啟動失敗",
     stop_failed: "錄影停止失敗",
-    worker_missing: "缺少背景收尾工具",
-    worker_start_failed: "背景收尾工具啟動失敗",
-    worker_error: "背景收尾發生錯誤",
   };
   return labels[state] || (state ? state : "尚無資料");
 }
 
 function recordingStateClass(state, active) {
-  if (active || ["starting", "recording", "segments_synced", "stopping", "finalize_pending", "merging", "copying_final"].includes(state)) {
+  if (active || ["starting", "recording", "stopping"].includes(state)) {
     return "running";
   }
   if (state === "complete") return "success";
-  if (["start_failed", "stop_failed", "worker_missing", "worker_start_failed", "worker_error"].includes(state)) {
+  if (["start_failed", "stop_failed", "stop_forced", "final_missing", "recording_interrupted"].includes(state)) {
     return "error";
   }
   if (state.includes("waiting")) return "warning";
@@ -2057,7 +2050,7 @@ function renderRecordingStatus() {
     recordingStatusBadge.className = "recording-status-badge idle";
     recordingStatusBadge.textContent = "尚無資料";
     recordingStatusUpdated.textContent = "請先選擇一台電腦（點此展開）";
-    recordingStatusNote.textContent = "選擇電腦後會顯示成功、失敗原因與實際保留位置。";
+    recordingStatusNote.textContent = "選擇電腦後會顯示單一 MKV 狀態與實際保存位置。";
     return;
   }
 
@@ -2067,7 +2060,6 @@ function renderRecordingStatus() {
   const state = String(readField(data, "recordingState", "") || "");
   const detail = String(readField(data, "recordingStateDetail", "") || "");
   const updatedAt = toMillis(readField(data, "recordingStateUpdatedAt", 0));
-  const autoMerge = Boolean(readField(data, "recordingAutoMerge", true));
 
   if (!available && !state) {
     recordingStatusBadge.className = "recording-status-badge idle";
@@ -2086,30 +2078,20 @@ function renderRecordingStatus() {
     ? `最後更新：${fmtTs(updatedAt)}（${fmtAge(updatedAt)}）｜點此展開`
     : "狀態時間未知｜點此展開";
   recordingStatusNote.textContent = detail || (state === "complete"
-    ? "目的端檔案已完成驗證。"
-    : "背景工具尚未提供詳細說明。");
+    ? "單一 MKV 已在執行端指定位置完成封口。"
+    : "等待執行端回報單檔錄影狀態。");
 
   const resultPath = readField(data, "recordingResultPath", "");
   const finalPath = readField(data, "recordingFinalPath", "");
-  const segmentPath = readField(data, "recordingDestinationSegmentsDir", "");
   const destinationDir = readField(data, "recordingDestinationDir", "");
-  const failureStorage = readField(data, "recordingFailureStorage", readField(data, "recordingLocalSessionDir", ""));
-  const workerLogPath = readField(data, "recordingWorkerLogPath", "");
   const completed = state === "complete";
 
   addRecordingPath(
-    autoMerge ? (completed ? "成功的完整影片" : "預定完整影片") : (completed ? "成功的分段資料夾" : "預定分段資料夾"),
-    resultPath || (autoMerge ? finalPath : segmentPath),
-    completed ? "背景工具已驗證完成" : "尚未顯示完成前，請勿當成最終成品",
+    completed ? "完成的單一 MKV" : "目前單一 MKV",
+    resultPath || finalPath,
+    completed ? "FFmpeg 已正常封口" : "錄影中或尚待正常封口",
   );
   addRecordingPath("設定的輸出資料夾", destinationDir);
-  if (autoMerge && segmentPath && segmentPath !== resultPath) {
-    addRecordingPath("目的端五分鐘分段", segmentPath, "合併成功後會自動清理；失敗時可逐段播放");
-  }
-  if (!completed) {
-    addRecordingPath("本機暫存／失敗保留位置", failureStorage, "網路、合併或複製失敗時，分段會保留在這裡");
-  }
-  addRecordingPath("錄影背景工具 log", workerLogPath);
 }
 
 function runtimeLevelClass(level) {
