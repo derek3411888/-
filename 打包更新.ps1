@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.87',
-    [string]$LauncherVersion = '4.98',
-    [string]$ServerVersion = '1.0.47'
+    [string]$PayloadVersion = '4.88',
+    [string]$LauncherVersion = '4.99',
+    [string]$ServerVersion = '1.0.48'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -219,6 +219,8 @@ Invoke-AhkValidate $payloadRuntime '測試\ScreenRecordingDirectOutputPolicyTest
 Invoke-AhkTest $payloadRuntime '測試\ScreenRecordingDirectOutputPolicyTest.ahk' '單檔錄影策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\InteractiveDesktopGuardTest.ahk' '鎖定畫面守門回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\ForegroundBlockerPolicyTest.ahk' 'Windows 通知前景阻塞策略測試語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\ForegroundBlockerPolicyTest.ahk' 'Windows 通知前景阻塞策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHealingPolicyTest.ahk' '自動修復策略測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHealingPolicyTest.ahk' '自動修復策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\GameReadyLoadingGracePolicyTest.ahk' '遊戲載入寬限策略測試語法 validate'
@@ -314,7 +316,7 @@ New-FilteredZip 'payload' 'payload.zip' @(
 )
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
-    'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk',
+    'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk', 'ForegroundBlockerPolicy.ahk',
     'ScreenRecordingEncoderPolicy.ahk', 'PerformanceTelemetry.ahk', 'SupportLogContext.ahk',
     'PerformanceTelemetryWorker.ps1', 'tools/PresentMon/LICENSE.txt',
     'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'

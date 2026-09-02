@@ -33,6 +33,7 @@ catch
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include InteractiveDesktopGuard.ahk
+#Include ForegroundBlockerPolicy.ahk
 #Include ScreenRecordingEncoderPolicy.ahk
 #Include PerformanceTelemetry.ahk
 #Include SupportLogContext.ahk
@@ -113,6 +114,8 @@ global LAST_RESTART_STAGE := ""
 global LAST_RESTART_RECOVERY := ""
 global LAST_RESTART_PROCESS_SNAPSHOT := ""
 global LAST_RESTART_LRMC_STATE := ""
+global LAST_INPUT_ACTIVATION_BLOCKER_KIND := ""
+global LAST_INPUT_ACTIVATION_BLOCKER_DETAIL := ""
 global MAX_RESTART_COUNT := 10
 global PROCESS_DETECT_RETRY_COUNT := 6
 global PROCESS_DETECT_RETRY_DELAY_MS := 800
@@ -120,7 +123,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.98"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.99"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -4190,6 +4193,139 @@ DescribeWindowForInputLog(hwnd) {
     }
 }
 
+InspectForegroundBlocker(hwnd := 0) {
+    if !hwnd
+        try hwnd := DllCall("user32\GetForegroundWindow", "ptr")
+    state := {
+        hwnd: hwnd,
+        kind: "",
+        processName: "",
+        className: "",
+        title: "",
+        pid: 0,
+        sessionId: -1,
+        inspectError: ""
+    }
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        return state
+
+    try state.pid := WinGetPID("ahk_id " hwnd)
+    catch as e
+        state.inspectError .= "pid_query_failed:" e.Message
+    try state.processName := WinGetProcessName("ahk_id " hwnd)
+    catch as e
+        state.inspectError .= (state.inspectError != "" ? ";" : "")
+            . "process_query_failed:" e.Message
+    try state.className := WinGetClass("ahk_id " hwnd)
+    catch as e
+        state.inspectError .= (state.inspectError != "" ? ";" : "")
+            . "class_query_failed:" e.Message
+    try state.title := WinGetTitle("ahk_id " hwnd)
+    catch as e
+        state.inspectError .= (state.inspectError != "" ? ";" : "")
+            . "title_query_failed:" e.Message
+    state.sessionId := GetProcessSessionIdForInputLog(state.pid)
+    state.kind := ForegroundBlockerClassifyIdentity(
+        state.processName, state.className, state.title)
+    return state
+}
+
+TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail := "") {
+    static lastAttemptHwnd := 0
+    static lastAttemptTick := 0
+
+    detail := "not_applicable"
+    blocker := InspectForegroundBlocker()
+    if (blocker.kind != "windows_notification" || blocker.hwnd = targetHwnd)
+        return "not_applicable"
+
+    currentPid := DllCall("kernel32\GetCurrentProcessId", "uint")
+    currentSession := GetProcessSessionIdForInputLog(currentPid)
+    targetPid := 0
+    try targetPid := WinGetPID("ahk_id " targetHwnd)
+    targetSession := GetProcessSessionIdForInputLog(targetPid)
+    if (currentSession < 0 || blocker.sessionId < 0 || targetSession < 0
+        || currentSession != blocker.sessionId || currentSession != targetSession) {
+        detail := "session_mismatch current=" currentSession
+            . " blocker=" blocker.sessionId " target=" targetSession
+        return "blocked_no_action"
+    }
+
+    nowTick := MonotonicTickMs()
+    if (blocker.hwnd = lastAttemptHwnd && nowTick - lastAttemptTick < 5000) {
+        detail := "cooldown hwnd=" blocker.hwnd
+        return "cooldown"
+    }
+    lastAttemptHwnd := blocker.hwnd
+    lastAttemptTick := nowTick
+
+    escapeDown := false
+    escapeUp := false
+    escapeDownError := 0
+    escapeUpError := 0
+    closePosted := false
+    closeError := 0
+    identityStable := false
+    previousCritical := Critical("On")
+    try {
+        ; 在送訊息前再做一次 HWND 與三欄身分驗證，避免 TOCTOU 誤碰其他視窗。
+        if (DllCall("user32\GetForegroundWindow", "ptr") = blocker.hwnd) {
+            verified := InspectForegroundBlocker(blocker.hwnd)
+            identityStable := (verified.kind = "windows_notification")
+        }
+        if identityStable {
+            DllCall("kernel32\SetLastError", "uint", 0)
+            escapeDown := DllCall("user32\PostMessageW", "ptr", blocker.hwnd,
+                "uint", 0x0100, "uptr", 0x1B, "ptr", 0x00010001, "int") ? true : false
+            escapeDownError := escapeDown ? 0 : A_LastError
+            DllCall("kernel32\SetLastError", "uint", 0)
+            escapeUp := DllCall("user32\PostMessageW", "ptr", blocker.hwnd,
+                "uint", 0x0101, "uptr", 0x1B, "ptr", 0xC0010001, "int") ? true : false
+            escapeUpError := escapeUp ? 0 : A_LastError
+        }
+    } finally {
+        Critical(previousCritical)
+    }
+
+    if !identityStable {
+        detail := "identity_changed_before_send hwnd=" blocker.hwnd
+        return "identity_changed"
+    }
+
+    RawSleep(220)
+    afterEscape := InspectForegroundBlocker()
+    if (afterEscape.hwnd = blocker.hwnd && afterEscape.kind = "windows_notification") {
+        previousCritical := Critical("On")
+        try {
+            if (DllCall("user32\GetForegroundWindow", "ptr") = blocker.hwnd) {
+                verified := InspectForegroundBlocker(blocker.hwnd)
+                if (verified.kind = "windows_notification") {
+                    ; WM_CLOSE 只送給已再次精確驗證的通知視窗，不終止 ShellExperienceHost。
+                    DllCall("kernel32\SetLastError", "uint", 0)
+                    closePosted := DllCall("user32\PostMessageW", "ptr", blocker.hwnd,
+                        "uint", 0x0010, "uptr", 0, "ptr", 0, "int") ? true : false
+                    closeError := closePosted ? 0 : A_LastError
+                }
+            }
+        } finally {
+            Critical(previousCritical)
+        }
+        RawSleep(280)
+    }
+
+    after := InspectForegroundBlocker()
+    released := (!WinExist("ahk_id " blocker.hwnd)
+        || after.hwnd != blocker.hwnd || after.kind != "windows_notification")
+    detail := "hwnd=" blocker.hwnd " process=" blocker.processName
+        . " class=" blocker.className " title=" blocker.title
+        . " escape=" escapeDown "/" escapeDownError "," escapeUp "/" escapeUpError
+        . " close=" closePosted "/" closeError
+        . " released=" (released ? 1 : 0) " afterForeground=" after.hwnd
+        . " context=" context
+    WriteLog("Windows 通知前景阻塞處理：" detail, "WARN")
+    return released ? "released" : "attempted"
+}
+
 RestoreMinimizedWindowPreservingPlacement(hwnd, context := "", &reason := "") {
     reason := ""
     target := "ahk_id " hwnd
@@ -4314,9 +4450,12 @@ TryActivateWindowByVerifiedCaptionClick(hwnd, context := "", &detail := "") {
 
 ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPolicy := "family") {
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+    global LAST_INPUT_ACTIVATION_BLOCKER_KIND, LAST_INPUT_ACTIVATION_BLOCKER_DETAIL
 
     LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
     LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
+    LAST_INPUT_ACTIVATION_BLOCKER_KIND := ""
+    LAST_INPUT_ACTIVATION_BLOCKER_DETAIL := ""
     if !hwnd || !WinExist("ahk_id " hwnd)
         return false
 
@@ -4356,6 +4495,22 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
             WriteLog("視窗前景已確認為同一互動視窗群組：relation=" relation
                 " target=" hwnd " foreground=" foregroundHwnd " | context=" context)
         return true
+    }
+
+    notificationReleaseDetail := ""
+    notificationReleaseStatus := TryReleaseKnownWindowsNotificationForeground(
+        hwnd, context, &notificationReleaseDetail)
+    if (notificationReleaseStatus != "not_applicable") {
+        try WinActivate(target)
+        if WaitForTargetForegroundWindow(hwnd,
+            Min(650, Max(0, deadline - MonotonicTickMs())), relationPolicy) {
+            relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+            WriteLog("視窗前景強化成功：mode=WindowsNotificationRelease"
+                . " relation=" relation " target=" hwnd " foreground=" foregroundHwnd
+                . " release=" notificationReleaseStatus
+                . " detail=" notificationReleaseDetail " | context=" context, "WARN")
+            return true
+        }
     }
 
     ; ShellExperienceHost 的通知視窗有時會長時間保有 foreground，並以拒絕存取
@@ -4491,6 +4646,12 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
     }
 
     currentForeground := DllCall("user32\GetForegroundWindow", "ptr")
+    blockerState := InspectForegroundBlocker(currentForeground)
+    LAST_INPUT_ACTIVATION_BLOCKER_KIND := blockerState.kind
+    LAST_INPUT_ACTIVATION_BLOCKER_DETAIL := blockerState.kind != ""
+        ? "hwnd=" blockerState.hwnd " process=" blockerState.processName
+            . " class=" blockerState.className " title=" blockerState.title
+        : ""
     finalDesktopState := GetInteractiveDesktopState()
     if !finalDesktopState.ok {
         LAST_INPUT_ACTIVATION_FAILURE_CODE := "INTERACTIVE_DESKTOP_UNAVAILABLE"
@@ -4518,6 +4679,8 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
         " setForeground=" foregroundResult "/" foregroundError
         " switchToThisWindow=" switchAttempted "/" switchError
         " captionClick=" captionClickUsed "/" captionClickDetail
+        " notificationRelease=" notificationReleaseStatus "/" notificationReleaseDetail
+        " blocker=" LAST_INPUT_ACTIVATION_BLOCKER_KIND
         " altPulse=" altPulseUsed "/" altPulseReason
         " targetGui={" DescribeGuiThreadForInputLog(hwnd) "}"
         " foregroundGui={" DescribeGuiThreadForInputLog(currentForeground) "}"
@@ -4544,8 +4707,11 @@ IsTargetWindowAtScreenPoint(hwnd, screenX, screenY, &hitHwnd := 0, &relation := 
 
 PrepareVerifiedWindowForInput(hwnd, expectedPid := 0, context := "", &reason := "") {
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
+    global LAST_INPUT_ACTIVATION_BLOCKER_KIND, LAST_INPUT_ACTIVATION_BLOCKER_DETAIL
     LAST_INPUT_ACTIVATION_FAILURE_CODE := ""
     LAST_INPUT_ACTIVATION_FAILURE_DETAIL := ""
+    LAST_INPUT_ACTIVATION_BLOCKER_KIND := ""
+    LAST_INPUT_ACTIVATION_BLOCKER_DETAIL := ""
     reason := ""
     if !hwnd || !WinExist("ahk_id " hwnd) {
         reason := "window_missing"
@@ -7581,6 +7747,7 @@ WaitForSelfHealingCooldown(policy, reasonCode, stage, reason) {
 RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNSPECIFIED", stage := "未指定") {
     global LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE, LAST_RESTART_RECOVERY
     global LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE, CRASH_RESTART_MODE
+    global LAST_INPUT_ACTIVATION_BLOCKER_KIND, LAST_INPUT_ACTIVATION_BLOCKER_DETAIL
 
     reason := Trim(reason, " `t`r`n")
     if (reason = "")
@@ -7634,6 +7801,17 @@ RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNS
     if IsForegroundInputFailureCode(reasonCode) {
         foregroundStreak := IncrementForegroundInputFailureStreak(
             "code=" reasonCode " | stage=" stage)
+        if ForegroundBlockerShouldWaitWithoutRecreate(
+            LAST_INPUT_ACTIVATION_BLOCKER_KIND, false) {
+            LAST_RESTART_RECOVERY := "Windows 通知佔用前景；保留 OKWW／鳴潮並等待解除（不重啟）"
+            WriteLog("已確認 Windows 通知視窗佔用前景；略過首次與週期性重啟"
+                . " | blocker={" LAST_INPUT_ACTIVATION_BLOCKER_DETAIL "}", "WARN")
+            NotifyUiInputBlockedOnce(reasonCode, stage, reason, foregroundStreak)
+            if !WaitForInteractiveDesktopBeforeRestart(probeKind)
+                return
+            RestartAutoScript(reason, false)
+            return
+        }
         if (foregroundStreak = 1) {
             LAST_RESTART_RECOVERY := "首次前景拒絕；先做一次不計額度的乾淨重啟"
             WriteLog("首次前景輸入被拒絕：先重建 OKWW／鳴潮視窗，不消耗 10 次重啟額度", "WARN")
@@ -7661,10 +7839,12 @@ RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNS
     RestartAutoScript(reason)
 }
 
-ProbeForegroundAccessForRecovery(preferredKind, &detail := "", &recreateRecommended := false) {
-    global LAST_INPUT_ACTIVATION_FAILURE_CODE
+ProbeForegroundAccessForRecovery(preferredKind, &detail := "", &recreateRecommended := false,
+    &foregroundBlockerKind := "") {
+    global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_BLOCKER_KIND
     detail := ""
     recreateRecommended := false
+    foregroundBlockerKind := ""
     hwnd := 0
     targetName := preferredKind
     if (preferredKind = "okww") {
@@ -7709,6 +7889,7 @@ ProbeForegroundAccessForRecovery(preferredKind, &detail := "", &recreateRecommen
     relationPolicy := "root"
     ok := ForceActivateWindowForInput(hwnd, 1800,
         "等待 UI 輸入恢復探測｜" targetName, relationPolicy)
+    foregroundBlockerKind := LAST_INPUT_ACTIVATION_BLOCKER_KIND
     if (ok && preferredKind = "okww") {
         safetyReason := ""
         if !IsSafeOkwwKeyboardForeground(hwnd, &relation, &foregroundHwnd, &safetyReason) {
@@ -7764,6 +7945,7 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
         lastLogTick := 0
         stableHits := 0
         targetProbeFailures := 0
+        notificationBlockHits := 0
         loop {
             if (REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED) {
                 WriteLog("等待 UI 輸入恢復已中止：程式正在執行停止／離開流程", "WARN")
@@ -7775,9 +7957,10 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
             probeOk := false
             probeDetail := ""
             recreateRecommended := false
+            foregroundBlockerKind := ""
             if (state.ok && !paused)
                 probeOk := ProbeForegroundAccessForRecovery(preferredKind, &probeDetail,
-                    &recreateRecommended)
+                    &recreateRecommended, &foregroundBlockerKind)
 
             if (state.ok && !paused && probeOk) {
                 targetProbeFailures := 0
@@ -7796,12 +7979,21 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
 
             stableHits := 0
             if (state.ok && !paused) {
-                targetProbeFailures += 1
+                waitWithoutRecreate := ForegroundBlockerShouldWaitWithoutRecreate(
+                    foregroundBlockerKind, recreateRecommended)
+                if waitWithoutRecreate {
+                    ; 已確認是 Windows 通知而目標本身仍健康：不累積重建門檻。
+                    targetProbeFailures := 0
+                    notificationBlockHits += 1
+                } else {
+                    notificationBlockHits := 0
+                    targetProbeFailures += 1
+                }
                 ; 鎖定畫面已由 GetInteractiveDesktopState 歸類為 state.ok=false，因此不會進入
                 ; 此計數。hung／disabled／主窗遺失等結構性故障連續兩次就重建；一般前景
                 ; 拒絕則低頻等約 5 分鐘後做一次不計額度的乾淨重啟。
                 probeFailureLimit := recreateRecommended ? 2 : 20
-                if (targetProbeFailures >= probeFailureLimit) {
+                if (!waitWithoutRecreate && targetProbeFailures >= probeFailureLimit) {
                     recoveryKind := recreateRecommended
                         ? "目標視窗結構性故障"
                         : "互動桌面正常但前景連續被拒絕"
@@ -7825,6 +8017,10 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
                     " inputDesktop=" state.inputDesktop " wts=" state.wtsState
                     " foreground=" state.foregroundHwnd "/" state.foregroundProcess
                     " | probe=" probeDetail " failures=" targetProbeFailures pauseText, "INFO")
+                if (foregroundBlockerKind != "")
+                    WriteLog("前景阻塞分類=" foregroundBlockerKind
+                        "；通知連續命中=" notificationBlockHits
+                        "；目標程式保持執行，不進入重啟門檻", "INFO")
                 lastLogTick := nowTick
             }
             ; 前景被拒絕可能是 RDP 客戶端最小化；低頻探測即可，避免一直搶使用者焦點。
