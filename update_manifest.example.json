@@ -1,13 +1,13 @@
 {
-  "release_id": "p4.88-l4.99-s1.0.48-F67C9865-AA88C345-A39467DB-60E21A0F",
-  "version": "4.88",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/83334fd017925d43d84b4d0962d77e8e930e5cab/payload.zip?release=p4.88-l4.99-s1.0.48-F67C9865-AA88C345-A39467DB-60E21A0F",
-  "payload_sha256": "F67C9865EB0730BBF288C3BEC4AB7F73AE6E68E99558B75E1CBA82CF251CC032",
-  "launcher_version": "4.99",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/83334fd017925d43d84b4d0962d77e8e930e5cab/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p4.88-l4.99-s1.0.48-F67C9865-AA88C345-A39467DB-60E21A0F",
-  "launcher_sha256": "AA88C345C4318B9A99649E0E0B69637927D493866240852D404DE22617CE56C7",
-  "server_version": "1.0.48",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/83334fd017925d43d84b4d0962d77e8e930e5cab/self-hosted-server.zip?release=p4.88-l4.99-s1.0.48-F67C9865-AA88C345-A39467DB-60E21A0F",
-  "server_sha256": "A39467DB782B2D034FF92C084AB704E0F612D812C38491EBDFD23878789500AE",
+  "release_id": "p4.89-l5.00-s1.0.49-03DEB1B3-38785A8E-8D587C4D-60E21A0F",
+  "version": "4.89",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip?release=p4.89-l5.00-s1.0.49-03DEB1B3-38785A8E-8D587C4D-60E21A0F",
+  "payload_sha256": "03DEB1B368EA3E415E3E483B7516A5F42B5EB710C77A684F4F95EB7AF44CE323",
+  "launcher_version": "5.00",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p4.89-l5.00-s1.0.49-03DEB1B3-38785A8E-8D587C4D-60E21A0F",
+  "launcher_sha256": "38785A8E51223E3A84C53BFF87252C3718C7E24BE73F7546E4A7E47A62636164",
+  "server_version": "1.0.49",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip?release=p4.89-l5.00-s1.0.49-03DEB1B3-38785A8E-8D587C4D-60E21A0F",
+  "server_sha256": "8D587C4D6E1207D0B507139214FC6959646751B759BA865B2D9E603C05A8737F",
   "web_sha256": "60E21A0FD5CF0D0E1B46F946C1DB2D72F2A63D4C44ABEDD87F6CDBAEE1BEE0E2"
 }

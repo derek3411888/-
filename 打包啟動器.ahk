@@ -4,7 +4,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "4.99"
+global PACK_LAUNCHER_BUILD_VERSION := "5.00"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -179,7 +179,7 @@ LauncherAdminForwardArgs() {
     ; 主啟動器只轉送自己理解、且不含使用者輸入值的旗標。
     ; 資料夾 picker 在提權前已結束，不會進入這裡。
     args := ""
-    for _, flag in ["--force-update", "--resume-current-task", "--cleanup-recordings"] {
+    for _, flag in ["--force-update", "--restart-current-task", "--resume-current-task", "--cleanup-recordings"] {
         if LauncherHasArg(flag)
             args .= " " flag
     }
@@ -1592,10 +1592,14 @@ try {
         payloadArgs := " cleanup-recordings"
         WriteLog("主腳本將以安全錄影清理模式啟動，不會開始遊戲流程")
     } else {
-        payloadArgs := LauncherHasArg("--resume-current-task") ? " restart resume" : ""
+        payloadArgs := LauncherHasArg("--resume-current-task")
+            ? " restart resume"
+            : (LauncherHasArg("--restart-current-task") ? " restart" : "")
     }
-    if (payloadArgs != "" && payloadArgs != " cleanup-recordings")
-        WriteLog("主腳本將以 restart resume 接續中斷任務")
+    if (payloadArgs = " restart resume")
+        WriteLog("主腳本將以 restart resume 接續已開始的 LRMCAI 任務")
+    else if (payloadArgs = " restart")
+        WriteLog("主腳本將以 restart 模式重跑尚未開始的流程")
     Run('"' ahkPath '" "' MAIN_PATH '"' payloadArgs, APP_DIR)
     mainLaunchSucceeded := true
     WriteLog("主腳本已成功啟動")

@@ -123,7 +123,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "4.99"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.00"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -4265,6 +4265,9 @@ TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail 
     escapeUpError := 0
     closePosted := false
     closeError := 0
+    hideAttempted := false
+    hideResult := false
+    hideError := 0
     identityStable := false
     previousCritical := Critical("On")
     try {
@@ -4313,6 +4316,30 @@ TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail 
         RawSleep(280)
     }
 
+    ; 部分 Windows 11 通知中心會接受 Escape／WM_CLOSE，卻仍讓同一個
+    ; CoreWindow 保持可見與 foreground。最後只對再次完整驗證的同一 HWND
+    ; 加上 SWP_HIDEWINDOW；仍不終止 ShellExperienceHost，也不碰其他通知視窗。
+    afterClose := InspectForegroundBlocker()
+    if (afterClose.hwnd = blocker.hwnd && afterClose.kind = "windows_notification") {
+        previousCritical := Critical("On")
+        try {
+            if (DllCall("user32\GetForegroundWindow", "ptr") = blocker.hwnd) {
+                verified := InspectForegroundBlocker(blocker.hwnd)
+                if (verified.kind = "windows_notification") {
+                    hideAttempted := true
+                    DllCall("kernel32\SetLastError", "uint", 0)
+                    hideResult := DllCall("user32\SetWindowPos", "ptr", blocker.hwnd,
+                        "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0,
+                        "uint", 0x0097, "int") ? true : false
+                    hideError := hideResult ? 0 : A_LastError
+                }
+            }
+        } finally {
+            Critical(previousCritical)
+        }
+        RawSleep(280)
+    }
+
     after := InspectForegroundBlocker()
     released := (!WinExist("ahk_id " blocker.hwnd)
         || after.hwnd != blocker.hwnd || after.kind != "windows_notification")
@@ -4320,6 +4347,7 @@ TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail 
         . " class=" blocker.className " title=" blocker.title
         . " escape=" escapeDown "/" escapeDownError "," escapeUp "/" escapeUpError
         . " close=" closePosted "/" closeError
+        . " hide=" hideAttempted "/" hideResult "/" hideError
         . " released=" (released ? 1 : 0) " afterForeground=" after.hwnd
         . " context=" context
     WriteLog("Windows 通知前景阻塞處理：" detail, "WARN")
@@ -8033,6 +8061,29 @@ WaitForInteractiveDesktopBeforeRestart(preferredKind := "game") {
     }
 }
 
+TryLaunchRestartThroughUpdater(resumeCurrentTask := false, &detail := "") {
+    detail := ""
+    rootDir := ResolvePersistentToolsRoot()
+    launcherPath := rootDir "\全自動鋤地.exe"
+    if (rootDir = "" || !FileExist(launcherPath)) {
+        detail := "launcher_missing path=" launcherPath
+        return false
+    }
+
+    try {
+        ; 由目前已提權的 payload 啟動時會沿用權限；launcher 先檢查 GitHub
+        ; manifest、原子套用新 payload，再依 LRMCAI 是否真的開始過選擇
+        ; restart 或 restart resume，不能把尚未開始的鋤地誤當成快捷鍵接續。
+        launcherFlag := resumeCurrentTask ? "--resume-current-task" : "--restart-current-task"
+        Run('"' launcherPath '" ' launcherFlag, rootDir)
+        detail := "launcher=" launcherPath " mode=" launcherFlag
+        return true
+    } catch as e {
+        detail := "launcher_start_failed path=" launcherPath " error=" e.Message
+        return false
+    }
+}
+
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
 RestartAutoScript(reason := "", countTowardsLimit := true) {
     global CFG_FILE, restartCount, MAX_RESTART_COUNT, LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE
@@ -8162,13 +8213,20 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
     WriteStep("重啟流程", "送出 restart 命令")
     try {
         global AhkExe
-        restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
-        if (CRASH_RESTART_MODE)
-            restartCmd .= ' resume'
         __RESTART_HANDOFF_LAUNCHED := true
-        Run(restartCmd)
-        WriteLog("重啟命令已發送")
-        WriteStep("重啟流程", "restart 命令已發送")
+        updaterDetail := ""
+        if TryLaunchRestartThroughUpdater(CRASH_RESTART_MODE, &updaterDetail) {
+            WriteLog("重啟已交由啟動器檢查更新後接續：" updaterDetail)
+            WriteStep("重啟流程", "啟動器更新檢查與接續命令已發送")
+        } else {
+            ; 啟動器遺失或無法啟動時才沿用本地 payload，確保離線故障仍能恢復。
+            restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
+            if (CRASH_RESTART_MODE)
+                restartCmd .= ' resume'
+            Run(restartCmd)
+            WriteLog("啟動器不可用，已用本地 payload 發送 restart 命令 | " updaterDetail, "WARN")
+            WriteStep("重啟流程", "本地 restart 命令已發送（啟動器後備）", "WARN")
+        }
     } catch as e {
         WriteLog("重啟失敗: " e.Message, "ERROR")
         WriteStep("重啟流程", "重啟失敗 | " e.Message, "ERROR")

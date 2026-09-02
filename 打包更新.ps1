@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.88',
-    [string]$LauncherVersion = '4.99',
-    [string]$ServerVersion = '1.0.48'
+    [string]$PayloadVersion = '4.89',
+    [string]$LauncherVersion = '5.00',
+    [string]$ServerVersion = '1.0.49'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -198,6 +198,15 @@ if ($launcherSource -notmatch ('PACK_LAUNCHER_BUILD_VERSION\s*:=\s*"' + [regex]:
 }
 if ($payloadSource -notmatch ('PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION\s*:=\s*"' + [regex]::Escape($LauncherVersion) + '"')) {
     throw "payload 啟動器相容版本不是 $LauncherVersion"
+}
+if ($launcherSource -notmatch [regex]::Escape('--restart-current-task') -or
+    $payloadSource -notmatch 'TryLaunchRestartThroughUpdater' -or
+    $payloadSource -notmatch [regex]::Escape('--restart-current-task')) {
+    throw '錯誤重啟更新政策缺漏：launcher／payload 必須支援先更新再以 restart 接續。'
+}
+if ($payloadSource -notmatch 'SWP_HIDEWINDOW' -or
+    $payloadSource -notmatch 'ForegroundBlockerClassifyIdentity') {
+    throw 'Windows 通知前景解除後備未完整納入 payload。'
 }
 $package = Get-Content -LiteralPath 'self-hosted-server\package.json' -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([string]$package.version -ne $ServerVersion) { throw "server package 版本不是 $ServerVersion" }
