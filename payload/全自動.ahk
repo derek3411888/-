@@ -124,8 +124,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "4.90"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.01"
+global PAYLOAD_BUILD_VERSION := "4.91"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.02"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -3862,10 +3862,14 @@ GetWindowRelationToTarget(candidateHwnd, targetHwnd) {
     if (targetRoot && candidateRoot && targetRoot = candidateRoot)
         return "same_root"
 
+    ; 直接由 HWND 讀 PID，不受 DetectHiddenWindows 影響。隱藏的 Windows 通知
+    ; 仍可能保有 foreground，不能在這裡被誤判成沒有關聯資料。
     targetPid := 0
     candidatePid := 0
-    try targetPid := WinGetPID("ahk_id " targetHwnd)
-    try candidatePid := WinGetPID("ahk_id " candidateHwnd)
+    try DllCall("user32\GetWindowThreadProcessId", "ptr", targetHwnd,
+        "uint*", &targetPid, "uint")
+    try DllCall("user32\GetWindowThreadProcessId", "ptr", candidateHwnd,
+        "uint*", &candidatePid, "uint")
 
     targetRootOwner := DllCall("user32\GetAncestor", "ptr", targetHwnd, "uint", 3, "ptr")
     candidateRootOwner := DllCall("user32\GetAncestor", "ptr", candidateHwnd, "uint", 3, "ptr")
@@ -4157,24 +4161,26 @@ CanUseForegroundAltPulse(hwnd, &reason := "") {
 DescribeWindowForInputLog(hwnd) {
     if !hwnd
         return "hwnd=0"
-    if !WinExist("ahk_id " hwnd)
+    identity := ForegroundBlockerReadWindowIdentity(hwnd)
+    if !identity.exists
         return "hwnd=" hwnd " missing=1"
 
     try {
-        pid := WinGetPID("ahk_id " hwnd)
+        pid := identity.pid
         tid := DllCall("user32\GetWindowThreadProcessId", "ptr", hwnd, "ptr", 0, "uint")
-        procName := WinGetProcessName("ahk_id " hwnd)
-        className := WinGetClass("ahk_id " hwnd)
-        title := WinGetTitle("ahk_id " hwnd)
-        style := WinGetStyle("ahk_id " hwnd)
-        exStyle := WinGetExStyle("ahk_id " hwnd)
+        procName := identity.processName
+        className := identity.className
+        title := identity.title
+        style := DllCall("user32\GetWindowLongPtrW", "ptr", hwnd, "int", -16, "ptr")
+        exStyle := DllCall("user32\GetWindowLongPtrW", "ptr", hwnd, "int", -20, "ptr")
         owner := DllCall("user32\GetWindow", "ptr", hwnd, "uint", 4, "ptr")
         root := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 2, "ptr")
         rootOwner := DllCall("user32\GetAncestor", "ptr", hwnd, "uint", 3, "ptr")
         visible := DllCall("user32\IsWindowVisible", "ptr", hwnd, "int")
         enabled := DllCall("user32\IsWindowEnabled", "ptr", hwnd, "int")
         hung := DllCall("user32\IsHungAppWindow", "ptr", hwnd, "int")
-        minMax := WinGetMinMax("ahk_id " hwnd)
+        minMax := DllCall("user32\IsIconic", "ptr", hwnd, "int")
+            ? -1 : (DllCall("user32\IsZoomed", "ptr", hwnd, "int") ? 1 : 0)
         cloakedValue := -1
         cloakedBuf := Buffer(4, 0)
         try {
@@ -4210,24 +4216,15 @@ InspectForegroundBlocker(hwnd := 0) {
         sessionId: -1,
         inspectError: ""
     }
-    if !hwnd || !WinExist("ahk_id " hwnd)
+    identity := ForegroundBlockerReadWindowIdentity(hwnd)
+    if !identity.exists
         return state
 
-    try state.pid := WinGetPID("ahk_id " hwnd)
-    catch as e
-        state.inspectError .= "pid_query_failed:" e.Message
-    try state.processName := WinGetProcessName("ahk_id " hwnd)
-    catch as e
-        state.inspectError .= (state.inspectError != "" ? ";" : "")
-            . "process_query_failed:" e.Message
-    try state.className := WinGetClass("ahk_id " hwnd)
-    catch as e
-        state.inspectError .= (state.inspectError != "" ? ";" : "")
-            . "class_query_failed:" e.Message
-    try state.title := WinGetTitle("ahk_id " hwnd)
-    catch as e
-        state.inspectError .= (state.inspectError != "" ? ";" : "")
-            . "title_query_failed:" e.Message
+    state.pid := identity.pid
+    state.processName := identity.processName
+    state.className := identity.className
+    state.title := identity.title
+    state.inspectError := identity.inspectError
     state.sessionId := GetProcessSessionIdForInputLog(state.pid)
     state.kind := ForegroundBlockerClassifyIdentity(
         state.processName, state.className, state.title)
@@ -4267,6 +4264,8 @@ TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail 
     escapeUp := false
     escapeDownError := 0
     escapeUpError := 0
+    physicalEscapeSent := false
+    physicalEscapeError := ""
     closePosted := false
     closeError := 0
     hideAttempted := false
@@ -4301,6 +4300,31 @@ TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail 
 
     RawSleep(220)
     afterEscape := InspectForegroundBlocker()
+    if (afterEscape.hwnd = blocker.hwnd && afterEscape.kind = "windows_notification") {
+        previousCritical := Critical("On")
+        try {
+            ; CoreWindow/UWP 通知常接受 PostMessage 卻不真正處理。只有在送出前
+            ; 再次確認「實際 foreground」仍是同一個已白名單通知時，才送一個
+            ; 真正的 Esc；就算前景在極短競態內變動，Esc 也不會關閉程式。
+            if (DllCall("user32\GetForegroundWindow", "ptr") = blocker.hwnd) {
+                verified := InspectForegroundBlocker(blocker.hwnd)
+                if (verified.kind = "windows_notification") {
+                    if GetKeyState("Esc", "P")
+                        physicalEscapeError := "physical_escape_is_down"
+                    else {
+                        physicalEscapeSent := true
+                        try SendEvent("{Esc}")
+                        catch as e
+                            physicalEscapeError := e.Message
+                    }
+                }
+            }
+        } finally {
+            Critical(previousCritical)
+        }
+        RawSleep(320)
+        afterEscape := InspectForegroundBlocker()
+    }
     if (afterEscape.hwnd = blocker.hwnd && afterEscape.kind = "windows_notification") {
         previousCritical := Critical("On")
         try {
@@ -4345,11 +4369,14 @@ TryReleaseKnownWindowsNotificationForeground(targetHwnd, context := "", &detail 
     }
 
     after := InspectForegroundBlocker()
-    released := (!WinExist("ahk_id " blocker.hwnd)
+    ; 不得用 WinExist 判斷：SWP_HIDEWINDOW 後它會因 DetectHiddenWindows=false
+    ; 回傳 0，但該 HWND 仍可能是 Windows 的 foreground。
+    released := (!ForegroundBlockerIsWindowHandleAlive(blocker.hwnd)
         || after.hwnd != blocker.hwnd || after.kind != "windows_notification")
     detail := "hwnd=" blocker.hwnd " process=" blocker.processName
         . " class=" blocker.className " title=" blocker.title
         . " escape=" escapeDown "/" escapeDownError "," escapeUp "/" escapeUpError
+        . " physicalEscape=" physicalEscapeSent "/" physicalEscapeError
         . " close=" closePosted "/" closeError
         . " hide=" hideAttempted "/" hideResult "/" hideError
         . " released=" (released ? 1 : 0) " afterForeground=" after.hwnd

@@ -7,6 +7,22 @@ AssertEqual(actual, expected, description) {
 }
 
 try {
+    DetectHiddenWindows(false)
+    hiddenProbe := Gui(, "foreground-hidden-window-probe")
+    hiddenHwnd := hiddenProbe.Hwnd
+    hiddenIdentity := ForegroundBlockerReadWindowIdentity(hiddenHwnd)
+    AssertEqual(ForegroundBlockerIsWindowHandleAlive(hiddenHwnd), true,
+        "Win32 必須辨識仍存在的隱藏 HWND")
+    AssertEqual(hiddenIdentity.exists, true,
+        "隱藏 HWND 的身分讀取不得受 DetectHiddenWindows 影響")
+    AssertEqual(hiddenIdentity.pid > 0, true, "隱藏 HWND 必須能讀取 PID")
+    AssertEqual(hiddenIdentity.className != "", true, "隱藏 HWND 必須能讀取 class")
+    AssertEqual(hiddenIdentity.title, "foreground-hidden-window-probe",
+        "隱藏 HWND 必須能讀取標題")
+    hiddenProbe.Destroy()
+    AssertEqual(ForegroundBlockerIsWindowHandleAlive(hiddenHwnd), false,
+        "已銷毀 HWND 不得視為仍存在")
+
     AssertEqual(ForegroundBlockerClassifyIdentity("ShellExperienceHost.exe",
         "Windows.UI.Core.CoreWindow", "新通知"), "windows_notification",
         "MyTUF 實機通知識別必須命中")

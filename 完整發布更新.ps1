@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.90',
-    [string]$LauncherVersion = '5.01',
-    [string]$ServerVersion = '1.0.50',
+    [string]$PayloadVersion = '4.91',
+    [string]$LauncherVersion = '5.02',
+    [string]$ServerVersion = '1.0.51',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
