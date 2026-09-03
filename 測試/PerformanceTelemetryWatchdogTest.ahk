@@ -93,6 +93,29 @@ try {
         "STOP 後 LaunchWorker 不得建立或篡改 worker PID")
     AssertTelemetryWatchdog(PERF_TELEMETRY_PROCESS_HANDLE = 0,
         "STOP 後 LaunchWorker 不得建立 worker process handle")
+
+    incidentFixture := '{"collector":{"state":"running","updatedAt":1900000000000},'
+        . '"current":{"fps":null,"cpuTotalPct":22.5,"gpuPct":27,"gpuTempC":69,'
+        . '"ramUsedGb":14.47,"gameRamMb":0,"lrmcRamMb":0,"diskReadMbps":1333.3,'
+        . '"recordingActive":true,"recordingFps":37.48,"gameRunning":false,"lrmcRunning":false},'
+        . '"minutes":[{"metrics":{"cpuTotalPctMax":67,"gpuPctMax":66,'
+        . '"gpuTempCMax":87,"ramUsedGbMax":22.4,"diskReadMbpsMax":249.7}}]}'
+    originalHeartbeatPath := PERF_TELEMETRY_HEARTBEAT_PATH
+    fixtureRoot := A_ScriptDir "\..\.dev-runtime\tests\performance-incident"
+    DirCreate(fixtureRoot)
+    PERF_TELEMETRY_HEARTBEAT_PATH := fixtureRoot "\heartbeat.json"
+    try FileDelete(PERF_TELEMETRY_HEARTBEAT_PATH)
+    FileAppend(incidentFixture, PERF_TELEMETRY_HEARTBEAT_PATH, "UTF-8")
+    incidentSummary := PerformanceTelemetry_CurrentIncidentSummary()
+    AssertTelemetryWatchdog(InStr(incidentSummary, "fps=-") > 0,
+        "事故摘要應正確表示 FPS 無資料")
+    AssertTelemetryWatchdog(InStr(incidentSummary, "gameRunning=false") > 0,
+        "事故摘要缺少遊戲程序狀態")
+    AssertTelemetryWatchdog(InStr(incidentSummary, "tempMaxC=87") > 0,
+        "事故摘要缺少上一分鐘最高 GPU 溫度")
+    PERF_TELEMETRY_HEARTBEAT_PATH := originalHeartbeatPath
+    try FileDelete(fixtureRoot "\heartbeat.json")
+    try DirDelete(fixtureRoot)
     FileAppend("performance-telemetry-watchdog=ok`n", "*")
 } catch as e {
     FileAppend("performance-telemetry-watchdog=failed: " e.Message "`n", "**")

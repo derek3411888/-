@@ -735,7 +735,7 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   }
   const status = device.status || {};
   setText("deviceTitle", device.display_name || device.uid);
-  setText("deviceSummary", `${device.online ? "在線" : "離線"}｜最後心跳 ${formatTime(device.last_seen)}｜${device.state}`);
+  setText("deviceSummary", `${device.online ? "在線" : "離線"}｜最後心跳 ${formatTime(device.last_seen)}｜${device.state}${status.payloadVersion ? `｜Payload ${status.payloadVersion}` : ""}`);
   setText("flowServer", status.currentServerLabel || status.currentServer || "尚無伺服器資料");
   setText("flowStep", status.currentStep ? `${status.currentStep}${status.currentStepDetail ? `｜${status.currentStepDetail}` : ""}` : "等待流程步驟");
   setText("switchProgress", status.serverSwitchNotifyPending

@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.89',
-    [string]$LauncherVersion = '5.00',
-    [string]$ServerVersion = '1.0.49'
+    [string]$PayloadVersion = '4.90',
+    [string]$LauncherVersion = '5.01',
+    [string]$ServerVersion = '1.0.50'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,7 +181,8 @@ $runtimeSources = @(
     '打包啟動器.ahk', 'LauncherProcessCleanupPolicy.ahk',
     'payload\全自動.ahk', 'payload\開啟LRMC.ahk',
     'payload\自動開啟OKWW.ahk', 'payload\聲骸合成.ahk',
-    'payload\RecordingFinalizeWorker.ahk', 'payload\RemoteControlFirestore.ahk'
+    'payload\RecordingFinalizeWorker.ahk', 'payload\RemoteControlFirestore.ahk',
+    'payload\RewardMonitorIncidentPolicy.ahk'
 )
 foreach ($runtimeSourcePath in $runtimeSources) {
     $runtimeText = Get-Content -LiteralPath $runtimeSourcePath -Raw -Encoding UTF8
@@ -198,6 +199,9 @@ if ($launcherSource -notmatch ('PACK_LAUNCHER_BUILD_VERSION\s*:=\s*"' + [regex]:
 }
 if ($payloadSource -notmatch ('PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION\s*:=\s*"' + [regex]::Escape($LauncherVersion) + '"')) {
     throw "payload 啟動器相容版本不是 $LauncherVersion"
+}
+if ($payloadSource -notmatch ('PAYLOAD_BUILD_VERSION\s*:=\s*"' + [regex]::Escape($PayloadVersion) + '"')) {
+    throw "payload 版本不是 $PayloadVersion"
 }
 if ($launcherSource -notmatch [regex]::Escape('--restart-current-task') -or
     $payloadSource -notmatch 'TryLaunchRestartThroughUpdater' -or
@@ -217,6 +221,8 @@ Invoke-AhkValidate $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 
 Invoke-AhkTest $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\PerformanceTelemetryWatchdogTest.ahk' '效能採集 watchdog 語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\PerformanceTelemetryWatchdogTest.ahk' '效能採集 watchdog 回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\RewardMonitorIncidentPolicyTest.ahk' '收尾遊戲退出確認策略語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\RewardMonitorIncidentPolicyTest.ahk' '收尾遊戲退出確認策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'

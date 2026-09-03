@@ -37,6 +37,7 @@ catch
 #Include ScreenRecordingEncoderPolicy.ahk
 #Include PerformanceTelemetry.ahk
 #Include SupportLogContext.ahk
+#Include RewardMonitorIncidentPolicy.ahk
 #Include RemoteControlFirestore.ahk
 #Include RemoteControlSelfHost.ahk
 #Include OkwwOcrTextMatchers.ahk
@@ -123,7 +124,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.00"
+global PAYLOAD_BUILD_VERSION := "4.90"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.01"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2044,7 +2046,7 @@ namespace AudioUtil {
 }
 
 ; 日誌函數（使用新的日誌系統）
-WriteLog(msg, level := "INFO") {
+WriteLog(msg, level := "INFO", publishRuntimeEvent := true) {
     global logger, RUN_ID, REMOTE_CONTROL_ACTIVE
     if IsSet(logger) && IsObject(logger) {
         logger.log("[" RUN_ID "] " msg, level)
@@ -2059,7 +2061,7 @@ WriteLog(msg, level := "INFO") {
     if (normalizedLevel = "WARN" || normalizedLevel = "ERROR") {
         ; RemoteControl 自己的 HTTP 錯誤不可再次觸發遠端事件，避免失敗遞迴。
         isRemoteInternal := InStr(msg, "[RemoteControl]") ? true : false
-        if (REMOTE_CONTROL_ACTIVE && !isRemoteInternal)
+        if (publishRuntimeEvent && REMOTE_CONTROL_ACTIVE && !isRemoteInternal)
             try RC_RecordRuntimeEvent(normalizedLevel = "ERROR" ? "錯誤" : "警告", msg, normalizedLevel)
         if !isRemoteInternal
             try ScheduleRuntimeErrorSnapshot(msg, normalizedLevel)
@@ -2420,7 +2422,9 @@ WriteStep(stepName, detail := "", level := "INFO") {
     msg := "[STEP " stepId "] " stepName
     if (detail != "")
         msg .= " | " detail
-    WriteLog(msg, level)
+    ; 此步驟已用具名事件送往遠端；本機 Log 仍保留完整內容，但不要再鏡像
+    ; 一筆名稱只有「警告／錯誤」的重複事件。
+    WriteLog(msg, level, false)
     tip := "📌 STEP " stepId "｜" stepName
     if (detail != "")
         tip .= "`nℹ " detail
@@ -2438,8 +2442,8 @@ WriteStepResult(stepName, ok, detail := "") {
 if MaybeRunServerSwitchLiveStressTest()
     ExitApp
 
-WriteLog("全自動腳本啟動: " A_ScriptFullPath)
-WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
+WriteLog("全自動腳本啟動: " A_ScriptFullPath " | Payload=" PAYLOAD_BUILD_VERSION)
+WriteStep("啟動", "Payload=" PAYLOAD_BUILD_VERSION " PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
 
 ; 鍵盤更穩
 SendMode "Input"
@@ -7808,7 +7812,6 @@ RequestRestart(reason, level := "ERROR", resumeLrmc := false, reasonCode := "UNS
     detail .= " | lrmc=" LAST_RESTART_LRMC_STATE " | processes=" LAST_RESTART_PROCESS_SNAPSHOT
     detail .= " | reason=" reason
     try PerformanceTelemetry_MarkIncident(reasonCode, stage, detail)
-    WriteLog("觸發重啟請求：" detail, level)
     WriteStep("重啟請求", detail, level)
 
     probeKind := (InStr(reasonCode, "GAME_") || InStr(stage, "鳴潮")) ? "game" : "okww"
@@ -8243,6 +8246,52 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
     ExitApp
 }
 
+ConfirmRewardMonitorGameProcessExit(&sampleDetail := "") {
+    global WUTHERING_PROCESS_EXE, REMOTE_CONTROL_ACTIVE, REMOTE_STOP_IN_PROGRESS
+    global __CLEAN_FINAL_EXIT_REQUESTED
+
+    samples := []
+    Loop 3 {
+        if (REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED
+            || (REMOTE_CONTROL_ACTIVE && RC_IsPaused())) {
+            sampleDetail := "confirmation_cancelled"
+            return false
+        }
+
+        pid := 0
+        hwnd := 0
+        try pid := ProcessExist(WUTHERING_PROCESS_EXE)
+        try hwnd := GetWutheringGameHwnd()
+        samples.Push({pid: pid, hwnd: hwnd})
+
+        ; 程序或視窗只要有一個恢復，就屬於載入／視窗重建的短暫空窗。
+        if (pid > 0 || hwnd > 0) {
+            sampleDetail := RewardMonitor_FormatProcessSamples(samples)
+            return false
+        }
+        if (A_Index < 3)
+            Sleep 700
+    }
+
+    sampleDetail := RewardMonitor_FormatProcessSamples(samples)
+    return RewardMonitor_IsConfirmedProcessExit(samples, 3)
+}
+
+BuildRewardMonitorGameExitEvidence(logPath, sampleDetail) {
+    evidence := "absence=" sampleDetail
+    performance := PerformanceTelemetry_CurrentIncidentSummary()
+    if (performance != "")
+        evidence .= " | " performance
+
+    recent := SupportLog_ReadRecentFile(logPath, 1600, 24576, 8)
+    if recent.available {
+        lrmcTail := RewardMonitor_CompactExcerpt(recent.excerpt, 4, 520)
+        if (lrmcTail != "")
+            evidence .= " | lrmc_tail=" lrmcTail
+    }
+    return SubStr(evidence, 1, 1800)
+}
+
 MonitorRewardAndShutdown() {
     global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS
     global REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT, REWARD_LOG_RECENT_WINDOW_SEC
@@ -8427,8 +8476,6 @@ MonitorRewardAndShutdown() {
                 ; 每個外部動作前都重新讀取即時狀態，避免沿用本輪開頭的舊 paused=false。
                 activeAllowed := !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
                 if (activeAllowed && state.invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
-                    WriteLog("偵測到大量無效視窗控制代碼，判定為遊戲閃退，觸發重啟", "ERROR")
-                    WriteStep("收尾監測", "無效視窗命中達閾值，觸發重啟", "ERROR")
                     if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
                         ShowTip("❌ 偵測遊戲閃退，準備重啟流程", 2500)
                         RequestRestart(
@@ -8446,12 +8493,15 @@ MonitorRewardAndShutdown() {
                 ; PAUSE 時不執行此檢查；RUN 後才根據當下狀態決定是否復原。
                 if (!(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
                     && !WinExist("ahk_exe Client-Win64-Shipping.exe")) {
-                    WriteLog("收尾監測期間偵測鳴潮遊戲窗口已消失，判定為遊戲閃退", "ERROR")
-                    WriteStep("收尾監測", "鳴潮視窗消失，觸發重啟", "ERROR")
-                    if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
+                    absenceSamples := ""
+                    if (ConfirmRewardMonitorGameProcessExit(&absenceSamples)
+                        && !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())) {
+                        incidentEvidence := BuildRewardMonitorGameExitEvidence(logPath, absenceSamples)
+                        WriteLog("收尾監測已確認遊戲程序退出；事故證據=" incidentEvidence, "INFO")
                         ShowTip("❌ 收尾期間鳴潮閃退，準備重啟", 2500)
                         RequestRestart(
-                            "收尾監測期間 Client-Win64-Shipping.exe 進程與遊戲視窗消失",
+                            "收尾監測連續 3 次確認 Client-Win64-Shipping.exe 進程與遊戲視窗皆不存在"
+                                " | " incidentEvidence,
                             "ERROR", true, "GAME_PROCESS_EXITED_DURING_REWARD_MONITOR", "收尾監測")
                         return
                     }
@@ -8460,7 +8510,7 @@ MonitorRewardAndShutdown() {
                 ; 收尾監測只做背景模板搜尋；不可因每輪輪詢而置頂或切換到鳴潮。
                 ; 若實際找到登入按鈕，才會在點擊時啟用鳴潮。
                 if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
-                    ClickTemplateIfFound(A_ScriptDir "\登入.png", true, false)
+                    ClickTemplateIfFound(A_ScriptDir "\登入.png", false, false)
             }
 
             if (!warmupFinishedLogged && warmupFinished) {

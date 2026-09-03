@@ -523,6 +523,79 @@ PerformanceTelemetry_FfmpegProgressArgs(kind := "recording") {
     return ' -stats_period 2 -progress "' progressPath '"'
 }
 
+PerformanceTelemetry_JsonScalar(json, key, preferLast := false) {
+    safeKey := RegExReplace(String(key), "[^A-Za-z0-9_-]", "")
+    if (safeKey = "")
+        return ""
+    pattern := 'i)"' safeKey '"\s*:\s*(null|true|false|-?\d+(?:\.\d+)?|"(?:\\.|[^"\\])*")'
+    result := ""
+    startAt := 1
+    while (startAt <= StrLen(json) && RegExMatch(json, pattern, &match, startAt)) {
+        result := String(match[1])
+        if !preferLast
+            break
+        nextAt := match.Pos(0) + Max(1, match.Len(0))
+        if (nextAt <= startAt)
+            break
+        startAt := nextAt
+    }
+    if (result = "null")
+        return "-"
+    if (SubStr(result, 1, 1) = '"' && SubStr(result, -1) = '"')
+        result := SubStr(result, 2, -1)
+    return result
+}
+
+PerformanceTelemetry_CurrentIncidentSummary() {
+    json := PerformanceTelemetry_ReadHeartbeatJson()
+    if (json = "")
+        return "telemetry=unavailable"
+
+    currentText := ""
+    if RegExMatch(json, 'i)"current"\s*:\s*\{([^{}]*)\}', &currentMatch)
+        currentText := String(currentMatch[1])
+    if (currentText = "")
+        return "telemetry=current-missing"
+
+    parts := []
+    for field in [
+        ["fps", "fps"], ["cpu", "cpuTotalPct"], ["gpu", "gpuPct"],
+        ["tempC", "gpuTempC"], ["ramGb", "ramUsedGb"],
+        ["gameRamMb", "gameRamMb"], ["lrmcRamMb", "lrmcRamMb"],
+        ["diskRead", "diskReadMbps"], ["recording", "recordingActive"],
+        ["recordingFps", "recordingFps"], ["gameRunning", "gameRunning"],
+        ["lrmcRunning", "lrmcRunning"]
+    ] {
+        value := PerformanceTelemetry_JsonScalar(currentText, field[2])
+        if (value = "")
+            value := "-"
+        parts.Push(field[1] "=" value)
+    }
+
+    summary := "current{"
+    for index, item in parts
+        summary .= (index > 1 ? "," : "") item
+    summary .= "}"
+
+    previousParts := []
+    for field in [
+        ["cpuMax", "cpuTotalPctMax"], ["gpuMax", "gpuPctMax"],
+        ["tempMaxC", "gpuTempCMax"], ["ramMaxGb", "ramUsedGbMax"],
+        ["diskReadMax", "diskReadMbpsMax"]
+    ] {
+        value := PerformanceTelemetry_JsonScalar(json, field[2], true)
+        if (value != "" && value != "-")
+            previousParts.Push(field[1] "=" value)
+    }
+    if (previousParts.Length > 0) {
+        summary .= " previousMinute{"
+        for index, item in previousParts
+            summary .= (index > 1 ? "," : "") item
+        summary .= "}"
+    }
+    return SubStr(summary, 1, 900)
+}
+
 PerformanceTelemetry_MarkIncident(code, stage := "", detail := "") {
     global PERF_TELEMETRY_ROOT, CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_SERVER_TARGET
     root := PERF_TELEMETRY_ROOT

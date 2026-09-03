@@ -322,7 +322,8 @@ RCSH_SendHeartbeat(state, diagnosticLog := "") {
     global RC_LAST_SETTINGS_APPLIED_REVISION, RC_RECENT_EVENTS
     global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
-    global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
+    global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID
+    global PAYLOAD_BUILD_VERSION
     global RCSH_LIVE_PID, RCSH_LIVE_STATE, RCSH_LIVE_DETAIL, RCSH_LIVE_ROUTE
     global RCSH_LIVE_PROFILE, RCSH_LIVE_ENCODER
     if !RCSH_EnsureReady() {
@@ -345,6 +346,7 @@ RCSH_SendHeartbeat(state, diagnosticLog := "") {
     switchNotify := RC_ReadServerSwitchNotifyStatus()
     eventsJson := RC_BuildRecentEventsJson()
     status := "{"
+    status .= '"payloadVersion":"' RC_JsonEsc(PAYLOAD_BUILD_VERSION) '",'
     status .= '"currentStep":"' RC_JsonEsc(Trim(CURRENT_STEP_NAME, " `t`r`n")) '",'
     status .= '"currentStepDetail":"' RC_JsonEsc(Trim(CURRENT_STEP_DETAIL, " `t`r`n")) '",'
     status .= '"currentStepLevel":"' RC_JsonEsc(Trim(CURRENT_STEP_LEVEL, " `t`r`n")) '",'
@@ -378,7 +380,9 @@ RCSH_SendHeartbeat(state, diagnosticLog := "") {
     status .= "},"
     status .= '"recording":{'
     status .= '"enabled":' (SCREEN_RECORDING_ENABLED ? "true" : "false") ","
-    status .= '"active":' (__SCREEN_RECORDING_ACTIVE ? "true" : "false") ","
+    recordingProcessAlive := __SCREEN_RECORDING_ACTIVE && __SCREEN_RECORDING_PID > 0
+        && ProcessExist(__SCREEN_RECORDING_PID)
+    status .= '"active":' (recordingProcessAlive ? "true" : "false") ","
     status .= '"state":"' RC_JsonEsc(recording.state) '",'
     status .= '"detail":"' RC_JsonEsc(SubStr(recording.detail, 1, 1000)) '",'
     status .= '"baseName":"' RC_JsonEsc(recording.baseName) '",'

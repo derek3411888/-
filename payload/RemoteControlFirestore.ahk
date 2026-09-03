@@ -1437,7 +1437,8 @@ RC_PatchClientState(state, isShutdown) {
     global RC_LAST_EVENT_AT, RC_RECENT_EVENTS
     global CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
-    global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE
+    global SCREEN_RECORDING_ENABLED, __SCREEN_RECORDING_ACTIVE, __SCREEN_RECORDING_PID
+    global PAYLOAD_BUILD_VERSION
     nowMs := RC_UnixMs()
     recentLog := SupportLog_CurrentSummary()
     selfHostedOk := RCSH_IsAvailable() ? RCSH_SendHeartbeat(state, recentLog) : false
@@ -1460,7 +1461,8 @@ RC_PatchClientState(state, isShutdown) {
     effectiveSettings := RC_ReadEffectiveRemoteSettings()
     serverProgress := RC_ReadServerProgress()
     switchNotify := RC_ReadServerSwitchNotifyStatus()
-    recordingActive := __SCREEN_RECORDING_ACTIVE ? true : false
+    recordingActive := __SCREEN_RECORDING_ACTIVE && __SCREEN_RECORDING_PID > 0
+        && ProcessExist(__SCREEN_RECORDING_PID) ? true : false
     recordingDetail := SubStr(recording.detail, 1, 1000)
     performanceJson := PerformanceTelemetry_ReadFirestoreJson()
     performanceAvailable := performanceJson != ""
@@ -1472,6 +1474,7 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
+    body .= '"payloadVersion":{"stringValue":"' RC_JsonEsc(PAYLOAD_BUILD_VERSION) '"},'
     body .= '"status":{"stringValue":"' RC_JsonEsc(state) '"},'
     body .= '"currentStep":{"stringValue":"' RC_JsonEsc(currentStepName) '"},'
     body .= '"currentStepDetail":{"stringValue":"' RC_JsonEsc(currentStepDetail) '"},'
@@ -1553,6 +1556,7 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=uid"
     url .= "&updateMask.fieldPaths=displayName"
     url .= "&updateMask.fieldPaths=computerName"
+    url .= "&updateMask.fieldPaths=payloadVersion"
     url .= "&updateMask.fieldPaths=status"
     url .= "&updateMask.fieldPaths=currentStep"
     url .= "&updateMask.fieldPaths=currentStepDetail"
