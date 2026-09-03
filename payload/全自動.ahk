@@ -124,8 +124,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "4.91"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.02"
+global PAYLOAD_BUILD_VERSION := "4.92"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.03"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -4507,6 +4507,114 @@ TryActivateWindowByVerifiedCaptionClick(hwnd, context := "", &detail := "") {
     }
 }
 
+TryActivateKnownOkwwByVerifiedHeaderClick(hwnd, context := "", &detail := "") {
+    detail := ""
+    identity := ForegroundBlockerReadWindowIdentity(hwnd)
+    if !identity.exists {
+        detail := "target_missing"
+        return false
+    }
+    for buttonName in ["LButton", "RButton", "MButton"] {
+        if GetKeyState(buttonName, "P") {
+            detail := "physical_mouse_button_down:" buttonName
+            return false
+        }
+    }
+
+    oldMouseMode := A_CoordModeMouse
+    originalX := 0
+    originalY := 0
+    moved := false
+    try {
+        WinGetPos(&windowX, &windowY, &windowW, &windowH, "ahk_id " hwnd)
+        if !ForegroundBlockerCanUseOkwwHeaderFallback(identity.processName,
+            identity.className, identity.title, windowW, windowH) {
+            detail := "target_identity_or_size_not_allowed process=" identity.processName
+                . " class=" identity.className " size=" windowW "x" windowH
+            return false
+        }
+
+        blocker := InspectForegroundBlocker()
+        if (blocker.kind != "windows_notification" || blocker.hwnd = hwnd) {
+            detail := "foreground_not_known_notification hwnd=" blocker.hwnd
+                . " kind=" blocker.kind
+            return false
+        }
+
+        currentPid := DllCall("kernel32\GetCurrentProcessId", "uint")
+        currentSession := GetProcessSessionIdForInputLog(currentPid)
+        targetSession := GetProcessSessionIdForInputLog(identity.pid)
+        if (currentSession < 0 || blocker.sessionId < 0 || targetSession < 0
+            || currentSession != blocker.sessionId || currentSession != targetSession) {
+            detail := "session_mismatch current=" currentSession
+                . " blocker=" blocker.sessionId " target=" targetSession
+            return false
+        }
+
+        ; OKWW 3.6.x 的 Qt 自訂框架把標題列算在 client area，因此幾何
+        ; captionHeight=0。實機 OCR 顯示頂部中央沒有按鈕；只挑 45%/50%/55%
+        ; 三個點，且 WindowFromPoint 必須再次證明命中同一 root。
+        candidateY := Round(windowY + Min(24, Max(14, windowH * 0.03)))
+        selectedX := 0
+        hitSummary := ""
+        for ratio in [0.50, 0.45, 0.55] {
+            candidateX := Round(windowX + windowW * ratio)
+            if IsTargetWindowAtScreenPoint(hwnd, candidateX, candidateY,
+                &hitHwnd, &hitRelation) {
+                selectedX := candidateX
+                break
+            }
+            hitSummary .= (hitSummary != "" ? "," : "")
+                . candidateX ":" hitHwnd "/" hitRelation
+        }
+        if !selectedX {
+            detail := "safe_header_occluded y=" candidateY " hits=" hitSummary
+            return false
+        }
+
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&originalX, &originalY)
+        MouseMove(selectedX, candidateY, 0)
+        moved := true
+        RawSleep(60)
+        previousCritical := Critical("On")
+        try {
+            if (DllCall("user32\GetForegroundWindow", "ptr") != blocker.hwnd) {
+                detail := "foreground_changed_before_click"
+                return false
+            }
+            verifiedBlocker := InspectForegroundBlocker(blocker.hwnd)
+            verifiedTarget := ForegroundBlockerReadWindowIdentity(hwnd)
+            if (verifiedBlocker.kind != "windows_notification"
+                || !ForegroundBlockerCanUseOkwwHeaderFallback(
+                    verifiedTarget.processName, verifiedTarget.className,
+                    verifiedTarget.title, windowW, windowH)) {
+                detail := "identity_changed_before_click"
+                return false
+            }
+            if !IsTargetWindowAtScreenPoint(hwnd, selectedX, candidateY,
+                &hitHwnd, &hitRelation) {
+                detail := "safe_header_lost_before_click hit=" hitHwnd
+                    . " relation=" hitRelation
+                return false
+            }
+            MouseClick("Left", selectedX, candidateY, 1, 0)
+        } finally {
+            Critical(previousCritical)
+        }
+        detail := "sent screen=" selectedX "," candidateY
+            . " blocker=" blocker.hwnd " target=" hwnd " context=" context
+        return true
+    } catch as e {
+        detail := "okww_header_click_exception:" e.Message
+        return false
+    } finally {
+        if moved
+            try MouseMove(originalX, originalY, 0)
+        CoordMode("Mouse", oldMouseMode)
+    }
+}
+
 ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPolicy := "family") {
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
     global LAST_INPUT_ACTIVATION_BLOCKER_KIND, LAST_INPUT_ACTIVATION_BLOCKER_DETAIL
@@ -4601,6 +4709,22 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
         WriteLog("視窗前景強化成功：mode=VerifiedCaptionClick relation=" relation
             " target=" hwnd " foreground=" foregroundHwnd
             " detail=" captionClickDetail " | context=" context)
+        return true
+    }
+
+    ; Qt 自訂標題列的 captionHeight=0，標準標題列後備無法使用。僅當目前
+    ; foreground 已再次確認為白名單 Windows 通知時，才對已知 OKWW 主窗的
+    ; 空白頂部中央送出一次實體點擊；之後仍須重新驗證前景，不能直接視為成功。
+    okwwHeaderClickDetail := ""
+    okwwHeaderClickUsed := TryActivateKnownOkwwByVerifiedHeaderClick(
+        hwnd, context, &okwwHeaderClickDetail)
+    if (okwwHeaderClickUsed
+        && WaitForTargetForegroundWindow(hwnd,
+            Min(750, Max(0, deadline - MonotonicTickMs())), relationPolicy)) {
+        relation := GetForegroundRelationToTarget(hwnd, &foregroundHwnd)
+        WriteLog("視窗前景強化成功：mode=VerifiedOkwwHeaderClick relation=" relation
+            . " target=" hwnd " foreground=" foregroundHwnd
+            . " detail=" okwwHeaderClickDetail " | context=" context, "WARN")
         return true
     }
 
@@ -4738,6 +4862,7 @@ ForceActivateWindowForInput(hwnd, timeoutMs := 3000, context := "", relationPoli
         " setForeground=" foregroundResult "/" foregroundError
         " switchToThisWindow=" switchAttempted "/" switchError
         " captionClick=" captionClickUsed "/" captionClickDetail
+        " okwwHeaderClick=" okwwHeaderClickUsed "/" okwwHeaderClickDetail
         " notificationRelease=" notificationReleaseStatus "/" notificationReleaseDetail
         " blocker=" LAST_INPUT_ACTIVATION_BLOCKER_KIND
         " altPulse=" altPulseUsed "/" altPulseReason

@@ -61,6 +61,22 @@ ForegroundBlockerReadWindowIdentity(hwnd) {
     return state
 }
 
+; 只允許在已知 OKWW 最終主窗的空白頂部中央區域使用實體點擊取回前景。
+; 這是 Windows 通知已被隱藏、卻仍保有 foreground 時的最後後備；尺寸門檻
+; 避免把啟動畫面、小對話框或其他 pythonw 視窗當成主程式。
+ForegroundBlockerCanUseOkwwHeaderFallback(processName, className, title,
+    windowWidth, windowHeight) {
+    normalizedProcess := StrLower(Trim(processName, " `t`r`n"))
+    normalizedClass := StrLower(Trim(className, " `t`r`n"))
+    normalizedTitle := StrLower(Trim(title, " `t`r`n"))
+    return (normalizedProcess = "pythonw.exe"
+        && normalizedClass = "qt6111qwindowicon"
+        && InStr(normalizedTitle, "ok-ww")
+        && InStr(normalizedTitle, "global")
+        && windowWidth >= 900
+        && windowHeight >= 600)
+}
+
 ; 只辨識已由實機 Log 證實會長時間佔用 foreground 的 Windows 通知視窗。
 ; 三項識別必須同時命中，避免對其他 ShellExperienceHost 介面送出任何訊息。
 ForegroundBlockerClassifyIdentity(processName, className := "", title := "") {

@@ -1,13 +1,13 @@
 {
-  "release_id": "p4.91-l5.02-s1.0.51-FC42F412-E6F2900F-7B6532B3-8B046079",
-  "version": "4.91",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/9f82ec82cb2fc92f88ff14c2f145263f8353d7ea/payload.zip?release=p4.91-l5.02-s1.0.51-FC42F412-E6F2900F-7B6532B3-8B046079",
-  "payload_sha256": "FC42F412BAD3D3B88AF532519059630E203783D889D2649E6D614816B02865D4",
-  "launcher_version": "5.02",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/9f82ec82cb2fc92f88ff14c2f145263f8353d7ea/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p4.91-l5.02-s1.0.51-FC42F412-E6F2900F-7B6532B3-8B046079",
-  "launcher_sha256": "E6F2900FF228497657C27E52E3E4ED2423BFFB7B76060E6CAD755B6FB7075F3F",
-  "server_version": "1.0.51",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/9f82ec82cb2fc92f88ff14c2f145263f8353d7ea/self-hosted-server.zip?release=p4.91-l5.02-s1.0.51-FC42F412-E6F2900F-7B6532B3-8B046079",
-  "server_sha256": "7B6532B349EE013594A209181158C49A37EF2F1D1D641B450E74800138619EB5",
+  "release_id": "p4.92-l5.03-s1.0.52-8B2FA93F-C0ACBF8F-BD747A2F-8B046079",
+  "version": "4.92",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip?release=p4.92-l5.03-s1.0.52-8B2FA93F-C0ACBF8F-BD747A2F-8B046079",
+  "payload_sha256": "8B2FA93F090D6A105A120BBE8551AAF1428417D42329C97E26DCB2C985538138",
+  "launcher_version": "5.03",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p4.92-l5.03-s1.0.52-8B2FA93F-C0ACBF8F-BD747A2F-8B046079",
+  "launcher_sha256": "C0ACBF8F5D759C2EF2AAB061C33803C918035E39955428F66F5A9214CA7DAD57",
+  "server_version": "1.0.52",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip?release=p4.92-l5.03-s1.0.52-8B2FA93F-C0ACBF8F-BD747A2F-8B046079",
+  "server_sha256": "BD747A2F86E077F95E4D695F81ECF30D13F53913AAEC831C4D76D18FCAE8BF20",
   "web_sha256": "8B046079A112025479145E3EEFD0C69F6267C73BECFA8F9C2400769183D936D6"
 }

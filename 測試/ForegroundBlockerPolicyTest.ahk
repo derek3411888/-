@@ -23,6 +23,19 @@ try {
     AssertEqual(ForegroundBlockerIsWindowHandleAlive(hiddenHwnd), false,
         "已銷毀 HWND 不得視為仍存在")
 
+    AssertEqual(ForegroundBlockerCanUseOkwwHeaderFallback("pythonw.exe",
+        "Qt6111QWindowIcon", "OK-WW v3.6.6 Global  - OK-WW", 1216, 816), true,
+        "MyTUF 實機 OKWW 主窗必須允許安全頂部中央後備")
+    AssertEqual(ForegroundBlockerCanUseOkwwHeaderFallback("python.exe",
+        "Qt6111QWindowIcon", "OK-WW v3.6.6 Global  - OK-WW", 1216, 816), false,
+        "其他 Python host 不得使用 OKWW 實體點擊後備")
+    AssertEqual(ForegroundBlockerCanUseOkwwHeaderFallback("pythonw.exe",
+        "Qt6111QWindowIcon", "OK-WW v3.6.6 Global  - OK-WW", 600, 400), false,
+        "小型啟動畫面或對話框不得使用 OKWW 實體點擊後備")
+    AssertEqual(ForegroundBlockerCanUseOkwwHeaderFallback("pythonw.exe",
+        "Qt6111QWindowIcon", "unrelated Global tool", 1216, 816), false,
+        "其他 Qt 視窗不得使用 OKWW 實體點擊後備")
+
     AssertEqual(ForegroundBlockerClassifyIdentity("ShellExperienceHost.exe",
         "Windows.UI.Core.CoreWindow", "新通知"), "windows_notification",
         "MyTUF 實機通知識別必須命中")
