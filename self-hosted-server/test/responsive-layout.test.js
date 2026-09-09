@@ -78,6 +78,7 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(server, /attempt === 0 \? 1_500 : 2_000/);
   assert.match(bridge, /forwardCommandWithFirestoreCas/);
   assert.match(bridge, /export async function refreshFirestoreCommand/);
+  assert.match(bridge, /import \{[\s\S]*FIRESTORE_COMMAND_READ_FIELDS[\s\S]*\} from "\.\/firestore-command\.js"/);
   assert.match(script, /cell\.dataset\.label = label/);
   assert.match(css, /\.table-wrap td::before\s*\{[^}]*content:\s*attr\(data-label\)/s);
   assert.match(script, /LEGACY_RECORDING_STATES/);

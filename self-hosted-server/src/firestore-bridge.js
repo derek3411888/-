@@ -2,7 +2,11 @@ import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import { buildFallbackCommandBaseline } from "./migration-baseline.js";
 import { firestoreSettingsImportState, forwardSettingsWithFirestoreCas } from "./settings.js";
-import { firestoreCommandState, forwardCommandWithFirestoreCas } from "./firestore-command.js";
+import {
+  FIRESTORE_COMMAND_READ_FIELDS,
+  firestoreCommandState,
+  forwardCommandWithFirestoreCas,
+} from "./firestore-command.js";
 import {
   CODEX_SUPPORT_ACTION,
   codexSupportCooldownRemaining,
