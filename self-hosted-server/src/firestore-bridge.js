@@ -311,6 +311,25 @@ export async function saveFirestoreCommand(uid, command, payload = {}, idempoten
   }
 }
 
+export async function refreshFirestoreCommand(uid) {
+  assertFirestoreCommandAvailable();
+  const localDevice = await query("SELECT uid,imported_from_firestore FROM devices WHERE uid=$1", [uid]);
+  if (!localDevice.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+  if (!localDevice.rows[0].imported_from_firestore) {
+    throw new HttpError(423, "此裝置沒有 Firestore 命令來源", "SHADOW_MODE");
+  }
+  const document = await getFirestoreDocument(uid, FIRESTORE_COMMAND_READ_FIELDS);
+  const current = firestoreCommandState(document);
+  await query(
+    `UPDATE devices SET command_nonce=GREATEST(command_nonce,$2),
+       firestore_observed_nonce=GREATEST(firestore_observed_nonce,$2),
+       firestore_observed_ack_nonce=GREATEST(firestore_observed_ack_nonce,$3),
+       firestore_observed_at=now(),firestore_command=$4,updated_at=now() WHERE uid=$1`,
+    [uid, current.nonce, current.lastAckNonce, current],
+  );
+  return current;
+}
+
 export async function saveFirestoreSettings(uid, settings) {
   assertFirestoreSettingsAvailable();
   const localDevice = await query("SELECT uid FROM devices WHERE uid=$1", [uid]);

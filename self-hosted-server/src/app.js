@@ -23,6 +23,7 @@ import {
   importFirestoreDevices,
   migrationReadiness,
   publishDiscovery,
+  refreshFirestoreCommand,
   saveFirestoreCommand,
   saveFirestoreSettings,
 } from "./firestore-bridge.js";
@@ -79,6 +80,7 @@ const eventHub = new EventHub();
 const limiter = new RateLimiter();
 const liveLeaseTouches = new Map();
 const liveHlsSessions = new Map();
+const firestoreCommandSyncTimers = new Map();
 const startedAt = Date.now();
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -112,6 +114,36 @@ async function migrationMode() {
   return (await getMigrationState()).mode ?? "shadow";
 }
 
+function scheduleFirestoreCommandSync(uid, expectedNonce, attempt = 0) {
+  const current = firestoreCommandSyncTimers.get(uid);
+  if (current) clearTimeout(current);
+  if (attempt >= 30) {
+    firestoreCommandSyncTimers.delete(uid);
+    return;
+  }
+  const timer = setTimeout(async () => {
+    if (firestoreCommandSyncTimers.get(uid) !== timer) return;
+    try {
+      const command = await refreshFirestoreCommand(uid);
+      eventHub.emit("command", {
+        uid,
+        nonce: Number(command.nonce),
+        status: command.pending ? "PENDING" : "ACKED",
+        result: command.lastAckResult || "",
+        at: Date.now(),
+      });
+      if (!command.pending || Number(command.nonce) !== Number(expectedNonce)) {
+        firestoreCommandSyncTimers.delete(uid);
+        return;
+      }
+    } catch (error) {
+      console.error(`Firestore command ACK sync failed for ${uid}`, error);
+    }
+    scheduleFirestoreCommandSync(uid, expectedNonce, attempt + 1);
+  }, attempt === 0 ? 1_500 : 2_000);
+  firestoreCommandSyncTimers.set(uid, timer);
+}
+
 async function sendCommand(uid, body, allowShadow = false) {
   const command = String(body.command ?? "").trim().toUpperCase();
   if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER"].includes(command)) {
@@ -122,7 +154,9 @@ async function sendCommand(uid, body, allowShadow = false) {
   if (!allowShadow) {
     const mode = await migrationMode();
     if (["shadow", "fallback"].includes(mode)) {
-      return saveFirestoreCommand(uid, command, payload, idempotencyKey ?? "");
+      const forwarded = await saveFirestoreCommand(uid, command, payload, idempotencyKey ?? "");
+      scheduleFirestoreCommandSync(uid, forwarded.nonce);
+      return forwarded;
     }
     if (mode !== "primary") {
       throw new HttpError(423, "目前遷移模式不允許送出命令", "COMMAND_WRITE_DISABLED", { mode });
@@ -1151,6 +1185,8 @@ async function start() {
     console.log(`Received ${signal}, shutting down`);
     clearInterval(heartbeatTimer); clearInterval(cleanupTimer); clearInterval(mediaRepairTimer);
     clearInterval(discoveryTimer); clearInterval(rateTimer);
+    for (const timer of firestoreCommandSyncTimers.values()) clearTimeout(timer);
+    firestoreCommandSyncTimers.clear();
     await new Promise((resolve) => server.close(resolve));
     await closeDatabase();
     process.exit(0);
