@@ -70,6 +70,11 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(script, /\/api\/v1\/devices\/\$\{encoded\}\/performance\?range=/);
   assert.match(script, /function renderPerformance/);
   assert.match(script, /function appendCell\(row, value, label = ""\)/);
+  assert.match(script, /\["primary", "shadow", "fallback"\]\.includes\(migrationMode\)/);
+  assert.match(script, /device\.firestore_command/);
+  assert.match(script, /此頁會經由 Firestore 安全轉送並等待 ACK/);
+  assert.match(server, /saveFirestoreCommand\(uid, command, payload, idempotencyKey/);
+  assert.match(bridge, /forwardCommandWithFirestoreCas/);
   assert.match(script, /cell\.dataset\.label = label/);
   assert.match(css, /\.table-wrap td::before\s*\{[^}]*content:\s*attr\(data-label\)/s);
   assert.match(script, /LEGACY_RECORDING_STATES/);

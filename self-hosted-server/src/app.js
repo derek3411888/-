@@ -23,6 +23,7 @@ import {
   importFirestoreDevices,
   migrationReadiness,
   publishDiscovery,
+  saveFirestoreCommand,
   saveFirestoreSettings,
 } from "./firestore-bridge.js";
 import { normalizeLiveQualityProfile, normalizeSettingsInput } from "./settings.js";
@@ -116,11 +117,17 @@ async function sendCommand(uid, body, allowShadow = false) {
   if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER"].includes(command)) {
     throw new HttpError(400, "命令不在允許清單", "INVALID_COMMAND");
   }
-  if (!allowShadow && (await migrationMode()) !== "primary") {
-    throw new HttpError(423, "並行驗證期間命令仍由 Firestore 控制", "SHADOW_MODE");
-  }
   const idempotencyKey = boundedText(body.idempotencyKey, 100) || null;
   const payload = commandPayload(body);
+  if (!allowShadow) {
+    const mode = await migrationMode();
+    if (["shadow", "fallback"].includes(mode)) {
+      return saveFirestoreCommand(uid, command, payload, idempotencyKey ?? "");
+    }
+    if (mode !== "primary") {
+      throw new HttpError(423, "目前遷移模式不允許送出命令", "COMMAND_WRITE_DISABLED", { mode });
+    }
+  }
   return withTransaction(async (client) => {
     const device = await client.query("SELECT * FROM devices WHERE uid=$1 FOR UPDATE", [uid]);
     if (!device.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");

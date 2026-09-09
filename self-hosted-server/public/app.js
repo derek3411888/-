@@ -678,7 +678,7 @@ async function api(path, options = {}) {
 }
 
 function migrationLabel(mode) {
-  return { shadow: "7 天並行驗證", primary: "自架正式控制", fallback: "Firestore 緊急回復", disabled: "自架停用／Firestore" }[mode] || mode || "未知";
+  return { shadow: "雙通道控制（Firestore 主控）", primary: "自架正式控制", fallback: "Firestore 備援控制", disabled: "控制已停用" }[mode] || mode || "未知";
 }
 
 function selectedDevice() { return state.devices.find((item) => item.uid === state.selectedUid) ?? null; }
@@ -748,8 +748,16 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   $("flowBadge").className = `badge ${device.online ? (device.state === "PAUSE" ? "warning" : "ok") : "muted"}`;
   $("deviceMeta").textContent = JSON.stringify({ uid: device.uid, online: device.online, state: device.state, lastSeen: device.last_seen, status }, null, 2);
 
-  const controlEnabled = state.migration?.mode === "primary";
-  for (const id of ["pauseButton", "runButton"]) $(id).disabled = !controlEnabled || Boolean(device.pending_nonce);
+  const migrationMode = state.migration?.mode ?? "shadow";
+  const firestoreControl = ["shadow", "fallback"].includes(migrationMode);
+  const controlEnabled = ["primary", "shadow", "fallback"].includes(migrationMode)
+    && !Boolean(state.migration?.writesFrozen);
+  const forwardedCommand = firestoreControl && device.firestore_command && typeof device.firestore_command === "object"
+    ? device.firestore_command : null;
+  const pendingNonce = Number(device.pending_nonce || (forwardedCommand?.pending ? forwardedCommand.nonce : 0)) || 0;
+  const pendingCommand = device.pending_command || forwardedCommand?.command || "";
+  const pendingAt = device.pending_created_at || (forwardedCommand?.updatedAt ? new Date(forwardedCommand.updatedAt).toISOString() : "");
+  for (const id of ["pauseButton", "runButton"]) $(id).disabled = !controlEnabled || Boolean(pendingNonce);
   // STOP 可依伺服器契約優先取代尚未套用的非 STOP 命令。
   $("stopButton").disabled = !controlEnabled;
   const serverList = Array.isArray(status.serverScheduleList)
@@ -757,23 +765,30 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     : String(status.serverScheduleList || "").split(/[\n,;|]+/).map((item) => item.trim()).filter(Boolean);
   $("serverSelect").replaceChildren(new Option("無設定", ""));
   serverList.forEach((name, index) => $("serverSelect").append(new Option(`${index + 1}. ${name}`, JSON.stringify({ index: index + 1, name }))));
-  $("switchButton").disabled = !controlEnabled || serverList.length < 2 || Boolean(device.pending_nonce);
-  $("completeButton").disabled = !controlEnabled || !serverList.length || Boolean(device.pending_nonce);
+  $("switchButton").disabled = !controlEnabled || serverList.length < 2 || Boolean(pendingNonce);
+  $("completeButton").disabled = !controlEnabled || !serverList.length || Boolean(pendingNonce);
   const completedServers = Array.isArray(status.serverCompletedList) ? status.serverCompletedList : [];
   setText("serverProgress", status.serverCycleKey
     ? `${status.serverCycleKey}｜已完成 ${completedServers.length}/${serverList.length || 0}${completedServers.length ? `｜${completedServers.join("、")}` : ""}`
     : "尚未收到今日伺服器進度。");
-  if (device.pending_nonce) {
-    const unanswered = Date.now() - new Date(device.pending_created_at).valueOf() >= 30_000;
+  if (pendingNonce) {
+    const unanswered = pendingAt && Date.now() - new Date(pendingAt).valueOf() >= 30_000;
     setText("commandStatus", unanswered
-      ? `未回應：${device.pending_command}（nonce=${device.pending_nonce}）。命令仍安全保留，裝置上線後會繼續套用。`
-      : `已送出 ${device.pending_command}（nonce=${device.pending_nonce}），等待裝置 ACK…`);
+      ? `未回應：${pendingCommand}（nonce=${pendingNonce}）。命令仍安全保留，裝置上線後會繼續套用。`
+      : `已送出 ${pendingCommand}（nonce=${pendingNonce}），等待裝置 ACK…`);
     $("commandStatus").className = `notice ${unanswered ? "warning" : ""}`;
+  } else if (firestoreControl && Number(forwardedCommand?.nonce) > 0) {
+    const acked = Number(forwardedCommand.lastAckNonce) >= Number(forwardedCommand.nonce)
+      && String(forwardedCommand.lastAckState || "").toUpperCase() === String(forwardedCommand.command || "").toUpperCase();
+    setText("commandStatus", `${forwardedCommand.command} #${forwardedCommand.nonce}｜${acked ? "ACKED" : "已轉送"}${forwardedCommand.lastAckResult ? `｜${forwardedCommand.lastAckResult}` : ""}`);
+    $("commandStatus").className = `notice ${acked ? "ok" : "muted"}`;
   } else if (device.last_command) {
     setText("commandStatus", `${device.last_command.command} #${device.last_command.nonce}｜${device.last_command.status}${device.last_command.ack_result ? `｜${device.last_command.ack_result}` : ""}`);
     $("commandStatus").className = `notice ${device.last_command.status === "ACKED" ? "ok" : "muted"}`;
   } else {
-    setText("commandStatus", state.migration?.mode === "primary" ? "尚未送出命令。" : "並行驗證中：控制命令仍請使用原 Firestore 網站。");
+    setText("commandStatus", controlEnabled
+      ? (firestoreControl ? "尚未送出命令；此頁會經由 Firestore 安全轉送並等待 ACK。" : "尚未送出命令。")
+      : "目前控制來源暫停寫入，請稍後重新整理。");
     $("commandStatus").className = "notice muted";
   }
 

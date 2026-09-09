@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.93',
-    [string]$LauncherVersion = '5.04',
-    [string]$ServerVersion = '1.0.53'
+    [string]$PayloadVersion = '4.94',
+    [string]$LauncherVersion = '5.05',
+    [string]$ServerVersion = '1.0.54'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,7 +29,7 @@ function Test-CurrentUserDpapiAvailable {
             $encrypted, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
         return [Text.Encoding]::UTF8.GetString($decrypted) -eq 'wuthering-dpapi-release-probe'
     } catch {
-        Write-Warning ("目前發布程序無權使用 CurrentUser DPAPI；保留語法驗證並略過僅限互動式使用者權杖的 round-trip：" +
+        Write-Warning ("目前發布程序無權使用 CurrentUser DPAPI；改執行 LocalMachine 回退的完整 round-trip：" +
             $_.Exception.Message)
         return $false
     }
@@ -276,6 +276,18 @@ Invoke-AhkTest $payloadRuntime '測試\SelfHostFreshDeviceDefaultTest.ahk' '外�
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證測試語法 validate'
 if (Test-CurrentUserDpapiAvailable) {
     Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證回歸測試'
+} else {
+    $previousDpapiTestScope = $env:WUTHERING_TEST_DPAPI_MACHINE
+    try {
+        $env:WUTHERING_TEST_DPAPI_MACHINE = '1'
+        Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架裝置憑證 LocalMachine 回退測試'
+    } finally {
+        if ($null -eq $previousDpapiTestScope) {
+            Remove-Item Env:WUTHERING_TEST_DPAPI_MACHINE -ErrorAction SilentlyContinue
+        } else {
+            $env:WUTHERING_TEST_DPAPI_MACHINE = $previousDpapiTestScope
+        }
+    }
 }
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 回歸測試'

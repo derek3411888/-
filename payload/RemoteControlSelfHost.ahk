@@ -871,21 +871,37 @@ RCSH_RandomToken(byteCount := 48) {
     return StrReplace(StrReplace(RTrim(RCSH_Base64Encode(randomBuffer), "=`r`n"), "+", "-"), "/", "_")
 }
 
-RCSH_DpapiProtect(text) {
+RCSH_DpapiProtect(text, forceMachineScope := false) {
     byteCount := StrPut(text, "UTF-8") - 1
     input := Buffer(byteCount + 1, 0)
     StrPut(text, input, "UTF-8")
-    protected := RCSH_DpapiTransform(input, byteCount, true)
-    return RCSH_Base64Encode(protected)
+    if !forceMachineScope {
+        try {
+            protected := RCSH_DpapiTransform(input, byteCount, true, false)
+            return "cu:" RCSH_Base64Encode(protected)
+        } catch as currentUserError {
+            ; 部分 Windows 登入狀態（例如 DPAPI master key 暫時不可用）會讓
+            ; CurrentUser 回傳 ERROR_ACCESS_DENIED／NTE_BAD_KEY_STATE。裝置憑證
+            ; 本來就綁定這台執行端，因此改用 LocalMachine DPAPI 作為可復原的
+            ; 次級範圍；仍不會把明文權杖寫進設定檔或 Log。
+            RC_Log("CurrentUser DPAPI 無法使用，改以本機 DPAPI 保護裝置憑證: "
+                currentUserError.Message, "WARN")
+        }
+    }
+    protected := RCSH_DpapiTransform(input, byteCount, true, true)
+    return "lm:" RCSH_Base64Encode(protected)
 }
 
 RCSH_DpapiUnprotect(base64Text) {
-    encrypted := RCSH_Base64Decode(base64Text)
+    stored := Trim(base64Text)
+    if (SubStr(stored, 1, 3) = "cu:" || SubStr(stored, 1, 3) = "lm:")
+        stored := SubStr(stored, 4)
+    encrypted := RCSH_Base64Decode(stored)
     plain := RCSH_DpapiTransform(encrypted, encrypted.Size, false)
     return StrGet(plain.Ptr, plain.Size, "UTF-8")
 }
 
-RCSH_DpapiTransform(input, inputSize, protect) {
+RCSH_DpapiTransform(input, inputSize, protect, machineScope := false) {
     pointerOffset := A_PtrSize = 8 ? 8 : 4
     blobSize := A_PtrSize = 8 ? 16 : 8
     inputBlob := Buffer(blobSize, 0)
@@ -893,14 +909,17 @@ RCSH_DpapiTransform(input, inputSize, protect) {
     NumPut("UInt", inputSize, inputBlob, 0)
     NumPut("Ptr", input.Ptr, inputBlob, pointerOffset)
     description := 0
+    flags := 0x1 ; CRYPTPROTECT_UI_FORBIDDEN
+    if (protect && machineScope)
+        flags |= 0x4 ; CRYPTPROTECT_LOCAL_MACHINE
     if protect {
         ok := DllCall("crypt32\CryptProtectData", "ptr", inputBlob.Ptr,
             "wstr", "Wuthering self-hosted device", "ptr", 0, "ptr", 0,
-            "ptr", 0, "uint", 0x1, "ptr", outputBlob.Ptr, "int")
+            "ptr", 0, "uint", flags, "ptr", outputBlob.Ptr, "int")
     } else {
         ok := DllCall("crypt32\CryptUnprotectData", "ptr", inputBlob.Ptr,
             "ptr*", &description, "ptr", 0, "ptr", 0, "ptr", 0,
-            "uint", 0x1, "ptr", outputBlob.Ptr, "int")
+            "uint", flags, "ptr", outputBlob.Ptr, "int")
     }
     if !ok
         throw OSError(A_LastError, protect ? "CryptProtectData" : "CryptUnprotectData")

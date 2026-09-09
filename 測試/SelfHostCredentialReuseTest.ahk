@@ -7,10 +7,13 @@
 testRoot := TestRuntime_NewCaseDir("self-host-credential", "credential_reuse")
 cfgPath := testRoot "\config.ini"
 expectedToken := RCSH_RandomToken(48)
+forceMachineScope := EnvGet("WUTHERING_TEST_DPAPI_MACHINE") = "1"
 
 try {
-    IniWrite(RCSH_DpapiProtect(expectedToken), cfgPath,
-        "self_hosted", "device_token_dpapi")
+    protectedToken := RCSH_DpapiProtect(expectedToken, forceMachineScope)
+    if (forceMachineScope && SubStr(protectedToken, 1, 3) != "lm:")
+        throw Error("Forced LocalMachine credential did not retain its scope marker")
+    IniWrite(protectedToken, cfgPath, "self_hosted", "device_token_dpapi")
 
     if !RCSH_LoadStoredCredential(cfgPath)
         throw Error("Stored DPAPI credential was not accepted")

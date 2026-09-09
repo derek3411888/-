@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import { buildFallbackCommandBaseline } from "./migration-baseline.js";
 import { firestoreSettingsImportState, forwardSettingsWithFirestoreCas } from "./settings.js";
+import { firestoreCommandState, forwardCommandWithFirestoreCas } from "./firestore-command.js";
 import {
   CODEX_SUPPORT_ACTION,
   codexSupportCooldownRemaining,
@@ -99,6 +100,7 @@ export async function importFirestoreDevices({ publish = true } = {}) {
       const deviceAlias = boundedText(field(document, "deviceAlias", ""), 120);
       const nonce = integer(field(document, "nonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
       const lastAck = integer(field(document, "lastAckNonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+      const importedCommand = firestoreCommandState(document);
       const importedSettings = firestoreSettingsImportState(document);
       const settingsAck = importedSettings.ackRevision > 0 ? {
         revision: importedSettings.ackRevision,
@@ -113,8 +115,9 @@ export async function importFirestoreDevices({ publish = true } = {}) {
           `INSERT INTO devices(uid,display_name,device_alias,last_nonce,command_nonce,settings_revision,
              settings_effective_revision,settings,settings_ack,
              imported_from_firestore,firestore_observed_nonce,firestore_observed_ack_nonce,
-             firestore_observed_settings_revision,firestore_observed_settings_ack_revision,firestore_observed_at)
-           VALUES($1,$2,$3,$4,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,now())
+             firestore_observed_settings_revision,firestore_observed_settings_ack_revision,firestore_observed_at,
+             firestore_command)
+           VALUES($1,$2,$3,$4,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,now(),$13)
            ON CONFLICT(uid) DO UPDATE SET
              display_name=COALESCE(NULLIF(EXCLUDED.display_name,''),devices.display_name),
              device_alias=COALESCE(NULLIF(EXCLUDED.device_alias,''),devices.device_alias),
@@ -133,10 +136,11 @@ export async function importFirestoreDevices({ publish = true } = {}) {
              firestore_observed_settings_revision=EXCLUDED.firestore_observed_settings_revision,
              firestore_observed_settings_ack_revision=EXCLUDED.firestore_observed_settings_ack_revision,
              firestore_observed_at=now(),
+             firestore_command=EXCLUDED.firestore_command,
              imported_from_firestore=true,updated_at=now()`,
-          [uid, displayName, deviceAlias, Math.max(nonce, lastAck), importedSettings.maxRevision,
-            importedSettings.effectiveRevision, importedSettings.effectiveSettings, settingsAck,
-            nonce, lastAck, importedSettings.desiredRevision, importedSettings.ackRevision],
+           [uid, displayName, deviceAlias, Math.max(nonce, lastAck), importedSettings.maxRevision,
+             importedSettings.effectiveRevision, importedSettings.effectiveSettings, settingsAck,
+            nonce, lastAck, importedSettings.desiredRevision, importedSettings.ackRevision, importedCommand],
         );
         if (importedSettings.effectiveRevision > 0) {
           const effectiveAckAt = importedSettings.ackRevision === importedSettings.effectiveRevision
@@ -260,6 +264,50 @@ function assertFirestoreSettingsAvailable() {
   const { enabled, projectId, apiKey, collection } = config.firestore;
   if (!enabled || !projectId || !apiKey || !collection) {
     throw new HttpError(503, "Firestore 設定轉送目前未設定", "FIRESTORE_SETTINGS_UNAVAILABLE");
+  }
+}
+
+function assertFirestoreCommandAvailable() {
+  const { enabled, projectId, apiKey, collection } = config.firestore;
+  if (!enabled || !projectId || !apiKey || !collection) {
+    throw new HttpError(503, "Firestore 命令轉送目前未設定", "FIRESTORE_COMMAND_UNAVAILABLE");
+  }
+}
+
+export async function saveFirestoreCommand(uid, command, payload = {}, idempotencyKey = "") {
+  assertFirestoreCommandAvailable();
+  const localDevice = await query("SELECT uid,imported_from_firestore FROM devices WHERE uid=$1", [uid]);
+  if (!localDevice.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+  // 整合測試或只在自架主機註冊的裝置沒有 Firestore 文件。這類裝置在
+  // shadow/fallback 期間不可假裝已轉送成功。
+  if (!localDevice.rows[0].imported_from_firestore) {
+    throw new HttpError(423, "並行驗證期間此裝置仍需由 Firestore 控制", "SHADOW_MODE");
+  }
+  try {
+    const forwarded = await forwardCommandWithFirestoreCas({
+      uid,
+      command,
+      payload,
+      idempotencyKey,
+      readDocument: getFirestoreDocument,
+      patchDocument: (documentId, fields, updateTime) => (
+        patchFirestoreDocumentAtVersion(documentId, fields, updateTime, [])
+      ),
+      isConcurrencyConflict: isFirestoreConcurrencyConflict,
+    });
+    await query(
+      `UPDATE devices SET command_nonce=GREATEST(command_nonce,$2),
+         firestore_observed_nonce=GREATEST(firestore_observed_nonce,$2),
+         firestore_observed_ack_nonce=GREATEST(firestore_observed_ack_nonce,$3),
+         firestore_observed_at=now(),firestore_command=$4,updated_at=now() WHERE uid=$1`,
+      [uid, forwarded.nonce, forwarded.lastAckNonce, forwarded],
+    );
+    return forwarded;
+  } catch (error) {
+    if (Number(error?.status) === 404) {
+      throw new HttpError(404, "找不到 Firestore 裝置文件", "DEVICE_NOT_FOUND");
+    }
+    throw error;
   }
 }
 
