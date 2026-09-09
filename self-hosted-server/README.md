@@ -17,6 +17,8 @@
 
 不要公開 PostgreSQL、API 的 3000、MediaMTX 的 8888 或任何管理介面。
 
+網站採用一致的 Apple 風格響應式介面：半透明卡片、分段式頁籤、明確狀態色與輕量進場動畫；系統開啟「減少動態效果」時會停用非必要動畫。頁籤支援滑鼠、觸控與左右方向鍵／Home／End 操作，版面以 1080p 桌面及 390px 手機寬度作為實際驗證基準。
+
 固定公網 IPv4 填入 `.env` 的 `PUBLIC_IP_ADDRESS`。Caddy 會使用 Let's Encrypt 的短效公開 IP 憑證提供主要 HTTPS 入口，例如 `https://203.0.113.10/`；控制 API、GitHub Pages 導向及外網 SRT 都使用這個固定 IP，不依賴 DDNS。`PUBLIC_HOSTNAME` 只保留舊網址相容與憑證入口，不會發布給執行端。
 
 `.env` 的 `LOCAL_SRT_HOST` 應設為 Docker 主機的固定內網 IPv4（目前主機為 `192.168.0.194`）。裝置會優先走內網 SRT，再退回固定公網 IP，避開許多家用路由器只支援 HTTPS、卻不支援 UDP NAT loopback 的情況。安裝工具會自動偵測預設路由所在的 IPv4，也可用 `-LocalSrtHost` 明確指定。

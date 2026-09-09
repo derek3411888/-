@@ -710,9 +710,10 @@ function renderDevices() {
   $("migrationBadge").className = `badge ${migration === "primary" ? "ok" : "warning"}`;
 }
 
-function appendCell(row, value) {
+function appendCell(row, value, label = "") {
   const cell = document.createElement("td");
   cell.textContent = escapeText(value);
+  if (label) cell.dataset.label = label;
   row.append(cell);
 }
 
@@ -844,7 +845,12 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   const eventsBody = $("eventsBody"); eventsBody.replaceChildren();
   for (const item of wrapper.events || []) {
     const row = document.createElement("tr");
-    [formatTime(item.event_at), item.level, item.name, item.detail].forEach((value) => appendCell(row, value));
+    [
+      ["時間", formatTime(item.event_at)],
+      ["等級", item.level],
+      ["事件", item.name],
+      ["內容", item.detail],
+    ].forEach(([label, value]) => appendCell(row, value, label));
     eventsBody.append(row);
   }
   const commandsBody = $("commandsBody"); commandsBody.replaceChildren();
@@ -852,7 +858,13 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
     const row = document.createElement("tr");
     const statusLabel = item.status === "PENDING" && Date.now() - new Date(item.created_at).valueOf() >= 30_000
       ? "PENDING／未回應" : item.status;
-    [formatTime(item.created_at), item.command, item.nonce, statusLabel, [item.ack_result, item.ack_detail].filter(Boolean).join("｜")].forEach((value) => appendCell(row, value));
+    [
+      ["送出時間", formatTime(item.created_at)],
+      ["命令", item.command],
+      ["Nonce", item.nonce],
+      ["狀態", statusLabel],
+      ["結果", [item.ack_result, item.ack_detail].filter(Boolean).join("｜")],
+    ].forEach(([label, value]) => appendCell(row, value, label));
     commandsBody.append(row);
   }
   const displayedSettings = wrapper.settings?.status === "PENDING"
@@ -1168,14 +1180,38 @@ function bindEvents() {
   $("btnAskCodex").addEventListener("click", () => requestCodexSupport());
   $("btnCancelCodexSupport").addEventListener("click", () => recoverCodexSupport("cancel"));
   $("btnRetryCodexSupport").addEventListener("click", () => recoverCodexSupport("retry"));
-  document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => {
-    document.querySelectorAll("[data-tab]").forEach((item) => item.classList.toggle("active", item === button));
-    document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
+  const tabButtons = [...document.querySelectorAll("[data-tab]")];
+  const activateTab = (button, focus = false) => {
+    tabButtons.forEach((item) => {
+      const selected = item === button;
+      item.classList.toggle("active", selected);
+      item.setAttribute("aria-selected", selected ? "true" : "false");
+      item.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll("[data-panel]").forEach((panel) => {
+      const selected = panel.dataset.panel === button.dataset.tab;
+      panel.classList.toggle("active", selected);
+      panel.hidden = !selected;
+    });
     state.activeTab = button.dataset.tab;
+    if (focus) button.focus();
     if (state.activeTab === "settings") refresh({ admin: true, reloadSettings: true }).catch((error) => toast(error.message));
     else if (state.activeTab === "videos") refresh({ includeDevices: false, includeRecordings: false, reloadSettings: false }).catch((error) => toast(error.message));
     else if (state.activeTab === "diagnostics") refresh({ includeDevices: false, includeRecordings: false, includePerformance: true, reloadSettings: false }).catch((error) => toast(error.message));
-  }));
+  };
+  tabButtons.forEach((button, index) => {
+    button.addEventListener("click", () => activateTab(button));
+    button.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabButtons.length;
+      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabButtons.length) % tabButtons.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabButtons.length - 1;
+      else return;
+      event.preventDefault();
+      activateTab(tabButtons[nextIndex], true);
+    });
+  });
   $("performanceRange").addEventListener("change", () => {
     state.performanceRange = $("performanceRange").value;
     localStorage.setItem("wuthering.performanceRange", state.performanceRange);

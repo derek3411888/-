@@ -3,15 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f5f5f7">
+  <meta name="color-scheme" content="light">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=__SERVER_VERSION__-diagnostics-recovery-20260831">
+  <link rel="stylesheet" href="/styles.css?v=__SERVER_VERSION__-apple-ui-v1">
 </head>
-<body>
+<body class="apple-ui">
+  <a class="skip-link" href="#appView">跳到主要內容</a>
   <main id="appView" class="shell">
     <header class="app-header">
-      <div>
-        <h1>鳴潮自動鋤地控制台</h1>
-        <p>自架 Docker・PostgreSQL 多機控制</p>
+      <div class="brand-lockup">
+        <span class="app-brand-mark" aria-hidden="true">WW</span>
+        <div class="brand-copy">
+          <span class="brand-kicker">Home operations</span>
+          <h1>鳴潮自動鋤地控制台</h1>
+          <p>自架 Docker・PostgreSQL 多機控制</p>
+        </div>
       </div>
       <div class="header-actions">
         <div class="support-control">
@@ -131,14 +138,14 @@
       <button id="refreshButton" type="button">立即重讀</button>
     </section>
 
-    <nav class="tabs" aria-label="控制台頁面">
-      <button class="active" data-tab="overview" type="button">總覽</button>
-      <button data-tab="diagnostics" type="button">診斷記錄</button>
-      <button data-tab="videos" type="button">直播</button>
-      <button data-tab="settings" type="button">設定</button>
+    <nav class="tabs" aria-label="控制台頁面" role="tablist">
+      <button id="tabOverview" class="active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panelOverview" tabindex="0">總覽</button>
+      <button id="tabDiagnostics" data-tab="diagnostics" type="button" role="tab" aria-selected="false" aria-controls="panelDiagnostics" tabindex="-1">診斷記錄</button>
+      <button id="tabVideos" data-tab="videos" type="button" role="tab" aria-selected="false" aria-controls="panelVideos" tabindex="-1">直播</button>
+      <button id="tabSettings" data-tab="settings" type="button" role="tab" aria-selected="false" aria-controls="panelSettings" tabindex="-1">設定</button>
     </nav>
 
-    <section class="tab-panel active" data-panel="overview">
+    <section id="panelOverview" class="tab-panel active" data-panel="overview" role="tabpanel" aria-labelledby="tabOverview">
       <div class="grid two">
         <article class="card">
           <div class="section-title"><div><h2>流程控制</h2><p>命令必須收到精確 ACK 才算完成。</p></div></div>
@@ -174,7 +181,7 @@
       </div>
     </section>
 
-    <section class="tab-panel" data-panel="diagnostics">
+    <section id="panelDiagnostics" class="tab-panel" data-panel="diagnostics" role="tabpanel" aria-labelledby="tabDiagnostics" hidden>
       <article class="card performance-card">
         <div class="section-title performance-title">
           <div><h2>效能分析</h2><p>本機每 2 秒低負擔取樣；網站只保存每分鐘彙整，不占 Firestore 額度。</p></div>
@@ -224,7 +231,7 @@
       </details>
     </section>
 
-    <section class="tab-panel" data-panel="videos">
+    <section id="panelVideos" class="tab-panel" data-panel="videos" role="tabpanel" aria-labelledby="tabVideos" hidden>
       <div class="grid">
         <article class="card">
           <div class="section-title"><div><h2>近即時畫面</h2><p id="liveProfileSummary">720p／30fps／3.5 Mbps；有人觀看時才推流。</p></div><span id="liveBadge" class="badge muted">未啟動</span></div>
@@ -239,7 +246,7 @@
       </div>
     </section>
 
-    <section class="tab-panel" data-panel="settings">
+    <section id="panelSettings" class="tab-panel" data-panel="settings" role="tabpanel" aria-labelledby="tabSettings" hidden>
       <div class="grid two">
         <form id="settingsForm" class="card">
           <div class="section-title"><div><h2>執行端設定</h2><p>並行驗證結束前由 Firestore 保存。</p></div></div>

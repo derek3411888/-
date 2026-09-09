@@ -29,7 +29,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p4.92-l5.03-s1.0.52";
+const WEB_BUILD = "p4.93-l5.04-s1.0.53";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -1511,6 +1511,7 @@ function setActiveView(view, updateHash = true) {
     const selected = tab.dataset.view === nextView;
     tab.classList.toggle("active", selected);
     tab.setAttribute("aria-selected", selected ? "true" : "false");
+    tab.tabIndex = selected ? 0 : -1;
     views[tab.dataset.view].hidden = !selected;
   }
 
@@ -3070,6 +3071,19 @@ btnRefreshSnapshot.addEventListener("click", () => {
 });
 for (const tab of viewTabs) {
   tab.addEventListener("click", () => setActiveView(tab.dataset.view));
+  tab.addEventListener("keydown", (event) => {
+    const index = viewTabs.indexOf(tab);
+    let nextIndex = index;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % viewTabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + viewTabs.length) % viewTabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = viewTabs.length - 1;
+    else return;
+    event.preventDefault();
+    const nextTab = viewTabs[nextIndex];
+    setActiveView(nextTab.dataset.view);
+    nextTab.focus();
+  });
 }
 window.addEventListener("hashchange", () => setActiveView(location.hash.slice(1), false));
 document.addEventListener("visibilitychange", () => startSelectedMediaSubscription(true));

@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.92',
-    [string]$LauncherVersion = '5.03',
-    [string]$ServerVersion = '1.0.52'
+    [string]$PayloadVersion = '4.93',
+    [string]$LauncherVersion = '5.04',
+    [string]$ServerVersion = '1.0.53'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +14,25 @@ $developmentSucceeded = $false
 
 function Assert-ExitCode([string]$Task) {
     if ($LASTEXITCODE -ne 0) { throw "$Task 失敗，exit=$LASTEXITCODE" }
+}
+
+function Test-CurrentUserDpapiAvailable {
+    # Codex／CI 的受限程序權杖可能無權開啟登入使用者的 DPAPI master key。
+    # 先以 .NET 做可快速失敗的探測，避免 AHK CryptProtectData 在該環境
+    # 卡住至逾時並於桌面彈出錯誤；一般互動式發布仍會執行完整 round-trip。
+    try {
+        Add-Type -AssemblyName System.Security | Out-Null
+        $plain = [Text.Encoding]::UTF8.GetBytes('wuthering-dpapi-release-probe')
+        $encrypted = [Security.Cryptography.ProtectedData]::Protect(
+            $plain, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $decrypted = [Security.Cryptography.ProtectedData]::Unprotect(
+            $encrypted, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [Text.Encoding]::UTF8.GetString($decrypted) -eq 'wuthering-dpapi-release-probe'
+    } catch {
+        Write-Warning ("目前發布程序無權使用 CurrentUser DPAPI；保留語法驗證並略過僅限互動式使用者權杖的 round-trip：" +
+            $_.Exception.Message)
+        return $false
+    }
 }
 
 function Wait-HiddenProcess([Diagnostics.Process]$Process, [string]$Task,
@@ -255,7 +274,9 @@ Invoke-AhkTest $payloadRuntime '測試\SelfHostLiveCandidatesTest.ahk' '直播�
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostFreshDeviceDefaultTest.ahk' '外網新裝置預設連線測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHostFreshDeviceDefaultTest.ahk' '外網新裝置預設連線回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證測試語法 validate'
-Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證回歸測試'
+if (Test-CurrentUserDpapiAvailable) {
+    Invoke-AhkTest $payloadRuntime '測試\SelfHostCredentialReuseTest.ahk' '自架既有裝置憑證回歸測試'
+}
 Invoke-AhkValidate $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\SelfHostBufferRegressionTest.ahk' '自架 Buffer 回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\SupportLogContextTest.ahk' '裝置 Log 摘要測試語法 validate'

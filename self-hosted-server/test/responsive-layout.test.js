@@ -21,7 +21,7 @@ test("recording status uses an isolated responsive layout", async () => {
   ]);
 
   assert.match(html, /id="recordingStatus" class="recording-status"/);
-  assert.match(html, /styles\.css\?v=__SERVER_VERSION__-diagnostics-recovery-20260831/);
+  assert.match(html, /styles\.css\?v=__SERVER_VERSION__-apple-ui-v1/);
   assert.match(html, /app\.js\?v=__SERVER_VERSION__-diagnostics-recovery-20260831/);
   assert.match(html, /<details class="card recording-details">/);
   assert.doesNotMatch(html, /<details class="card recording-details"\s+open/);
@@ -56,12 +56,22 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(css, /\.codex-field\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(css, /\.codex-progress-list\s*\{/);
   assert.match(css, /@media\s*\(max-width:\s*820px\)[\s\S]*\.codex-progress-list\s*\{\s*grid-template-columns:\s*1fr/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce/);
+  assert.match(css, /body\.apple-ui/);
+  assert.match(html, /class="skip-link"/);
+  assert.match(html, /class="brand-lockup"/);
+  assert.match(html, /class="tabs"[^>]+role="tablist"/);
+  assert.match(html, /data-tab="overview"[^>]+role="tab"[^>]+aria-selected="true"/);
+  assert.match(html, /data-panel="diagnostics"[^>]+role="tabpanel"[^>]+hidden/);
   assert.match(script, /api\("\/api\/v1\/codex-support"/);
   assert.match(script, /\/api\/v1\/codex-support\/\$\{action\}/);
   assert.match(script, /CODEX_SUPPORT_PRESETS\s*=\s*Object\.freeze/);
   assert.match(script, /stopCodexSupportPolling/);
   assert.match(script, /\/api\/v1\/devices\/\$\{encoded\}\/performance\?range=/);
   assert.match(script, /function renderPerformance/);
+  assert.match(script, /function appendCell\(row, value, label = ""\)/);
+  assert.match(script, /cell\.dataset\.label = label/);
+  assert.match(css, /\.table-wrap td::before\s*\{[^}]*content:\s*attr\(data-label\)/s);
   assert.match(script, /LEGACY_RECORDING_STATES/);
   assert.match(script, /舊版分段狀態已停用/);
   assert.match(script, /現在不會再合併或上傳/);
@@ -177,4 +187,8 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(css, /\.codex-support-dialog\s*\{/);
   assert.match(css, /\.codex-progress-list\s*\{/);
   assert.match(css, /\.codex-request-details\s+dl\s*\{/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce/);
+  assert.match(css, /body\.apple-ui/);
+  assert.match(html, /class="skip-link"/);
+  assert.match(html, /class="brand-lockup"/);
 });
