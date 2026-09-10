@@ -37,6 +37,7 @@ const CODEX_SUPPORT_MAX_CONTEXT_LENGTH = 14000;
 const CODEX_SUPPORT_MAX_LOG_LENGTH = 12000;
 const CODEX_BRIDGE_ONLINE_MS = 3 * 60_000;
 const CODEX_SUPPORT_COOLDOWN_MS = 5 * 60_000;
+const CODEX_RESPONSE_START_TIMEOUT_MS = 3 * 60_000;
 const CODEX_SUPPORT_PRESETS = Object.freeze({
   FIX_SCRIPT: Object.freeze({
     label: "找出問題並修正",
@@ -410,6 +411,9 @@ function renderCodexSupportStatus() {
   const responseState = state === "QUEUED" && responseNonce === requestNonce
     ? String(readField(data, "codexResponseState", "WAITING") || "WAITING").trim().toUpperCase()
     : "NONE";
+  const responseTurnId = state === "QUEUED" && responseNonce === requestNonce
+    ? String(readField(data, "codexResponseTurnId", "") || "").trim()
+    : "";
   const responsePending = state === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
 
   const requestPending = requestNonce > statusNonce || (
@@ -421,23 +425,31 @@ function renderCodexSupportStatus() {
     && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
   const dispatchResultUnknown = String(readField(data, "bridgeErrorCode", "") || "")
     .trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
+  const orphanedResponse = state === "QUEUED" && responseState === "WAITING" && !responseTurnId
+    && queuedAt > 0 && Date.now() - queuedAt >= CODEX_RESPONSE_START_TIMEOUT_MS;
+  const failedResponse = state === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState);
   const retryable = !dispatchResultUnknown
-    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) || stalled);
+    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state)
+      || stalled || orphanedResponse || failedResponse);
   const selection = selectedCodexSupportMessage();
   btnAskCodex.disabled = codexSupportSending || codexSupportRecoveryBusy || requestPending || responsePending || cooldownRemaining > 0 || !selection.message;
   btnCancelCodexSupport.disabled = codexSupportSending || codexSupportRecoveryBusy || !safelyCancellable;
   btnRetryCodexSupport.disabled = codexSupportSending || codexSupportRecoveryBusy || !retryable;
-  codexRecoveryHint.textContent = stalled
-    ? "這筆請求已超過 3 分鐘且尚未嘗試，可取消，或取消後用新編號重送。"
-    : dispatchResultUnknown
-      ? "傳送結果不明，訊息可能已進入 Codex；為避免重複執行，不能直接重送。請先檢查目前 Codex 任務。"
-    : safelyCancellable
-      ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
-      : state === "QUEUED"
-        ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
-        : retryable
-          ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
-          : "只有尚未進入 Codex 的請求可以安全取消。";
+  codexRecoveryHint.textContent = orphanedResponse
+    ? "Codex 已接收佇列，但超過 3 分鐘仍未建立處理回合；可中斷舊請求並用新編號重送。"
+    : failedResponse
+      ? "Codex 沒有完成這筆請求；可保留相同內容與裝置 Log，用新編號重送。"
+      : stalled
+        ? "這筆請求已超過 3 分鐘且尚未嘗試，可取消，或取消後用新編號重送。"
+        : dispatchResultUnknown
+          ? "傳送結果不明，訊息可能已進入 Codex；為避免重複執行，不能直接重送。請先檢查目前 Codex 任務。"
+          : safelyCancellable
+            ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
+            : state === "QUEUED"
+              ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
+              : retryable
+                ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
+                : "只有尚未進入 Codex 的請求可以安全取消。";
 
   const stateLabels = {
     PENDING: "已送出，等待家中主機",
@@ -638,13 +650,25 @@ async function retryCodexSupport() {
       const state = currentNonce > statusNonce ? "PENDING" : storedState;
       const attempts = Math.max(0, toInteger(readField(data, "bridgeAttemptCount", 0), 0));
       const requestedAt = toMillis(readField(data, "supportRequestedAt", 0));
+      const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
+      const responseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
+      const responseState = responseNonce === currentNonce
+        ? String(readField(data, "codexResponseState", "WAITING") || "WAITING").trim().toUpperCase()
+        : "NONE";
+      const responseTurnId = responseNonce === currentNonce
+        ? String(readField(data, "codexResponseTurnId", "") || "").trim()
+        : "";
       const errorCode = String(readField(data, "bridgeErrorCode", "") || "").trim().toUpperCase();
       if (errorCode === "DISPATCH_RESULT_UNKNOWN") {
         throw new Error("上一筆傳送結果不明，可能已進入 Codex；為避免重複執行，禁止直接重送");
       }
       const stalled = attempts === 0 && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(state)
         && requestedAt > 0 && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
-      if (!["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) && !stalled) {
+      const orphanedResponse = state === "QUEUED" && responseState === "WAITING" && !responseTurnId
+        && queuedAt > 0 && Date.now() - queuedAt >= CODEX_RESPONSE_START_TIMEOUT_MS;
+      const failedResponse = state === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState);
+      if (!["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state)
+          && !stalled && !orphanedResponse && !failedResponse) {
         throw new Error("這筆請求仍可能正在處理，暫時不能重送");
       }
       const nextNonce = currentNonce + 1;

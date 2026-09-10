@@ -173,6 +173,7 @@
 
 ### 3.21 自架 Docker 控制與直播平台
 - `self-hosted-server/` 包含 PostgreSQL、Node API/網站、Caddy、MediaMTX、備份與一鍵安裝／更新工具；中央正式影片庫自 1.0.45 起停用。
+- Codex 支援訊息若已由 CLI 接收，但 3 分鐘後仍未在指定 thread 的 session log 建立對應 turn，橋接會回報 `INTERRUPTED`；自架站與公司頁皆可把該舊請求以新 nonce 取代。後端重送必須在同一交易鎖定舊列、將孤兒 `QUEUED/WAITING` 回覆標為中斷，再建立 `retry_of_id` 新列，不能重用舊編號。
 - `payload/RemoteControlSelfHost.ahk` 沿用既有 durable nonce／claim／ACK 狀態機；shadow 期間 Firestore 是唯一命令來源，primary 才切換到 PostgreSQL。裝置 token 只存伺服器雜湊，本機以 Windows DPAPI 保存。
 - 舊 `SelfHostMediaUpload.ps1`／`RecordingFinalizeWorker.ahk` 只為舊 Payload 相容保留，新主流程不得呼叫；中央錄影片段 API 固定回 `FORMAL_MEDIA_DISABLED`。
 - 直播使用獨立 `WUTHERING_RUNTIME_PREVIEW_V1` FFmpeg marker 與加密 SRT；正式錄影掃描會排除它，啟動時只清理由該 marker 識別的孤兒預覽程序。每台可由自架網站選擇 `economy=720p12/1.5Mbps`、預設 `balanced=720p30/3.5Mbps` 或 `smooth=720p60/6Mbps`；所有畫質以及正式錄影都會依序實測 NVENC、QSV、AMF 並優先使用 GPU，只有硬體編碼不可用時才回退 libx264。關鍵影格均為 2 秒。

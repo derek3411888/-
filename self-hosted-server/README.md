@@ -96,7 +96,7 @@ GitHub Pages 公司控制台與自架一般控制台都有「通知目前 Codex 
 
 安裝工具會驗證 Firestore、中央 loopback API、本機 Codex CLI 與工作區，將 bridge、watchdog 與 bootstrap 放到 Task Scheduler 可見的 ProgramData，建立隱藏的登入啟動項目並立即啟動。設定會保留穩定的 dispatcher ID，讓橋接或 Codex 更新重啟後仍可以安全回報原本的 claim。設定與最多 15 份輪替 Log 位於 `%ProgramData%\WutheringAutomation\CodexSupportBridge`，資料夾 ACL 僅允許目前 Windows 使用者與 SYSTEM。伺服器更新會同步重裝 bridge/watchdog；移除時執行 `windows\Uninstall-CodexSupportBridge.ps1`。
 
-新版網站使用 `QUEUE_MESSAGE_V1`，提供三種預設訊息及最多 1,000 字元的自訂訊息，也可選擇一台裝置並附上經截斷、遮蔽敏感字串的最近 Log。橋接端會再次檢查動作、長度、空白與控制字元，並相容舊版 `FIX_SCRIPT`。Codex task ID 仍只存在主機本機。網頁會顯示收到、驗證、嘗試、重試與排入時間、嘗試次數、訊息 SHA-256 指紋及錯誤代碼；尚未開始送出的請求可取消，失敗或安全判定卡住的請求會以新 nonce 重送；「已排入」不會被描述成 Codex 已完成。自架網站只在載入時讀取一次，開啟對話框後才以 3～15 秒間隔查詢；橋接主機每 90 秒回報心跳，兩次成功排入至少間隔 5 分鐘。
+新版網站使用 `QUEUE_MESSAGE_V1`，提供三種預設訊息及最多 1,000 字元的自訂訊息，也可選擇一台裝置並附上經截斷、遮蔽敏感字串的最近 Log。橋接端會再次檢查動作、長度、空白與控制字元，並相容舊版 `FIX_SCRIPT`。Codex task ID 仍只存在主機本機。網頁會顯示收到、驗證、嘗試、重試與排入時間、嘗試次數、訊息 SHA-256 指紋及錯誤代碼；尚未開始送出的請求可取消，失敗或安全判定卡住的請求會以新 nonce 重送；若 CLI 已接收佇列、但 3 分鐘後仍沒有建立對應 Codex turn，橋接會將舊請求標為中斷，兩個控制台也會開放以新 nonce 取代，避免永久卡在 `QUEUED/WAITING`。「已排入」不會被描述成 Codex 已完成。自架網站只在載入時讀取一次，開啟對話框後才以 3～15 秒間隔查詢；橋接主機每 90 秒回報心跳，兩次成功排入至少間隔 5 分鐘。
 
 由於 GitHub Pages 控制台目前沒有登入驗證，自訂訊息會經過 Firestore，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。橋接 Log 只記錄 nonce、長度、指紋與結果，不記錄訊息本文。
 
