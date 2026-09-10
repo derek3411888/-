@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.99',
-    [string]$LauncherVersion = '5.10',
-    [string]$ServerVersion = '1.0.62'
+    [string]$PayloadVersion = '5.00',
+    [string]$LauncherVersion = '5.11',
+    [string]$ServerVersion = '1.0.63'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -338,6 +338,18 @@ foreach ($bridgeScript in @(
         throw "Codex 橋接 PowerShell 語法錯誤 ($bridgeScript)：$($bridgeParseErrors[0].Message)"
     }
 }
+$currentPowerShellPath = (Get-Process -Id $PID).Path
+$bridgeRegressionOutput = @(& $currentPowerShellPath -NoProfile -File `
+    (Join-Path $projectRoot 'self-hosted-server\windows\CodexSupportBridge.ps1') -RegressionTest)
+Assert-ExitCode 'Codex 網站回報橋接回歸測試'
+$bridgeRegression = ($bridgeRegressionOutput -join "`n") | ConvertFrom-Json
+if (-not [bool]$bridgeRegression.Ok -or
+    -not [bool]$bridgeRegression.CorrelationIdsAreUnique -or
+    -not [bool]$bridgeRegression.ChronologyWindowGuarded -or
+    -not [bool]$bridgeRegression.ResponseStateMonotonic -or
+    -not [bool]$bridgeRegression.ExactTurnCorrelation) {
+    throw 'Codex 網站回報橋接回歸測試失敗。'
+}
 Add-Type -AssemblyName System.Security
 if (-not ('System.Security.Cryptography.ProtectedData' -as [type])) {
     throw '目前 PowerShell 無法載入 DPAPI ProtectedData 型別。'
@@ -387,6 +399,8 @@ Assert-ZipContains 'self-hosted-server.zip' @(
     'public/index.html', 'public/app.js', 'public/styles.css', 'src/hls-proxy.js',
     'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
     'migrations/006_codex_support_queue.sql', 'migrations/007_effective_settings_revision.sql',
+    'migrations/008_codex_support_responses.sql', 'migrations/009_firestore_command_bridge.sql',
+    'migrations/010_codex_support_response_recovery.sql',
     'src/performance.js', 'src/settings.js',
     'src/codex-support.js', 'src/codex-support-queue.js', 'Update-Server.ps1',
     'test/dev-runtime.js', 'test/development-paths.test.js', 'test/run-tests.mjs',

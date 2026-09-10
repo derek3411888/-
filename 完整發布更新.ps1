@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.99',
-    [string]$LauncherVersion = '5.10',
-    [string]$ServerVersion = '1.0.62',
+    [string]$PayloadVersion = '5.00',
+    [string]$LauncherVersion = '5.11',
+    [string]$ServerVersion = '1.0.63',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -101,7 +101,7 @@ if ($stagedPaths | Where-Object {
 if (-not $stagedPaths.Count) { Write-Host '沒有新的發布差異，沿用目前提交。' }
 else {
     if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
-        $CommitMessage = "發布 $PayloadVersion：修正收尾誤判與網站回報備援"
+        $CommitMessage = "發布 $PayloadVersion：90 秒收尾保護與網站回報可靠性"
     }
     & git commit -m $CommitMessage
     Assert-ExitCode '建立 Git 提交'

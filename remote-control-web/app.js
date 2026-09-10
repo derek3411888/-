@@ -29,7 +29,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p4.99-l5.10-s1.0.62";
+const WEB_BUILD = "p5.00-l5.11-s1.0.63";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -407,9 +407,17 @@ function renderCodexSupportStatus() {
   const cooldownRemaining = Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now());
   const pendingStates = ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"];
   const responseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
-  const responseState = state === "QUEUED" && responseNonce === requestNonce
+  const rawResponseState = state === "QUEUED" && responseNonce === requestNonce
     ? String(readField(data, "codexResponseState", "WAITING") || "WAITING").trim().toUpperCase()
     : "NONE";
+  const storedResponseAt = toMillis(readField(data, "codexResponseAt", 0));
+  const invalidResponseChronology = ["COMPLETED", "FAILED", "INTERRUPTED"].includes(rawResponseState)
+    && queuedAt > 0 && storedResponseAt < queuedAt;
+  const responseState = invalidResponseChronology ? "FAILED" : rawResponseState;
+  const responseText = invalidResponseChronology ? "" : String(readField(data, "codexResponseText", "") || "").trim();
+  const responseError = invalidResponseChronology
+    ? "已拒絕顯示時間早於本次請求的舊 Codex 回覆；請按重送建立新請求"
+    : String(readField(data, "codexResponseError", "") || "").trim();
   const responsePending = state === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
 
   const requestPending = requestNonce > statusNonce || (
@@ -421,8 +429,9 @@ function renderCodexSupportStatus() {
     && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
   const dispatchResultUnknown = String(readField(data, "bridgeErrorCode", "") || "")
     .trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
+  const responseRetryable = state === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState);
   const retryable = !dispatchResultUnknown
-    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) || stalled);
+    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) || stalled || responseRetryable);
   const selection = selectedCodexSupportMessage();
   btnAskCodex.disabled = codexSupportSending || codexSupportRecoveryBusy || requestPending || responsePending || cooldownRemaining > 0 || !selection.message;
   btnCancelCodexSupport.disabled = codexSupportSending || codexSupportRecoveryBusy || !safelyCancellable;
@@ -434,7 +443,11 @@ function renderCodexSupportStatus() {
     : safelyCancellable
       ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
       : state === "QUEUED"
-        ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
+        ? (responsePending
+          ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。"
+          : responseRetryable
+            ? "這筆 Codex 回覆失敗或中斷，可以保留相同內容與裝置 Log，用新編號重送。"
+            : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
         : retryable
           ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
           : "只有尚未進入 Codex 的請求可以安全取消。";
@@ -498,9 +511,9 @@ function renderCodexSupportStatus() {
     setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
     setCodexStage(codexStages.queued, "done", queuedAt ? `排入於 ${fmtTs(queuedAt)}` : "Codex 佇列已接收");
     if (responseState === "COMPLETED") {
-      setCodexStage(codexStages.response, "done", `完成於 ${fmtTs(readField(data, "codexResponseAt", 0))}`);
+      setCodexStage(codexStages.response, "done", `完成於 ${fmtTs(storedResponseAt)}`);
     } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
-      setCodexStage(codexStages.response, "error", String(readField(data, "codexResponseError", "") || "Codex 沒有產生最終回覆"));
+      setCodexStage(codexStages.response, "error", responseError || "Codex 沒有產生最終回覆");
     } else {
       setCodexStage(codexStages.response, "active", responseState === "IN_PROGRESS" ? "Codex 正在處理" : "等待 Codex 開始處理");
     }
@@ -516,8 +529,6 @@ function renderCodexSupportStatus() {
     setCodexStage(codexStages.received, "error", detail || "已取消，未送進 Codex");
   }
 
-  const responseText = String(readField(data, "codexResponseText", "") || "").trim();
-  const responseError = String(readField(data, "codexResponseError", "") || "").trim();
   const responseViews = {
     NONE: ["waiting", "尚未送出", "請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。", "muted"],
     WAITING: ["waiting", "等待 Codex", "已排入目前任務，等待 Codex 開始處理。", "warning"],
@@ -530,7 +541,7 @@ function renderCodexSupportStatus() {
   document.getElementById("codexResponseCard").className = `codex-response-card ${responseView[0]}`;
   document.getElementById("codexResponseBadge").className = `badge ${responseView[3]}`;
   document.getElementById("codexResponseBadge").textContent = responseView[1];
-  document.getElementById("codexResponseAt").textContent = fmtTs(readField(data, "codexResponseAt", 0));
+  document.getElementById("codexResponseAt").textContent = fmtTs(invalidResponseChronology ? 0 : storedResponseAt);
   document.getElementById("codexResponseHint").textContent = responseView[2];
   document.getElementById("codexResponseText").hidden = !responseText;
   document.getElementById("codexResponseText").textContent = responseText;
@@ -638,13 +649,21 @@ async function retryCodexSupport() {
       const state = currentNonce > statusNonce ? "PENDING" : storedState;
       const attempts = Math.max(0, toInteger(readField(data, "bridgeAttemptCount", 0), 0));
       const requestedAt = toMillis(readField(data, "supportRequestedAt", 0));
+      const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
       const errorCode = String(readField(data, "bridgeErrorCode", "") || "").trim().toUpperCase();
+      const responseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
+      const responseState = String(readField(data, "codexResponseState", "") || "").trim().toUpperCase();
+      const responseAt = toMillis(readField(data, "codexResponseAt", 0));
+      const invalidResponseChronology = ["COMPLETED", "FAILED", "INTERRUPTED"].includes(responseState)
+        && queuedAt > 0 && responseAt < queuedAt;
+      const responseRetryable = currentNonce === statusNonce && currentNonce === responseNonce
+        && state === "QUEUED" && (["FAILED", "INTERRUPTED"].includes(responseState) || invalidResponseChronology);
       if (errorCode === "DISPATCH_RESULT_UNKNOWN") {
         throw new Error("上一筆傳送結果不明，可能已進入 Codex；為避免重複執行，禁止直接重送");
       }
       const stalled = attempts === 0 && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(state)
         && requestedAt > 0 && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
-      if (!["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) && !stalled) {
+      if (!["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) && !stalled && !responseRetryable) {
         throw new Error("這筆請求仍可能正在處理，暫時不能重送");
       }
       const nextNonce = currentNonce + 1;

@@ -449,8 +449,9 @@ function renderCodexSupportStatus() {
   const stalled = safelyCancellable && requestedAt > 0
     && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
   const dispatchResultUnknown = String(data.errorCode || "").trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
+  const responseRetryable = supportState === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState);
   const retryable = !dispatchResultUnknown
-    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState) || stalled);
+    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState) || stalled || responseRetryable);
   const selection = selectedCodexSupportMessage();
   $("btnAskCodex").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || requestPending || responsePending || cooldownRemaining > 0
     || !selection.message || selection.message.length > CODEX_SUPPORT_MAX_MESSAGE_LENGTH;
@@ -463,7 +464,11 @@ function renderCodexSupportStatus() {
     : safelyCancellable
       ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
       : supportState === "QUEUED"
-        ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
+        ? (responsePending
+          ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。"
+          : responseRetryable
+            ? "這筆 Codex 回覆失敗或中斷，可以保留相同內容與裝置 Log，用新編號重送。"
+            : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
         : retryable
           ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
           : "一般控制台會直接寫入中央主機，不經 Firestore。只有尚未進入 Codex 的請求可以安全取消。");

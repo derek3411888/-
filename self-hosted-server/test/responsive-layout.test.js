@@ -111,7 +111,13 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(codexBridge, /\$script:CodexResponseCursors/);
   assert.match(codexBridge, /\$scanStart = \[long\]\$cursor\.Offset/);
   assert.doesNotMatch(codexBridge, /cursor\.Offset\s*-\s*1MB/);
-  assert.match(codexBridge, /if \(\$targetSeen\) \{[\s\S]*\$targetTurnId = \$nextTurnId[\s\S]*\$targetActive = \$true/);
+  assert.match(codexBridge, /New-CodexRequestCorrelationId/);
+  assert.match(codexBridge, /\$cursorKey = "\$\(\[string\]\$Target\.Source\)\|\$\(\[long\]\$Target\.Nonce\)\|\$messageHash"/);
+  assert.match(codexBridge, /Test-CodexRequestLogTimestamp/);
+  assert.match(codexBridge, /\$nextTurnId -ne \$targetTurnId/);
+  assert.doesNotMatch(codexBridge, /\$targetTurnId = \$nextTurnId\s*\r?\n\s*\$targetActive = \$true/);
+  assert.match(codexBridge, /Set-FirestoreFieldsAtVersion \$Config \$values/);
+  assert.match(codexBridge, /Repair-FirestoreInvalidCodexResponse/);
   assert.match(codexBridge, /Get-CodexDisplayResponseText/);
   assert.match(codexBridge, /<oai-mem-citation>/);
   assert.match(codexBridgeInstaller, /BridgePowerShellPath = \$bridgePowerShellPath/);
@@ -206,7 +212,8 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(css, /body\.apple-ui/);
   assert.match(html, /class="skip-link"/);
   assert.match(html, /class="brand-lockup"/);
-  assert.match(fallback, /Codex 緊急修復備援/);
+  assert.match(fallback, /Codex 人工救援與訊息匯出/);
+  assert.match(fallback, /這不是自動備援/);
   assert.match(fallback, /id="generatedPrompt"/);
   assert.match(fallback, /id="copyPrompt"/);
   assert.match(fallback, /id="downloadPrompt"/);

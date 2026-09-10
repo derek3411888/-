@@ -65,24 +65,39 @@ try {
     for line in abandonLines {
         AssertRewardIncident(RewardMonitor_IsTaskAbandonLine(line),
             "task-abandon-zh-pattern-not-matched")
-        RewardMonitor_RecordTaskAbandon(abandonState, line, 120)
+        RewardMonitor_RecordTaskAbandon(abandonState, line, 90)
     }
     AssertRewardIncident(RewardMonitor_HasTaskAbandonBurst(abandonState, 5),
         "task-abandon-five-hit-burst-not-detected")
-    AssertRewardIncident(RewardMonitor_ShouldHoldCompletion(abandonState, 5, 120,
+    AssertRewardIncident(RewardMonitor_ShouldHoldCompletion(abandonState, 5, 90,
         "20260910101800"), "task-abandon-burst-must-defeat-reward-completion")
-    burstSummary := RewardMonitor_FormatTaskAbandonBurst(abandonState, 5, 120)
+    burstSummary := RewardMonitor_FormatTaskAbandonBurst(abandonState, 5, 90)
     AssertRewardIncident(InStr(burstSummary, "hits=5/5") > 0,
         "task-abandon-summary-missing-count")
 
     RewardMonitor_RecordTaskAbandon(abandonState,
-        "2026-09-10 10:20:00,000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!", 120)
+        "2026-09-10 10:20:00,000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!", 90)
     AssertRewardIncident(abandonState.taskAbandonHits = 1,
         "task-abandon-window-did-not-reset")
-    AssertRewardIncident(RewardMonitor_IsTaskAbandonWindowActive(abandonState, 120,
+    AssertRewardIncident(RewardMonitor_IsTaskAbandonWindowActive(abandonState, 90,
         "20260910102130"), "task-abandon-quiet-window-ended-too-early")
-    AssertRewardIncident(!RewardMonitor_IsTaskAbandonWindowActive(abandonState, 120,
-        "20260910102201"), "task-abandon-quiet-window-did-not-expire")
+    AssertRewardIncident(!RewardMonitor_IsTaskAbandonWindowActive(abandonState, 90,
+        "20260910102131"), "task-abandon-quiet-window-did-not-expire")
+
+    defaultWindowState := {
+        taskAbandonHits: 0,
+        taskAbandonFirstAt: "",
+        taskAbandonLastAt: "",
+        lastTaskAbandonLine: ""
+    }
+    RewardMonitor_RecordTaskAbandon(defaultWindowState,
+        "2026-09-10 11:00:00,000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!")
+    AssertRewardIncident(RewardMonitor_IsTaskAbandonWindowActive(defaultWindowState,
+        , "20260910110130"), "task-abandon-default-90s-window-ended-too-early")
+    AssertRewardIncident(!RewardMonitor_IsTaskAbandonWindowActive(defaultWindowState,
+        , "20260910110131"), "task-abandon-default-90s-window-did-not-expire")
+    AssertRewardIncident(InStr(RewardMonitor_FormatTaskAbandonBurst(defaultWindowState),
+        "window=90s") > 0, "task-abandon-default-summary-is-not-90s")
 
     rollingState := {
         taskAbandonHits: 0,
@@ -93,7 +108,7 @@ try {
     for timestamp in ["101500", "101559", "101758"] {
         RewardMonitor_RecordTaskAbandon(rollingState,
             "2026-09-10 " SubStr(timestamp, 1, 2) ":" SubStr(timestamp, 3, 2) ":"
-                SubStr(timestamp, 5, 2) ",000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!", 120)
+                SubStr(timestamp, 5, 2) ",000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!", 90)
     }
     AssertRewardIncident(rollingState.taskAbandonHits = 1,
         "task-abandon-window-used-adjacent-gap")

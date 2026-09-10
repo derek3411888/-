@@ -86,11 +86,11 @@ RewardMonitor_ExtractLogTimestamp(line, fallbackTimestamp := "") {
     return fallback ~= "^\d{14}$" ? fallback : A_Now
 }
 
-RewardMonitor_RecordTaskAbandon(state, line, windowSeconds := 120, fallbackTimestamp := "") {
+RewardMonitor_RecordTaskAbandon(state, line, windowSeconds := 90, fallbackTimestamp := "") {
     if !IsObject(state)
         throw TypeError("收尾監測任務放棄狀態必須是物件")
 
-    window := 120
+    window := 90
     try window := Max(1, Integer(windowSeconds))
     timestamp := RewardMonitor_ExtractLogTimestamp(line, fallbackTimestamp)
     firstTimestamp := ""
@@ -126,13 +126,13 @@ RewardMonitor_HasTaskAbandonBurst(state, requiredHits := 5) {
     return hits >= needed
 }
 
-RewardMonitor_IsTaskAbandonWindowActive(state, windowSeconds := 120,
+RewardMonitor_IsTaskAbandonWindowActive(state, windowSeconds := 90,
     currentTimestamp := "") {
     if !IsObject(state)
         return false
     hits := 0
     lastAt := ""
-    window := 120
+    window := 90
     try hits := state.HasOwnProp("taskAbandonHits") ? Integer(state.taskAbandonHits) : 0
     try lastAt := state.HasOwnProp("taskAbandonLastAt") ? state.taskAbandonLastAt : ""
     try window := Max(1, Integer(windowSeconds))
@@ -145,7 +145,7 @@ RewardMonitor_IsTaskAbandonWindowActive(state, windowSeconds := 120,
     return elapsed >= 0 && elapsed <= window
 }
 
-RewardMonitor_ShouldHoldCompletion(state, requiredHits := 5, windowSeconds := 120,
+RewardMonitor_ShouldHoldCompletion(state, requiredHits := 5, windowSeconds := 90,
     currentTimestamp := "") {
     ; A confirmed burst must permanently defeat reward completion until the
     ; caller restarts and clears the state. A smaller number of task abandons
@@ -154,7 +154,7 @@ RewardMonitor_ShouldHoldCompletion(state, requiredHits := 5, windowSeconds := 12
         || RewardMonitor_IsTaskAbandonWindowActive(state, windowSeconds, currentTimestamp)
 }
 
-RewardMonitor_FormatTaskAbandonBurst(state, requiredHits := 5, windowSeconds := 120,
+RewardMonitor_FormatTaskAbandonBurst(state, requiredHits := 5, windowSeconds := 90,
     maxLineChars := 420) {
     if !IsObject(state)
         return "task_abandon_state=none"
@@ -167,7 +167,7 @@ RewardMonitor_FormatTaskAbandonBurst(state, requiredHits := 5, windowSeconds := 
     try lastAt := state.HasOwnProp("taskAbandonLastAt") ? state.taskAbandonLastAt : ""
     try lastLine := state.HasOwnProp("lastTaskAbandonLine") ? state.lastTaskAbandonLine : ""
     needed := 5
-    window := 120
+    window := 90
     lineLimit := 420
     try needed := Max(1, Integer(requiredHits))
     try window := Max(1, Integer(windowSeconds))

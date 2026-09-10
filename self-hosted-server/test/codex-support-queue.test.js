@@ -8,6 +8,8 @@ for (const name of ["SESSION_SECRET", "CODEX_BRIDGE_TOKEN", "LIVE_TOKEN_SECRET",
 
 const {
   CODEX_DISPATCH_LEASE_MS,
+  isCodexResponseTransitionAllowed,
+  isCodexResponseTurnCompatible,
   isDirectCodexTransitionAllowed,
   isCodexResponseChronologicallyValid,
   isDispatchResultUnknown,
@@ -32,6 +34,18 @@ test("a terminal Codex reply must belong to the current request chronology", () 
     queued_at: new Date("2026-09-10T08:00:00Z"),
     codex_response_at: null,
   }), true);
+});
+
+test("Codex response state and turn identity cannot regress or jump requests", () => {
+  assert.equal(isCodexResponseTransitionAllowed("WAITING", "IN_PROGRESS"), true);
+  assert.equal(isCodexResponseTransitionAllowed("WAITING", "COMPLETED"), true);
+  assert.equal(isCodexResponseTransitionAllowed("IN_PROGRESS", "COMPLETED"), true);
+  assert.equal(isCodexResponseTransitionAllowed("IN_PROGRESS", "WAITING"), false);
+  assert.equal(isCodexResponseTransitionAllowed("COMPLETED", "IN_PROGRESS"), false);
+  assert.equal(isCodexResponseTurnCompatible("WAITING", "", "turn-a"), true);
+  assert.equal(isCodexResponseTurnCompatible("IN_PROGRESS", "turn-a", "turn-a"), true);
+  assert.equal(isCodexResponseTurnCompatible("IN_PROGRESS", "turn-a", "turn-b"), false);
+  assert.equal(isCodexResponseTurnCompatible("IN_PROGRESS", "turn-a", ""), false);
 });
 
 test("dispatcher state machine accepts idempotent/forward updates and rejects stale regression", () => {
@@ -91,6 +105,7 @@ test("queue SQL contract uses row locking, expiring leases, and state compare-an
   const source = await fs.readFile(new URL("../src/codex-support-queue.js", import.meta.url), "utf8");
   const migration = await fs.readFile(new URL("../migrations/006_codex_support_queue.sql", import.meta.url), "utf8");
   const responseMigration = await fs.readFile(new URL("../migrations/008_codex_support_responses.sql", import.meta.url), "utf8");
+  const responseRecoveryMigration = await fs.readFile(new URL("../migrations/010_codex_support_response_recovery.sql", import.meta.url), "utf8");
   const publicApp = await fs.readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const serverApp = await fs.readFile(new URL("../src/app.js", import.meta.url), "utf8");
 
@@ -112,6 +127,11 @@ test("queue SQL contract uses row locking, expiring leases, and state compare-an
   assert.match(source, /CODEX_RESPONSE_MESSAGE_MISMATCH/);
   assert.match(source, /CODEX_RESPONSE_ALREADY_TERMINAL/);
   assert.match(source, /CODEX_RESPONSE_PREDATES_REQUEST/);
+  assert.match(source, /CODEX_RESPONSE_INVALID_TRANSITION/);
+  assert.match(source, /CODEX_RESPONSE_TURN_MISMATCH/);
+  assert.match(source, /responseRetryable/);
+  assert.match(responseRecoveryMigration, /response_state = 'FAILED'/);
+  assert.match(responseRecoveryMigration, /legacyCorrelationRejected/);
   assert.match(publicApp, /dispatchResultUnknown/);
   assert.match(publicApp, /deviceUid: \$\("codexLogDeviceSelect"\)\.value \|\| state\.selectedUid/);
   assert.match(serverApp, /nextDispatcherRequest\(dispatcherId\)/);

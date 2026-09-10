@@ -36,6 +36,27 @@ export function isDirectCodexTransitionAllowed(fromState, toState) {
   return Boolean(LEGAL_DISPATCH_TRANSITIONS[from]?.has(to));
 }
 
+const LEGAL_RESPONSE_TRANSITIONS = Object.freeze({
+  WAITING: new Set(["WAITING", "IN_PROGRESS", "COMPLETED", "FAILED", "INTERRUPTED"]),
+  IN_PROGRESS: new Set(["IN_PROGRESS", "COMPLETED", "FAILED", "INTERRUPTED"]),
+  COMPLETED: new Set(["COMPLETED"]),
+  FAILED: new Set(["FAILED"]),
+  INTERRUPTED: new Set(["INTERRUPTED"]),
+});
+
+export function isCodexResponseTransitionAllowed(fromState, toState) {
+  const from = String(fromState ?? "").trim().toUpperCase();
+  const to = String(toState ?? "").trim().toUpperCase();
+  return Boolean(LEGAL_RESPONSE_TRANSITIONS[from]?.has(to));
+}
+
+export function isCodexResponseTurnCompatible(currentState, currentTurnId, nextTurnId) {
+  const state = String(currentState ?? "").trim().toUpperCase();
+  const current = String(currentTurnId ?? "").trim();
+  const next = String(nextTurnId ?? "").trim();
+  return state !== "IN_PROGRESS" || !current || current === next;
+}
+
 export function isDispatchResultUnknown(row = {}) {
   return String(row.error_code ?? row.errorCode ?? "").trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
 }
@@ -101,7 +122,7 @@ function statusFromRow(row = null, dispatcher = {}) {
   const invalidResponseChronology = String(row.state) === "QUEUED"
     && TERMINAL_RESPONSE_STATES.has(rawResponseState)
     && !isCodexResponseChronologicallyValid(row);
-  const responseState = invalidResponseChronology ? "WAITING" : rawResponseState;
+  const responseState = invalidResponseChronology ? "FAILED" : rawResponseState;
   const responsePending = String(row.state) === "QUEUED" && PENDING_RESPONSE_STATES.has(responseState);
   return {
     requestNonce: Number(row.id), statusNonce: Number(row.id), state: String(row.state), detail: String(row.detail || ""),
@@ -244,7 +265,10 @@ export async function retryDirectCodexSupport() {
     }
     const stalled = CANCELLABLE_STATES.has(String(current.state)) && Number(current.attempt_count) === 0
       && Date.now() - milliseconds(current.created_at) >= BRIDGE_ONLINE_MS;
-    if (!RETRYABLE_TERMINAL_STATES.has(String(current.state)) && !stalled) {
+    const responseRetryable = String(current.state) === "QUEUED"
+      && (["FAILED", "INTERRUPTED"].includes(String(current.response_state || "").toUpperCase())
+        || !isCodexResponseChronologicallyValid(current));
+    if (!RETRYABLE_TERMINAL_STATES.has(String(current.state)) && !stalled && !responseRetryable) {
       throw new HttpError(409, "這筆請求仍可能正在處理，暫時不能重送", "CODEX_SUPPORT_NOT_RETRYABLE", statusFromRow(current));
     }
     if (stalled) {
@@ -392,6 +416,22 @@ export async function updateCodexResponse(nonceValue, body = {}, dispatcherIdVal
         && String(current.codex_response_sha256 || "") === responseSha256;
       if (sameTerminal) return statusFromRow(current);
       throw new HttpError(409, "Codex 回覆已是最終狀態，不能覆蓋", "CODEX_RESPONSE_ALREADY_TERMINAL", statusFromRow(current));
+    }
+    if (!isCodexResponseTransitionAllowed(currentState, responseState)) {
+      throw new HttpError(
+        409,
+        `拒絕過期 Codex 回覆狀態：${currentState} → ${responseState}`,
+        "CODEX_RESPONSE_INVALID_TRANSITION",
+        statusFromRow(current),
+      );
+    }
+    if (!isCodexResponseTurnCompatible(currentState, current.codex_turn_id, turnId)) {
+      throw new HttpError(
+        409,
+        "Codex 回覆 turn 與已鎖定的網站請求不一致",
+        "CODEX_RESPONSE_TURN_MISMATCH",
+        statusFromRow(current),
+      );
     }
     const responseAt = TERMINAL_RESPONSE_STATES.has(responseState)
       ? new Date(Number(body.responseAt) > 0 ? Number(body.responseAt) : Date.now()) : null;
