@@ -1,0 +1,200 @@
+name: Hotfix Codex Bridge Firestore CAS
+
+on:
+  push:
+    paths:
+      - .github/workflows/hotfix-codex-bridge-cas.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hotfix-codex-bridge-cas
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: self-hosted-server/package-lock.json
+
+      - name: Patch bridge and bump server version
+        shell: python
+        run: |
+          from pathlib import Path
+          import json
+
+          bridge = Path('self-hosted-server/windows/CodexSupportBridge.ps1')
+          text = bridge.read_text(encoding='utf-8-sig')
+
+          old_version = "$BridgeVersion = '3.0.1'"
+          new_version = "$BridgeVersion = '3.0.2'"
+          if text.count(old_version) != 1:
+              raise SystemExit('BridgeVersion 3.0.1 marker is missing or not unique')
+          text = text.replace(old_version, new_version, 1)
+
+          old_patch = "    return Invoke-RestMethod -Method Patch -Uri $url -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15"
+          new_patch = "    $response = Invoke-WebRequest -UseBasicParsing -Method Patch -Uri $url -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15\n    return ConvertFrom-FirestoreJson ([string]$response.Content)"
+          if text.count(old_patch) != 1:
+              raise SystemExit('CAS PATCH marker is missing or not unique')
+          text = text.replace(old_patch, new_patch, 1)
+          bridge.write_text(text, encoding='utf-8', newline='\n')
+
+          # Keep release defaults aligned so the next normal package does not regress the server version.
+          for script_name in ('打包更新.ps1', '完整發布更新.ps1'):
+              path = Path(script_name)
+              script = path.read_text(encoding='utf-8-sig')
+              marker = "[string]$ServerVersion = '1.0.56'"
+              if marker not in script:
+                  raise SystemExit(f'{script_name}: server version marker not found')
+              path.write_text(script.replace(marker, "[string]$ServerVersion = '1.0.57'", 1), encoding='utf-8', newline='\n')
+
+          # Bump package identity used by /health/ready and Update-Server.ps1.
+          package_path = Path('self-hosted-server/package.json')
+          package = json.loads(package_path.read_text(encoding='utf-8'))
+          if package.get('version') != '1.0.56':
+              raise SystemExit(f"unexpected package version: {package.get('version')}")
+          package['version'] = '1.0.57'
+          package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          lock_path = Path('self-hosted-server/package-lock.json')
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          if lock.get('version') != '1.0.56' or lock.get('packages', {}).get('', {}).get('version') != '1.0.56':
+              raise SystemExit('unexpected package-lock version')
+          lock['version'] = '1.0.57'
+          lock['packages']['']['version'] = '1.0.57'
+          lock_path.write_text(json.dumps(lock, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # Company Pages build stamp follows the server bridge release.
+          app_path = Path('remote-control-web/app.js')
+          app = app_path.read_text(encoding='utf-8')
+          old_stamp = 'const WEB_BUILD = "p4.96-l5.07-s1.0.56";'
+          if app.count(old_stamp) != 1:
+              raise SystemExit('remote-control-web WEB_BUILD marker not found')
+          app_path.write_text(app.replace(old_stamp, 'const WEB_BUILD = "p4.96-l5.07-s1.0.57";', 1), encoding='utf-8', newline='\n')
+
+          index_path = Path('remote-control-web/index.html')
+          index = index_path.read_text(encoding='utf-8')
+          old_cache = 'app.js?v=p4.96-l5.07-s1.0.56'
+          if index.count(old_cache) != 1:
+              raise SystemExit('remote-control-web cache stamp not found')
+          index_path.write_text(index.replace(old_cache, 'app.js?v=p4.96-l5.07-s1.0.57', 1), encoding='utf-8', newline='\n')
+
+          # Static regression guard: the CAS PATCH response must pass through the same
+          # timestamp-preserving parser as Firestore GET before the next CAS transition.
+          fixed = bridge.read_text(encoding='utf-8')
+          start = fixed.index('function Set-FirestoreFieldsAtVersion')
+          end = fixed.index('function Get-HttpStatusCode', start)
+          body = fixed[start:end]
+          required = ('Invoke-WebRequest -UseBasicParsing -Method Patch', 'ConvertFrom-FirestoreJson ([string]$response.Content)')
+          for marker in required:
+              if marker not in body:
+                  raise SystemExit(f'CAS regression guard missing: {marker}')
+          if 'return Invoke-RestMethod -Method Patch' in body:
+              raise SystemExit('CAS PATCH still uses Invoke-RestMethod automatic JSON conversion')
+
+      - name: Install and test self-hosted server
+        working-directory: self-hosted-server
+        run: |
+          npm ci
+          npm test
+
+      - name: Build server bundle
+        shell: python
+        run: |
+          from pathlib import Path
+          import zipfile
+
+          root = Path('self-hosted-server')
+          out = Path('self-hosted-server.zip')
+          excluded_dirs = {'node_modules', '.update-work'}
+          if out.exists():
+              out.unlink()
+          with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+              for path in sorted(root.rglob('*')):
+                  if not path.is_file():
+                      continue
+                  rel = path.relative_to(root)
+                  if any(part in excluded_dirs for part in rel.parts):
+                      continue
+                  if rel.as_posix() == '.env' or path.name.endswith('.log') or path.name.endswith('.partial'):
+                      continue
+                  z.write(path, rel.as_posix())
+
+          required = {
+              'package.json',
+              'Update-Server.ps1',
+              'windows/CodexSupportBridge.ps1',
+              'windows/Install-CodexSupportBridge.ps1',
+              'windows/CodexSupportWatchdog.ps1',
+          }
+          with zipfile.ZipFile(out, 'r') as z:
+              names = set(z.namelist())
+          missing = required - names
+          if missing:
+              raise SystemExit(f'server bundle missing: {sorted(missing)}')
+
+      - name: Commit hotfix bundle
+        id: source_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add self-hosted-server/windows/CodexSupportBridge.ps1 \
+                  self-hosted-server/package.json self-hosted-server/package-lock.json \
+                  self-hosted-server.zip remote-control-web/app.js remote-control-web/index.html \
+                  "打包更新.ps1" "完整發布更新.ps1"
+          git commit -m "修正 Codex Bridge Firestore CAS 日期解析並發布 server 1.0.57"
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Pin manifest to hotfix commit
+        env:
+          SOURCE_SHA: ${{ steps.source_commit.outputs.sha }}
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib, json, os, urllib.parse
+
+          manifest_path = Path('update_manifest.example.json')
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          server_sha = hashlib.sha256(Path('self-hosted-server.zip').read_bytes()).hexdigest().upper()
+          payload_sha = manifest['payload_sha256'].upper()
+          launcher_sha = manifest['launcher_sha256'].upper()
+          web_sha = manifest['web_sha256'].upper()
+          release_id = f"p4.96-l5.07-s1.0.57-{payload_sha[:8]}-{launcher_sha[:8]}-{server_sha[:8]}-{web_sha[:8]}"
+
+          def with_release(url, release):
+              parts = urllib.parse.urlsplit(url)
+              return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode({'release': release}), parts.fragment))
+
+          manifest['release_id'] = release_id
+          manifest['payload_url'] = with_release(manifest['payload_url'], release_id)
+          manifest['launcher_url'] = with_release(manifest['launcher_url'], release_id)
+          manifest['server_version'] = '1.0.57'
+          manifest['server_sha256'] = server_sha
+          manifest['server_bundle_url'] = f"https://raw.githubusercontent.com/derek3411888/-/{os.environ['SOURCE_SHA']}/self-hosted-server.zip?release={release_id}"
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(release_id)
+
+      - name: Commit pinned manifest and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add update_manifest.example.json
+          git rm .github/workflows/hotfix-codex-bridge-cas.yml
+          RELEASE_ID=$(python -c "import json; print(json.load(open('update_manifest.example.json', encoding='utf-8'))['release_id'])")
+          git commit -m "固定發布檔來源 ${RELEASE_ID}"
+          git push origin HEAD:main
