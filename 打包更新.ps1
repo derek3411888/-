@@ -155,7 +155,9 @@ function Assert-ZipContains([string]$ArchivePath, [string[]]$RequiredEntries) {
 }
 
 function Get-WebAssetHash([string]$Root) {
-    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css', 'web-work-fallback.html') | Sort-Object) {
+    # 這是 API /health/ready 與 Update-Server.ps1 共用的三個主資產指紋。
+    # 其他 public 檔案（包含獨立備援頁）仍由 server_bundle SHA-256 保護。
+    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css') | Sort-Object) {
         $path = Join-Path $Root "public\$name"
         if (-not (Test-Path -LiteralPath $path)) { throw "缺少網站檔案：$path" }
         "${name}:$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
