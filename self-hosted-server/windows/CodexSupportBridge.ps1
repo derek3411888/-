@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.0.1'
+$BridgeVersion = '3.0.2'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
@@ -155,7 +155,8 @@ function Set-FirestoreFieldsAtVersion($Config, [hashtable]$Values, [string]$Upda
     $query.Add("currentDocument.updateTime=$([Uri]::EscapeDataString($UpdateTime))")
     $url = "$(Get-FirestoreBaseUrl $Config)?$($query -join '&')"
     $body = @{ fields = $fields } | ConvertTo-Json -Depth 8 -Compress
-    return Invoke-RestMethod -Method Patch -Uri $url -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15
+    $response = Invoke-WebRequest -UseBasicParsing -Method Patch -Uri $url -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15
+    return ConvertFrom-FirestoreJson ([string]$response.Content)
 }
 
 function Get-HttpStatusCode($ErrorRecord) {
