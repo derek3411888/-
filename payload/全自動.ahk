@@ -126,8 +126,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "4.97"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.08"
+global PAYLOAD_BUILD_VERSION := "4.98"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.09"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -7614,6 +7614,38 @@ MarkServerCompletedInCurrentCycle(server, completedTime := "") {
     }
 }
 
+UnmarkServerCompletedInCurrentCycle(server, expectedTime := "") {
+    global SERVER_COMPLETED_CYCLE_MAP, CFG_FILE
+
+    if (server = "" || expectedTime = "")
+        return false
+
+    savedTime := ""
+    if SERVER_COMPLETED_CYCLE_MAP.Has(server)
+        savedTime := SERVER_COMPLETED_CYCLE_MAP[server]
+    if (savedTime = "")
+        savedTime := Trim(IniReadSafe(CFG_FILE, "server_completed", server, ""), " `t`r`n")
+    if (savedTime != expectedTime) {
+        WriteLog("拒絕回滾伺服器完成標記：目前時間與事故狀態不一致"
+            " | server=" server " expected=" expectedTime " actual=" savedTime, "WARN")
+        return false
+    }
+
+    try {
+        IniDelete CFG_FILE, "server_completed", server
+        if (SERVER_COMPLETED_CYCLE_MAP.Has(server)
+            && SERVER_COMPLETED_CYCLE_MAP[server] = expectedTime)
+            SERVER_COMPLETED_CYCLE_MAP.Delete(server)
+        WriteLog("已回滾由不可信領獎訊號提前寫入的伺服器完成標記"
+            " | server=" server " time=" expectedTime, "WARN")
+        return true
+    } catch as e {
+        WriteLog("回滾伺服器完成標記失敗：" e.Message
+            " | server=" server " time=" expectedTime, "ERROR")
+        return false
+    }
+}
+
 IsLrmcRunResumeReady() {
     global CFG_FILE
     return IniReadSafe(CFG_FILE, "lrmc_runtime", "run_started", "0") = "1"
@@ -8511,8 +8543,8 @@ MonitorRewardAndShutdown() {
             lastPos := state.lastPos
             chunk := ReadLogAppended(logPath, &lastPos)
             state.lastPos := lastPos
+            stateChanged := false
             if (chunk != "") {
-                stateChanged := false
                 for line in StrSplit(chunk, "`n") {
                     line := Trim(line, "`r`t ")
                     if (line = "")
@@ -8574,35 +8606,74 @@ MonitorRewardAndShutdown() {
                     }
                 }
 
-                completionReason := GetRewardMonitorCompletionReason(state)
-                if (state.pendingReason = "" && completionReason != "") {
-                    state.pendingReason := completionReason
-                    state.pendingAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-                    __REWARD_MONITOR_COMPLETION_PENDING := true
-                    stateChanged := true
-                    WriteLog("收尾監測條件已達成並持久保存：" completionReason
-                        (paused ? "；目前為 PAUSE，等待 RUN 後才執行關閉" : ""))
-                    WriteStep("收尾監測", "條件已保存：" completionReason)
-                    if !paused
-                        ShowTip("✅ 收尾條件已達成", 2000)
-                }
-
-                ; 命中時連同當下游標立即保存；一般高頻日誌不反覆重寫設定檔。
-                if stateChanged
-                    SaveRewardMonitorRuntimeState(state)
             }
+
+            completionReason := GetRewardMonitorCompletionReason(state)
+            ; 事故優先於完成訊號。即使 GetRewardMonitorCompletionReason() 因為
+            ; 已達放棄任務門檻而主動回傳空字串，仍必須撤銷既有 pending，
+            ; 否則同一批 Log 先前保存的完成狀態可能搶在重啟判斷前關機。
+            holdCompletion := RewardMonitor_ShouldHoldCompletion(
+                state, REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC)
+            if holdCompletion {
+                if (state.pendingReason != "") {
+                    if (state.completionRecorded && SERVER_SCHEDULE_ENABLED
+                        && CURRENT_SERVER_TARGET != "") {
+                        if UnmarkServerCompletedInCurrentCycle(
+                            CURRENT_SERVER_TARGET, state.pendingAt)
+                            state.completionRecorded := false
+                    }
+                    state.pendingReason := ""
+                    state.pendingAt := ""
+                    __REWARD_MONITOR_COMPLETION_PENDING := false
+                    stateChanged := true
+                }
+                if !state.taskAbandonCompletionHeld {
+                    state.taskAbandonCompletionHeld := true
+                    stateChanged := true
+                    WriteLog("收尾監測暫不採信領獎完成訊號：LRMCAI 最近曾放棄任務；"
+                        "等待 " REWARD_TASK_ABANDON_WINDOW_SEC " 秒安靜觀察窗，"
+                        "達 " REWARD_TASK_ABANDON_NEED_COUNT " 次則直接重啟"
+                        " | " RewardMonitor_FormatTaskAbandonBurst(state,
+                            REWARD_TASK_ABANDON_NEED_COUNT,
+                            REWARD_TASK_ABANDON_WINDOW_SEC), "WARN")
+                    WriteStep("收尾監測", "領獎訊號暫緩：等待 LRMCAI 放棄任務觀察窗", "WARN")
+                }
+                completionReason := ""
+            } else if state.taskAbandonCompletionHeld {
+                state.taskAbandonCompletionHeld := false
+                stateChanged := true
+                WriteLog("LRMCAI 放棄任務觀察窗已安全結束；現在才允許採信已保存的領獎完成訊號")
+            }
+
+            if (state.pendingReason = "" && completionReason != "") {
+                state.pendingReason := completionReason
+                state.pendingAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+                __REWARD_MONITOR_COMPLETION_PENDING := true
+                stateChanged := true
+                WriteLog("收尾監測條件已達成並持久保存：" completionReason
+                    (paused ? "；目前為 PAUSE，等待 RUN 後才執行關閉" : ""))
+                WriteStep("收尾監測", "條件已保存：" completionReason)
+                if !paused
+                    ShowTip("✅ 收尾條件已達成", 2000)
+            }
+
+            ; 命中時連同當下游標立即保存；一般高頻日誌不反覆重寫設定檔。
+            if stateChanged
+                SaveRewardMonitorRuntimeState(state)
 
             ; 解析期間可能收到新的遠端命令，主動操作前重新取得即時狀態。
             paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
             if (state.pendingReason != "" && !state.completionRecorded
+                && !RewardMonitor_ShouldHoldCompletion(state,
+                    REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC)
                 && SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
                 if MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET, state.pendingAt) {
                     state.completionRecorded := true
                     SaveRewardMonitorRuntimeState(state)
-                    WriteLog("收尾條件已達成：已先持久標記伺服器『" CURRENT_SERVER_TARGET "』完成；實際關閉仍遵守 PAUSE", "INFO")
+                    WriteLog("收尾條件已通過 LRMCAI 放棄任務觀察窗：已持久標記伺服器『"
+                        CURRENT_SERVER_TARGET "』完成；實際關閉仍遵守 PAUSE", "INFO")
                 }
             }
-
             if (state.pendingReason != "") {
                 if paused {
                     if !pendingPauseLogged {
@@ -8773,6 +8844,7 @@ LoadRewardMonitorRuntimeState(logPath, defaultPos) {
         taskAbandonFirstAt: "",
         taskAbandonLastAt: "",
         lastTaskAbandonLine: "",
+        taskAbandonCompletionHeld: false,
         pendingReason: "",
         pendingAt: "",
         completionRecorded: false,
@@ -8797,6 +8869,7 @@ LoadRewardMonitorRuntimeState(logPath, defaultPos) {
     state.taskAbandonFirstAt := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_first_at", "")
     state.taskAbandonLastAt := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_last_at", "")
     state.lastTaskAbandonLine := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_task_abandon_line", "")
+    state.taskAbandonCompletionHeld := ReadRewardMonitorStateBool("task_abandon_completion_held")
     state.pendingReason := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason", ""), " `t`r`n")
     state.pendingAt := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at", ""), " `t`r`n")
     if (state.pendingReason != "" && state.pendingAt = "")
@@ -8822,6 +8895,7 @@ SaveRewardMonitorRuntimeState(state) {
         IniWrite state.taskAbandonFirstAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_first_at"
         IniWrite state.taskAbandonLastAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_last_at"
         IniWrite state.lastTaskAbandonLine, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_task_abandon_line"
+        IniWrite state.taskAbandonCompletionHeld ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_completion_held"
         IniWrite state.pendingReason, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason"
         IniWrite state.pendingAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at"
         IniWrite state.completionRecorded ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "completion_recorded"

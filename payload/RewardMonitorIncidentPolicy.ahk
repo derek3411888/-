@@ -126,6 +126,34 @@ RewardMonitor_HasTaskAbandonBurst(state, requiredHits := 5) {
     return hits >= needed
 }
 
+RewardMonitor_IsTaskAbandonWindowActive(state, windowSeconds := 120,
+    currentTimestamp := "") {
+    if !IsObject(state)
+        return false
+    hits := 0
+    lastAt := ""
+    window := 120
+    try hits := state.HasOwnProp("taskAbandonHits") ? Integer(state.taskAbandonHits) : 0
+    try lastAt := state.HasOwnProp("taskAbandonLastAt") ? state.taskAbandonLastAt : ""
+    try window := Max(1, Integer(windowSeconds))
+    if (hits <= 0 || !(lastAt ~= "^\d{14}$"))
+        return false
+
+    nowTimestamp := RewardMonitor_ExtractLogTimestamp("", currentTimestamp)
+    elapsed := -1
+    try elapsed := DateDiff(nowTimestamp, lastAt, "Seconds")
+    return elapsed >= 0 && elapsed <= window
+}
+
+RewardMonitor_ShouldHoldCompletion(state, requiredHits := 5, windowSeconds := 120,
+    currentTimestamp := "") {
+    ; A confirmed burst must permanently defeat reward completion until the
+    ; caller restarts and clears the state. A smaller number of task abandons
+    ; delays completion until the observation window has stayed quiet.
+    return RewardMonitor_HasTaskAbandonBurst(state, requiredHits)
+        || RewardMonitor_IsTaskAbandonWindowActive(state, windowSeconds, currentTimestamp)
+}
+
 RewardMonitor_FormatTaskAbandonBurst(state, requiredHits := 5, windowSeconds := 120,
     maxLineChars := 420) {
     if !IsObject(state)
