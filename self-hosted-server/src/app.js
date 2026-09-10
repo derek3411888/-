@@ -28,6 +28,7 @@ import {
   saveFirestoreSettings,
 } from "./firestore-bridge.js";
 import { normalizeLiveQualityProfile, normalizeSettingsInput } from "./settings.js";
+import { discardFetchBody, withHeaderTimeout } from "./hls-proxy.js";
 import {
   assertCodexDispatcher,
   cancelDirectCodexSupport,
@@ -724,16 +725,17 @@ async function fetchHlsUpstream(upstreamUrl, rangeHeader, sessionKey) {
     session = { cookies: new Map(), touchedAt: Date.now() };
     liveHlsSessions.set(sessionKey, session);
   }
-  const signal = AbortSignal.timeout(15_000);
-  let hadHlsSession = session.cookies.has("hlsSession");
-  let upstream = await fetchHlsWithCookies(upstreamUrl, rangeHeader, session.cookies, signal);
-  if (upstream.status === 401 && hadHlsSession) {
-    await upstream.body?.cancel().catch(() => {});
-    session.cookies.clear();
-    upstream = await fetchHlsWithCookies(upstreamUrl, rangeHeader, session.cookies, signal);
-  }
-  session.touchedAt = Date.now();
-  return upstream;
+  return withHeaderTimeout(async (signal) => {
+    const hadHlsSession = session.cookies.has("hlsSession");
+    let upstream = await fetchHlsWithCookies(upstreamUrl, rangeHeader, session.cookies, signal);
+    if (upstream.status === 401 && hadHlsSession) {
+      await discardFetchBody(upstream);
+      session.cookies.clear();
+      upstream = await fetchHlsWithCookies(upstreamUrl, rangeHeader, session.cookies, signal);
+    }
+    session.touchedAt = Date.now();
+    return upstream;
+  }, 15_000);
 }
 
 async function proxyHls(req, res, uid, suffix, searchParams, browserSessionId) {
@@ -744,7 +746,10 @@ async function proxyHls(req, res, uid, suffix, searchParams, browserSessionId) {
     if (name !== "t") upstreamUrl.searchParams.append(name, value);
   }
   const upstream = await fetchHlsUpstream(upstreamUrl, req.headers.range, `${uid}:${browserSessionId}`);
-  if (!upstream.ok || !upstream.body) throw new HttpError(upstream.status === 404 ? 404 : 502, "直播畫面尚未就緒", "LIVE_NOT_READY");
+  if (!upstream.ok || !upstream.body) {
+    await discardFetchBody(upstream);
+    throw new HttpError(upstream.status === 404 ? 404 : 502, "直播畫面尚未就緒", "LIVE_NOT_READY");
+  }
   const headers = {
     "Content-Type": upstream.headers.get("content-type") ?? "application/octet-stream",
     "Cache-Control": "private, no-store",

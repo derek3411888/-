@@ -2,7 +2,7 @@
 param(
     [string]$PayloadVersion = '4.97',
     [string]$LauncherVersion = '5.08',
-    [string]$ServerVersion = '1.0.59'
+    [string]$ServerVersion = '1.0.60'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -384,7 +384,7 @@ New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
 )
 Assert-ZipContains 'self-hosted-server.zip' @(
     '.npmrc', 'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
-    'public/index.html', 'public/app.js', 'public/styles.css',
+    'public/index.html', 'public/app.js', 'public/styles.css', 'src/hls-proxy.js',
     'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
     'migrations/006_codex_support_queue.sql', 'migrations/007_effective_settings_revision.sql',
     'src/performance.js', 'src/settings.js',
