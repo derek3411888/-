@@ -4,7 +4,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.09"
+global PACK_LAUNCHER_BUILD_VERSION := "5.10"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -1588,7 +1588,8 @@ WriteLog("工作目錄: " APP_DIR)
 
 mainLaunchSucceeded := false
 try {
-    if LauncherHasArg("--cleanup-recordings") {
+    cleanupRecordingsOnly := LauncherHasArg("--cleanup-recordings")
+    if cleanupRecordingsOnly {
         payloadArgs := " cleanup-recordings"
         WriteLog("主腳本將以安全錄影清理模式啟動，不會開始遊戲流程")
     } else {
@@ -1607,24 +1608,29 @@ try {
     ; 等待一小段時間確認腳本啟動
     Sleep 2000
     
-    ; 檢查全自動腳本是否成功啟動
-    processStarted := false
-    Loop 5 {
-        for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name like '%AutoHotkey%'") {
-            try {
-                cmdLine := proc.CommandLine
-                if (InStr(cmdLine, "全自動.ahk")) {
-                    WriteLog("確認全自動腳本已啟動: PID=" proc.ProcessId)
-                    processStarted := true
-                    break
+    ; cleanup-recordings 是一次性維護入口，成功載入設定後會立刻 ExitApp；
+    ; 不可用「數秒後仍常駐」判定它失敗。正式流程仍保留原本的程序確認。
+    processStarted := cleanupRecordingsOnly
+    if cleanupRecordingsOnly {
+        WriteLog("安全錄影清理模式已成功交給主腳本；完成後快速退出屬預期，不要求常駐程序")
+    } else {
+        Loop 5 {
+            for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name like '%AutoHotkey%'") {
+                try {
+                    cmdLine := proc.CommandLine
+                    if (InStr(cmdLine, "全自動.ahk")) {
+                        WriteLog("確認全自動腳本已啟動: PID=" proc.ProcessId)
+                        processStarted := true
+                        break
+                    }
+                } catch {
+                    ; 忽略錯誤
                 }
-            } catch {
-                ; 忽略錯誤
             }
+            if (processStarted)
+                break
+            Sleep 1000
         }
-        if (processStarted)
-            break
-        Sleep 1000
     }
     
     if (!processStarted) {
