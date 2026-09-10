@@ -2,7 +2,7 @@
 param(
     [string]$PayloadVersion = '4.97',
     [string]$LauncherVersion = '5.08',
-    [string]$ServerVersion = '1.0.58'
+    [string]$ServerVersion = '1.0.59'
 )
 
 $ErrorActionPreference = 'Stop'

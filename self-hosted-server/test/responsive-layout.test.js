@@ -40,7 +40,7 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(css, /\.table-wrap\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*auto/s);
   assert.match(css, /\.device-bar,\s*\.grid\.two,\s*\.video-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
   assert.match(html, /id="btnOpenCodexSupport"/);
-  assert.match(html, /href="\/web-work-fallback\.html"/);
+  assert.match(html, /href="https:\/\/derek3411888\.github\.io\/-\/web-work-fallback\.html"/);
   assert.match(html, /id="codexLogDeviceSelect"/);
   assert.match(html, /id="btnCancelCodexSupport"/);
   assert.match(html, /id="btnRetryCodexSupport"/);
@@ -212,4 +212,15 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(fallback, /id="downloadPrompt"/);
   assert.match(fallback, /https:\/\/chatgpt\.com\/codex/);
   assert.doesNotMatch(fallback, /<script[^>]+src=|firebase-app|firestore\.googleapis|\/api\/v1\//i);
+});
+
+test("self-hosted site exposes a direct independent GitHub fallback and serves its local redirect", async () => {
+  const [html, appSource] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/app.js", import.meta.url), "utf8"),
+  ]);
+
+  const fallbackUrl = "https://derek3411888.github.io/-/web-work-fallback.html";
+  assert.equal(html.split(`href="${fallbackUrl}"`).length - 1, 2);
+  assert.match(appSource, /\["\/web-work-fallback\.html", \["web-work-fallback\.html", "text\/html; charset=utf-8"\]\]/);
 });
