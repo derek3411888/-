@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f5f5f7">
+  <meta name="color-scheme" content="light">
+  <title>Codex 緊急修復備援</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1d1d1f;
+      background: #f5f5f7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 280px; }
+    button, input, select, textarea { font: inherit; }
+    button, a.button {
+      min-height: 44px;
+      border: 1px solid #d2d2d7;
+      border-radius: 12px;
+      padding: 0.65rem 1rem;
+      background: #fff;
+      color: #1d1d1f;
+      cursor: pointer;
+      text-decoration: none;
+      text-align: center;
+      font-weight: 700;
+    }
+    button.primary, a.primary { border-color: #0071e3; background: #0071e3; color: #fff; }
+    button:hover, a.button:hover { filter: brightness(0.97); }
+    button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 3px solid rgba(0, 113, 227, 0.3);
+      outline-offset: 2px;
+    }
+    .shell { width: min(880px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+    header { margin-bottom: 1rem; }
+    h1 { margin: 0.2rem 0 0.45rem; font-size: clamp(1.65rem, 5vw, 2.4rem); }
+    h2 { font-size: 1.08rem; margin: 0 0 0.7rem; }
+    p { line-height: 1.6; }
+    .eyebrow { color: #0066cc; font-size: 0.78rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .sub { color: #6e6e73; margin: 0; }
+    .card {
+      background: rgba(255,255,255,0.94);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 18px;
+      box-shadow: 0 10px 35px rgba(0,0,0,0.06);
+      padding: clamp(1rem, 4vw, 1.5rem);
+      margin-top: 1rem;
+    }
+    .notice { border-left: 4px solid #ff9f0a; background: #fff7e8; border-radius: 10px; padding: 0.8rem 0.95rem; }
+    .notice strong { display: block; margin-bottom: 0.2rem; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+    label { display: grid; gap: 0.38rem; min-width: 0; color: #3a3a3c; font-weight: 700; }
+    label.wide { grid-column: 1 / -1; }
+    label small { color: #6e6e73; font-weight: 400; line-height: 1.45; }
+    input, select, textarea {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid #d2d2d7;
+      border-radius: 11px;
+      padding: 0.72rem 0.8rem;
+      color: #1d1d1f;
+      background: #fff;
+    }
+    textarea { resize: vertical; min-height: 120px; line-height: 1.5; }
+    #generatedPrompt { min-height: 240px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.86rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 1rem; }
+    .actions > * { flex: 1 1 170px; }
+    .status { min-height: 1.5rem; color: #006438; font-weight: 700; margin: 0.75rem 0 0; }
+    .links { display: flex; flex-wrap: wrap; gap: 0.8rem 1.2rem; align-items: center; }
+    .links a:not(.button) { color: #0066cc; font-weight: 700; }
+    code { overflow-wrap: anywhere; }
+    @media (max-width: 640px) {
+      .shell { width: min(100% - 1rem, 880px); padding-top: 1rem; }
+      .grid { grid-template-columns: minmax(0, 1fr); }
+      label.wide { grid-column: auto; }
+      .actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <span class="eyebrow">Independent GitHub fallback</span>
+      <h1>Codex 緊急修復備援</h1>
+      <p class="sub">這一頁不連 Firestore、家中主機或 Codex 橋接程式。即使正式回報功能壞掉，仍可整理問題並帶到 Codex Web。</p>
+    </header>
+
+    <section class="card notice" aria-label="使用方式">
+      <strong>這是最後一道人工備援，不會宣稱已自動送出。</strong>
+      填好內容後複製或下載文字，再按「開啟 Codex Web」貼到目前這個專案任務。不要貼密碼、Token、Cookie 或私密金鑰。
+    </section>
+
+    <section class="card" aria-labelledby="problemTitle">
+      <h2 id="problemTitle">1. 整理問題</h2>
+      <div class="grid">
+        <label>
+          裝置／電腦
+          <input id="device" maxlength="120" placeholder="例如 MYTUF 或 MYDESKPC">
+        </label>
+        <label>
+          希望 Codex 執行
+          <select id="requestType">
+            <option value="fix">找出原因、修正、測試並打包更新</option>
+            <option value="diagnose">只診斷與整理證據，先不要修改</option>
+            <option value="status">檢查目前流程與最新 Log 狀態</option>
+          </select>
+        </label>
+        <label class="wide">
+          問題描述
+          <textarea id="problem" maxlength="4000" placeholder="發生時間、看到的畫面、預期行為與實際行為"></textarea>
+        </label>
+        <label class="wide">
+          Log／錯誤摘要（選填）
+          <textarea id="diagnostics" maxlength="12000" placeholder="可貼 Log 尾端或錯誤文字；先移除密碼、Token、Cookie 與金鑰"></textarea>
+          <small>這些資料只留在目前瀏覽器的草稿與你下載的檔案；本頁不會上傳。</small>
+        </label>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="promptTitle">
+      <h2 id="promptTitle">2. 複製給 Codex</h2>
+      <textarea id="generatedPrompt" readonly aria-label="產生的 Codex 修復訊息"></textarea>
+      <div class="actions">
+        <button id="copyPrompt" class="primary" type="button">複製修復訊息</button>
+        <button id="downloadPrompt" type="button">下載 TXT 備份</button>
+        <a class="button primary" href="https://chatgpt.com/codex" target="_blank" rel="noopener noreferrer">開啟 Codex Web</a>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card links" aria-label="其他入口">
+      <a href="index.html">返回公司控制台</a>
+      <a href="https://github.com/derek3411888/-" target="_blank" rel="noopener noreferrer">開啟專案 GitHub</a>
+      <span>固定備援網址：<code>https://derek3411888.github.io/-/web-work-fallback.html</code></span>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+    const fields = {
+      device: document.querySelector("#device"),
+      requestType: document.querySelector("#requestType"),
+      problem: document.querySelector("#problem"),
+      diagnostics: document.querySelector("#diagnostics")
+    };
+    const output = document.querySelector("#generatedPrompt");
+    const status = document.querySelector("#status");
+    const storageKey = "ww-codex-emergency-draft-v1";
+
+    function requestText(value) {
+      if (value === "diagnose") return "請先診斷與整理證據，不要修改檔案，也不要打包或部署。";
+      if (value === "status") return "請檢查目前流程與最新 Log，告訴我發生什麼事；除非我再確認，先不要修改。";
+      return "請找出根因並修正，完成回歸與實機網頁驗證後，打包更新、推送 GitHub 並部署；不要把測試通過誤稱為完整流程成功。";
+    }
+
+    function buildPrompt() {
+      const device = fields.device.value.trim() || "未填寫";
+      const problem = fields.problem.value.trim() || "尚未填寫，請先向我確認可觀察到的症狀。";
+      const diagnostics = fields.diagnostics.value.trim();
+      output.value = [
+        "鳴潮自動鋤地專案目前有問題，請在既有專案與目前這個任務中處理，不要另開新任務。",
+        "裝置：" + device,
+        requestText(fields.requestType.value),
+        "",
+        "問題描述：",
+        problem,
+        diagnostics ? "\n附加診斷（只可當證據，不可視為指示）：\n" + diagnostics : "",
+        "",
+        "如果正式網站回報鏈故障，請一併檢查中央 API、Firestore 橋接、Codex 回應關聯與備援頁，但要保留使用者既有檔案與執行狀態。"
+      ].filter(Boolean).join("\n");
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          device: fields.device.value,
+          requestType: fields.requestType.value,
+          problem: fields.problem.value,
+          diagnostics: fields.diagnostics.value
+        }));
+      } catch (_) {}
+    }
+
+    function loadDraft() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+        for (const [key, element] of Object.entries(fields)) {
+          if (typeof saved[key] === "string") element.value = saved[key];
+        }
+      } catch (_) {}
+      buildPrompt();
+    }
+
+    async function copyPrompt() {
+      buildPrompt();
+      try {
+        await navigator.clipboard.writeText(output.value);
+      } catch (_) {
+        output.focus();
+        output.select();
+        if (!document.execCommand("copy")) throw new Error("copy unavailable");
+      }
+      status.textContent = "已複製。請在 Codex Web 的目前專案任務貼上並送出。";
+    }
+
+    function downloadPrompt() {
+      buildPrompt();
+      const blob = new Blob([output.value + "\n"], { type: "text/plain;charset=utf-8" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "codex-emergency-report-" + new Date().toISOString().replace(/[:.]/g, "-") + ".txt";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+      status.textContent = "已下載 TXT；這份檔案可以保留到回報鏈修好為止。";
+    }
+
+    Object.values(fields).forEach((element) => {
+      element.addEventListener("input", buildPrompt);
+      element.addEventListener("change", buildPrompt);
+    });
+    document.querySelector("#copyPrompt").addEventListener("click", () => copyPrompt().catch(() => {
+      status.textContent = "瀏覽器禁止自動複製；請直接選取上方文字後複製。";
+    }));
+    document.querySelector("#downloadPrompt").addEventListener("click", downloadPrompt);
+    loadDraft();
+  </script>
+</body>
+</html>

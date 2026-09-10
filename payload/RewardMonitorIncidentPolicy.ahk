@@ -69,3 +69,85 @@ RewardMonitor_CompactExcerpt(text, maxLines := 4, maxChars := 520) {
         result := "..." SubStr(result, -(charLimit - 3))
     return result
 }
+
+RewardMonitor_IsTaskAbandonLine(line) {
+    text := String(line)
+    return text ~= "i)(?:传送重试次数过多|傳送重試次數過多)[，, ]*(?:放弃该任务|放棄該任務)"
+}
+
+RewardMonitor_ExtractLogTimestamp(line, fallbackTimestamp := "") {
+    text := String(line)
+    if RegExMatch(text,
+        "^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})",
+        &match) {
+        return match[1] match[2] match[3] match[4] match[5] match[6]
+    }
+    fallback := Trim(String(fallbackTimestamp), " `t`r`n")
+    return fallback ~= "^\d{14}$" ? fallback : A_Now
+}
+
+RewardMonitor_RecordTaskAbandon(state, line, windowSeconds := 120, fallbackTimestamp := "") {
+    if !IsObject(state)
+        throw TypeError("收尾監測任務放棄狀態必須是物件")
+
+    window := 120
+    try window := Max(1, Integer(windowSeconds))
+    timestamp := RewardMonitor_ExtractLogTimestamp(line, fallbackTimestamp)
+    firstTimestamp := ""
+    previousHits := 0
+    try firstTimestamp := state.HasOwnProp("taskAbandonFirstAt") ? state.taskAbandonFirstAt : ""
+    try previousHits := state.HasOwnProp("taskAbandonHits") ? Integer(state.taskAbandonHits) : 0
+
+    withinWindow := false
+    if (firstTimestamp ~= "^\d{14}$") {
+        elapsed := -1
+        try elapsed := DateDiff(timestamp, firstTimestamp, "Seconds")
+        withinWindow := elapsed >= 0 && elapsed <= window
+    }
+
+    if withinWindow {
+        state.taskAbandonHits := previousHits + 1
+    } else {
+        state.taskAbandonHits := 1
+        state.taskAbandonFirstAt := timestamp
+    }
+    state.taskAbandonLastAt := timestamp
+    state.lastTaskAbandonLine := String(line)
+    return state.taskAbandonHits
+}
+
+RewardMonitor_HasTaskAbandonBurst(state, requiredHits := 5) {
+    if !IsObject(state)
+        return false
+    hits := 0
+    needed := 5
+    try hits := state.HasOwnProp("taskAbandonHits") ? Integer(state.taskAbandonHits) : 0
+    try needed := Max(1, Integer(requiredHits))
+    return hits >= needed
+}
+
+RewardMonitor_FormatTaskAbandonBurst(state, requiredHits := 5, windowSeconds := 120,
+    maxLineChars := 420) {
+    if !IsObject(state)
+        return "task_abandon_state=none"
+    hits := 0
+    firstAt := ""
+    lastAt := ""
+    lastLine := ""
+    try hits := state.HasOwnProp("taskAbandonHits") ? Integer(state.taskAbandonHits) : 0
+    try firstAt := state.HasOwnProp("taskAbandonFirstAt") ? state.taskAbandonFirstAt : ""
+    try lastAt := state.HasOwnProp("taskAbandonLastAt") ? state.taskAbandonLastAt : ""
+    try lastLine := state.HasOwnProp("lastTaskAbandonLine") ? state.lastTaskAbandonLine : ""
+    needed := 5
+    window := 120
+    lineLimit := 420
+    try needed := Max(1, Integer(requiredHits))
+    try window := Max(1, Integer(windowSeconds))
+    try lineLimit := Max(80, Integer(maxLineChars))
+    return (
+        "hits=" hits "/" needed
+        . " window=" window "s first=" (firstAt != "" ? firstAt : "-")
+        . " last=" (lastAt != "" ? lastAt : "-")
+        . " line=" SubStr(lastLine != "" ? lastLine : "-", 1, lineLimit)
+    )
+}

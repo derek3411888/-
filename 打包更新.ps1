@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.96',
-    [string]$LauncherVersion = '5.07',
-    [string]$ServerVersion = '1.0.57'
+    [string]$PayloadVersion = '4.97',
+    [string]$LauncherVersion = '5.08',
+    [string]$ServerVersion = '1.0.58'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,7 +155,7 @@ function Assert-ZipContains([string]$ArchivePath, [string[]]$RequiredEntries) {
 }
 
 function Get-WebAssetHash([string]$Root) {
-    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css') | Sort-Object) {
+    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css', 'web-work-fallback.html') | Sort-Object) {
         $path = Join-Path $Root "public\$name"
         if (-not (Test-Path -LiteralPath $path)) { throw "缺少網站檔案：$path" }
         "${name}:$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"

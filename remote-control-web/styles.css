@@ -2689,3 +2689,20 @@ body.apple-ui .activation-card {
     transition-delay: 0ms !important;
   }
 }
+.web-work-fallback-link {
+  color: #0066cc;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-decoration: none;
+}
+
+.web-work-fallback-link:hover,
+.web-work-fallback-link:focus-visible {
+  text-decoration: underline;
+}
+
+.codex-recovery-row .web-work-fallback-link {
+  align-self: center;
+  padding: 0.35rem 0.15rem;
+}

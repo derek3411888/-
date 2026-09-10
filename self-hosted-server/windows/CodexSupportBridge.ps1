@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.0.2'
+$BridgeVersion = '3.1.0'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
@@ -155,7 +155,12 @@ function Set-FirestoreFieldsAtVersion($Config, [hashtable]$Values, [string]$Upda
     $query.Add("currentDocument.updateTime=$([Uri]::EscapeDataString($UpdateTime))")
     $url = "$(Get-FirestoreBaseUrl $Config)?$($query -join '&')"
     $body = @{ fields = $fields } | ConvertTo-Json -Depth 8 -Compress
-    $response = Invoke-WebRequest -UseBasicParsing -Method Patch -Uri $url -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15
+    # Invoke-RestMethod 在 PowerShell 7.5+ 會把回傳的 RFC3339 updateTime
+    # 自動轉成 DateTime。下一個 CAS 若再轉成字串就會變成本地化日期，
+    # Firestore 以 HTTP 400 拒絕，造成公司頁永遠卡在 RECEIVED。每一個
+    # PATCH 回應都必須沿用 GET 相同的 DateKind=String 正規化。
+    $response = Invoke-WebRequest -UseBasicParsing -Method Patch -Uri $url `
+        -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15
     return ConvertFrom-FirestoreJson ([string]$response.Content)
 }
 
@@ -165,6 +170,18 @@ function Get-HttpStatusCode($ErrorRecord) {
         if ($null -ne $response -and $null -ne $response.StatusCode) { return [int]$response.StatusCode }
     } catch {}
     return 0
+}
+
+function Get-HttpErrorSummary($ErrorRecord) {
+    $status = Get-HttpStatusCode $ErrorRecord
+    $detail = ''
+    try { $detail = [string]$ErrorRecord.ErrorDetails.Message } catch {}
+    if ([string]::IsNullOrWhiteSpace($detail)) {
+        try { $detail = [string]$ErrorRecord.Exception.Message } catch {}
+    }
+    $detail = ($detail -replace '[\r\n]+', ' ').Trim()
+    if ($detail.Length -gt 700) { $detail = $detail.Substring(0, 700) }
+    return "HTTP=$status detail=$detail"
 }
 
 function Test-ConcurrencyConflict($ErrorRecord) {
@@ -866,7 +883,6 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
     $reader = $null
     $targetSeen = $false
     $targetActive = $false
-    $superseded = $false
     $currentTurnId = ''
     $targetTurnId = $knownTurnId
     $finalText = ''
@@ -876,9 +892,10 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
         $fileLength = [long]$stream.Length
         if ($null -ne $cursor -and [string]$cursor.TurnId -eq $knownTurnId -and
             [long]$cursor.Offset -ge 0 -and [long]$cursor.Offset -le $fileLength) {
-            # 已確認過所屬 turn 後，只重讀 1 MiB 邊界並接著讀新增內容，
-            # 避免每 15 秒掃描數十 MiB 的長聊天室。
-            $scanStart = [Math]::Max(0L, [long]$cursor.Offset - 1MB)
+            # Offset 是上一輪完整讀到的 JSONL EOF，直接從該 record 邊界
+            # 繼續。舊版倒退重讀 1 MiB 卻預先設 targetActive=true，會把
+            # 請求之前的上一則 final_answer 誤認成這一筆網站回覆。
+            $scanStart = [long]$cursor.Offset
             $targetSeen = $true
             $targetActive = $true
             $currentTurnId = $knownTurnId
@@ -903,16 +920,13 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
             if ($isTurnContext) {
                 $nextTurnId = [string](Read-OptionalProperty $payload 'turn_id' '')
                 if (-not $nextTurnId) { continue }
-                if ($targetSeen -and $targetTurnId -and $nextTurnId -ne $targetTurnId) {
-                    $targetActive = $false
-                    $superseded = $true
-                    try { $supersededAt = ([DateTimeOffset]::Parse([string]$record.timestamp)).ToUnixTimeMilliseconds() } catch {}
-                }
                 $currentTurnId = $nextTurnId
-                if ($targetTurnId -and $nextTurnId -eq $targetTurnId) {
-                    $targetSeen = $true
+                if ($targetSeen) {
+                    # 使用者可能在網站請求後補充資訊，Codex 會開啟後續
+                    # turn。網站要顯示這條處理鏈的第一個最終答覆，而不是
+                    # 因正常補充訊息永久停在「中斷」。
+                    $targetTurnId = $nextTurnId
                     $targetActive = $true
-                    $superseded = $false
                 }
                 continue
             }
@@ -923,7 +937,6 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
                 if ($userText -and (Get-MessageSha256 $userText) -eq $messageHash) {
                     $targetSeen = $true
                     $targetActive = $true
-                    $superseded = $false
                     if (-not $targetTurnId) { $targetTurnId = $currentTurnId }
                 }
                 continue
@@ -951,11 +964,6 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
 
     if ($finalText) {
         return New-CodexResponseMatch $true 'COMPLETED' $finalText $finalAt $targetTurnId 'completed' ''
-    }
-    if ($targetSeen -and $superseded) {
-        if ($supersededAt -le 0) { $supersededAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
-        return New-CodexResponseMatch $true 'INTERRUPTED' '' $supersededAt $targetTurnId 'interrupted' `
-            'Codex 任務已被後續回合取代，沒有產生可顯示的最終回覆'
     }
     if ($targetSeen) {
         return New-CodexResponseMatch $true 'IN_PROGRESS' '' 0L $targetTurnId 'inProgress' ''
@@ -1553,7 +1561,7 @@ try {
             }
             Invoke-FirestoreQueue $config $firestoreStatePath $firestoreInFlightPath $allStatePaths $logPath
         } catch {
-            Write-BridgeLog $logPath 'ERROR' "Firestore source: $($_.Exception.Message)"
+            Write-BridgeLog $logPath 'ERROR' "Firestore source: $(Get-HttpErrorSummary $_)"
         }
 
         if ($null -ne $selfHostedBridge) {
@@ -1569,14 +1577,14 @@ try {
                 }
                 Invoke-SelfHostedQueue $selfHostedBridge $config $selfHostedStatePath $selfHostedInFlightPath $allStatePaths $logPath
             } catch {
-                Write-BridgeLog $logPath 'ERROR' "Self-hosted source: $($_.Exception.Message)"
+                Write-BridgeLog $logPath 'ERROR' "Self-hosted source: $(Get-HttpErrorSummary $_)"
             }
         }
 
         try {
             Sync-CodexResponses $config $selfHostedBridge $logPath
         } catch {
-            Write-BridgeLog $logPath 'ERROR' "Codex response sync: $($_.Exception.Message)"
+            Write-BridgeLog $logPath 'ERROR' "Codex response sync: $(Get-HttpErrorSummary $_)"
         }
 
         if (-not $Once) { Start-Sleep -Seconds ([int]$config.PollSeconds) }

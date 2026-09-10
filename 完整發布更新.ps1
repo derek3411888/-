@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '4.96',
-    [string]$LauncherVersion = '5.07',
-    [string]$ServerVersion = '1.0.57',
+    [string]$PayloadVersion = '4.97',
+    [string]$LauncherVersion = '5.08',
+    [string]$ServerVersion = '1.0.58',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
@@ -87,7 +87,7 @@ $releasePaths = @(
     'ProjectDevelopmentPaths.ps1', 'LauncherProcessCleanupPolicy.ahk',
     '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
     'payload', '測試', '文字識別/文字識別測試.ahk', '郵件測試/寄送信件測試.ahk',
-    'self-hosted-server', 'remote-control-web',
+    'self-hosted-server', 'remote-control-web', 'WEB_WORK_EMERGENCY_REPAIR.md',
     'payload.zip', 'self-hosted-server.zip', '全自動鋤地.exe', 'update_manifest.example.json'
 )
 & git add -- $releasePaths
@@ -101,7 +101,7 @@ if ($stagedPaths | Where-Object {
 if (-not $stagedPaths.Count) { Write-Host '沒有新的發布差異，沿用目前提交。' }
 else {
     if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
-        $CommitMessage = "發布 $PayloadVersion：執行檔案集中至程式資料夾"
+        $CommitMessage = "發布 $PayloadVersion：修正收尾誤判與網站回報備援"
     }
     & git commit -m $CommitMessage
     Assert-ExitCode '建立 Git 提交'

@@ -72,6 +72,14 @@ export function resolveCodexDispatcherPresence(row = null, dispatcher = {}, now 
   };
 }
 
+export function isCodexResponseChronologicallyValid(row = {}) {
+  const responseState = String(row.response_state ?? row.responseState ?? "").trim().toUpperCase();
+  if (!TERMINAL_RESPONSE_STATES.has(responseState)) return true;
+  const queuedAt = milliseconds(row.queued_at ?? row.queuedAt);
+  const responseAt = milliseconds(row.codex_response_at ?? row.responseAt);
+  return queuedAt > 0 && responseAt >= queuedAt;
+}
+
 function statusFromRow(row = null, dispatcher = {}) {
   const presence = resolveCodexDispatcherPresence(row, dispatcher);
   if (!row) {
@@ -89,7 +97,11 @@ function statusFromRow(row = null, dispatcher = {}) {
   }
   const queuedAt = milliseconds(row.queued_at);
   const dispatchPending = CODEX_SUPPORT_PENDING_STATES.includes(String(row.state));
-  const responseState = String(row.state) === "QUEUED" ? String(row.response_state || "WAITING") : "NONE";
+  const rawResponseState = String(row.state) === "QUEUED" ? String(row.response_state || "WAITING") : "NONE";
+  const invalidResponseChronology = String(row.state) === "QUEUED"
+    && TERMINAL_RESPONSE_STATES.has(rawResponseState)
+    && !isCodexResponseChronologicallyValid(row);
+  const responseState = invalidResponseChronology ? "WAITING" : rawResponseState;
   const responsePending = String(row.state) === "QUEUED" && PENDING_RESPONSE_STATES.has(responseState);
   return {
     requestNonce: Number(row.id), statusNonce: Number(row.id), state: String(row.state), detail: String(row.detail || ""),
@@ -105,10 +117,15 @@ function statusFromRow(row = null, dispatcher = {}) {
     bridgeVersion: presence.version,
     online: presence.online,
     pending: dispatchPending || responsePending, responsePending, responseState,
-    responseText: String(row.codex_response || ""), responseAt: milliseconds(row.codex_response_at),
-    responseSha256: String(row.codex_response_sha256 || ""), codexTurnId: String(row.codex_turn_id || ""),
-    codexTurnStatus: String(row.codex_turn_status || ""), replyCheckedAt: milliseconds(row.codex_reply_checked_at),
-    replyError: String(row.codex_reply_error || ""),
+    responseText: invalidResponseChronology ? "" : String(row.codex_response || ""),
+    responseAt: invalidResponseChronology ? 0 : milliseconds(row.codex_response_at),
+    responseSha256: invalidResponseChronology ? "" : String(row.codex_response_sha256 || ""),
+    codexTurnId: invalidResponseChronology ? "" : String(row.codex_turn_id || ""),
+    codexTurnStatus: invalidResponseChronology ? "" : String(row.codex_turn_status || ""),
+    replyCheckedAt: milliseconds(row.codex_reply_checked_at),
+    replyError: invalidResponseChronology
+      ? "已拒絕顯示時間早於本次請求的舊 Codex 回覆，等待重新配對"
+      : String(row.codex_reply_error || ""),
     cooldownRemainingMs: queuedAt ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0,
     transport: "selfhost",
   };
@@ -378,6 +395,14 @@ export async function updateCodexResponse(nonceValue, body = {}, dispatcherIdVal
     }
     const responseAt = TERMINAL_RESPONSE_STATES.has(responseState)
       ? new Date(Number(body.responseAt) > 0 ? Number(body.responseAt) : Date.now()) : null;
+    if (responseAt && milliseconds(current.queued_at) > responseAt.valueOf()) {
+      throw new HttpError(
+        409,
+        "Codex 回覆時間早於這筆網站請求，已拒絕舊回覆",
+        "CODEX_RESPONSE_PREDATES_REQUEST",
+        statusFromRow(current),
+      );
+    }
     const updated = await client.query(
       `UPDATE codex_support_requests SET response_state=$2,codex_turn_id=$3,codex_turn_status=$4,
          codex_response=$5,codex_response_sha256=$6,codex_response_at=COALESCE($7,codex_response_at),

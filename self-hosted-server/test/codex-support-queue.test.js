@@ -9,11 +9,30 @@ for (const name of ["SESSION_SECRET", "CODEX_BRIDGE_TOKEN", "LIVE_TOKEN_SECRET",
 const {
   CODEX_DISPATCH_LEASE_MS,
   isDirectCodexTransitionAllowed,
+  isCodexResponseChronologicallyValid,
   isDispatchResultUnknown,
   matchesDirectCodexClaim,
   normalizeCodexDispatcherId,
   resolveCodexDispatcherPresence,
 } = await import("../src/codex-support-queue.js");
+
+test("a terminal Codex reply must belong to the current request chronology", () => {
+  assert.equal(isCodexResponseChronologicallyValid({
+    response_state: "COMPLETED",
+    queued_at: new Date("2026-09-10T08:00:00Z"),
+    codex_response_at: new Date("2026-09-10T08:01:00Z"),
+  }), true);
+  assert.equal(isCodexResponseChronologicallyValid({
+    response_state: "COMPLETED",
+    queued_at: new Date("2026-09-10T08:00:00Z"),
+    codex_response_at: new Date("2026-09-09T08:01:00Z"),
+  }), false);
+  assert.equal(isCodexResponseChronologicallyValid({
+    response_state: "IN_PROGRESS",
+    queued_at: new Date("2026-09-10T08:00:00Z"),
+    codex_response_at: null,
+  }), true);
+});
 
 test("dispatcher state machine accepts idempotent/forward updates and rejects stale regression", () => {
   assert.equal(isDirectCodexTransitionAllowed("PENDING", "RECEIVED"), true);
@@ -92,6 +111,7 @@ test("queue SQL contract uses row locking, expiring leases, and state compare-an
   assert.match(responseMigration, /CHECK \(response_state IN \('WAITING','IN_PROGRESS','COMPLETED','FAILED','INTERRUPTED'\)\)/);
   assert.match(source, /CODEX_RESPONSE_MESSAGE_MISMATCH/);
   assert.match(source, /CODEX_RESPONSE_ALREADY_TERMINAL/);
+  assert.match(source, /CODEX_RESPONSE_PREDATES_REQUEST/);
   assert.match(publicApp, /dispatchResultUnknown/);
   assert.match(publicApp, /deviceUid: \$\("codexLogDeviceSelect"\)\.value \|\| state\.selectedUid/);
   assert.match(serverApp, /nextDispatcherRequest\(dispatcherId\)/);

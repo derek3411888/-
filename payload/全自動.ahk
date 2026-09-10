@@ -61,6 +61,8 @@ global REWARD_CHECK_INTERVAL_MS := 3000
 global REWARD_SHUTDOWN_DELAY_MS := 5000
 global REWARD_MATCH_NEED_COUNT := 2
 global REWARD_INVALID_HWND_NEED_COUNT := 6
+global REWARD_TASK_ABANDON_NEED_COUNT := 5
+global REWARD_TASK_ABANDON_WINDOW_SEC := 120
 global REWARD_LOG_RECENT_WINDOW_SEC := 3600
 global REWARD_LRMCAI_RESTART_COOLDOWN_MS := 15000
 global REWARD_MONITOR_STATE_SECTION := "reward_monitor_runtime"
@@ -124,8 +126,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "4.96"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.07"
+global PAYLOAD_BUILD_VERSION := "4.97"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.08"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -8447,6 +8449,7 @@ BuildRewardMonitorGameExitEvidence(logPath, sampleDetail) {
 MonitorRewardAndShutdown() {
     global REWARD_LOG_FILE, REWARD_START_DELAY_MS, REWARD_CHECK_INTERVAL_MS, REWARD_SHUTDOWN_DELAY_MS
     global REWARD_MATCH_NEED_COUNT, REWARD_INVALID_HWND_NEED_COUNT, REWARD_LOG_RECENT_WINDOW_SEC
+    global REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC
     global REMOTE_CONTROL_ACTIVE, __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
     global SERVER_SCHEDULE_ENABLED, CURRENT_SERVER_TARGET
 
@@ -8485,6 +8488,7 @@ MonitorRewardAndShutdown() {
                 " daily=" (state.seenDailyRewardSuccess ? "1" : "0")
                 " solaraFail=" (state.seenSolaraRewardFail ? "1" : "0")
                 " invalidHwnd=" state.invalidHwndHits
+                " taskAbandon=" state.taskAbandonHits "/" REWARD_TASK_ABANDON_NEED_COUNT
                 " pending=" (state.pendingReason != "" ? state.pendingReason : "無"))
         }
 
@@ -8528,6 +8532,18 @@ MonitorRewardAndShutdown() {
                         WriteLog("監測命中『無效視窗控制代碼』累計次數: " state.invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT " | " line, "WARN")
                         if (state.invalidHwndHits = 1 || Mod(state.invalidHwndHits, 3) = 0)
                             WriteStep("收尾監測", "無效視窗控制代碼累計 " state.invalidHwndHits "/" REWARD_INVALID_HWND_NEED_COUNT, "WARN")
+                    }
+
+                    if RewardMonitor_IsTaskAbandonLine(line) {
+                        taskAbandonHits := RewardMonitor_RecordTaskAbandon(
+                            state, line, REWARD_TASK_ABANDON_WINDOW_SEC)
+                        stateChanged := true
+                        WriteLog("監測命中『LRMCAI 放棄任務』時間窗次數: " taskAbandonHits
+                            "/" REWARD_TASK_ABANDON_NEED_COUNT "（" REWARD_TASK_ABANDON_WINDOW_SEC
+                            " 秒） | " line, "WARN")
+                        if (taskAbandonHits = 1 || taskAbandonHits >= REWARD_TASK_ABANDON_NEED_COUNT)
+                            WriteStep("收尾監測", "LRMCAI 短時間放棄任務 " taskAbandonHits
+                                "/" REWARD_TASK_ABANDON_NEED_COUNT, "WARN")
                     }
 
                     if (line ~= "i)(电台.*一键领取|電台.*一鍵領取)") {
@@ -8627,6 +8643,26 @@ MonitorRewardAndShutdown() {
                 ; 計時器可能在本輪任何兩行之間套用新的 PAUSE。
                 ; 每個外部動作前都重新讀取即時狀態，避免沿用本輪開頭的舊 paused=false。
                 activeAllowed := !(REMOTE_CONTROL_ACTIVE && RC_IsPaused())
+                if (activeAllowed && RewardMonitor_HasTaskAbandonBurst(
+                    state, REWARD_TASK_ABANDON_NEED_COUNT)) {
+                    burstEvidence := RewardMonitor_FormatTaskAbandonBurst(state,
+                        REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC)
+                    foregroundTitle := ""
+                    foregroundProcess := ""
+                    try foregroundTitle := WinGetTitle("A")
+                    try foregroundProcess := WinGetProcessName("A")
+                    WriteLog("收尾監測拒絕把領獎訊號當成完成：LRMCAI 短時間大量放棄任務"
+                        " | " burstEvidence " | foreground=" foregroundProcess "/" foregroundTitle,
+                        "ERROR")
+                    ShowTip("❌ LRMCAI 大量跳過任務，準備乾淨重啟", 2500)
+                    ClearRewardMonitorRuntimeState(state.key)
+                    RequestRestart(
+                        "LRMCAI 在 " REWARD_TASK_ABANDON_WINDOW_SEC " 秒內連續放棄至少 "
+                            REWARD_TASK_ABANDON_NEED_COUNT " 個任務；拒絕採信後續領獎完成訊號"
+                            " | " burstEvidence " | foreground=" foregroundProcess "/" foregroundTitle,
+                        "ERROR", false, "LRMCAI_TASK_ABANDON_BURST", "收尾監測／LRMCAI 日誌")
+                    return
+                }
                 if (activeAllowed && state.invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
                     if !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
                         ShowTip("❌ 偵測遊戲閃退，準備重啟流程", 2500)
@@ -8657,6 +8693,7 @@ MonitorRewardAndShutdown() {
                             "ERROR", true, "GAME_PROCESS_EXITED_DURING_REWARD_MONITOR", "收尾監測")
                         return
                     }
+
                 }
 
                 ; 收尾監測只做背景模板搜尋；不可因每輪輪詢而置頂或切換到鳴潮。
@@ -8732,6 +8769,10 @@ LoadRewardMonitorRuntimeState(logPath, defaultPos) {
         seenSolaraRewardFail: false,
         invalidHwndHits: 0,
         lastInvalidHwndLine: "",
+        taskAbandonHits: 0,
+        taskAbandonFirstAt: "",
+        taskAbandonLastAt: "",
+        lastTaskAbandonLine: "",
         pendingReason: "",
         pendingAt: "",
         completionRecorded: false,
@@ -8752,6 +8793,10 @@ LoadRewardMonitorRuntimeState(logPath, defaultPos) {
     state.seenSolaraRewardFail := ReadRewardMonitorStateBool("seen_solara_reward_fail")
     state.invalidHwndHits := ReadRewardMonitorStateInteger("invalid_hwnd_hits", 0)
     state.lastInvalidHwndLine := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_invalid_hwnd_line", "")
+    state.taskAbandonHits := ReadRewardMonitorStateInteger("task_abandon_hits", 0)
+    state.taskAbandonFirstAt := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_first_at", "")
+    state.taskAbandonLastAt := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_last_at", "")
+    state.lastTaskAbandonLine := IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_task_abandon_line", "")
     state.pendingReason := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason", ""), " `t`r`n")
     state.pendingAt := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at", ""), " `t`r`n")
     if (state.pendingReason != "" && state.pendingAt = "")
@@ -8773,6 +8818,10 @@ SaveRewardMonitorRuntimeState(state) {
         IniWrite state.seenSolaraRewardFail ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_solara_reward_fail"
         IniWrite state.invalidHwndHits, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "invalid_hwnd_hits"
         IniWrite state.lastInvalidHwndLine, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_invalid_hwnd_line"
+        IniWrite state.taskAbandonHits, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_hits"
+        IniWrite state.taskAbandonFirstAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_first_at"
+        IniWrite state.taskAbandonLastAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_last_at"
+        IniWrite state.lastTaskAbandonLine, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_task_abandon_line"
         IniWrite state.pendingReason, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason"
         IniWrite state.pendingAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at"
         IniWrite state.completionRecorded ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "completion_recorded"
@@ -8799,7 +8848,9 @@ ClearRewardMonitorRuntimeState(expectedKey := "") {
         for key in [
             "state_key", "last_pos", "click_reward_hits", "seen_click_reward", "seen_no_reward",
             "seen_daily_reward_success", "seen_solara_reward_fail", "invalid_hwnd_hits",
-            "last_invalid_hwnd_line", "pending_reason", "pending_at", "completion_recorded", "updated_at"
+            "last_invalid_hwnd_line", "task_abandon_hits", "task_abandon_first_at",
+            "task_abandon_last_at", "last_task_abandon_line", "pending_reason", "pending_at",
+            "completion_recorded", "updated_at"
         ]
             IniWrite "", CFG_FILE, REWARD_MONITOR_STATE_SECTION, key
         WriteLog("收尾監測持久狀態已在正式收尾前清除")
@@ -8824,7 +8875,12 @@ ReadRewardMonitorStateBool(key) {
 }
 
 GetRewardMonitorCompletionReason(state) {
-    global REWARD_MATCH_NEED_COUNT
+    global REWARD_MATCH_NEED_COUNT, REWARD_TASK_ABANDON_NEED_COUNT
+
+    ; 領獎訊號只能證明「領獎頁跑過」，不能證明前面的鋤地任務成功。
+    ; 若同一時間窗已有大量任務被放棄，先拒絕完成，讓主監測走乾淨復原。
+    if RewardMonitor_HasTaskAbandonBurst(state, REWARD_TASK_ABANDON_NEED_COUNT)
+        return ""
 
     if (state.hit >= REWARD_MATCH_NEED_COUNT)
         return "電台一鍵領取命中 " state.hit "/" REWARD_MATCH_NEED_COUNT

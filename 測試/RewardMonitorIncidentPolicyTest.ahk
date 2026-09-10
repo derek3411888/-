@@ -46,9 +46,60 @@ try {
     AssertRewardIncident(StrLen(shortExcerpt) <= 80,
         "摘要長度下限處理異常")
 
+    abandonState := {
+        taskAbandonHits: 0,
+        taskAbandonFirstAt: "",
+        taskAbandonLastAt: "",
+        lastTaskAbandonLine: ""
+    }
+    normalLine := "2026-09-10 10:15:00,000 - LRMCAI - INFO - 執行任務"
+    AssertRewardIncident(!RewardMonitor_IsTaskAbandonLine(normalLine),
+        "task-abandon-normal-line-false-positive")
+    abandonLines := [
+        "2026-09-10 10:15:03,213 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!",
+        "2026-09-10 10:15:19,187 - LRMCAI - INFO - 傳送重試次數過多，放棄該任務!",
+        "2026-09-10 10:15:35,144 - LRMCAI - INFO - 传送重试次数过多,放弃该任务!",
+        "2026-09-10 10:15:51,073 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!",
+        "2026-09-10 10:16:07,111 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!"
+    ]
+    for line in abandonLines {
+        AssertRewardIncident(RewardMonitor_IsTaskAbandonLine(line),
+            "task-abandon-zh-pattern-not-matched")
+        RewardMonitor_RecordTaskAbandon(abandonState, line, 120)
+    }
+    AssertRewardIncident(RewardMonitor_HasTaskAbandonBurst(abandonState, 5),
+        "task-abandon-five-hit-burst-not-detected")
+    burstSummary := RewardMonitor_FormatTaskAbandonBurst(abandonState, 5, 120)
+    AssertRewardIncident(InStr(burstSummary, "hits=5/5") > 0,
+        "task-abandon-summary-missing-count")
+
+    RewardMonitor_RecordTaskAbandon(abandonState,
+        "2026-09-10 10:20:00,000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!", 120)
+    AssertRewardIncident(abandonState.taskAbandonHits = 1,
+        "task-abandon-window-did-not-reset")
+
+    rollingState := {
+        taskAbandonHits: 0,
+        taskAbandonFirstAt: "",
+        taskAbandonLastAt: "",
+        lastTaskAbandonLine: ""
+    }
+    for timestamp in ["101500", "101559", "101758"] {
+        RewardMonitor_RecordTaskAbandon(rollingState,
+            "2026-09-10 " SubStr(timestamp, 1, 2) ":" SubStr(timestamp, 3, 2) ":"
+                SubStr(timestamp, 5, 2) ",000 - LRMCAI - INFO - 传送重试次数过多，放弃该任务!", 120)
+    }
+    AssertRewardIncident(rollingState.taskAbandonHits = 1,
+        "task-abandon-window-used-adjacent-gap")
+
     FileAppend("reward-monitor-incident-policy=ok`n", "*")
 } catch as e {
-    FileAppend("reward-monitor-incident-policy=failed: " e.Message "`n", "**")
+    detail := e.Message
+    try detail .= " | what=" e.What
+    try detail .= " | file=" e.File
+    try detail .= " | line=" e.Line
+    try detail .= " | extra=" e.Extra
+    FileAppend("reward-monitor-incident-policy=failed: " detail "`n", "**")
     ExitApp(1)
 }
 
