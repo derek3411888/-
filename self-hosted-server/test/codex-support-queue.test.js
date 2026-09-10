@@ -10,10 +10,12 @@ const {
   CODEX_DISPATCH_LEASE_MS,
   isDirectCodexTransitionAllowed,
   isDispatchResultUnknown,
+  isQueuedCodexResponseRetryable,
   matchesDirectCodexClaim,
   normalizeCodexDispatcherId,
   resolveCodexDispatcherPresence,
 } = await import("../src/codex-support-queue.js");
+const { CODEX_RESPONSE_START_TIMEOUT_MS } = await import("../src/codex-support.js");
 
 test("dispatcher state machine accepts idempotent/forward updates and rejects stale regression", () => {
   assert.equal(isDirectCodexTransitionAllowed("PENDING", "RECEIVED"), true);
@@ -31,6 +33,23 @@ test("dispatch-result-unknown is recognized as an unsafe retry result", () => {
   assert.equal(isDispatchResultUnknown({ error_code: "DISPATCH_RESULT_UNKNOWN" }), true);
   assert.equal(isDispatchResultUnknown({ errorCode: "dispatch_result_unknown" }), true);
   assert.equal(isDispatchResultUnknown({ error_code: "CODEX_EXIT_1" }), false);
+});
+
+test("queued Codex responses are retryable only after a terminal response or missing-turn timeout", () => {
+  const now = 2_000_000;
+  const waiting = {
+    state: "QUEUED",
+    response_state: "WAITING",
+    codex_turn_id: "",
+    queued_at: new Date(now - CODEX_RESPONSE_START_TIMEOUT_MS),
+  };
+  assert.equal(isQueuedCodexResponseRetryable(waiting, now - 1), false);
+  assert.equal(isQueuedCodexResponseRetryable(waiting, now), true);
+  assert.equal(isQueuedCodexResponseRetryable({ ...waiting, codex_turn_id: "turn-123" }, now), false);
+  assert.equal(isQueuedCodexResponseRetryable({ ...waiting, response_state: "IN_PROGRESS" }, now), false);
+  assert.equal(isQueuedCodexResponseRetryable({ ...waiting, response_state: "FAILED" }, now - 1), true);
+  assert.equal(isQueuedCodexResponseRetryable({ ...waiting, response_state: "INTERRUPTED" }, now - 1), true);
+  assert.equal(isQueuedCodexResponseRetryable({ ...waiting, state: "FAILED" }, now), false);
 });
 
 test("claim ownership requires the exact generation and stable dispatcher identity", () => {
@@ -84,6 +103,8 @@ test("queue SQL contract uses row locking, expiring leases, and state compare-an
   assert.doesNotMatch(source, /state IN \('RECEIVED','VALIDATING'\)[\s\S]{0,200}claim_expires_at<=now\(\)/);
   assert.match(source, /WHERE id=\$1 AND state=\$14 AND claim_generation=\$15 AND claimed_by=\$16 RETURNING \*/);
   assert.match(source, /CODEX_SUPPORT_RESULT_UNKNOWN/);
+  assert.match(source, /response_state='INTERRUPTED'/);
+  assert.match(source, /codex_turn_status='interrupted'/);
   assert.match(source, /CODEX_SUPPORT_STALE_CLAIM/);
   assert.match(source, /system_settings\.value->>'heartbeatAt'/);
   assert.match(migration, /claim_generation integer NOT NULL DEFAULT 0/);

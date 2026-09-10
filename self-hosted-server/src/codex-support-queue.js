@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import {
+  CODEX_RESPONSE_START_TIMEOUT_MS,
   CODEX_SUPPORT_COOLDOWN_MS,
   CODEX_SUPPORT_PENDING_STATES,
   buildDeviceSupportContext,
@@ -38,6 +39,15 @@ export function isDirectCodexTransitionAllowed(fromState, toState) {
 
 export function isDispatchResultUnknown(row = {}) {
   return String(row.error_code ?? row.errorCode ?? "").trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
+}
+
+export function isQueuedCodexResponseRetryable(row = {}, now = Date.now()) {
+  if (String(row.state ?? "").trim().toUpperCase() !== "QUEUED") return false;
+  const responseState = String(row.response_state ?? "WAITING").trim().toUpperCase();
+  if (["FAILED", "INTERRUPTED"].includes(responseState)) return true;
+  if (responseState !== "WAITING" || String(row.codex_turn_id ?? "").trim()) return false;
+  const queuedAt = milliseconds(row.queued_at);
+  return queuedAt > 0 && now - queuedAt >= CODEX_RESPONSE_START_TIMEOUT_MS;
 }
 
 export function normalizeCodexDispatcherId(value) {
@@ -227,7 +237,8 @@ export async function retryDirectCodexSupport() {
     }
     const stalled = CANCELLABLE_STATES.has(String(current.state)) && Number(current.attempt_count) === 0
       && Date.now() - milliseconds(current.created_at) >= BRIDGE_ONLINE_MS;
-    if (!RETRYABLE_TERMINAL_STATES.has(String(current.state)) && !stalled) {
+    const queuedResponseRetryable = isQueuedCodexResponseRetryable(current);
+    if (!RETRYABLE_TERMINAL_STATES.has(String(current.state)) && !stalled && !queuedResponseRetryable) {
       throw new HttpError(409, "這筆請求仍可能正在處理，暫時不能重送", "CODEX_SUPPORT_NOT_RETRYABLE", statusFromRow(current));
     }
     if (stalled) {
@@ -239,6 +250,22 @@ export async function retryDirectCodexSupport() {
       );
       if (!cancelled.rowCount) {
         throw new HttpError(409, "請求狀態已改變，請重新整理後再重送", "CODEX_SUPPORT_STATE_CHANGED");
+      }
+    }
+    const currentResponseState = String(current.response_state || "WAITING").trim().toUpperCase();
+    if (queuedResponseRetryable && !TERMINAL_RESPONSE_STATES.has(currentResponseState)) {
+      const cutoff = new Date(Date.now() - CODEX_RESPONSE_START_TIMEOUT_MS);
+      const interrupted = await client.query(
+        `UPDATE codex_support_requests SET response_state='INTERRUPTED',
+         detail='Codex 未建立處理回合；舊請求已由新編號取代',
+         codex_turn_status='interrupted',codex_response_at=now(),codex_reply_checked_at=now(),
+         codex_reply_error='Codex 佇列已接收，但逾時仍未建立處理回合；已由使用者以新編號重送',updated_at=now()
+         WHERE id=$1 AND state='QUEUED' AND response_state='WAITING' AND codex_turn_id='' AND queued_at<=$2
+         RETURNING id`,
+        [current.id, cutoff],
+      );
+      if (!interrupted.rowCount) {
+        throw new HttpError(409, "Codex 回覆狀態已改變，請重新整理後再重送", "CODEX_SUPPORT_STATE_CHANGED");
       }
     }
     const inserted = await client.query(

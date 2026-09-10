@@ -12,10 +12,11 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.0.2'
+$BridgeVersion = '3.0.3'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
+$ResponseStartTimeoutMs = 3 * 60 * 1000
 $script:LastFirestoreDocument = $null
 $script:CodexSessionLogPath = ''
 $script:CodexResponseCursors = @{}
@@ -849,9 +850,20 @@ function New-CodexResponseMatch(
     }
 }
 
+function Get-CodexResponseStartTimeoutMatch($Target) {
+    if ([string](Read-OptionalProperty $Target 'TurnId' '')) { return $null }
+    $queuedAt = [long](Read-OptionalProperty $Target 'QueuedAt' 0L)
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if ($queuedAt -le 0 -or $now - $queuedAt -lt $ResponseStartTimeoutMs) { return $null }
+    return New-CodexResponseMatch $true 'INTERRUPTED' '' $now '' 'interrupted' `
+        'Codex 佇列已接收，但超過 3 分鐘仍未建立處理回合；可用新編號重送'
+}
+
 function Find-CodexResponseFromSessionLog($Config, $Target) {
     $sessionPath = Find-CodexSessionLog $Config
     if (-not $sessionPath) {
+        $timedOut = Get-CodexResponseStartTimeoutMatch $Target
+        if ($null -ne $timedOut) { return $timedOut }
         return New-CodexResponseMatch $false 'WAITING' '' 0L '' '' '找不到目前 Codex 任務的本機記錄'
     }
 
@@ -960,6 +972,8 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
     if ($targetSeen) {
         return New-CodexResponseMatch $true 'IN_PROGRESS' '' 0L $targetTurnId 'inProgress' ''
     }
+    $timedOut = Get-CodexResponseStartTimeoutMatch $Target
+    if ($null -ne $timedOut) { return $timedOut }
     return New-CodexResponseMatch $false 'WAITING' '' 0L '' '' ''
 }
 

@@ -106,6 +106,9 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(codexBridge, /phase' ''\) -eq 'final_answer'/);
   assert.match(codexBridge, /Find-CodexResponseByMessageHash/);
   assert.match(codexBridge, /Find-CodexResponseFromSessionLog \$Config \$target/);
+  assert.match(codexBridge, /\$ResponseStartTimeoutMs\s*=\s*3 \* 60 \* 1000/);
+  assert.match(codexBridge, /Get-CodexResponseStartTimeoutMatch/);
+  assert.match(codexBridge, /Codex 佇列已接收，但超過 3 分鐘仍未建立處理回合/);
   assert.match(codexBridge, /rollout-\*-\$\(\[string\]\$Config\.ThreadId\)\.jsonl/);
   assert.match(codexBridge, /\$script:CodexResponseCursors/);
   assert.match(codexBridge, /Get-CodexDisplayResponseText/);
@@ -165,6 +168,9 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(retryBlock, /codexResponseState:\s*"WAITING"/);
   assert.match(retryBlock, /codexResponseText:\s*""/);
   assert.match(script, /supportRetryOfNonce:\s*currentNonce/);
+  assert.match(script, /CODEX_RESPONSE_START_TIMEOUT_MS\s*=\s*3 \* 60_000/);
+  assert.match(script, /orphanedResponse/);
+  assert.match(script, /failedResponse/);
   assert.match(script, /DISPATCH_RESULT_UNKNOWN/);
   assert.match(script, /為避免重複執行，禁止直接重送/);
   assert.match(bridge, /\$ExpectedAction\s*=\s*'QUEUE_MESSAGE_V1'/);

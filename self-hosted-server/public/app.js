@@ -34,6 +34,7 @@ const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
 const CODEX_SUPPORT_COOLDOWN_MS = 5 * 60_000;
 const CODEX_BRIDGE_ONLINE_MS = 3 * 60_000;
+const CODEX_RESPONSE_START_TIMEOUT_MS = 3 * 60_000;
 const CODEX_SUPPORT_PENDING_STATES = ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"];
 const CODEX_SUPPORT_PRESETS = Object.freeze({
   FIX_SCRIPT: Object.freeze({ label: "找出問題並修正", message: "現在腳本有問題，請你找出問題並修正" }),
@@ -443,30 +444,39 @@ function renderCodexSupportStatus() {
     requestNonce === statusNonce && CODEX_SUPPORT_PENDING_STATES.includes(supportState)
   );
   const responseState = String(data.responseState || "NONE").trim().toUpperCase();
+  const responseTurnId = String(data.codexTurnId || "").trim();
   const responsePending = supportState === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
   const safelyCancellable = requestPending && attemptCount === 0
     && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(supportState);
   const stalled = safelyCancellable && requestedAt > 0
     && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
   const dispatchResultUnknown = String(data.errorCode || "").trim().toUpperCase() === "DISPATCH_RESULT_UNKNOWN";
+  const orphanedResponse = supportState === "QUEUED" && responseState === "WAITING" && !responseTurnId
+    && queuedAt > 0 && Date.now() - queuedAt >= CODEX_RESPONSE_START_TIMEOUT_MS;
+  const failedResponse = supportState === "QUEUED" && ["FAILED", "INTERRUPTED"].includes(responseState);
   const retryable = !dispatchResultUnknown
-    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState) || stalled);
+    && (["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(supportState)
+      || stalled || orphanedResponse || failedResponse);
   const selection = selectedCodexSupportMessage();
   $("btnAskCodex").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || requestPending || responsePending || cooldownRemaining > 0
     || !selection.message || selection.message.length > CODEX_SUPPORT_MAX_MESSAGE_LENGTH;
   $("btnCancelCodexSupport").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || !safelyCancellable;
   $("btnRetryCodexSupport").disabled = state.codexSupportSending || state.codexSupportRecoveryBusy || !retryable;
-  setText("codexRecoveryHint", stalled
-    ? "這筆請求已超過 3 分鐘且尚未嘗試，可取消，或取消後用新編號重送。"
-    : dispatchResultUnknown
-      ? "傳送結果不明，這筆訊息可能已進入 Codex；為避免重複執行，不能直接重送。請先檢查目前 Codex 任務。"
-    : safelyCancellable
-      ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
-      : supportState === "QUEUED"
-        ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
-        : retryable
-          ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
-          : "一般控制台會直接寫入中央主機，不經 Firestore。只有尚未進入 Codex 的請求可以安全取消。");
+  setText("codexRecoveryHint", orphanedResponse
+    ? "Codex 已接收佇列，但超過 3 分鐘仍未建立處理回合；可中斷舊請求並用新編號重送。"
+    : failedResponse
+      ? "Codex 沒有完成這筆請求；可保留相同內容與裝置 Log，用新編號重送。"
+      : stalled
+        ? "這筆請求已超過 3 分鐘且尚未嘗試，可取消，或取消後用新編號重送。"
+        : dispatchResultUnknown
+          ? "傳送結果不明，這筆訊息可能已進入 Codex；為避免重複執行，不能直接重送。請先檢查目前 Codex 任務。"
+          : safelyCancellable
+            ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
+            : supportState === "QUEUED"
+              ? (responsePending ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。" : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
+              : retryable
+                ? "可以保留相同內容與裝置 Log，建立新的請求編號重送。"
+                : "一般控制台會直接寫入中央主機，不經 Firestore。只有尚未進入 Codex 的請求可以安全取消。");
 
   const stateLabels = {
     PENDING: "已送出，等待家中主機", RECEIVED: "家中主機已收到", VALIDATING: "正在驗證訊息",
