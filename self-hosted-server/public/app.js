@@ -475,7 +475,7 @@ function renderCodexSupportStatus() {
 
   const stateLabels = {
     PENDING: "已送出，等待家中主機", RECEIVED: "家中主機已收到", VALIDATING: "正在驗證訊息",
-    QUEUEING: "正在送往 Codex", RETRYING: "Codex 暫未接收，等待重試", QUEUED: "已排入目前 Codex 任務",
+    QUEUEING: "正在送往 Codex", RETRYING: "等待取得 Codex Turn ID", QUEUED: "Codex Turn 已開始",
     REJECTED: "訊息被主機拒絕", RATE_LIMITED: "送出過於頻繁", FAILED: "傳送失敗",
     CANCELLED: "已取消（未送進 Codex）", READY: "橋接程式待命",
   };
@@ -517,7 +517,7 @@ function renderCodexSupportStatus() {
   }
   if (supportState === "QUEUED") {
     setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
-    setCodexStage(codexStages.queued, "done", queuedAt ? `排入於 ${formatTime(queuedAt)}` : "Codex 佇列已接收");
+    setCodexStage(codexStages.queued, "done", queuedAt ? `啟動於 ${formatTime(queuedAt)}` : "Codex Turn ID 已確認");
     if (responseState === "COMPLETED") {
       setCodexStage(codexStages.response, "done", data.responseAt ? `完成於 ${formatTime(data.responseAt)}` : "最終回覆已同步");
     } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
@@ -541,7 +541,7 @@ function renderCodexSupportStatus() {
   const responseText = String(data.responseText || "").trim();
   const responseLabels = {
     NONE: ["waiting", "尚未送出", "請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。", "muted"],
-    WAITING: ["waiting", "等待 Codex", "已排入目前任務，等待 Codex 開始處理。", "warning"],
+    WAITING: ["waiting", "正在復原", "舊版只排入佇列；Bridge 正在安全尋找並啟動這筆訊息。", "warning"],
     IN_PROGRESS: ["in-progress", "處理中", "Codex 正在處理這筆網站回報；完成後會自動更新。", "warning"],
     COMPLETED: ["completed", "已完成", "已取得這個 Codex turn 的最終回覆。", "ok"],
     FAILED: ["failed", "失敗", data.replyError || "Codex 任務結束但沒有可顯示的最終回覆。", "danger"],

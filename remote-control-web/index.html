@@ -89,8 +89,8 @@
           <li id="codexStageSubmitted" data-state="waiting"><span>1</span><div><strong>網站寫入請求</strong><small>尚未送出</small></div></li>
           <li id="codexStageReceived" data-state="waiting"><span>2</span><div><strong>家中主機收到</strong><small>等待橋接程式讀取</small></div></li>
           <li id="codexStageValidated" data-state="waiting"><span>3</span><div><strong>訊息驗證完成</strong><small>檢查動作、長度與內容</small></div></li>
-          <li id="codexStageAttempted" data-state="waiting"><span>4</span><div><strong>送往 Codex</strong><small>等待佇列嘗試</small></div></li>
-          <li id="codexStageQueued" data-state="waiting"><span>5</span><div><strong>Codex 已接收佇列</strong><small>不代表已開始或已完成</small></div></li>
+          <li id="codexStageAttempted" data-state="waiting"><span>4</span><div><strong>送往 Codex</strong><small>等待建立 Turn</small></div></li>
+          <li id="codexStageQueued" data-state="waiting"><span>5</span><div><strong>Codex Turn 已建立</strong><small>必須取得實際 Turn ID</small></div></li>
           <li id="codexStageResponse" data-state="waiting"><span>6</span><div><strong>Codex 處理與回覆</strong><small>等待最終回覆</small></div></li>
         </ol>
       </section>
@@ -381,6 +381,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=p5.00-l5.11-s1.0.63"></script>
+  <script type="module" src="app.js?v=p5.00-l5.11-s1.0.63-turn-start-20260911"></script>
 </body>
 </html>

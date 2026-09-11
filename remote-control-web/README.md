@@ -2,9 +2,9 @@
 
 這是供公司或其他無法連線個人網址的網路使用的 Firestore 控制台。GitHub Pages 首頁不再轉址到固定 IP；狀態、快照、命令與設定都經由既有 Firestore 文件傳遞。自架網站另外提供直播；正式錄影只保存在執行端指定位置。
 
-頁首的「通知目前 Codex 任務」不會另開 ChatGPT。可以選擇「找出問題並修正／只分析原因／檢查目前狀態」三種預設訊息，也可以自行輸入最多 1,000 字元；Docker／資料庫所在的 Windows 主機常駐橋接程式收到後，會使用本機 Codex 的既有任務佇列，把訊息直接送進指定的既有 Codex 任務。
+頁首的「通知目前 Codex 任務」不會另開 ChatGPT。可以選擇「找出問題並修正／只分析原因／檢查目前狀態」三種預設訊息，也可以自行輸入最多 1,000 字元；Docker／資料庫所在的 Windows 主機常駐橋接程式收到後，會連到本機 Codex 的持久 App Server，恢復指定的既有任務並啟動訊息 Turn。
 
-網頁會分別顯示「網站已送出／家中主機收到／訊息驗證／送往 Codex／Codex 佇列已接收」，並列出 nonce、各階段時間、嘗試次數、下次重試、訊息 SHA-256 指紋與錯誤原因。「已排入」只代表本機佇列接收，不能當成 Codex 已開始或已完成。橋接端仍不把 Codex 任務 ID 放到 Firestore；同一 nonce 成功後不會重複送入，且兩次成功排入至少間隔 5 分鐘。舊版網頁的 `FIX_SCRIPT` 動作仍可使用。安裝方式見 `self-hosted-server/windows/Install-CodexSupportBridge.ps1`。
+網頁會分別顯示「網站已送出／家中主機收到／訊息驗證／送往 Codex／Codex Turn 已建立」，並列出 nonce、各階段時間、嘗試次數、下次重試、訊息 SHA-256 指紋、Turn ID 與錯誤原因。Bridge 只有在 `thread/queue/start` 回傳執行中的 Turn ID 後才會回報成功；重試時先依唯一識別碼與訊息雜湊尋找既有佇列或 Turn，不會重複執行。同一 nonce 成功後不會重複送入，且兩次成功啟動至少間隔 5 分鐘。3.2.x 留下的 WAITING 請求會先嘗試安全啟動原佇列項目，找不到才開放重送。舊版網頁的 `FIX_SCRIPT` 動作仍可使用。安裝方式見 `self-hosted-server/windows/Install-CodexSupportBridge.ps1`。
 
 公司控制台目前沒有登入驗證，自訂訊息會經過 Firestore，因此不得輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。
 

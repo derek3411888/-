@@ -347,7 +347,8 @@ if (-not [bool]$bridgeRegression.Ok -or
     -not [bool]$bridgeRegression.CorrelationIdsAreUnique -or
     -not [bool]$bridgeRegression.ChronologyWindowGuarded -or
     -not [bool]$bridgeRegression.ResponseStateMonotonic -or
-    -not [bool]$bridgeRegression.ExactTurnCorrelation) {
+    -not [bool]$bridgeRegression.ExactTurnCorrelation -or
+    -not [bool]$bridgeRegression.QueuedSubmissionDeduplication) {
     throw 'Codex 網站回報橋接回歸測試失敗。'
 }
 Add-Type -AssemblyName System.Security
