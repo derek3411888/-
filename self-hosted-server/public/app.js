@@ -422,6 +422,122 @@ function setCodexSupportMessage(kind, message) {
   }
 }
 
+function formatCodexElapsed(value) {
+  const at = Math.max(0, Number(value) || 0);
+  if (!at) return "尚未計時";
+  const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
+  if (seconds < 60) return `已過 ${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `已過 ${minutes} 分鐘`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `已過 ${hours} 小時${remainder ? ` ${remainder} 分鐘` : ""}`;
+}
+
+function renderCodexProgressOverview(view) {
+  const banner = $("codexProgressBanner");
+  if (!banner) return;
+
+  const {
+    requestNonce, supportState, responseState, requestedAt, receivedAt, validatedAt,
+    lastAttemptAt, queuedAt, responseAt, replyCheckedAt, heartbeatAt, bridgeOnline,
+    bridgeVersion, detail, replyError, sending, uiError,
+  } = view;
+  const hasRequest = requestNonce > 0 && supportState !== "READY";
+  const lastActivityAt = Math.max(
+    requestedAt, receivedAt, validatedAt, lastAttemptAt, queuedAt, responseAt, replyCheckedAt,
+  );
+  const failedDispatch = ["REJECTED", "RATE_LIMITED", "FAILED", "CANCELLED"].includes(supportState);
+  let step = 0;
+  let tone = "idle";
+  let badgeTone = "muted";
+  let badge = "尚無回報";
+  let headline = "網站回報進度";
+  let summary = bridgeOnline
+    ? "橋接程式在線；送出後會在這裡持續顯示收件、排隊、處理與回覆。"
+    : "尚未收到家中 Bridge 心跳；送出前請先確認家中主機在線。";
+
+  if (sending) {
+    step = 1;
+    tone = "pending";
+    badgeTone = "warning";
+    badge = "正在寫入";
+    headline = "正在建立網站回報";
+    summary = "正在取得新請求編號並寫入中央主機。";
+  } else if (uiError) {
+    tone = "error";
+    badgeTone = "danger";
+    badge = "狀態讀取失敗";
+    headline = "目前無法確認是否送達";
+    summary = uiError;
+  } else if (hasRequest) {
+    const stateStep = {
+      PENDING: 1, RECEIVED: 2, VALIDATING: 3, QUEUEING: 4, RETRYING: 4,
+      REJECTED: 3, RATE_LIMITED: 4, FAILED: 4, CANCELLED: 1,
+    };
+    step = supportState === "QUEUED"
+      ? (["IN_PROGRESS", "COMPLETED", "FAILED", "INTERRUPTED"].includes(responseState) ? 6 : 5)
+      : (stateStep[supportState] || 1);
+    if (supportState === "QUEUED") {
+      badgeTone = "ok";
+      badge = "已送進 Codex";
+      if (responseState === "COMPLETED") {
+        tone = "ok";
+        headline = "Codex 已回覆";
+        summary = "最終回覆已同步到網站；請查看完整回覆確認修正內容與驗證結果。";
+      } else if (responseState === "IN_PROGRESS") {
+        tone = "pending";
+        headline = "Codex 正在處理";
+        summary = "目前聊天室已辨識到這筆網站回報，正在執行與整理結果。";
+      } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
+        tone = "error";
+        headline = responseState === "INTERRUPTED" ? "Codex 處理已中斷" : "Codex 回覆同步失敗";
+        summary = replyError || "請求確實已送進 Codex，但沒有取得可顯示的最終回覆。";
+      } else {
+        tone = "pending";
+        headline = "已送進 Codex，等待聊天室接收";
+        summary = "已確認 Codex 佇列接受這筆回報；尚未在目前聊天室找到對應訊息。";
+      }
+    } else if (failedDispatch) {
+      tone = "error";
+      badgeTone = "danger";
+      badge = "未送進 Codex";
+      headline = supportState === "CANCELLED" ? "網站回報已取消" : "網站回報傳送失敗";
+      summary = detail || "橋接程式未能把這筆回報送進 Codex。";
+    } else {
+      tone = "pending";
+      badgeTone = "warning";
+      badge = "尚未送進 Codex";
+      const preQueueLabels = {
+        PENDING: "網站已寫入，等待家中主機接收",
+        RECEIVED: "家中主機已收到，準備驗證",
+        VALIDATING: "正在驗證回報內容",
+        QUEUEING: "正在送往 Codex",
+        RETRYING: "Codex 暫未接收，等待自動重試",
+      };
+      headline = preQueueLabels[supportState] || "網站回報處理中";
+      summary = detail || "請求正在橋接流程中，尚未取得 Codex 佇列收件證明。";
+    }
+  } else if (!bridgeOnline) {
+    tone = "error";
+    badgeTone = "danger";
+    badge = "Bridge 離線";
+  }
+
+  banner.className = `codex-progress-banner ${tone}`;
+  $("codexProgressDeliveryBadge").className = `badge ${badgeTone}`;
+  setText("codexProgressDeliveryBadge", badge);
+  setText("codexProgressHeadline", headline);
+  setText("codexProgressSummary", summary);
+  $("codexProgressBar").value = step;
+  $("codexProgressBar").setAttribute("aria-label", `網站回報進度：第 ${step} 步，共 6 步`);
+  setText("codexProgressStep", `第 ${step} / 6 步`);
+  setText("codexProgressNonce", requestNonce > 0 ? `請求 #${requestNonce}` : "尚無請求");
+  setText("codexProgressElapsed", hasRequest ? formatCodexElapsed(requestedAt) : "尚未計時");
+  setText("codexProgressActivity", lastActivityAt ? `最後活動：${formatTime(lastActivityAt)}（${formatAge(lastActivityAt)}）` : "最後活動：—");
+  setText("codexProgressBridge", `Bridge：${bridgeOnline ? "在線" : "離線"}${bridgeVersion ? ` v${bridgeVersion}` : ""}${heartbeatAt ? `（${formatAge(heartbeatAt)}）` : ""}`);
+}
+
 function renderCodexSupportStatus() {
   const data = state.codexSupportData || {};
   const requestNonce = Math.max(0, Number(data.requestNonce) || 0);
@@ -443,6 +559,8 @@ function renderCodexSupportStatus() {
     requestNonce === statusNonce && CODEX_SUPPORT_PENDING_STATES.includes(supportState)
   );
   const responseState = String(data.responseState || "NONE").trim().toUpperCase();
+  const responseAt = Math.max(0, Number(data.responseAt) || 0);
+  const replyCheckedAt = Math.max(0, Number(data.replyCheckedAt) || 0);
   const responsePending = supportState === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
   const safelyCancellable = requestPending && attemptCount === 0
     && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(supportState);
@@ -497,6 +615,14 @@ function renderCodexSupportStatus() {
   codexDetails.nextRetryAt.textContent = formatTime(nextRetryAt);
   codexDetails.messageHash.textContent = data.messageSha256 ? `SHA-256 ${data.messageSha256}` : "-";
   codexDetails.error.textContent = [data.errorCode, data.errorDetail || detail].filter(Boolean).join("：") || "-";
+
+  renderCodexProgressOverview({
+    requestNonce, supportState, responseState, requestedAt, receivedAt, validatedAt,
+    lastAttemptAt, queuedAt, responseAt, replyCheckedAt, heartbeatAt, bridgeOnline,
+    bridgeVersion: String(data.bridgeVersion || ""), detail,
+    replyError: String(data.replyError || ""), sending: state.codexSupportSending,
+    uiError: state.codexSupportError,
+  });
 
   const lifecycle = requestNonce > 0 && supportState !== "READY";
   for (const stage of Object.values(codexStages)) setCodexStage(stage, "waiting", "等待前一步完成");
@@ -588,8 +714,7 @@ function stopCodexSupportPolling() {
 
 function scheduleCodexSupportRefresh() {
   stopCodexSupportPolling();
-  if (!$("codexSupportDialog").open) return;
-  const delay = state.codexSupportData?.pending ? 3_000 : 15_000;
+  const delay = state.codexSupportData?.pending ? 3_000 : (document.hidden ? 60_000 : 15_000);
   state.codexSupportTimer = setTimeout(() => refreshCodexSupport().catch(() => {}), delay);
 }
 
@@ -1168,8 +1293,7 @@ async function stopLive() {
   setText("liveMessage", "停止觀看；執行端會在租約到期後自動停止推流。");
 }
 
-function bindEvents() {
-  $("btnOpenCodexSupport").addEventListener("click", () => {
+function openCodexSupportDialog() {
     state.codexSupportError = "";
     syncCodexLogDeviceOptions(true);
     updateCodexMessageControls();
@@ -1177,9 +1301,12 @@ function bindEvents() {
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
     refreshCodexSupport().catch(() => {});
-  });
+}
+
+function bindEvents() {
+  $("btnOpenCodexSupport").addEventListener("click", openCodexSupportDialog);
+  $("btnOpenCodexProgress").addEventListener("click", openCodexSupportDialog);
   $("btnCloseCodexSupport").addEventListener("click", () => $("codexSupportDialog").close());
-  $("codexSupportDialog").addEventListener("close", stopCodexSupportPolling);
   $("codexMessagePreset").addEventListener("change", () => {
     state.codexSupportError = "";
     updateCodexMessageControls();
@@ -1283,7 +1410,10 @@ function bindEvents() {
   $("stopLiveButton").addEventListener("click", () => stopLive());
   $("cutoverButton").addEventListener("click", async () => { if (!confirm("確認兩台裝置與直播均完成驗證，正式把命令來源切到自架伺服器？")) return; try { await api("/api/v1/admin/migration/cutover", { method: "POST" }); toast("已切換為自架正式控制"); await refresh(); } catch (error) { toast(error.message); } });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
+    if (!document.hidden) {
+      refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
+      refreshCodexSupport().catch(() => {});
+    }
   });
   let chartResizeTimer = 0;
   window.addEventListener("resize", () => {
@@ -1308,7 +1438,7 @@ async function boot() {
   setText("releaseBadge", `Server ${state.me.serverVersion || "未知"}`);
   $("releaseBadge").className = "badge muted";
   await refresh({ reloadSnapshot: true, admin: true });
-  refreshCodexSupport({ schedule: false }).catch(() => {});
+  refreshCodexSupport().catch(() => {});
   clearInterval(state.periodicTimer);
   state.periodicTimer = setInterval(() => {
     if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));

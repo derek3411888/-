@@ -2706,3 +2706,58 @@ body.apple-ui .activation-card {
   align-self: center;
   padding: 0.35rem 0.15rem;
 }
+
+/* Always-visible Codex delivery receipt. The detailed six-step view remains in
+   the dialog, while this banner answers the two operational questions without
+   another click: did Codex receive it, and what is happening now? */
+.codex-progress-banner {
+  --codex-progress-color: #7d8b95;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+  margin: 0 0 16px;
+  border: 1px solid rgba(29, 29, 31, 0.1);
+  border-left: 5px solid var(--codex-progress-color);
+  border-radius: 18px;
+  padding: 15px 17px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 10px 28px rgb(23 48 66 / 7%);
+}
+
+.codex-progress-banner.pending { --codex-progress-color: var(--warn); background: rgba(255, 248, 235, 0.92); }
+.codex-progress-banner.ok { --codex-progress-color: var(--ok); background: rgba(240, 250, 245, 0.94); }
+.codex-progress-banner.error { --codex-progress-color: var(--danger); background: rgba(255, 243, 244, 0.94); }
+.codex-progress-overview { display: grid; gap: 8px; min-width: 0; }
+.codex-progress-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.codex-progress-title-row strong { font-size: 1.02rem; overflow-wrap: anywhere; }
+.codex-progress-banner p { margin: 0; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+.codex-progress-banner progress {
+  appearance: none;
+  width: 100%;
+  height: 9px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(118, 118, 128, 0.14);
+}
+.codex-progress-banner progress::-webkit-progress-bar { border-radius: 999px; background: rgba(118, 118, 128, 0.14); }
+.codex-progress-banner progress::-webkit-progress-value { border-radius: 999px; background: var(--codex-progress-color); transition: width 240ms ease; }
+.codex-progress-banner progress::-moz-progress-bar { border-radius: 999px; background: var(--codex-progress-color); }
+.codex-progress-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 13px; color: var(--muted); font-size: 0.78rem; }
+.codex-progress-meta span { overflow-wrap: anywhere; }
+.codex-progress-meta span:not(:last-child)::after { content: ""; display: inline-block; width: 3px; height: 3px; margin-left: 13px; border-radius: 50%; vertical-align: middle; background: currentColor; opacity: 0.42; }
+.codex-progress-open { min-width: 180px; border-color: color-mix(in srgb, var(--codex-progress-color) 42%, var(--line)); color: var(--ink); background: rgba(255, 255, 255, 0.76); font-weight: 700; }
+.codex-progress-open:hover:not(:disabled), .codex-progress-open:focus-visible { border-color: var(--codex-progress-color); background: #fff; }
+
+@media (max-width: 700px) {
+  .codex-progress-banner { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px; }
+  .codex-progress-open { width: 100%; min-width: 0; }
+  .codex-progress-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 12px; }
+  .codex-progress-meta span:not(:last-child)::after { display: none; }
+}
+
+@media (max-width: 420px) {
+  .codex-progress-meta { grid-template-columns: minmax(0, 1fr); }
+}

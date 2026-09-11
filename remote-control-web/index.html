@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f5f7" />
   <meta name="color-scheme" content="light" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260910-emergency-v1" />
+  <link rel="stylesheet" href="styles.css?v=20260911-codex-progress-v1" />
 </head>
 <body class="apple-ui">
   <a class="skip-link" href="#mainContent">跳到主要內容</a>
@@ -31,6 +31,25 @@
         <span class="quota-badge">免費額度保護</span>
       </div>
     </header>
+
+    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite">
+      <div class="codex-progress-overview">
+        <div class="codex-progress-title-row">
+          <span id="codexProgressDeliveryBadge" class="badge muted">尚無回報</span>
+          <strong id="codexProgressHeadline">網站回報進度</strong>
+        </div>
+        <p id="codexProgressSummary">正在讀取家中主機與 Codex 橋接狀態…</p>
+        <progress id="codexProgressBar" max="6" value="0" aria-label="網站回報進度：第 0 步，共 6 步"></progress>
+        <div class="codex-progress-meta">
+          <span id="codexProgressStep">第 0 / 6 步</span>
+          <span id="codexProgressNonce">尚無請求</span>
+          <span id="codexProgressElapsed">尚未計時</span>
+          <span id="codexProgressActivity">最後活動：—</span>
+          <span id="codexProgressBridge">Bridge：讀取中</span>
+        </div>
+      </div>
+      <button id="btnOpenCodexProgress" class="codex-progress-open" type="button">查看完整進度與回覆</button>
+    </section>
 
     <dialog id="codexSupportDialog" class="codex-support-dialog" aria-labelledby="codexSupportTitle">
       <div class="codex-dialog-heading">
@@ -381,6 +400,6 @@
     </section>
   </main>
 
-  <script type="module" src="app.js?v=p5.00-l5.11-s1.0.63-turn-start-20260911"></script>
+  <script type="module" src="app.js?v=p5.01-l5.12-s1.0.64"></script>
 </body>
 </html>

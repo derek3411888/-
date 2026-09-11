@@ -21,8 +21,8 @@ test("recording status uses an isolated responsive layout", async () => {
   ]);
 
   assert.match(html, /id="recordingStatus" class="recording-status"/);
-  assert.match(html, /styles\.css\?v=__SERVER_VERSION__-apple-ui-v1/);
-  assert.match(html, /app\.js\?v=__SERVER_VERSION__-diagnostics-recovery-20260831/);
+  assert.match(html, /styles\.css\?v=__SERVER_VERSION__-codex-progress-v1/);
+  assert.match(html, /app\.js\?v=__SERVER_VERSION__-codex-progress-v1/);
   assert.match(html, /<details class="card recording-details">/);
   assert.doesNotMatch(html, /<details class="card recording-details"\s+open/);
   assert.match(html, /id="performanceRange"/);
@@ -49,6 +49,10 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(html, /id="codexStageQueued"/);
   assert.match(html, /id="codexStageResponse"/);
   assert.match(html, /id="codexResponseText"/);
+  assert.match(html, /id="codexProgressBanner"/);
+  assert.match(html, /id="codexProgressDeliveryBadge"/);
+  assert.match(html, /id="codexProgressBar"[^>]*max="6"/);
+  assert.match(html, /id="btnOpenCodexProgress"/);
   assert.match(html, /data-panel="videos"/);
   assert.match(html, /id="liveVideo"/);
   assert.doesNotMatch(html, /id="recordingList"|id="playbackVideo"|完整錄影與片段/);
@@ -56,6 +60,8 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(server, /FORMAL_MEDIA_DISABLED/);
   assert.match(css, /\.codex-field\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(css, /\.codex-progress-list\s*\{/);
+  assert.match(css, /\.codex-progress-banner\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/s);
+  assert.match(css, /\.codex-progress-banner\.error\s*\{/);
   assert.match(css, /@media\s*\(max-width:\s*820px\)[\s\S]*\.codex-progress-list\s*\{\s*grid-template-columns:\s*1fr/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /body\.apple-ui/);
@@ -68,6 +74,10 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(script, /\/api\/v1\/codex-support\/\$\{action\}/);
   assert.match(script, /CODEX_SUPPORT_PRESETS\s*=\s*Object\.freeze/);
   assert.match(script, /stopCodexSupportPolling/);
+  assert.match(script, /function renderCodexProgressOverview/);
+  assert.match(script, /已送進 Codex，等待聊天室接收/);
+  assert.match(script, /目前聊天室已辨識到這筆網站回報/);
+  assert.match(script, /document\.hidden \? 60_000 : 15_000/);
   assert.match(script, /\/api\/v1\/devices\/\$\{encoded\}\/performance\?range=/);
   assert.match(script, /function renderPerformance/);
   assert.match(script, /function appendCell\(row, value, label = ""\)/);
@@ -152,6 +162,10 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(html, /id="codexStageQueued"/);
   assert.match(html, /id="codexStageResponse"/);
   assert.match(html, /id="codexResponseText"/);
+  assert.match(html, /id="codexProgressBanner"/);
+  assert.match(html, /id="codexProgressDeliveryBadge"/);
+  assert.match(html, /id="codexProgressBar"[^>]*max="6"/);
+  assert.match(html, /id="btnOpenCodexProgress"/);
   assert.match(html, /id="codexDetailAttemptCount"/);
   assert.match(html, /id="codexDetailError"/);
   assert.doesNotMatch(html, /chatgpt\.com/i);
@@ -183,7 +197,7 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(bridge, /\$LegacyAction\s*=\s*'FIX_SCRIPT'/);
   assert.match(bridge, /\$FixedPrompt\s*=\s*'現在腳本有問題，請你找出問題並修正'/);
   assert.match(bridge, /\$MaxMessageLength\s*=\s*1000/);
-  assert.match(bridge, /\$BridgeVersion\s*=\s*'3\.3\.0'/);
+  assert.match(bridge, /\$BridgeVersion\s*=\s*'3\.3\.1'/);
   assert.doesNotMatch(bridge, /&\s*\$codexPath\s+queue\s+--thread/);
   assert.match(bridge, /\$startInfo\.Arguments\s*=\s*'app-server proxy'/);
   assert.match(bridge, /method\s*=\s*'initialized'/);
@@ -212,6 +226,9 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(script, /startClientListener\(\)/);
   assert.match(script, /snap\.forEach\(\(s\) => cache\.set\(s\.id, s\.data\(\)\)\);[\s\S]*syncCodexLogDeviceOptions\(false\)/);
   assert.match(script, /startCodexSupportListener\(\)/);
+  assert.match(script, /function renderCodexProgressOverview/);
+  assert.match(script, /已送進 Codex，等待聊天室接收/);
+  assert.match(script, /目前聊天室已辨識到這筆網站回報/);
   assert.match(script, /LEGACY_RECORDING_STATES/);
   assert.match(script, /舊版分段狀態已停用/);
   assert.match(script, /現在不會再合併或上傳/);
@@ -219,6 +236,7 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(css, /\.support-button\s*\{[^}]*white-space:\s*normal/s);
   assert.match(css, /\.codex-support-dialog\s*\{/);
   assert.match(css, /\.codex-progress-list\s*\{/);
+  assert.match(css, /\.codex-progress-banner\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/s);
   assert.match(css, /\.codex-request-details\s+dl\s*\{/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /body\.apple-ui/);

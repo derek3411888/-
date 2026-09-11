@@ -13,13 +13,18 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.3.0'
+$BridgeVersion = '3.3.1'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
 $CodexCorrelationPrefix = 'wuthering-support'
 $CodexQueueMatchEarlyToleranceMs = 120000L
-$CodexQueueMatchLateToleranceMs = 120000L
+# `codex queue` accepts a message immediately, but an already-running turn can
+# keep that message out of the session JSONL for hours. The correlation id
+# contains the transport and monotonically increasing nonce, so a bounded
+# multi-day delivery window is safe and avoids leaving valid replies in
+# WAITING merely because the preceding turn took longer than two minutes.
+$CodexQueueMatchLateToleranceMs = 604800000L
 $CodexTurnStartEvidenceTimeoutMs = 180000L
 $script:LastFirestoreDocument = $null
 $script:CodexSessionLogPath = ''
@@ -1175,11 +1180,20 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
             if ($role -eq 'user') {
                 $userText = Get-CodexUserMessageText $payload
                 $userAt = Get-CodexRecordTimestampMs $record
-                if ($userText -and (Get-MessageSha256 $userText) -eq $messageHash -and
+                $userHash = $(if ($userText) { Get-MessageSha256 $userText } else { '' })
+                if ($userHash -eq $messageHash -and
                     (Test-CodexRequestLogTimestamp $userAt $queuedAt)) {
                     $targetSeen = $true
                     $targetActive = $true
                     if (-not $targetTurnId) { $targetTurnId = $currentTurnId }
+                } elseif ($targetSeen -and $targetActive -and $userHash -and $userHash -ne $messageHash) {
+                    # Codex can steer a later user message into the same turn
+                    # without emitting a new turn_context first. Treat that as
+                    # an interruption so its answer cannot be published as the
+                    # older website request's reply.
+                    $supersededAt = $userAt
+                    $targetActive = $false
+                    break
                 }
                 continue
             }
@@ -1917,6 +1931,39 @@ function Invoke-CodexBridgeRegressionTest {
             throw 'Codex 回覆沒有綁定唯一識別碼所在的原始 turn。'
         }
 
+        # Reproduce the production failure: the CLI accepted the website
+        # message, but an active turn delayed its JSONL delivery by 8m18s.
+        # The unique source/nonce correlation must remain valid.
+        $delayedMessageAt = $matchQueuedAt + 498000L
+        $records = @(
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($delayedMessageAt - 100).ToString('o'); type = 'turn_context'; payload = @{ turn_id = $turnA } },
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($delayedMessageAt).ToString('o'); type = 'response_item'; payload = @{ type = 'message'; role = 'user'; content = @(@{ type = 'input_text'; text = $targetMessage }) } },
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($delayedMessageAt + 500).ToString('o'); type = 'response_item'; payload = @{ type = 'message'; role = 'assistant'; phase = 'final_answer'; content = @(@{ type = 'output_text'; text = 'delayed response' }) } }
+        ) | ForEach-Object { $_ | ConvertTo-Json -Depth 8 -Compress }
+        [IO.File]::WriteAllLines($testPath, $records, [Text.UTF8Encoding]::new($false))
+        $script:CodexResponseCursors = @{}
+        $match = Find-CodexResponseFromSessionLog ([pscustomobject]@{ ThreadId = '33333333-3333-4333-8333-333333333333' }) `
+            ([pscustomobject]@{ Source = 'selfhost'; Nonce = 77L; MessageSha256 = Get-MessageSha256 $targetMessage; TurnId = ''; QueuedAt = $matchQueuedAt })
+        if (-not $match.Found -or $match.ResponseState -ne 'COMPLETED' -or $match.ResponseText -ne 'delayed response') {
+            throw 'Codex response failed to match a delayed queued message.'
+        }
+
+        # A later user message can be steered into the same turn without a new
+        # turn_context. It must interrupt the older website request.
+        $records = @(
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($matchQueuedAt - 100).ToString('o'); type = 'turn_context'; payload = @{ turn_id = $turnA } },
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($matchQueuedAt).ToString('o'); type = 'response_item'; payload = @{ type = 'message'; role = 'user'; content = @(@{ type = 'input_text'; text = $targetMessage }) } },
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($matchQueuedAt + 500).ToString('o'); type = 'response_item'; payload = @{ type = 'message'; role = 'user'; content = @(@{ type = 'input_text'; text = 'same-turn override' }) } },
+            [ordered]@{ timestamp = [DateTimeOffset]::FromUnixTimeMilliseconds($matchQueuedAt + 900).ToString('o'); type = 'response_item'; payload = @{ type = 'message'; role = 'assistant'; phase = 'final_answer'; content = @(@{ type = 'output_text'; text = 'must not attach' }) } }
+        ) | ForEach-Object { $_ | ConvertTo-Json -Depth 8 -Compress }
+        [IO.File]::WriteAllLines($testPath, $records, [Text.UTF8Encoding]::new($false))
+        $script:CodexResponseCursors = @{}
+        $match = Find-CodexResponseFromSessionLog ([pscustomobject]@{ ThreadId = '33333333-3333-4333-8333-333333333333' }) `
+            ([pscustomobject]@{ Source = 'selfhost'; Nonce = 77L; MessageSha256 = Get-MessageSha256 $targetMessage; TurnId = ''; QueuedAt = $matchQueuedAt })
+        if (-not $match.Found -or $match.ResponseState -ne 'INTERRUPTED' -or $match.ResponseText) {
+            throw 'Codex response did not reject a same-turn user supersession.'
+        }
+
         $interruptedId = New-CodexRequestCorrelationId 'firestore' 78
         $interruptedMessage = Join-RequestAndContext '中斷關聯測試' '' $interruptedId
         $records = @(
@@ -1944,9 +1991,11 @@ function Invoke-CodexBridgeRegressionTest {
         CorrelationIdsAreUnique = $true
         MessageLengthBounded = $true
         ChronologyWindowGuarded = $true
+        DelayedQueueDeliveryMatched = $true
         ResponseStateMonotonic = $true
         ExactTurnCorrelation = $true
         QueuedSubmissionDeduplication = $true
+        SameTurnSupersessionGuarded = $true
     } | ConvertTo-Json -Compress
 }
 

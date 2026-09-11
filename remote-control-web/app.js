@@ -29,7 +29,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.00-l5.11-s1.0.63-turn-start-20260911";
+const WEB_BUILD = "p5.01-l5.12-s1.0.64";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -59,6 +59,7 @@ const clientsQuery = query(collection(db, COLLECTION), where("uid", "!=", ""));
 
 const pcDropdown = document.getElementById("pcDropdown");
 const btnOpenCodexSupport = document.getElementById("btnOpenCodexSupport");
+const btnOpenCodexProgress = document.getElementById("btnOpenCodexProgress");
 const btnAskCodex = document.getElementById("btnAskCodex");
 const btnCancelCodexSupport = document.getElementById("btnCancelCodexSupport");
 const btnRetryCodexSupport = document.getElementById("btnRetryCodexSupport");
@@ -388,6 +389,124 @@ function setCodexSupportMessage(kind, message) {
   }
 }
 
+function formatCodexElapsed(value) {
+  const at = toMillis(value);
+  if (!at) return "尚未計時";
+  const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
+  if (seconds < 60) return `已過 ${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `已過 ${minutes} 分鐘`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `已過 ${hours} 小時${remainder ? ` ${remainder} 分鐘` : ""}`;
+}
+
+function renderCodexProgressOverview(view) {
+  const banner = document.getElementById("codexProgressBanner");
+  if (!banner) return;
+
+  const {
+    requestNonce, supportState, responseState, requestedAt, receivedAt, validatedAt,
+    lastAttemptAt, queuedAt, responseAt, replyCheckedAt, heartbeatAt, bridgeOnline,
+    bridgeVersion, detail, replyError, sending, uiError,
+  } = view;
+  const hasRequest = requestNonce > 0 && supportState !== "READY";
+  const lastActivityAt = Math.max(
+    requestedAt, receivedAt, validatedAt, lastAttemptAt, queuedAt, responseAt, replyCheckedAt,
+  );
+  const failedDispatch = ["REJECTED", "RATE_LIMITED", "FAILED", "CANCELLED"].includes(supportState);
+  let step = 0;
+  let tone = "idle";
+  let badgeTone = "muted";
+  let badge = "尚無回報";
+  let headline = "網站回報進度";
+  let summary = bridgeOnline
+    ? "橋接程式在線；送出後會在這裡持續顯示收件、排隊、處理與回覆。"
+    : "尚未收到家中 Bridge 心跳；送出前請先確認家中主機在線。";
+
+  if (sending) {
+    step = 1;
+    tone = "pending";
+    badgeTone = "warning";
+    badge = "正在寫入";
+    headline = "正在建立網站回報";
+    summary = "正在取得新請求編號並寫入 Firestore。";
+  } else if (uiError) {
+    tone = "error";
+    badgeTone = "danger";
+    badge = "狀態讀取失敗";
+    headline = "目前無法確認是否送達";
+    summary = uiError;
+  } else if (hasRequest) {
+    const stateStep = {
+      PENDING: 1, RECEIVED: 2, VALIDATING: 3, QUEUEING: 4, RETRYING: 4,
+      REJECTED: 3, RATE_LIMITED: 4, FAILED: 4, CANCELLED: 1,
+    };
+    step = supportState === "QUEUED"
+      ? (["IN_PROGRESS", "COMPLETED", "FAILED", "INTERRUPTED"].includes(responseState) ? 6 : 5)
+      : (stateStep[supportState] || 1);
+    if (supportState === "QUEUED") {
+      badgeTone = "ok";
+      badge = "已送進 Codex";
+      if (responseState === "COMPLETED") {
+        tone = "ok";
+        headline = "Codex 已回覆";
+        summary = "最終回覆已同步到網站；請查看完整回覆確認修正內容與驗證結果。";
+      } else if (responseState === "IN_PROGRESS") {
+        tone = "pending";
+        headline = "Codex 正在處理";
+        summary = "目前聊天室已辨識到這筆網站回報，正在執行與整理結果。";
+      } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
+        tone = "error";
+        headline = responseState === "INTERRUPTED" ? "Codex 處理已中斷" : "Codex 回覆同步失敗";
+        summary = replyError || "請求確實已送進 Codex，但沒有取得可顯示的最終回覆。";
+      } else {
+        tone = "pending";
+        headline = "已送進 Codex，等待聊天室接收";
+        summary = "已確認 Codex 佇列接受這筆回報；尚未在目前聊天室找到對應訊息。";
+      }
+    } else if (failedDispatch) {
+      tone = "error";
+      badgeTone = "danger";
+      badge = "未送進 Codex";
+      headline = supportState === "CANCELLED" ? "網站回報已取消" : "網站回報傳送失敗";
+      summary = detail || "橋接程式未能把這筆回報送進 Codex。";
+    } else {
+      tone = "pending";
+      badgeTone = "warning";
+      badge = "尚未送進 Codex";
+      const preQueueLabels = {
+        PENDING: "網站已寫入，等待家中主機接收",
+        RECEIVED: "家中主機已收到，準備驗證",
+        VALIDATING: "正在驗證回報內容",
+        QUEUEING: "正在送往 Codex",
+        RETRYING: "Codex 暫未接收，等待自動重試",
+      };
+      headline = preQueueLabels[supportState] || "網站回報處理中";
+      summary = detail || "請求正在橋接流程中，尚未取得 Codex 佇列收件證明。";
+    }
+  } else if (!bridgeOnline) {
+    tone = "error";
+    badgeTone = "danger";
+    badge = "Bridge 離線";
+  }
+
+  banner.className = `codex-progress-banner ${tone}`;
+  const deliveryBadge = document.getElementById("codexProgressDeliveryBadge");
+  deliveryBadge.className = `badge ${badgeTone}`;
+  deliveryBadge.textContent = badge;
+  document.getElementById("codexProgressHeadline").textContent = headline;
+  document.getElementById("codexProgressSummary").textContent = summary;
+  const progress = document.getElementById("codexProgressBar");
+  progress.value = step;
+  progress.setAttribute("aria-label", `網站回報進度：第 ${step} 步，共 6 步`);
+  document.getElementById("codexProgressStep").textContent = `第 ${step} / 6 步`;
+  document.getElementById("codexProgressNonce").textContent = requestNonce > 0 ? `請求 #${requestNonce}` : "尚無請求";
+  document.getElementById("codexProgressElapsed").textContent = hasRequest ? formatCodexElapsed(requestedAt) : "尚未計時";
+  document.getElementById("codexProgressActivity").textContent = lastActivityAt ? `最後活動：${fmtTs(lastActivityAt)}（${fmtAge(lastActivityAt)}）` : "最後活動：—";
+  document.getElementById("codexProgressBridge").textContent = `Bridge：${bridgeOnline ? "在線" : "離線"}${bridgeVersion ? ` v${bridgeVersion}` : ""}${heartbeatAt ? `（${fmtAge(heartbeatAt)}）` : ""}`;
+}
+
 function renderCodexSupportStatus() {
   const data = codexSupportData || {};
   const requestNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
@@ -418,6 +537,7 @@ function renderCodexSupportStatus() {
   const responseError = invalidResponseChronology
     ? "已拒絕顯示時間早於本次請求的舊 Codex 回覆；請按重送建立新請求"
     : String(readField(data, "codexResponseError", "") || "").trim();
+  const replyCheckedAt = toMillis(readField(data, "codexResponseCheckedAt", 0));
   const responsePending = state === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
 
   const requestPending = requestNonce > statusNonce || (
@@ -489,6 +609,14 @@ function renderCodexSupportStatus() {
   const errorCode = String(readField(data, "bridgeErrorCode", "") || "");
   const errorDetail = String(readField(data, "bridgeErrorDetail", "") || "");
   codexDetails.error.textContent = [errorCode, errorDetail || detail].filter(Boolean).join("：") || "-";
+
+  renderCodexProgressOverview({
+    requestNonce, supportState: state, responseState, requestedAt, receivedAt, validatedAt,
+    lastAttemptAt, queuedAt, responseAt: invalidResponseChronology ? 0 : storedResponseAt,
+    replyCheckedAt, heartbeatAt, bridgeOnline,
+    bridgeVersion: String(readField(data, "bridgeVersion", "") || ""), detail,
+    replyError: responseError, sending: codexSupportSending, uiError: codexSupportError,
+  });
 
   const hasRequestLifecycle = requestNonce > 0 && state !== "READY";
   for (const stage of Object.values(codexStages)) setCodexStage(stage, "waiting", "等待前一步完成");
@@ -3151,13 +3279,16 @@ btnReloadSettings.addEventListener("click", () => {
   renderSettingsPage(true);
 });
 
-btnOpenCodexSupport.addEventListener("click", () => {
+function openCodexSupportDialog() {
   codexSupportError = "";
   syncCodexLogDeviceOptions(true);
   updateCodexMessageControls();
   if (typeof codexSupportDialog.showModal === "function") codexSupportDialog.showModal();
   else codexSupportDialog.setAttribute("open", "");
-});
+}
+
+btnOpenCodexSupport.addEventListener("click", openCodexSupportDialog);
+btnOpenCodexProgress.addEventListener("click", openCodexSupportDialog);
 btnCloseCodexSupport.addEventListener("click", () => codexSupportDialog.close());
 codexMessagePreset.addEventListener("change", () => {
   codexSupportError = "";

@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.00',
-    [string]$LauncherVersion = '5.11',
-    [string]$ServerVersion = '1.0.63'
+    [string]$PayloadVersion = '5.01',
+    [string]$LauncherVersion = '5.12',
+    [string]$ServerVersion = '1.0.64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -148,6 +148,23 @@ function Assert-ZipContains([string]$ArchivePath, [string[]]$RequiredEntries) {
         $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
         foreach ($required in $RequiredEntries) {
             if ($required -notin $names) { throw "$ArchivePath 缺少必要檔案：$required" }
+        }
+    } finally {
+        $archive.Dispose()
+    }
+}
+
+function Assert-ZipExcludes([string]$ArchivePath, [string[]]$ForbiddenPatterns) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $ArchivePath))
+    try {
+        foreach ($entry in $archive.Entries) {
+            $name = $entry.FullName.Replace('\', '/')
+            foreach ($pattern in $ForbiddenPatterns) {
+                if ($name -like $pattern) {
+                    throw "$ArchivePath 不得包含開發或執行暫存：$name"
+                }
+            }
         }
     } finally {
         $archive.Dispose()
@@ -346,9 +363,11 @@ $bridgeRegression = ($bridgeRegressionOutput -join "`n") | ConvertFrom-Json
 if (-not [bool]$bridgeRegression.Ok -or
     -not [bool]$bridgeRegression.CorrelationIdsAreUnique -or
     -not [bool]$bridgeRegression.ChronologyWindowGuarded -or
+    -not [bool]$bridgeRegression.DelayedQueueDeliveryMatched -or
     -not [bool]$bridgeRegression.ResponseStateMonotonic -or
     -not [bool]$bridgeRegression.ExactTurnCorrelation -or
-    -not [bool]$bridgeRegression.QueuedSubmissionDeduplication) {
+    -not [bool]$bridgeRegression.QueuedSubmissionDeduplication -or
+    -not [bool]$bridgeRegression.SameTurnSupersessionGuarded) {
     throw 'Codex 網站回報橋接回歸測試失敗。'
 }
 Add-Type -AssemblyName System.Security
@@ -375,7 +394,8 @@ Move-Item -LiteralPath $payloadTemp -Destination 'payload\全自動鋤地.exe' -
 
 Write-Host '建立 payload.zip…'
 New-FilteredZip 'payload' 'payload.zip' @(
-    '*.log', 'temp*.png', 'ue4crash*.png', 'menu*.png', '*.new', '*.partial'
+    '.dev-runtime/*', '*.log', 'temp*.png', 'ue4crash*.png',
+    'menu*.png', '*.new', '*.partial'
 )
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
@@ -384,6 +404,7 @@ Assert-ZipContains 'payload.zip' @(
     'PerformanceTelemetryWorker.ps1', 'tools/PresentMon/LICENSE.txt',
     'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
 )
+Assert-ZipExcludes 'payload.zip' @('.dev-runtime/*', 'node_modules/*')
 
 Write-Host '編譯內嵌最新版 Payload 的 Launcher EXE…'
 $launcherTemp = Join-Path $projectRoot '全自動鋤地.new.exe'
@@ -393,7 +414,8 @@ Move-Item -LiteralPath $launcherTemp -Destination '全自動鋤地.exe' -Force
 
 Write-Host '建立同版 self-hosted-server.zip…'
 New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
-    'node_modules/*', '.update-work/*', '.env', '*.log', '*.partial'
+    '.dev-runtime/*', 'node_modules/*', '.update-work/*',
+    '.env', '*.log', '*.partial'
 )
 Assert-ZipContains 'self-hosted-server.zip' @(
     '.npmrc', 'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
@@ -409,6 +431,9 @@ Assert-ZipContains 'self-hosted-server.zip' @(
     'test/company-performance-web.test.js',
     'windows/CodexSupportBridge.ps1', 'windows/CodexSupportWatchdog.ps1', 'windows/CodexSupportBootstrap.ps1', 'windows/Install-CodexSupportBridge.ps1',
     'windows/Uninstall-CodexSupportBridge.ps1'
+)
+Assert-ZipExcludes 'self-hosted-server.zip' @(
+    '.dev-runtime/*', 'node_modules/*', '.update-work/*', '.env'
 )
 
 $payloadHash = (Get-FileHash -LiteralPath 'payload.zip' -Algorithm SHA256).Hash
