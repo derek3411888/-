@@ -13,13 +13,14 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.2.0'
+$BridgeVersion = '3.3.0'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
 $CodexCorrelationPrefix = 'wuthering-support'
 $CodexQueueMatchEarlyToleranceMs = 120000L
 $CodexQueueMatchLateToleranceMs = 120000L
+$CodexTurnStartEvidenceTimeoutMs = 180000L
 $script:LastFirestoreDocument = $null
 $script:CodexSessionLogPath = ''
 $script:CodexResponseCursors = @{}
@@ -660,22 +661,18 @@ function Invoke-SelfHostedQueue(
 
     $output = ''
     $exitCode = -1
-    Push-Location -LiteralPath ([string]$Config.Workspace)
+    $delivery = $null
     try {
-        try {
-            $codexPath = Find-CodexExecutable $Config
-            $output = @(& $codexPath queue --thread ([string]$Config.ThreadId) --message $queuedMessage 2>&1) -join ' '
-            $exitCode = $LASTEXITCODE
-        } catch {
-            $output = $_.Exception.Message
-            $exitCode = -1
-        }
-    } finally {
-        Pop-Location
+        $delivery = Invoke-CodexQueuedTurnDelivery $Config $messageHash $queuedMessage $correlationId $true
+        if ($delivery.Delivered -and $delivery.TurnId) { $exitCode = 0 }
+        else { $output = 'Codex 沒有確認執行中的 Turn ID。' }
+    } catch {
+        $output = $_.Exception.Message
+        $exitCode = -1
     }
     if ($exitCode -eq 0) {
         $queuedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-        $detail = '已排入目前 Codex 任務；這只代表佇列已接收，不代表已開始或完成'
+        $detail = "Codex 已開始處理；Turn ID 已確認：$([string]$delivery.TurnId)"
         $metadata = @{
             ReceivedAt = $receivedAt; ValidatedAt = $validatedAt; AttemptCount = $attemptCount
             AttemptAt = $attemptAt; MessageSha256 = $messageHash; MessageLength = $queuedMessage.Length
@@ -687,15 +684,22 @@ function Invoke-SelfHostedQueue(
             attemptCount = $attemptCount; lastAttemptAt = $attemptAt; messageSha256 = $messageHash
         })
         if (-not $published.Success) { throw '自架請求在 Codex 已接收後被伺服器拒絕更新狀態。' }
+        Publish-SelfHostedCodexResponse $BridgeConfig ([pscustomobject]@{
+            Nonce = $nonce; MessageSha256 = $messageHash
+        }) (New-CodexResponseMatch $true 'IN_PROGRESS' '' 0L ([string]$delivery.TurnId) `
+            ([string]$delivery.TurnStatus) '')
         Remove-InFlightMarker $InFlightPath
-        Write-BridgeLog $LogPath 'INFO' "Queued self-hosted support message nonce=$nonce length=$($queuedMessage.Length) sha256=$messageHash"
+        Write-BridgeLog $LogPath 'INFO' "Started self-hosted support turn nonce=$nonce turn=$($delivery.TurnId) length=$($queuedMessage.Length) sha256=$messageHash"
     } else {
         $retryAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ([int]$Config.PollSeconds * 1000)
         $safeOutput = ($output -replace '[\r\n]+', ' ').Trim()
         if ($safeOutput.Length -gt 240) { $safeOutput = $safeOutput.Substring(0, 240) }
-        $detail = "第 $attemptCount 次未排入，稍後自動重試"
-        $errorCode = "CODEX_QUEUE_EXIT_$exitCode"
-        $errorDetail = $(if ($safeOutput) { $safeOutput } else { 'Codex CLI 未提供錯誤內容' })
+        $busy = $safeOutput -match '(?i)active or pending turn|already has an active|thread.*busy'
+        $detail = if ($busy) {
+            'Codex 正在處理其他 Turn；訊息已安全保留，閒置後會自動開始'
+        } else { "第 $attemptCount 次尚未取得 Codex Turn ID，稍後自動重試" }
+        $errorCode = if ($busy) { 'CODEX_TURN_BUSY' } else { 'CODEX_TURN_START_FAILED' }
+        $errorDetail = $(if ($safeOutput) { $safeOutput } else { 'Codex App Server 未提供錯誤內容' })
         Save-State $StatePath $nonce 'RETRYING' $detail $lastQueuedAt @{
             ReceivedAt = $receivedAt; ValidatedAt = $validatedAt; AttemptCount = $attemptCount
             AttemptAt = $attemptAt; NextRetryAt = $retryAt; MessageSha256 = $messageHash
@@ -708,7 +712,7 @@ function Invoke-SelfHostedQueue(
             messageSha256 = $messageHash; errorCode = $errorCode; errorDetail = $errorDetail
         })
         if ($published.Success) { Remove-InFlightMarker $InFlightPath }
-        Write-BridgeLog $LogPath 'WARN' "Self-hosted Codex queue failed nonce=$nonce attempt=$attemptCount exit=$exitCode"
+        Write-BridgeLog $LogPath 'WARN' "Self-hosted Codex turn start pending nonce=$nonce attempt=$attemptCount error=$errorCode"
     }
 }
 
@@ -742,7 +746,8 @@ function Read-CodexRpcResponse($Process, [long]$Id, [int]$TimeoutMilliseconds) {
         if ([long](Read-OptionalProperty $message 'id' ([long]-1)) -eq $Id) {
             $rpcError = Read-OptionalProperty $message 'error' $null
             if ($null -ne $rpcError) {
-                throw "Codex app-server RPC 失敗：$([string](Read-OptionalProperty $rpcError 'message' '未知錯誤'))"
+                $rpcCode = [long](Read-OptionalProperty $rpcError 'code' 0L)
+                throw "Codex app-server RPC 失敗（code=$rpcCode）：$([string](Read-OptionalProperty $rpcError 'message' '未知錯誤'))"
             }
             return $message
         }
@@ -750,13 +755,28 @@ function Read-CodexRpcResponse($Process, [long]$Id, [int]$TimeoutMilliseconds) {
     throw "Codex app-server 回應逾時（id=$Id）。"
 }
 
-function Get-CodexThreadTurns($Config) {
+function Close-CodexAppServerProxy($Session) {
+    if ($null -eq $Session) { return }
+    $process = $Session.Process
+    try { $process.StandardInput.Close() } catch {}
+    if (-not $process.HasExited) {
+        try { [void]$process.WaitForExit(1000) } catch {}
+    }
+    if (-not $process.HasExited) { try { $process.Kill() } catch {} }
+    $stderrDrain = $Session.StderrDrain
+    if ($null -ne $stderrDrain -and -not $stderrDrain.IsCompleted) {
+        try { [void]$stderrDrain.Wait(1000) } catch {}
+    }
+    $process.Dispose()
+}
+
+function Open-CodexAppServerProxyOnce($Config) {
     $codexPath = Find-CodexExecutable $Config
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = $codexPath
-    $startInfo.Arguments = 'app-server --listen stdio://'
-    # 工作排程器預設從 System32 啟動；Codex 必須在原任務工作區讀取同一份
-    # 專案與 thread，否則 thread/turns/list 會長時間等待甚至逾時。
+    # 連到 Codex Desktop／CLI 共用的持久 App Server。若改用一次性的
+    # `app-server --listen stdio://`，關閉 stdio 時會連同剛開始的 turn 一起結束。
+    $startInfo.Arguments = 'app-server proxy'
     $startInfo.WorkingDirectory = [string]$Config.Workspace
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardInput = $true
@@ -766,38 +786,29 @@ function Get-CodexThreadTurns($Config) {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
     if (-not $process.Start()) { throw '無法啟動 Codex app-server。' }
-    # app-server 會把診斷訊息寫到 stderr；若只重導卻不持續讀取，Windows
-    # pipe 填滿後會反向卡住 stdout RPC，表面上就會變成 id=2 逾時。
     $stderrDrain = $process.StandardError.ReadToEndAsync()
+    $session = [pscustomobject]@{ Process = $process; StderrDrain = $stderrDrain }
     try {
         $initialize = @{
             id = 1
             method = 'initialize'
-            params = @{ clientInfo = @{ name = 'wuthering-codex-support-bridge'; version = $BridgeVersion } }
+            params = @{
+                clientInfo = @{
+                    name = 'wuthering-codex-support-bridge'
+                    title = 'Wuthering Codex Support Bridge'
+                    version = $BridgeVersion
+                }
+                capabilities = @{ experimentalApi = $true }
+            }
         } | ConvertTo-Json -Depth 6 -Compress
         $process.StandardInput.WriteLine($initialize)
         $process.StandardInput.Flush()
         [void](Read-CodexRpcResponse $process 1 10000)
 
-        $request = @{
-            id = 2
-            method = 'thread/turns/list'
-            params = @{
-                threadId = [string]$Config.ThreadId
-                # 網站回報一定是這個既有任務的最新 turn；只讀最近 5 筆摘要，
-                # 摘要仍包含 userMessage 與最後一筆 agentMessage，可避免長任務
-                # 把完整工具歷史序列化成巨大單行 JSON 而逾時。
-                limit = 5
-                sortDirection = 'desc'
-                itemsView = 'summary'
-            }
-        } | ConvertTo-Json -Depth 6 -Compress
-        $process.StandardInput.WriteLine($request)
+        $initialized = @{ method = 'initialized'; params = @{} } | ConvertTo-Json -Depth 3 -Compress
+        $process.StandardInput.WriteLine($initialized)
         $process.StandardInput.Flush()
-        $response = Read-CodexRpcResponse $process 2 20000
-        $result = Read-OptionalProperty $response 'result' $null
-        if ($null -eq $result) { return @() }
-        return @((Read-OptionalProperty $result 'data' @()))
+        return $session
     } catch {
         $primaryMessage = $_.Exception.Message
         if (-not $process.HasExited) {
@@ -809,15 +820,183 @@ function Get-CodexThreadTurns($Config) {
         } catch {}
         $stderrText = (($stderrText -replace '[\r\n]+', ' ').Trim())
         if ($stderrText.Length -gt 1200) { $stderrText = $stderrText.Substring($stderrText.Length - 1200) }
+        Close-CodexAppServerProxy $session
         if ($stderrText) { throw "$primaryMessage | app-server stderr: $stderrText" }
         throw
-    } finally {
-        try { $process.StandardInput.Close() } catch {}
-        if (-not $process.HasExited) { try { $process.Kill() } catch {} }
-        if ($null -ne $stderrDrain -and -not $stderrDrain.IsCompleted) {
-            try { [void]$stderrDrain.Wait(1000) } catch {}
+    }
+}
+
+function Open-CodexAppServerProxy($Config) {
+    try {
+        return Open-CodexAppServerProxyOnce $Config
+    } catch {
+        $firstError = $_.Exception.Message
+    }
+
+    # `codex queue` 可在沒有 daemon 時用一次性的 embedded server 寫入佇列，
+    # 但那個 server 隨即退出，因此沒有人能開始 turn。啟動官方持久 daemon
+    # 後再連線，讓 turn 在本橋接關閉 proxy 後仍可繼續執行。
+    $codexPath = Find-CodexExecutable $Config
+    $daemonOutput = ''
+    $daemonExit = -1
+    Push-Location -LiteralPath ([string]$Config.Workspace)
+    try {
+        try {
+            $daemonOutput = @(& $codexPath app-server daemon start 2>&1) -join ' '
+            $daemonExit = $LASTEXITCODE
+        } catch {
+            $daemonOutput = $_.Exception.Message
+            $daemonExit = -1
         }
-        $process.Dispose()
+    } finally {
+        Pop-Location
+    }
+    if ($daemonExit -ne 0) {
+        $safeDaemonOutput = ($daemonOutput -replace '[\r\n]+', ' ').Trim()
+        if ($safeDaemonOutput.Length -gt 600) { $safeDaemonOutput = $safeDaemonOutput.Substring(0, 600) }
+        throw "無法連到 Codex 持久 App Server：$firstError | daemon start exit=$daemonExit $safeDaemonOutput"
+    }
+
+    $lastError = $firstError
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        Start-Sleep -Milliseconds 250
+        try { return Open-CodexAppServerProxyOnce $Config } catch { $lastError = $_.Exception.Message }
+    }
+    throw "Codex 持久 App Server 啟動後仍無法連線：$lastError"
+}
+
+function Invoke-CodexRpcRequest($Session, [long]$Id, [string]$Method, $Params, [int]$TimeoutMilliseconds = 20000) {
+    $request = @{ id = $Id; method = $Method; params = $Params } | ConvertTo-Json -Depth 12 -Compress
+    $Session.Process.StandardInput.WriteLine($request)
+    $Session.Process.StandardInput.Flush()
+    return Read-CodexRpcResponse $Session.Process $Id $TimeoutMilliseconds
+}
+
+function Resume-CodexBridgeThread($Session, $Config, [long]$RequestId = 2L) {
+    $response = Invoke-CodexRpcRequest $Session $RequestId 'thread/resume' @{
+        threadId = [string]$Config.ThreadId
+    } 30000
+    $result = Read-OptionalProperty $response 'result' $null
+    $thread = Read-OptionalProperty $result 'thread' $null
+    $actualThreadId = [string](Read-OptionalProperty $thread 'id' '')
+    if (-not $actualThreadId -or
+        -not $actualThreadId.Equals([string]$Config.ThreadId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Codex thread/resume 沒有回傳設定中的 Thread ID。"
+    }
+    return $thread
+}
+
+function Get-CodexThreadTurnsFromSession($Session, $Config, [long]$RequestId = 3L) {
+    $response = Invoke-CodexRpcRequest $Session $RequestId 'thread/turns/list' @{
+        threadId = [string]$Config.ThreadId
+        limit = 20
+        sortDirection = 'desc'
+        itemsView = 'summary'
+    } 30000
+    $result = Read-OptionalProperty $response 'result' $null
+    if ($null -eq $result) { return @() }
+    return @((Read-OptionalProperty $result 'data' @()))
+}
+
+function Get-CodexQueuedInputText($Submission) {
+    $parts = New-Object Collections.Generic.List[string]
+    foreach ($item in @((Read-OptionalProperty $Submission 'input' @()))) {
+        $type = [string](Read-OptionalProperty $item 'type' '')
+        $text = [string](Read-OptionalProperty $item 'text' '')
+        if ($type -eq 'text' -and $text) { $parts.Add($text) }
+    }
+    return [string]::Join("`n", $parts.ToArray())
+}
+
+function Find-CodexQueuedSubmission($Submissions, [string]$MessageSha256, [string]$ClientUserMessageId = '') {
+    foreach ($submission in @($Submissions)) {
+        $clientId = [string](Read-OptionalProperty $submission 'clientUserMessageId' '')
+        if ($ClientUserMessageId -and $clientId -eq $ClientUserMessageId) { return $submission }
+        $text = Get-CodexQueuedInputText $submission
+        if ($text -and (Get-MessageSha256 $text) -eq $MessageSha256) { return $submission }
+    }
+    return $null
+}
+
+function Invoke-CodexQueuedTurnDelivery(
+    $Config,
+    [string]$MessageSha256,
+    [string]$Message = '',
+    [string]$ClientUserMessageId = '',
+    [bool]$AllowEnqueue = $true
+) {
+    $session = $null
+    try {
+        $session = Open-CodexAppServerProxy $Config
+        [void](Resume-CodexBridgeThread $session $Config 2)
+
+        # 若前一次 RPC 回應在傳輸途中遺失，先從已儲存 turn 找到同一訊息，
+        # 絕不可因重試而再執行一次。
+        $turns = Get-CodexThreadTurnsFromSession $session $Config 3
+        $existing = Find-CodexResponseByMessageHash $turns $MessageSha256
+        if ($existing.Found -and $existing.TurnId) {
+            return [pscustomobject]@{
+                Delivered = $true; QueuedFound = $false; ExistingTurn = $true
+                TurnId = [string]$existing.TurnId; TurnStatus = [string]$existing.TurnStatus
+                ResponseState = [string]$existing.ResponseState; Match = $existing
+            }
+        }
+
+        $queueResponse = Invoke-CodexRpcRequest $session 4 'thread/queue/list' @{
+            threadId = [string]$Config.ThreadId
+            limit = 100
+        } 20000
+        $queueResult = Read-OptionalProperty $queueResponse 'result' $null
+        $submissions = @((Read-OptionalProperty $queueResult 'data' @()))
+        $submission = Find-CodexQueuedSubmission $submissions $MessageSha256 $ClientUserMessageId
+        if ($null -eq $submission) {
+            if (-not $AllowEnqueue) {
+                return [pscustomobject]@{
+                    Delivered = $false; QueuedFound = $false; ExistingTurn = $false
+                    TurnId = ''; TurnStatus = ''; ResponseState = 'WAITING'; Match = $null
+                }
+            }
+            if ([string]::IsNullOrWhiteSpace($Message)) { throw 'Codex 佇列缺少可送出的訊息。' }
+            if ([string]::IsNullOrWhiteSpace($ClientUserMessageId)) { throw 'Codex 佇列缺少冪等訊息識別碼。' }
+            $addResponse = Invoke-CodexRpcRequest $session 5 'thread/queue/add' @{
+                threadId = [string]$Config.ThreadId
+                input = @(@{ type = 'text'; text = $Message })
+                clientUserMessageId = $ClientUserMessageId
+            } 20000
+            $addResult = Read-OptionalProperty $addResponse 'result' $null
+            $submission = Read-OptionalProperty $addResult 'queuedSubmission' $null
+        }
+        $submissionId = [string](Read-OptionalProperty $submission 'id' '')
+        if (-not $submissionId) { throw 'Codex thread/queue/add 沒有回傳 queued submission ID。' }
+
+        $startResponse = Invoke-CodexRpcRequest $session 6 'thread/queue/start' @{
+            threadId = [string]$Config.ThreadId
+            queuedSubmissionId = $submissionId
+        } 30000
+        $startResult = Read-OptionalProperty $startResponse 'result' $null
+        $turn = Read-OptionalProperty $startResult 'turn' $null
+        $turnId = [string](Read-OptionalProperty $turn 'id' '')
+        $turnStatus = [string](Read-OptionalProperty $turn 'status' '')
+        if (-not $turnId -or $turnStatus -ne 'inProgress') {
+            throw "Codex thread/queue/start 未確認執行中的 Turn ID（status=$turnStatus）。"
+        }
+        $match = New-CodexResponseMatch $true 'IN_PROGRESS' '' 0L $turnId $turnStatus ''
+        return [pscustomobject]@{
+            Delivered = $true; QueuedFound = $true; ExistingTurn = $false
+            TurnId = $turnId; TurnStatus = $turnStatus; ResponseState = 'IN_PROGRESS'; Match = $match
+        }
+    } finally {
+        Close-CodexAppServerProxy $session
+    }
+}
+
+function Get-CodexThreadTurns($Config) {
+    $session = $null
+    try {
+        $session = Open-CodexAppServerProxy $Config
+        return @(Get-CodexThreadTurnsFromSession $session $Config 2)
+    } finally {
+        Close-CodexAppServerProxy $session
     }
 }
 
@@ -1259,6 +1438,34 @@ function Sync-CodexResponses($Config, $SelfHostedBridge, [string]$LogPath) {
 
     foreach ($target in $targets) {
         $match = Find-CodexResponseFromSessionLog $Config $target
+        if (-not $match.Found -and
+            ([string]$target.ResponseState).Trim().ToUpperInvariant() -eq 'WAITING' -and
+            [string]::IsNullOrWhiteSpace([string]$target.TurnId)) {
+            try {
+                # 3.2.x 以前只執行 `codex queue`，因此可能留下「已入佇列但
+                # 沒有 Turn」的請求。新版會找到同一訊息的既有 submission，
+                # 在不重複 enqueue 的前提下把它真正啟動。
+                $activation = Invoke-CodexQueuedTurnDelivery $Config ([string]$target.MessageSha256) '' '' $false
+                if ($activation.Delivered -and $activation.TurnId) {
+                    $match = $activation.Match
+                    Write-BridgeLog $LogPath 'INFO' "Recovered queued Codex request source=$($target.Source) nonce=$($target.Nonce) turn=$($activation.TurnId)"
+                } elseif (-not $activation.QueuedFound -and [long]$target.QueuedAt -gt 0 -and
+                    ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$target.QueuedAt) -ge $CodexTurnStartEvidenceTimeoutMs) {
+                    $failedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    $match = New-CodexResponseMatch $true 'FAILED' '' $failedAt '' 'notStarted' `
+                        '找不到 Codex Turn 或保留的佇列項目；請按重送建立新請求'
+                }
+            } catch {
+                Write-BridgeLog $LogPath 'WARN' "Queued Codex recovery pending source=$($target.Source) nonce=$($target.Nonce): $($_.Exception.Message)"
+            }
+        } elseif (-not $match.Found) {
+            try {
+                $turns = Get-CodexThreadTurns $Config
+                $match = Find-CodexResponseByMessageHash $turns ([string]$target.MessageSha256)
+            } catch {
+                Write-BridgeLog $LogPath 'WARN' "Codex turn lookup pending source=$($target.Source) nonce=$($target.Nonce): $($_.Exception.Message)"
+            }
+        }
         if (-not $match.Found) { continue }
         if ([string]$target.ResponseState -eq [string]$match.ResponseState -and
             [string]$target.TurnId -eq [string]$match.TurnId -and
@@ -1577,24 +1784,19 @@ function Invoke-FirestoreQueue(
 
     $output = ''
     $exitCode = -1
-    Push-Location -LiteralPath ([string]$Config.Workspace)
+    $delivery = $null
     try {
-        try {
-            # Codex 桌面版更新會更換雜湊目錄；每次實際送出都重新解析執行檔。
-            $codexPath = Find-CodexExecutable $Config
-            $output = @(& $codexPath queue --thread ([string]$Config.ThreadId) --message $queuedMessage 2>&1) -join ' '
-            $exitCode = $LASTEXITCODE
-        } catch {
-            $output = $_.Exception.Message
-            $exitCode = -1
-        }
-    } finally {
-        Pop-Location
+        $delivery = Invoke-CodexQueuedTurnDelivery $Config $messageHash $queuedMessage $correlationId $true
+        if ($delivery.Delivered -and $delivery.TurnId) { $exitCode = 0 }
+        else { $output = 'Codex 沒有確認執行中的 Turn ID。' }
+    } catch {
+        $output = $_.Exception.Message
+        $exitCode = -1
     }
 
     if ($exitCode -eq 0) {
         $queuedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-        $detail = '已排入目前 Codex 任務；這只代表佇列已接收，不代表已開始或完成'
+        $detail = "Codex 已開始處理；Turn ID 已確認：$([string]$delivery.TurnId)"
         $metadata = @{
             ReceivedAt = $receivedAt; ValidatedAt = $validatedAt; AttemptCount = $attemptCount; AttemptAt = $attemptAt
             MessageSha256 = $messageHash; MessageLength = $queuedMessage.Length
@@ -1607,19 +1809,25 @@ function Invoke-FirestoreQueue(
             bridgeMessageSha256 = $messageHash; bridgeMessageLength = $queuedMessage.Length
             bridgeContextIncluded = [bool]$context; bridgeContextLength = $context.Length
             bridgeErrorCode = ''; bridgeErrorDetail = ''
-            codexResponseNonce = $nonce; codexResponseState = 'WAITING'; codexResponseText = ''
-            codexResponseAt = 0L; codexResponseSha256 = ''; codexResponseTurnId = ''
-            codexResponseTurnStatus = ''; codexResponseCheckedAt = 0L; codexResponseError = ''
+            codexResponseNonce = $nonce; codexResponseState = 'IN_PROGRESS'; codexResponseText = ''
+            codexResponseAt = 0L; codexResponseSha256 = ''; codexResponseTurnId = [string]$delivery.TurnId
+            codexResponseTurnStatus = [string]$delivery.TurnStatus
+            codexResponseCheckedAt = $queuedAt; codexResponseError = ''
         }
         Remove-InFlightMarker $InFlightPath
-        Write-BridgeLog $LogPath 'INFO' "Queued Firestore support message nonce=$nonce length=$($queuedMessage.Length) sha256=$messageHash"
+        Write-BridgeLog $LogPath 'INFO' "Started Firestore support turn nonce=$nonce turn=$($delivery.TurnId) length=$($queuedMessage.Length) sha256=$messageHash"
     } else {
         $retryAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ([int]$Config.PollSeconds * 1000)
         $safeOutput = ($output -replace '[\r\n]+', ' ').Trim()
         if ($safeOutput.Length -gt 240) { $safeOutput = $safeOutput.Substring(0, 240) }
-        $errorCode = "CODEX_QUEUE_EXIT_$exitCode"
-        $errorDetail = if ($safeOutput) { $safeOutput } else { 'Codex CLI 未提供錯誤內容' }
-        $detail = "第 $attemptCount 次未排入，會在 $(Get-Date ([DateTimeOffset]::FromUnixTimeMilliseconds($retryAt).LocalDateTime) -Format 'HH:mm:ss') 自動重試"
+        $busy = $safeOutput -match '(?i)active or pending turn|already has an active|thread.*busy'
+        $errorCode = if ($busy) { 'CODEX_TURN_BUSY' } else { 'CODEX_TURN_START_FAILED' }
+        $errorDetail = if ($safeOutput) { $safeOutput } else { 'Codex App Server 未提供錯誤內容' }
+        $detail = if ($busy) {
+            "Codex 正在處理其他 Turn；訊息已安全保留，會在 $(Get-Date ([DateTimeOffset]::FromUnixTimeMilliseconds($retryAt).LocalDateTime) -Format 'HH:mm:ss') 再嘗試啟動"
+        } else {
+            "第 $attemptCount 次尚未取得 Codex Turn ID，會在 $(Get-Date ([DateTimeOffset]::FromUnixTimeMilliseconds($retryAt).LocalDateTime) -Format 'HH:mm:ss') 自動重試"
+        }
         Save-State $StatePath $nonce 'RETRYING' $detail $lastQueuedAt @{
             ReceivedAt = $receivedAt; ValidatedAt = $validatedAt; AttemptCount = $attemptCount; AttemptAt = $attemptAt
             NextRetryAt = $retryAt; MessageSha256 = $messageHash; MessageLength = $queuedMessage.Length
@@ -1634,7 +1842,7 @@ function Invoke-FirestoreQueue(
             bridgeErrorCode = $errorCode; bridgeErrorDetail = $errorDetail
         }
         Remove-InFlightMarker $InFlightPath
-        Write-BridgeLog $LogPath 'WARN' "Firestore Codex queue failed nonce=$nonce attempt=$attemptCount exit=$exitCode"
+        Write-BridgeLog $LogPath 'WARN' "Firestore Codex turn start pending nonce=$nonce attempt=$attemptCount error=$errorCode"
     }
 }
 
@@ -1666,6 +1874,19 @@ function Invoke-CodexBridgeRegressionTest {
         (Test-CodexResponseTransitionAllowed 'IN_PROGRESS' 'WAITING') -or
         (Test-CodexResponseTransitionAllowed 'COMPLETED' 'IN_PROGRESS')) {
         throw 'Codex 回覆狀態不可倒退規則失效。'
+    }
+
+    $queuedSubmission = [pscustomobject]@{
+        id = 'queued-1'
+        clientUserMessageId = $selfHostedId
+        input = @([pscustomobject]@{ type = 'text'; text = $selfHostedMessage })
+    }
+    $queuedMatch = Find-CodexQueuedSubmission @($queuedSubmission) `
+        (Get-MessageSha256 $selfHostedMessage) $selfHostedId
+    $wrongQueuedMatch = Find-CodexQueuedSubmission @($queuedSubmission) `
+        (Get-MessageSha256 '另一筆訊息') '另一個識別碼'
+    if ($null -eq $queuedMatch -or [string]$queuedMatch.id -ne 'queued-1' -or $null -ne $wrongQueuedMatch) {
+        throw 'Codex 佇列冪等比對失效。'
     }
 
     $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -1725,6 +1946,7 @@ function Invoke-CodexBridgeRegressionTest {
         ChronologyWindowGuarded = $true
         ResponseStateMonotonic = $true
         ExactTurnCorrelation = $true
+        QueuedSubmissionDeduplication = $true
     } | ConvertTo-Json -Compress
 }
 
