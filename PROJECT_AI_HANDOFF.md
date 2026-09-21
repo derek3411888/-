@@ -10,6 +10,7 @@
 ## 2) 目前主流程重點（payload/全自動.ahk）
 - 啟動前：
   - CFG_FILE 唯一正式位置為 `<程式根目錄>\config\config.ini`；舊 Temp 設定只作一次性驗證搬移，不再作執行後備
+  - 設定／遠端控制／伺服器排程初始化後，先經 `GameMaintenanceHost.ahk` 官方維護閘門，再做清場；維護等待不提早開遊戲、更新器或錄影
   - 前置檢查與清場
   - 啟動崩潰監看
 - 執行中：
@@ -19,6 +20,18 @@
 - 收尾：
   - 進入 MonitorRewardAndShutdown 監測 LRMCAI 日誌
   - 達標後關閉流程或切換伺服器續跑
+
+### 版本維護功能的開發／驗收界線（2026-09-21）
+
+本功能在 `codex/game-maintenance-20260921` 實作，尚未發布至正式客戶端或兩個網站。規格與計畫在 `docs/superpowers/`；驗收摘要見 [遊戲維護驗收](docs/game-maintenance-acceptance.md)。不要把隔離編譯視為已推送更新。
+
+- Worker 為唯讀 Windows PowerShell，`GameMaintenancePolicy.ahk` 為純策略；`GameMaintenanceHost.ahk` 對接現有主流程。只按實際設定入口自動辨識 Steam App 3513350／官方 Kuro，雙安裝不可猜。
+- 官方公告來源限既定官方 HTTPS；到預計開服時間再以新公告放行，延長優先。無既知事件且來源失敗才降級到平日流程；已知事件不因斷線被忽略。
+- RUN／PAUSE／STOP、04:00 日循環、完成伺服器與待切目標沿用原管線。略過只略過當前事件的時間，不略過來源、鎖定、PAUSE 或遊戲內維護證據。
+- 公告快取與 intent journal 在 `<程式根目錄>/config/game-maintenance`，helper 的請求／快照在 `執行暫存/遊戲更新`。備份恢復不確定最新 intent 時不自動執行，須明確 STOP 後再開新任務。
+- 公開小型 JSON 沿既有心跳；不新增 Firestore 輪詢、倒數寫入或帳密存取。通知沿原郵件總開關，先持久去重再嘗試寄送，失敗會記錄而非宣稱送達。
+- **Steam／Kuro 真實更新驗收尚未完成**：本機兩套安裝均做唯讀辨識，但未執行遊戲、下載／安裝或取得真實 launcher OCR layout。`adapter-acceptance.ini` 未建立；不可手動造假驗收旗標以宣稱可用。
+- Steam 本身可能依使用者既有設定自行更新；本程式只約束自己發起的操作，不改 Steam 全域下載政策。
 
 ## 3) 近期已落地的需求與行為
 ### 3.1 伺服器完成記錄時機

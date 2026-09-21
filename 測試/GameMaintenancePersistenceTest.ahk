@@ -17,6 +17,14 @@ TestMaintenancePersistence() {
     FileDelete(path), FileAppend("[state]`nschemaVersion=1`nphase=READY",path,"UTF-8")
     saved := GM_LoadJournal(path)
     GMTest_Assert(saved.desiredState = "PAUSE", "torn primary recovers valid previous journal")
+    recoveredInput := GMTest_Input(10000)
+    recoveredInput.runCycle := saved.runCycle
+    GMTest_Assert(GM_Evaluate(saved,recoveredInput).errorCode = "JOURNAL_RECOVERY_UNCERTAIN", "backup cannot prove whether latest action or STOP already happened")
+    GM_SaveJournal(path,saved)
+    GMTest_Assert(GM_Evaluate(GM_LoadJournal(path),recoveredInput).errorCode = "JOURNAL_RECOVERY_UNCERTAIN", "uncertain backup stays non-actionable after another restart")
+    recoveredInput.desiredState := "STOP"
+    GMTest_Assert(GM_Evaluate(saved,recoveredInput).effect.type = "stop", "explicit STOP still works with recovered journal")
+    FileDelete(path), FileAppend("[state]`nschemaVersion=1`nphase=READY",path,"UTF-8")
     FileAppend("uncommitted",path ".abandoned.tmp","UTF-8")
     GMTest_Assert(GM_LoadJournal(path).phase = "WAIT_OPEN", "stray temp never treated as current")
     FileDelete(path ".bak")

@@ -141,7 +141,7 @@ GM_IsValidGameLaunchEntry(path) {
 }
 
 GM_JournalFields() {
-    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt"
+    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt,recoveryUncertain"
 }
 
 GM_TextChecksum(text) {
@@ -165,7 +165,7 @@ GM_ParseJournal(text) {
             throw Error("Unsafe journal field")
         data[field[1]] := field[2]
     }
-    numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,notifiedOpenAt,"
+    numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,notifiedOpenAt,recoveryUncertain,"
     for key in StrSplit(GM_JournalFields(),",") {
         if !data.Has(key)
             throw Error("Incomplete maintenance journal")
@@ -184,7 +184,7 @@ GM_ParseJournal(text) {
     GM_RequireEnum(state.updaterUiActionStage,",intent,observed,cancelled")
     GM_RequireEnum(state.provider,"unknown,ambiguous,steam,kuro")
     GM_RequireEnum(state.overlay,",PAUSE,WAIT_DESKTOP")
-    if (state.cancelled != 0 && state.cancelled != 1) || (state.f11InputAttempted != 0 && state.f11InputAttempted != 1)
+    if (state.cancelled != 0 && state.cancelled != 1) || (state.f11InputAttempted != 0 && state.f11InputAttempted != 1) || (state.recoveryUncertain != 0 && state.recoveryUncertain != 1)
         throw Error("Invalid journal flag")
     return state
 }
@@ -201,7 +201,10 @@ GM_LoadJournal(path) {
             GM_ContainedPath(candidate,root)
             if FileGetSize(candidate) > 32768
                 throw Error("Journal too large")
-            return GM_ParseJournal(FileRead(candidate,"UTF-8"))
+            state := GM_ParseJournal(FileRead(candidate,"UTF-8"))
+            if candidate != path
+                state.recoveryUncertain := true
+            return state
         }
     }
     if exists
@@ -266,6 +269,8 @@ GM_HasActiveContinuation(stateOrCfg,nowMs := 0) {
         catch
             return true ; A damaged journal must not silently clear persisted PAUSE.
     }
+    if GM_Value(state,"recoveryUncertain",false)
+        return true
     if (GM_Value(state,"cancelled",false) || InStr(",NORMAL,READY,STOPPED,","," state.phase ",",true))
         return false
     if (state.eventId = "" && state.phase != "WAIT_SERVER")
@@ -502,7 +507,7 @@ GM_ControllerRemoteIntent(c,desired,command := 0) {
     } else if (desired = "RUN" || desired = "PAUSE" || desired = "STOP") {
         c.state.desiredState := desired
         if desired = "STOP"
-            c.state.cancelled := true, c.state.phase := "STOPPED", c.state.actionStage := "cancelled"
+            c.state.cancelled := true, c.state.phase := "STOPPED", c.state.actionStage := "cancelled", c.state.recoveryUncertain := false
         c.state.overlay := desired = "PAUSE" ? "PAUSE" : ""
     } else
         return {handled:false}

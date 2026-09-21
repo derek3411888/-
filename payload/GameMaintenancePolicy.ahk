@@ -14,7 +14,7 @@ GM_DefaultState() {
         startsAt:0, expectedOpenAt:0, provider:"unknown", fingerprint:"", runCycle:"", targetServer:"",
         actionId:"", actionStage:"", f11InputAttempted:0, cancelled:0, desiredState:"RUN", remoteGeneration:0,
         elapsedMs:0, lastObserveElapsedMs:0, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0,
-        updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0}
+        updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0,recoveryUncertain:0}
 }
 
 GM_CopyState(original) {
@@ -38,7 +38,7 @@ GM_Evaluate(previous, input) {
     state.desiredState := GM_Value(input,"desiredState","PAUSE"), state.remoteGeneration := GM_Value(input,"remoteGeneration",0)
     state.elapsedMs := elapsed, state.updatedAtUtcMs := now
     if (state.desiredState = "STOP") {
-        state.cancelled := true, state.actionStage := "cancelled"
+        state.cancelled := true, state.actionStage := "cancelled", state.recoveryUncertain := false
         return GM_Decision(state,"STOPPED","stop","","已取消本腳本後續更新及登入動作")
     }
     if state.cancelled {
@@ -46,6 +46,8 @@ GM_Evaluate(previous, input) {
             return GM_Decision(state,"STOPPED","none","","前一任務已取消，等待明確新任務")
         state.cancelled := false, state.actionId := "", state.actionStage := "", state.f11InputAttempted := false
     }
+    if state.recoveryUncertain
+        return GM_Decision(state,"NEEDS_ATTENTION","none","JOURNAL_RECOVERY_UNCERTAIN","已恢復備份，但無法證明最新動作／停止意圖；請先停止，再明確啟動新任務")
     notice := GM_Value(input,"notice",0), sourceState := GM_Value(input,"noticeState","pending")
     if IsObject(notice) && GM_Value(notice,"eventId","") != "" {
         if (state.eventId != "" && state.eventId != notice.eventId)
@@ -84,8 +86,8 @@ GM_Evaluate(previous, input) {
         serverDeadline := state.expectedOpenAt
         if (GM_Value(input,"delayEventId","") = state.eventId && GM_Value(input,"delayUntilUtc",0) > now && GM_Value(input,"delayUntilUtc",0) - now <= 172800000)
             serverDeadline := Max(serverDeadline,GM_Value(input,"delayUntilUtc",0))
-        if (state.eventId != "" && GM_Value(input,"skipEventId","") != state.eventId) {
-            if now < serverDeadline
+        if (state.eventId != "") {
+            if (GM_Value(input,"skipEventId","") != state.eventId && now < serverDeadline)
                 return GM_Decision(state,"WAIT_SERVER","none","","維護畫面已恢復，仍須等公告開服時間")
             if (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision) {
                 effect := elapsed - state.lastNoticeCheckElapsedMs >= 300000 ? "check_notice" : "none"
@@ -121,7 +123,8 @@ GM_Evaluate(previous, input) {
     skip := GM_Value(input,"skipEventId","") = state.eventId
     if (!skip && now < deadline)
         return GM_Decision(state,"WAIT_OPEN","none","","等待官方公告開服時間；不提前更新")
-    if (!skip && (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision)) {
+    ; An event-scoped skip changes the clock gate only, never source validation.
+    if (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision) {
         effect := elapsed - state.lastNoticeCheckElapsedMs >= 300000 ? "check_notice" : "none"
         if effect = "check_notice"
             state.lastNoticeCheckElapsedMs := elapsed

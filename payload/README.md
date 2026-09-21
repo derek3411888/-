@@ -1,5 +1,17 @@
 # 自動開啟OKWW - 修復打包EXE後重複啟動問題
 
+## 官方維護與版本更新（開發中，尚未發布）
+
+設定介面新增「版本維護」分頁，自動辨識設定入口屬於 Steam 或官方啟動器，無須選版本。來源不明時請修正鳴潮入口再按「重新偵測」，偵測本身不開遊戲。維護公告已知時，先等官方預計開服時間，重新確認公告後才允許發起更新；不提早預下載。等待不搶前景、不新開正式錄影，也不累計一般錯誤重啟。
+
+`config.ini` 的 `[game_maintenance]` 使用 `enabled`、`override_event_id`、`delay_until_utc`、`skip_event_id`、`refresh_request_id`。遠端對應 `maintenanceEnabled` 等五欄位，沿既有 revision／ACK 回報；延後綁目前事件且最長 48 小時。略過只略過時間，不略過安全或來源驗證。
+
+狀態與公告摘要保存於程式內 `config/game-maintenance`，helper 暫存保存於 `執行暫存/遊戲更新`。磁碟寫入失敗或只能恢復舊備份時，寧可回報需要確認，也不盲目重送更新或 F11。等待期間仍可遠端暫停、停止、排定切服或標記完成。正常進入主畫面後才開始更新日的正式錄影與啟動通知。
+
+實機能力閘門目前未開放：兩種安裝的唯讀辨識通過不等於真實更新成功。還需在獲准工作階段驗證 Steam／Kuro 各自的啟動與更新、正確程序身分、官方 launcher 的實際按鈕區域及主畫面就緒。不要自行建立驗收檔案跳過這些檢查。Steam 自己的排程下載不受本腳本控制。
+
+隔離測試：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File 測試/Invoke-GameMaintenanceTests.ps1 -Suite All`（在專案根目錄執行）。編譯驗證用 `測試/Build-GameMaintenanceSmoke.ps1`，產物只在 `.dev-runtime/build`，不發布、不執行編譯出的 EXE。
+
 ## 問題
 
 打包成EXE後啟動器會開啟兩個OKWW實例。

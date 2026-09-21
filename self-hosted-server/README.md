@@ -1,5 +1,13 @@
 # 鳴潮自動鋤地自架控制平台
 
+## 遊戲版本維護（待下一次正式發布）
+
+新版 Payload 將小型 `status.gameMaintenance` 隨原心跳傳入，包含來源、公告時間、等待／更新／需要確認階段與當前目標伺服器。資料上限 4 KiB，不含本機完整安裝路徑、帳密或公告全文；伺服器不替裝置發起更新。
+
+總覽顯示維護卡；設定卡使用原 revision／ACK 管線傳遞 `maintenanceEnabled`、`maintenanceOverrideEventId`、`maintenanceDelayUntilUtc`、`maintenanceSkipEventId`、`maintenanceRefreshRequestId`。伺服器在裝置行鎖內檢查 capability、新鮮度、目前事件與 48 小時延後範圍；未提供欄位保留原值，不因一般設定儲存清空維護意圖。
+
+兩網站共用 `public/game-maintenance-view.js`，已加入 Web 資產 checksum；不增加 Firestore 流量、migration 或資料表。來源無法判定、更新無進展、桌面鎖定、備份恢復不確定時均顯示原因，不把 HTTP 200 當成已套用或遊戲已更新。實際 Steam／Kuro 更新能力需另外完成裝置端實機驗收。
+
 這個資料夾是一套可在常開 Windows 電腦上用 Docker Desktop 執行的中央控制、診斷與直播平台。PostgreSQL 只存控制資料；快照與 Log 預設放在 D 槽可直接管理的 Windows 資料夾，資料庫本體使用 Docker named volume；備份預設獨立放在 E 槽。正式錄影不進中央主機，只保存在各執行端設定的位置。
 
 ## 服務與公開連接埠

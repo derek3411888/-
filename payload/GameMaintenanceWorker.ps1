@@ -202,7 +202,11 @@ function ConvertTo-GMWorkerSnapshot {
 function Invoke-GMWorker {
     param([string]$RequestPath,[string]$OutputPath,[string]$StopPath,[string]$StateDirectory,[int]$ParentPid,[string]$ParentStartUtc)
     $session=Test-GMWorkerPaths $RequestPath $OutputPath $StopPath $StateDirectory
-    $env:TEMP=$session;$env:TMP=$session;$env:TMPDIR=$session
+    # Override only this helper's environment, after canonical containment checks.
+    # Do not read or fall back to the user's Windows temporary directory.
+    foreach ($variableName in @('TEMP','TMP','TMPDIR')) {
+        [Environment]::SetEnvironmentVariable($variableName, $session, 'Process')
+    }
     [void][IO.Directory]::CreateDirectory($StateDirectory)
     $lock=$null
     # A just-exiting parent may need a short moment to release its one helper.

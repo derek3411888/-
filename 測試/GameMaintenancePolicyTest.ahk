@@ -88,6 +88,15 @@ TestMaintenancePolicy() {
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "start_update", "explicit new task may restart")
     state := GMTest_State(), input := GMTest_Input(9999), input.skipEventId := state.eventId
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "start_update", "event-scoped manual skip only time gate")
+    input.notice.freshForRelease := false
+    GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_NOTICE", "skip cannot bypass official source freshness")
+    input.notice.freshForRelease := true, input.noticeState := "unavailable"
+    GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_NOTICE", "skip cannot bypass source outage")
+    state.phase := "WAIT_SERVER"
+    input.observation := {phase:"game_ready", observedAt:9999, identityVerified:true, stable:true}
+    GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_SERVER", "server recovery skip still needs current official source")
+    input.noticeState := "valid"
+    GMTest_Assert(GM_Evaluate(state,input).phase = "READY", "fresh source allows explicit time-only skip")
     input.desktopAvailable := false
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "none", "skip cannot bypass desktop guard")
     input := GMTest_Input(10000), state := GMTest_State(), input.delayEventId := state.eventId, input.delayUntilUtc := 20000

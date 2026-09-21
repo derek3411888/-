@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$PayloadVersion = '5.01',
     [string]$LauncherVersion = '5.12',
@@ -38,6 +38,9 @@ function Test-CurrentUserDpapiAvailable {
 function Wait-HiddenProcess([Diagnostics.Process]$Process, [string]$Task,
     [int]$TimeoutSeconds) {
     if ($null -eq $Process) { throw "$Task 未能啟動程序。" }
+    # Cache the native handle before waiting. Windows PowerShell 5.1 otherwise
+    # may report null ExitCode for fast GUI-subsystem validation/compile tools.
+    [void]$Process.Handle
     if (-not $Process.WaitForExit([Math]::Max(1, $TimeoutSeconds) * 1000)) {
         # 只終止這次驗證建立的精確 PID，不用名稱掃描，
         # 避免影響正式運行中的 AutoHotkey 或其他測試。
@@ -116,6 +119,28 @@ function Find-AhkCompiler {
         if (Test-Path -LiteralPath $candidate) { return $candidate }
     }
     throw '找不到 AutoHotkey v2 Ahk2Exe.exe。'
+}
+
+function Get-GameMaintenancePayloadFiles {
+    return @('GameMaintenance.ahk', 'GameMaintenancePolicy.ahk', 'GameMaintenanceHost.ahk',
+        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameMaintenanceWorker.ps1',
+        'GameMaintenanceNotice.ps1', 'GameInstallDiscovery.ps1')
+}
+
+function Get-PayloadZipExcludes {
+    return @('.dev-runtime/*', '.superpowers/*', 'node_modules/*', 'config/*', 'docs/*',
+        'fixtures/*', 'test/*', 'tests/*', '測試/*', 'log/*', '.env', '.env.*',
+        '*.log', 'temp*.png', 'ue4crash*.png', 'menu*.png', '*.tmp', '*.new', '*.partial')
+}
+
+function Test-GameMaintenanceReleaseSources {
+    foreach ($relative in @(Get-GameMaintenancePayloadFiles) | Where-Object { $_ -like '*.ps1' }) {
+        $errors = $null; $tokens = $null
+        [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $projectRoot "payload\$relative"), [ref]$tokens, [ref]$errors)
+        if (@($errors).Count) { throw "PowerShell 維護模組語法錯誤：$relative : $($errors[0].Message)" }
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot '測試\Invoke-GameMaintenanceTests.ps1') -Suite All
+    Assert-ExitCode '維護／版本更新完整回歸測試'
 }
 
 function New-FilteredZip([string]$SourceRoot, [string]$TargetPath, [string[]]$ExcludedParts) {
@@ -259,6 +284,7 @@ $package = Get-Content -LiteralPath 'self-hosted-server\package.json' -Raw -Enco
 if ([string]$package.version -ne $ServerVersion) { throw "server package 版本不是 $ServerVersion" }
 
 Write-Host '執行語法與單元測試…'
+Test-GameMaintenanceReleaseSources
 & (Join-Path $projectRoot '測試\PowerShellDevelopmentPathPolicyTest.ps1')
 Invoke-AhkValidate $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策回歸測試'
@@ -390,6 +416,8 @@ try {
 }
 & node.exe --check 'remote-control-web\app.js'
 Assert-ExitCode '舊控制台靜態檢查'
+& node.exe --check 'remote-control-web\game-maintenance-view.js'
+Assert-ExitCode '公司控制台維護模組靜態檢查'
 
 Write-Host '編譯 Payload EXE…'
 $payloadTemp = Join-Path $projectRoot 'payload\全自動鋤地.new.exe'
@@ -398,10 +426,8 @@ Invoke-AhkCompile $compiler 'payload\全自動.ahk' $payloadTemp $payloadRuntime
 Move-Item -LiteralPath $payloadTemp -Destination 'payload\全自動鋤地.exe' -Force
 
 Write-Host '建立 payload.zip…'
-New-FilteredZip 'payload' 'payload.zip' @(
-    '.dev-runtime/*', '*.log', 'temp*.png', 'ue4crash*.png',
-    'menu*.png', '*.new', '*.partial'
-)
+New-FilteredZip 'payload' 'payload.zip' (Get-PayloadZipExcludes)
+Assert-ZipContains 'payload.zip' (Get-GameMaintenancePayloadFiles)
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk', 'ForegroundBlockerPolicy.ahk',
@@ -409,7 +435,7 @@ Assert-ZipContains 'payload.zip' @(
     'PerformanceTelemetryWorker.ps1', 'tools/PresentMon/LICENSE.txt',
     'SelfHealingPolicy.ahk', 'SelfHostMediaUpload.ps1'
 )
-Assert-ZipExcludes 'payload.zip' @('.dev-runtime/*', 'node_modules/*')
+Assert-ZipExcludes 'payload.zip' (Get-PayloadZipExcludes)
 
 Write-Host '編譯內嵌最新版 Payload 的 Launcher EXE…'
 $launcherTemp = Join-Path $projectRoot '全自動鋤地.new.exe'
@@ -425,6 +451,7 @@ New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
 Assert-ZipContains 'self-hosted-server.zip' @(
     '.npmrc', 'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
     'public/index.html', 'public/app.js', 'public/styles.css', 'src/hls-proxy.js',
+    'public/game-maintenance-view.js', 'src/game-maintenance.js',
     'migrations/004_media_auto_repair.sql', 'migrations/005_performance_telemetry.sql',
     'migrations/006_codex_support_queue.sql', 'migrations/007_effective_settings_revision.sql',
     'migrations/008_codex_support_responses.sql', 'migrations/009_firestore_command_bridge.sql',
