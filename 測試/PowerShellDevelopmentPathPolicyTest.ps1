@@ -31,7 +31,7 @@ $succeeded = $false
 try {
     foreach ($path in @(
         $context.Root, $context.TempRoot, $context.RunRoot, $context.TestsRoot,
-        $context.NpmCacheRoot, $context.BuildRoot, $context.CacheRoot
+        $context.NpmCacheRoot, $context.NpmLogsRoot, $context.BuildRoot, $context.CacheRoot
     )) {
         Assert-True (Test-ProjectContainedPath -Path $path -ProjectRoot $projectRoot) `
             "開發路徑不在專案內：$path"
@@ -39,7 +39,7 @@ try {
             "開發路徑未建立：$path"
     }
 
-    foreach ($name in @('TEMP', 'TMP', 'TMPDIR', 'NPM_CONFIG_CACHE',
+    foreach ($name in @('TEMP', 'TMP', 'TMPDIR', 'NPM_CONFIG_CACHE', 'NPM_CONFIG_LOGS_DIR',
         'XDG_CACHE_HOME', 'NODE_COMPILE_CACHE', 'PSModuleAnalysisCachePath',
         'PIP_CACHE_DIR', 'PYTHONPYCACHEPREFIX', 'UV_CACHE_DIR', 'NUGET_PACKAGES',
         'DOTNET_CLI_HOME')) {

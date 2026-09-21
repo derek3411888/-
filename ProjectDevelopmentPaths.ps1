@@ -35,6 +35,7 @@ function Initialize-ProjectDevelopmentPaths {
         $safeRunName, $PID, [Guid]::NewGuid().ToString('N'))
     $testsRoot = Join-Path $developmentRoot 'tests'
     $npmCacheRoot = Join-Path $developmentRoot 'npm-cache'
+    $npmLogsRoot = Join-Path $developmentRoot 'npm-logs'
     $buildRoot = Join-Path $developmentRoot 'build'
     $cacheRoot = Join-Path $developmentRoot 'cache'
     $nodeCacheRoot = Join-Path $cacheRoot 'node-compile'
@@ -45,7 +46,7 @@ function Initialize-ProjectDevelopmentPaths {
     $dotnetHomeRoot = Join-Path $cacheRoot 'dotnet-home'
 
     $managedPaths = @(
-        $developmentRoot, $tempRoot, $runRoot, $testsRoot, $npmCacheRoot,
+        $developmentRoot, $tempRoot, $runRoot, $testsRoot, $npmCacheRoot, $npmLogsRoot,
         $buildRoot, $cacheRoot, $nodeCacheRoot, $powershellCacheRoot,
         $pythonCacheRoot, $pipCacheRoot, $nugetCacheRoot, $dotnetHomeRoot
     )
@@ -61,6 +62,7 @@ function Initialize-ProjectDevelopmentPaths {
         TMP = $runRoot
         TMPDIR = $runRoot
         NPM_CONFIG_CACHE = $npmCacheRoot
+        NPM_CONFIG_LOGS_DIR = $npmLogsRoot
         npm_config_update_notifier = 'false'
         XDG_CACHE_HOME = $cacheRoot
         NODE_COMPILE_CACHE = $nodeCacheRoot
@@ -84,6 +86,7 @@ function Initialize-ProjectDevelopmentPaths {
         RunRoot = $runRoot
         TestsRoot = $testsRoot
         NpmCacheRoot = $npmCacheRoot
+        NpmLogsRoot = $npmLogsRoot
         BuildRoot = $buildRoot
         CacheRoot = $cacheRoot
         PreviousEnvironment = $previousEnvironment
