@@ -23,7 +23,7 @@
 
 ### 版本維護功能的開發／驗收界線（2026-09-22）
 
-本功能在 `codex/game-maintenance-20260921` 實作；2026-09-22 使用者已授權推送，發布目標為 Payload 5.02／Launcher 5.13／Server bundle 1.0.65。規格與計畫在 `docs/superpowers/`；先前的隔離驗收摘要見 [遊戲維護驗收](docs/game-maintenance-acceptance.md)。正式發布仍以遠端固定 commit 的 manifest、下載雜湊與 Pages 部署結果為證據；server bundle 發布不等於 Docker 已部署，亦不代表正在執行的客戶端已熱更新。
+本功能在 `codex/game-maintenance-20260921` 實作；2026-09-22 已依使用者授權推送 Payload 5.02／Launcher 5.13／Server bundle 1.0.65 至 GitHub main。產物 commit 為 `318363f`，固定來源 manifest 為 `f84b98b`，公司用 GitHub Pages 部署成功。規格與計畫在 `docs/superpowers/`；驗收摘要與發布界線見 [遊戲維護驗收](docs/game-maintenance-acceptance.md)。server bundle 發布不等於 Docker 已部署，亦不代表正在執行的客戶端已熱更新。
 
 - 平日主流程維持；新增啟動前的官方公告查詢，無適用維護事件即返回既有流程。
 - 下一版官方已公告為 3.7、2026-09-30（三）；截至 2026-09-22 查詢，繁中 MainMenu 只有 3.7 前瞻／特別資訊，尚無 3.7 維護時段。不可拿 3.6 時間推定開服，也不可硬編碼預告日期作為可登入證據。
