@@ -72,6 +72,15 @@ TestUpdateAdapters() {
     target.foregroundVerified := true, action := {type:"click_update",actionId:"button-3"}
     hooks.ClickVerified := (*) => false, hooks.ReadObservation := (*) => {phase:"downloading"}
     GMTest_Assert(!GMU_ApplyAction(target,action,hooks).ok,"rejected click cannot be called an applied action")
+    launcher := {pid:80,hwnd:81,path:install.launcherPath,identityVerified:true,foregroundVerified:true,desktopAvailable:true}
+    live := launcher.Clone(), taps := [], guard := {CanAct:(*) => true,InspectWindow:(*) => live,
+        PrepareWindow:(*) => true,ClickPoint:(args*) => RecordAdapterClick(taps,args)}
+    button := {x:100,y:200}, action := {type:"click_update",button:button}
+    GMTest_Assert(GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 1,"launcher-specific wrapper permits exact identity")
+    live.path := TestRuntime_RepoRoot() "\fixture\pythonw.exe"
+    GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 1,"OKWW never masquerades as launcher")
+    live := launcher.Clone(), live.pid := 82
+    GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 1,"HWND with replaced PID rejected")
 }
 FlipAdapterGuard(&allowed) {
     allowed := false

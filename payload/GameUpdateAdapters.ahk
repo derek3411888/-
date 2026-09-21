@@ -1,5 +1,6 @@
 #Requires AutoHotkey v2.0
 #Include GameMaintenancePolicy.ahk
+#Include GameUpdateOcrPolicy.ahk
 
 ; Side effects are provided by the controller. These adapters never run a shell
 ; or touch a window on their own; the same guards are exercised by action spies.
@@ -100,4 +101,26 @@ GMU_ApplyAction(target,action,hooks) {
     if !InStr(",downloading,installing,verifying,game_running,","," GM_Value(observation,"phase","unknown") ",",true)
         return GMU_Result(false,"UPDATE_ACTION_UNCONFIRMED","輸入已嘗試，尚未確認更新狀態轉變",true,GM_Value(action,"actionId",""))
     return GMU_Result(true,"","已驗證更新狀態轉變",true,GM_Value(action,"actionId",""))
+}
+
+GMU_TargetMatchesLauncher(install,expected,current) {
+    return IsObject(current) && GM_Value(current,"identityVerified",false)
+        && GM_Value(current,"pid",0) = GM_Value(expected,"pid",-1)
+        && GM_Value(current,"hwnd",0) = GM_Value(expected,"hwnd",-1)
+        && StrLower(GM_Value(current,"path","")) = StrLower(GM_Value(install,"launcherPath","not-verified"))
+        && GM_Value(current,"desktopAvailable",false)
+}
+
+GMU_ClickLauncherVerified(install,target,action,hooks) {
+    if !GM_Value(install,"identityVerified",false) || !IsObject(GM_Value(action,"button",0)) || !hooks.CanAct.Call(action)
+        return false
+    before := hooks.InspectWindow.Call(target.hwnd)
+    if !GMU_TargetMatchesLauncher(install,target,before)
+        return false
+    if !hooks.PrepareWindow.Call(target.hwnd,target.pid)
+        return false
+    current := hooks.InspectWindow.Call(target.hwnd)
+    if (!hooks.CanAct.Call(action) || !GMU_TargetMatchesLauncher(install,target,current) || !GM_Value(current,"foregroundVerified",false))
+        return false
+    return hooks.ClickPoint.Call(target.hwnd,action.button.x,action.button.y,target.pid)
 }
