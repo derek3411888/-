@@ -76,7 +76,7 @@ function Get-ServerVersion([string]$Root) {
 }
 
 function Get-WebAssetHash([string]$Root) {
-    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css') | Sort-Object) {
+    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css', 'game-maintenance-view.js') | Sort-Object) {
         $path = Join-Path $Root "public\$name"
         if (-not (Test-Path -LiteralPath $path)) { throw "伺服器套件缺少網站檔案：$path" }
         "${name}:$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"

@@ -47,7 +47,7 @@ function sha256Text(value) {
 }
 
 function webAssetSha256(root) {
-  const names = ["app.js", "index.html", "styles.css"].sort();
+  const names = ["app.js", "index.html", "styles.css", "game-maintenance-view.js"].sort();
   const inventory = names.map((name) => {
     const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, name))).digest("hex").toUpperCase();
     return `${name}:${digest}`;

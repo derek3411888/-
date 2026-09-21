@@ -338,7 +338,7 @@ GM_BuildPublicJson(state,decision,input,nowMs) {
     percent := GM_Value(observation,"progressPercent","")
     percentJson := IsNumber(percent) && percent != "" && Number(percent) >= 0 && Number(percent) <= 100 ? Number(percent) : "null"
     source := state.sourceUrl
-    if !RegExMatch(source,"^https://wutheringwaves\.kurogames\.com/tw/main/news/detail/\d+$")
+    if !RegExMatch(source,"^https://wutheringwaves\.kurogames\.com/zh-tw/main/news/detail/\d+$")
         source := ""
     detail := RegExReplace(GM_Value(decision,"detail",""),"(?:[A-Za-z]:\\|\\\\)[^\s|]*","[本機路徑]")
     result := '{"schemaVersion":1,"capabilityVersion":1'
@@ -349,13 +349,22 @@ GM_BuildPublicJson(state,decision,input,nowMs) {
     for key, value in fields.OwnProps()
         result .= ',' GM_PublicQuote(key) ':' GM_PublicQuote(value,key = "detail" ? 400 : key = "sourceUrl" ? 180 : 180)
     result .= ',"expectedOpenAt":' state.expectedOpenAt ',"checkedAt":' GM_Value(input,"noticeCheckedAt",0)
-    result .= ',"observedAt":' GM_Value(input,"nowUtcMs",nowMs) ',"observedUtcNow":' nowMs ',"progressPercent":' percentJson '}'
+    ; Current controller status is observed for every existing heartbeat. Notice
+    ; freshness remains independently exposed as checkedAt; no HTTP read here.
+    result .= ',"observedAt":' nowMs ',"observedUtcNow":' nowMs ',"progressPercent":' percentJson '}'
     return StrPut(result,"UTF-8") <= 4097 ? result : "null"
 }
 
 GM_MaintenanceSettingKeys() {
     return Map("maintenanceEnabled","enabled","maintenanceOverrideEventId","override_event_id",
         "maintenanceDelayUntilUtc","delay_until_utc","maintenanceSkipEventId","skip_event_id","maintenanceRefreshRequestId","refresh_request_id")
+}
+
+GM_InstallSummary(install) {
+    provider := GM_Value(install,"provider","unknown")
+    label := provider = "steam" ? "Steam（自動判定）" : provider = "kuro" ? "官方啟動器（自動判定）"
+        : provider = "ambiguous" ? "來源有衝突，請確認所選入口" : "來源尚未確認"
+    return label "`n" SubStr(GM_Value(install,"evidence","尚未完成只讀偵測"),1,500)
 }
 
 GM_ReadMaintenanceSettings(cfgPath) {

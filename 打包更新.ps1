@@ -172,9 +172,9 @@ function Assert-ZipExcludes([string]$ArchivePath, [string[]]$ForbiddenPatterns) 
 }
 
 function Get-WebAssetHash([string]$Root) {
-    # 這是 API /health/ready 與 Update-Server.ps1 共用的三個主資產指紋。
+    # 與 API /health/ready 及 Update-Server.ps1 的資產清單一致。
     # 其他 public 檔案（包含獨立備援頁）仍由 server_bundle SHA-256 保護。
-    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css') | Sort-Object) {
+    $lines = foreach ($name in @('app.js', 'index.html', 'styles.css', 'game-maintenance-view.js') | Sort-Object) {
         $path = Join-Path $Root "public\$name"
         if (-not (Test-Path -LiteralPath $path)) { throw "缺少網站檔案：$path" }
         "${name}:$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
@@ -213,6 +213,11 @@ if (-not (Test-Path -LiteralPath $runtime) -or -not (Test-Path -LiteralPath $pay
 }
 
 Set-CompanyWebBuildStamp $PayloadVersion $LauncherVersion $ServerVersion
+Copy-Item -LiteralPath (Join-Path $projectRoot 'self-hosted-server\public\game-maintenance-view.js') -Destination (Join-Path $projectRoot 'remote-control-web\game-maintenance-view.js') -Force
+if ((Get-FileHash -LiteralPath (Join-Path $projectRoot 'self-hosted-server\public\game-maintenance-view.js')).Hash -ne
+    (Get-FileHash -LiteralPath (Join-Path $projectRoot 'remote-control-web\game-maintenance-view.js')).Hash) {
+    throw '兩套網站維護模組不同步。'
+}
 $launcherSource = Get-Content -LiteralPath '打包啟動器.ahk' -Raw -Encoding UTF8
 $payloadSource = Get-Content -LiteralPath 'payload\全自動.ahk' -Raw -Encoding UTF8
 $runtimeSources = @(

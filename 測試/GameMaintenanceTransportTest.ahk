@@ -8,11 +8,17 @@ TestTransport() {
     DirCreate(root)
     state := GM_DefaultState(), state.phase := "WAIT_OPEN", state.eventId := "event-1", state.revision := "r1"
     state.expectedOpenAt := 20000, state.provider := "steam"
+    state.sourceUrl := "https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5280"
     input := GMTest_Input(10000), input.observation := {phase:"downloading",progressPercent:""}
     decision := GM_Decision(state,"UPDATING","none","","正在更新 C:\private\game.exe")
     json := GM_BuildPublicJson(state,decision,input,10000)
     GMTest_Assert(InStr(json,'"progressPercent":null') && !InStr(json,"private"),"公開狀態不假報 0 或洩漏路徑")
+    GMTest_Assert(InStr(json,state.sourceUrl),"保留公告來源實際產生的 zh-tw 連結")
     GMTest_Assert(StrPut(json,"UTF-8") <= 4097,"公開 JSON 不超過 4 KiB")
+    fresh := GM_BuildPublicJson(state,decision,input,200000)
+    GMTest_Assert(InStr(fresh,'"observedAt":200000'),"一般流程仍隨心跳回報目前控制器能力，不因停止只讀 helper 而永遠過期")
+    GMTest_Assert(InStr(GM_InstallSummary(Map("provider","steam","evidence","installation-files-verified")),"Steam"),"UI 顯示實際自動來源")
+    GMTest_Assert(InStr(GM_InstallSummary(Map("provider","unknown","evidence","missing-entry")),"尚未確認"),"UI 不把未知當官方版")
     cfg := root "\config.ini"
     IniWrite(0,cfg,"game_maintenance","enabled")
     prior := GM_ReadMaintenanceSettings(cfg)

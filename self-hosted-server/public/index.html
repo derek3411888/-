@@ -167,6 +167,7 @@
     </nav>
 
     <section id="panelOverview" class="tab-panel active" data-panel="overview" role="tabpanel" aria-labelledby="tabOverview">
+      <section id="gameMaintenanceCard" class="card game-maintenance" aria-label="版本維護狀態" hidden></section>
       <div class="grid two">
         <article class="card">
           <div class="section-title"><div><h2>流程控制</h2><p>命令必須收到精確 ACK 才算完成。</p></div></div>
@@ -268,6 +269,7 @@
     </section>
 
     <section id="panelSettings" class="tab-panel" data-panel="settings" role="tabpanel" aria-labelledby="tabSettings" hidden>
+      <section id="gameMaintenanceSettings" class="card game-maintenance"></section>
       <div class="grid two">
         <form id="settingsForm" class="card">
           <div class="section-title"><div><h2>執行端設定</h2><p>並行驗證結束前由 Firestore 保存。</p></div></div>

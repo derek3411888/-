@@ -14,7 +14,7 @@ export function normalizeGameMaintenance(value, nowMs = Date.now()) {
   }
   if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== 1 || value.capabilityVersion !== 1
     || !phases.has(value.phase) || !time(value.observedAt) || value.observedAt > nowMs + 5000) return null;
-  const sourceUrl = /^https:\/\/wutheringwaves\.kurogames\.com\/tw\/main\/news\/detail\/\d+$/.test(value.sourceUrl ?? "")
+  const sourceUrl = /^https:\/\/wutheringwaves\.kurogames\.com\/zh-tw\/main\/news\/detail\/\d+$/.test(value.sourceUrl ?? "")
     ? value.sourceUrl : "";
   return { schemaVersion: 1, capabilityVersion: 1, phase: value.phase,
     overlay: ["PAUSE", "WAIT_DESKTOP"].includes(value.overlay) ? value.overlay : "",

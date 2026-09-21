@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('Foundation','Notice','Install','Worker','Policy','Adapters','Ocr','Startup','Transport','All')][string]$Suite = 'All')
+param([ValidateSet('Foundation','Notice','Install','Worker','Policy','Adapters','Ocr','Startup','Transport','Ui','All')][string]$Suite = 'All')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $suiteTests = [ordered]@{
@@ -12,6 +12,7 @@ $suiteTests = [ordered]@{
     Ocr=@('GameUpdateOcrPolicyTest.ahk')
     Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1')
     Transport=@('GameMaintenanceTransportTest.ahk')
+    Ui=@('GameMaintenanceLocalUiTest.ps1')
 }
 $context = Initialize-ProjectDevelopmentPaths -ProjectRoot (Split-Path $PSScriptRoot -Parent) -RunName "gm-$Suite"
 try {

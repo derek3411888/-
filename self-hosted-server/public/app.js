@@ -1,3 +1,5 @@
+import { attachMaintenanceUI } from "./game-maintenance-view.js?v=maintenance-v1";
+
 const state = {
   me: null,
   devices: [],
@@ -44,6 +46,27 @@ const CODEX_SUPPORT_PRESETS = Object.freeze({
 const $ = (id) => document.getElementById(id);
 const appView = $("appView");
 const deviceSelect = $("deviceSelect");
+const maintenanceUi = attachMaintenanceUI({ card: $("gameMaintenanceCard"), settingsRoot: $("gameMaintenanceSettings"),
+  onSave: async (patch, uid) => {
+    if (uid !== state.selectedUid || uid !== state.details?.device?.uid) throw new Error("選取裝置已改變，請重新確認。");
+    const saved = await api(`/api/v1/devices/${encodeURIComponent(uid)}/settings`, {
+      method: "PUT", body: { ...state.details.device.settings, ...patch },
+    });
+    state.settingsSaveStatus = { state: "pending", revision: Number(saved.revision), at: Date.now(), detail: "維護設定已送出，等待裝置 ACK。" };
+    await refresh({ reloadSettings: false });
+    return saved;
+  },
+});
+
+function renderGameMaintenance() {
+  const device = state.details?.device || {};
+  const version = state.details?.settings || {};
+  maintenanceUi.update({ uid: device.uid || "", value: device.status?.gameMaintenance, deviceFresh: device.online,
+    effectiveSettings: device.settings, writable: ["primary", "shadow", "fallback"].includes(state.migration?.mode),
+    ack: { desiredRevision: Math.max(Number(version.revision) || 0, Number(device.settings_revision) || 0),
+      ackRevision: Number(device.settings_ack?.revision) || 0, effectiveRevision: Number(device.settings_effective_revision) || 0,
+      applied: device.settings_ack?.applied, detail: device.settings_ack?.detail } });
+}
 const codexStages = {
   submitted: $("codexStageSubmitted"),
   received: $("codexStageReceived"),
@@ -856,6 +879,7 @@ function refreshSnapshot(device = state.details?.device) {
 }
 
 function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
+  renderGameMaintenance();
   const wrapper = state.details;
   const device = wrapper?.device;
   if (!device) {

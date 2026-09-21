@@ -329,6 +329,64 @@ GM_ValidateRemoteSettings(settings) {
     return GM_ValidateMaintenanceSettings(settings,GM_ReadMaintenanceSettings(CFG_FILE),state,RC_UnixMs())
 }
 
+GM_StartInstallProbe(guiState) {
+    global GM_CONTROLLER
+    GM_StopInstallProbe(guiState)
+    entry := Trim(guiState.edWu.Value)
+    if !GM_IsValidGameLaunchEntry(entry) {
+        guiState.maintenanceProvider.Text := "請先選擇有效 .exe、.lnk、Steam .url 或 steam://run/3513350"
+        return
+    }
+    if IsObject(GM_CONTROLLER) && IsObject(GM_CONTROLLER.worker) && GMHost_WorkerAlive(GM_CONTROLLER.worker) {
+        if entry != GM_CONTROLLER.launchEntry {
+            guiState.maintenanceProvider.Text := "流程正在使用既有入口；請停止後再偵測不同入口，避免影響正在更新的遊戲。"
+            return
+        }
+        GM_CONTROLLER.forceRevision += 1
+        GMHost_WriteRequest(GM_CONTROLLER)
+        guiState.maintenanceProbe := GM_CONTROLLER
+        guiState.maintenanceProbeOwned := false
+    } else {
+        c := {state:GM_DefaultState(),worker:0,forceRevision:0,launchEntry:entry,lastRequestKey:"",workerMode:"install"}
+        try c.worker := GMHost_StartWorker(c)
+        catch as err {
+            guiState.maintenanceProvider.Text := "只讀偵測未完成：" err.Message
+            return
+        }
+        guiState.maintenanceProbe := c, guiState.maintenanceProbeOwned := true
+    }
+    guiState.maintenanceProbeStarted := MonotonicTickMs()
+    guiState.maintenanceProvider.Text := "只讀辨識中…不會啟動 Steam、遊戲或下載更新。"
+    guiState.maintenanceProbeTimer := (*) => GM_PollInstallProbe(guiState)
+    SetTimer(guiState.maintenanceProbeTimer,500)
+}
+
+GM_PollInstallProbe(guiState) {
+    if GM_Value(guiState,"done",false) {
+        GM_StopInstallProbe(guiState)
+        return
+    }
+    worker := guiState.maintenanceProbe.worker
+    try {
+        snapshot := GM_ReadWorkerSnapshot(worker.outputPath,worker.requestId,0,RC_UnixMs(),worker.session)
+        guiState.maintenanceProvider.Text := GM_InstallSummary(snapshot["install"])
+        GM_StopInstallProbe(guiState)
+        return
+    }
+    if MonotonicTickMs() - guiState.maintenanceProbeStarted > 15000 {
+        guiState.maintenanceProvider.Text := "只讀辨識逾時，來源仍未確認；未啟動任何遊戲。"
+        GM_StopInstallProbe(guiState)
+    }
+}
+
+GM_StopInstallProbe(guiState) {
+    if IsObject(GM_Value(guiState,"maintenanceProbeTimer",0))
+        SetTimer(guiState.maintenanceProbeTimer,0)
+    if GM_Value(guiState,"maintenanceProbeOwned",false) && IsObject(GM_Value(guiState,"maintenanceProbe",0))
+        try GMHost_StopWorker(guiState.maintenanceProbe.worker)
+    guiState.maintenanceProbe := 0, guiState.maintenanceProbeOwned := false
+}
+
 GM_MarkF11Attempt() {
     global GM_CONTROLLER
     if !IsObject(GM_CONTROLLER)

@@ -2761,3 +2761,13 @@ body.apple-ui .activation-card {
 @media (max-width: 420px) {
   .codex-progress-meta { grid-template-columns: minmax(0, 1fr); }
 }
+/* Maintenance stays compact in overview and wraps long Traditional Chinese. */
+.game-maintenance { min-width: 0; max-width: 100%; margin-bottom: 1rem; overflow-wrap: anywhere; }
+.game-maintenance[hidden] { display: none; }
+.game-maintenance h3 { margin-top: 0; }
+.game-maintenance label { display: block; margin: .7rem 0; }
+.game-maintenance input[type="datetime-local"] { display: block; box-sizing: border-box; width: min(100%, 24rem); margin-top: .4rem; }
+.maintenance-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.maintenance-actions button { white-space: normal; min-height: 2.6rem; max-width: 100%; }
+.maintenance-warning { color: #9a5700; }
+.maintenance-settings-status { border-left: .25rem solid #3282ad; padding: .6rem; background: #eef7fc; }

@@ -1,4 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+import { attachMaintenanceUI, maintenanceViewModel } from "./game-maintenance-view.js?v=maintenance-v1";
 import {
   collection,
   doc,
@@ -168,6 +169,23 @@ const settingsStatus = document.getElementById("settingsStatus");
 const settingsStatusTitle = document.getElementById("settingsStatusTitle");
 const settingsStatusDetail = document.getElementById("settingsStatusDetail");
 const settingsForm = document.getElementById("settingsForm");
+const MAINTENANCE_SETTING_KEYS = ["maintenanceEnabled", "maintenanceOverrideEventId", "maintenanceDelayUntilUtc", "maintenanceSkipEventId", "maintenanceRefreshRequestId"];
+const maintenanceUi = attachMaintenanceUI({ card: document.getElementById("gameMaintenanceCard"),
+  settingsRoot: document.getElementById("gameMaintenanceSettings"),
+  onSave: (patch, uid) => saveRemoteSettings({ preventDefault() {} }, patch, uid),
+});
+
+function renderGameMaintenance() {
+  const data = selectedClientData() || {};
+  const effective = readRemoteSettings(data, false);
+  let writable = true;
+  try { assertFirestoreControlWritable(data); } catch { writable = false; }
+  maintenanceUi.update({ uid: pcDropdown.value, value: readField(data, "gameMaintenanceJson", null),
+    deviceFresh: isClientOnline(data), effectiveSettings: effective, writable,
+    ack: { desiredRevision: effective.desiredRevision, ackRevision: effective.lastAckRevision,
+      effectiveRevision: effective.effectiveRevision, applied: readField(data, "lastSettingsAckApplied", false),
+      detail: effective.lastAckDetail } });
+}
 const settingsServerEnabled = document.getElementById("settingsServerEnabled");
 const settingsServerList = document.getElementById("settingsServerList");
 const btnAddServer = document.getElementById("btnAddServer");
@@ -1204,6 +1222,9 @@ function readRemoteSettings(data, preferDesired = true) {
       useDesired ? "desiredMaxRestartCount" : "effectiveMaxRestartCount",
       10,
     ), 10),
+    ...Object.fromEntries(MAINTENANCE_SETTING_KEYS.map((key) => [key, readField(source,
+      `${useDesired ? "desired" : "effective"}${key[0].toUpperCase()}${key.slice(1)}`,
+      key === "maintenanceEnabled" ? true : key === "maintenanceDelayUntilUtc" ? 0 : "")])),
     lastAckRevision: Math.max(0, toInteger(readField(source, "lastSettingsAckRevision", 0), 0)),
     lastAckResult: String(readField(source, "lastSettingsAckResult", "") || "").toUpperCase(),
     lastAckDetail: String(readField(source, "lastSettingsAckDetail", "") || ""),
@@ -2786,15 +2807,16 @@ function assertFirestoreControlWritable(data) {
   }
 }
 
-async function saveRemoteSettings(event) {
+async function saveRemoteSettings(event, maintenancePatch = null, expectedId = pcDropdown.value) {
   event.preventDefault();
   const id = pcDropdown.value;
   const data = selectedClientData();
   if (!id || !data) return;
+  if (id !== expectedId) throw new Error("選取裝置已改變，請重新確認。");
 
   let values;
   try {
-    values = validateSettingsForm(data);
+    values = maintenancePatch ? readRemoteSettings(data, false) : validateSettingsForm(data);
   } catch (error) {
     settingsError = error?.message || String(error);
     renderSettingsPage();
@@ -2812,6 +2834,14 @@ async function saveRemoteSettings(event) {
       if (!snap.exists()) throw new Error("選取的電腦文件不存在");
       const current = snap.data();
       assertFirestoreControlWritable(current);
+      if (maintenancePatch) {
+        const model = maintenanceViewModel(readField(current, "gameMaintenanceJson", null), Date.now(), isClientOnline(current));
+        if (!model.canOperate) throw new Error("裝置維護能力尚未就緒或狀態已過期。");
+        if ((maintenancePatch.maintenanceSkipEventId && maintenancePatch.maintenanceSkipEventId !== model.eventId)
+          || (maintenancePatch.maintenanceOverrideEventId && maintenancePatch.maintenanceOverrideEventId !== model.eventId))
+          throw new Error("維護事件已變更，請重新確認。");
+        values = readRemoteSettings(current, false);
+      }
       if (toInteger(readField(current, "remoteSettingsSchemaVersion", 0), 0) < SETTINGS_SCHEMA_VERSION) {
         throw new Error("裝置版本尚不支援遠端設定");
       }
@@ -2840,6 +2870,13 @@ async function saveRemoteSettings(event) {
         desiredRuntimeDiagnosticsErrorKeepCount: values.runtimeDiagnosticsErrorKeepCount,
         desiredMaxRestartCount: values.maxRestartCount,
         desiredSettingsUpdatedAt: updatedAt,
+        // Preserve omitted maintenance fields from the transaction's fresh document.
+        ...Object.fromEntries(MAINTENANCE_SETTING_KEYS.map((key) => {
+          const suffix = `${key[0].toUpperCase()}${key.slice(1)}`;
+          return [`desired${suffix}`, maintenancePatch && Object.hasOwn(maintenancePatch, key)
+            ? maintenancePatch[key] : readField(current, `effective${suffix}`, key === "maintenanceEnabled" ? true : key === "maintenanceDelayUntilUtc" ? 0 : "")];
+        })),
+        desiredLiveQualityProfile: readField(current, "effectiveLiveQualityProfile", "balanced"),
       };
       transaction.update(ref, update);
       return { nextRevision, data: { ...current, ...update } };
@@ -2851,14 +2888,17 @@ async function saveRemoteSettings(event) {
     settingsPreferEffective = false;
     settingsFormSourceKey = "";
     renderSelectedClient();
+    return { revision: result.nextRevision };
   } catch (error) {
     settingsSaving = false;
     settingsError = error?.message || String(error);
     renderSettingsPage();
+    if (maintenancePatch) throw error;
   }
 }
 
 function renderSelectedClient() {
+  renderGameMaintenance();
   renderDeviceSummary();
   renderFlowServerStatus();
   refreshMeta();

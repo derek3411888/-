@@ -23,8 +23,8 @@ test("public maintenance status is bounded and contains neither local paths nor 
   assert.equal(result.launcherPath, undefined);
   assert.equal(result.nonce, undefined);
   assert.ok(!result.detail.includes("C:\\private"));
-  assert.equal(normalizeGameMaintenance({ ...sample, sourceUrl: "https://wutheringwaves.kurogames.com/tw/main/news/detail/5280" }, now).sourceUrl,
-    "https://wutheringwaves.kurogames.com/tw/main/news/detail/5280");
+  assert.equal(normalizeGameMaintenance({ ...sample, sourceUrl: "https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5280" }, now).sourceUrl,
+    "https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5280");
   assert.equal(normalizeGameMaintenance(JSON.stringify(sample), now).provider, "steam");
   assert.equal(normalizeGameMaintenance("x".repeat(5000), now), null);
 });

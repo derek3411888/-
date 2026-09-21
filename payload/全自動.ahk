@@ -9978,6 +9978,7 @@ ReadCombinedConfigState() {
     state.okwwPath := NormalizePath(IniReadSafe(CFG_FILE, "paths", "OKWW", ""))
     state.lrmcPath := NormalizePath(IniReadSafe(CFG_FILE, "paths", "LRMC", ""))
     state.wuPath := NormalizePath(IniReadSafe(CFG_FILE, "paths", "WUTHERING", ""))
+    state.maintenanceEnabled := IniReadSafe(CFG_FILE,"game_maintenance","enabled","1") = "1"
 
     state.smtpHost := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_host", ""), " `t`r`n")
     state.smtpPort := Trim(IniReadSafe(CFG_FILE, MAIL_SECTION, "smtp_port", "587"), " `t`r`n")
@@ -10169,7 +10170,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     summary .= "runtime_diagnostics.video_preview_enabled: " state.runtimeDiagnosticsVideoPreviewEnabled "`r`n"
     summary .= "fallback_log_file: " state.fallbackLogFile
     tabs := g.AddTab3("xm y+10 w1080 h500", [
-        "基本路徑與通知", "螢幕錄影", "遠端與診斷", "目前設定"
+        "基本路徑與通知", "螢幕錄影", "遠端與診斷", "目前設定", "版本維護"
     ])
     tabs.UseTab(1)
 
@@ -10357,6 +10358,15 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         g.AddEdit("xs y+5 w1010 r5 ReadOnly", state.errorText)
     }
 
+    tabs.UseTab(5)
+    g.AddText("Section w950", "【版本更新日排程】")
+    cbMaintenanceEnabled := g.AddCheckbox("xs y+12 w900", "自動查詢官方公告，等開服時間才發起遊戲更新")
+    cbMaintenanceEnabled.Value := state.maintenanceEnabled ? 1 : 0
+    g.AddText("xs y+12 w950 h50", "依基本路徑中的鳴潮入口自動辨識 Steam／官方版，不需手動選版本。支援 .exe、.lnk、Steam .url 和 steam://run/3513350。")
+    txtMaintenanceProvider := g.AddText("xs y+12 w950 h90", "尚未執行來源偵測。重新偵測只讀取安裝資訊，不開遊戲、不發起下載。")
+    btnMaintenanceProbe := g.AddButton("xs y+10 w180 h32", "重新偵測安裝來源")
+    g.AddText("xs y+14 w950 h95", "等待期間可從網站暫停、停止、指定伺服器。開服後仍需驗證更新完成及主畫面。Steam 自行排程的下載不受本程式控制。`n來源辨識成功不等於更新程序已通過實機驗收；未驗證的啟動器不會盲按。")
+
     tabs.UseTab()
     ; === 底部按鈕區（永遠位於分頁外） ===
     btnSave := g.AddButton("xm y+25 w170 h34 Default", "儲存全部並繼續")
@@ -10375,6 +10385,8 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         edOkww: edOkww,
         edLrmc: edLrmc,
         edWu: edWu,
+        cbMaintenanceEnabled: cbMaintenanceEnabled,
+        maintenanceProvider: txtMaintenanceProvider,
         edFallbackLog: edFallbackLog,
         txtFallbackHint: txtFallbackHint,
         cbServerScheduleEnabled: cbServerScheduleEnabled,
@@ -10426,6 +10438,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
     btnOkww.OnEvent("Click", OnCombinedBrowseOkww)
     btnLrmc.OnEvent("Click", OnCombinedBrowseLrmc)
     btnWu.OnEvent("Click", OnCombinedBrowseWu)
+    btnMaintenanceProbe.OnEvent("Click",(*) => GM_StartInstallProbe(__MAIL_SETUP))
     btnFallbackLog.OnEvent("Click", OnCombinedBrowseFallbackLog)
     edFallbackLog.OnEvent("Change", OnFallbackLogChanged)
     cbServerScheduleEnabled.OnEvent("Click", OnServerScheduleEnabledChanged)
@@ -10461,6 +10474,7 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
         Sleep 50
 
     saved := __MAIL_SETUP.saved
+    GM_StopInstallProbe(__MAIL_SETUP)
     __MAIL_SETUP := ""
     return saved
 }
@@ -10781,6 +10795,7 @@ OnCombinedSetupSave(*) {
     IniWrite lrmcPath, st.cfgPath, "paths", "LRMC"
     IniWrite "1", st.cfgPath, "flags", "LRMC_remember"
     IniWrite wuPath, st.cfgPath, "paths", "WUTHERING"
+    IniWrite st.cbMaintenanceEnabled.Value, st.cfgPath, "game_maintenance", "enabled"
     IniWrite "1", st.cfgPath, "flags", "WUTHERING_remember"
 
     IniWrite fallbackLogVal, st.cfgPath, "reward_monitor", "fallback_log_file"
