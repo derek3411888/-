@@ -8,6 +8,11 @@ function Assert-GMEqual($Actual, $Expected, [string]$Message) {
 function Assert-GMTrue([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
+function Read-GMTestOutput([string]$Path) {
+    $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
 function Invoke-GMTestProcess {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ScriptPath, [Parameter(Mandatory)]$Context,
@@ -44,7 +49,7 @@ function Invoke-GMTestProcess {
         $exitCode = 124
     } else { $process.WaitForExit(); $exitCode = $process.ExitCode }
     $result = [pscustomobject]@{ ExitCode=$exitCode; TimedOut=$timedOut; ProcessId=$process.Id
-        Stdout=[IO.File]::ReadAllText($stdoutPath); Stderr=[IO.File]::ReadAllText($stderrPath) }
+        Stdout=(Read-GMTestOutput $stdoutPath); Stderr=(Read-GMTestOutput $stderrPath) }
     $process.Dispose()
     return $result
 }

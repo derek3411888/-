@@ -43,6 +43,7 @@ catch
 #Include OkwwOcrTextMatchers.ahk
 #Include WutheringServerNames.ahk
 #Include SelfHealingPolicy.ahk
+#Include GameMaintenanceHost.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -1053,6 +1054,7 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
         return
     }
     try ToolTip(, , , TOOLTIP_SLOT)
+    try GM_Shutdown(exitReason)
     try StopRuntimeDiagnostics()
     try PerformanceTelemetry_Stop()
     try SetTimer(ScreenRecordingMaintenanceTick, 0)
@@ -1089,6 +1091,9 @@ OnRemoteControlStateChanged(state, command := "") {
         SetSoftPauseClockState(true)
     else if (state = "RUN" || state = "STOP")
         SetSoftPauseClockState(false)
+    maintenanceIntent := GM_HandleRemoteIntent(state, command)
+    if (maintenanceIntent.handled && state != "STOP")
+        return maintenanceIntent
     if (state = "SWITCH_SERVER") {
         if __WAITING_FOR_INTERACTIVE_DESKTOP {
             WriteLog("遠端切服：目前正等待可互動桌面，保留命令結果為 BUSY", "WARN")
@@ -1169,7 +1174,7 @@ RemotePauseHookTick(generationNonce := 0) {
     global __REMOTE_PAUSE_HOTKEY_BUSY, __REMOTE_PAUSE_HOOK_NONCE, __REWARD_MONITOR_ACTIVE
     global __WAITING_FOR_INTERACTIVE_DESKTOP
 
-    if (__WAITING_FOR_INTERACTIVE_DESKTOP
+    if (GM_IsGateActive() || __WAITING_FOR_INTERACTIVE_DESKTOP
         || !IsRemoteHookGenerationCurrent("PAUSE", generationNonce, "遠端PAUSE"))
         return
     ; 同一 nonce 不重入；較新 nonce 可取代仍在背景等待的舊 hook。
@@ -1239,6 +1244,8 @@ RemotePauseHookTick(generationNonce := 0) {
 }
 
 RemoteRunResumeHookTick(generationNonce := 0) {
+    if GM_IsGateActive()
+        return
     global __REMOTE_RESUME_SYNC_BUSY, __REMOTE_RESUME_HOOK_NONCE
     global __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
     global __WAITING_FOR_INTERACTIVE_DESKTOP
@@ -2338,6 +2345,17 @@ PrepareRemoteServerSwitch(command) {
     if (targetIndex = SERVER_SCHEDULE_INDEX && expectedName = CURRENT_SERVER_TARGET)
         return { code: "ALREADY_CURRENT", detail: "目前已在第 " targetIndex " 個伺服器「" expectedName "」" }
 
+    if GM_IsGateActive() {
+        scheduled := GM_HandleRemoteIntent("SWITCH_SERVER",{validated:true,serverName:expectedName,remoteNonce:GM_Value(command,"remoteNonce",0)})
+        if scheduled.code != "SWITCH_SCHEDULED"
+            return scheduled
+        SERVER_SCHEDULE_INDEX := targetIndex, CURRENT_SERVER_TARGET := expectedName
+        IniWrite(targetIndex,CFG_FILE,"server_schedule","current_index")
+        QueueServerSwitchCompletionNotification("WEB_SERVER_SWITCH")
+        SyncRemoteControlRuntimeState()
+        return scheduled
+    }
+
     REMOTE_SERVER_SWITCH_PENDING := true
     REMOTE_SERVER_SWITCH_TARGET_INDEX := targetIndex
     REMOTE_SERVER_SWITCH_TARGET_NAME := expectedName
@@ -2385,6 +2403,12 @@ CompleteServerForTodayFromRemote(command) {
         return { code: "CONFIG_WRITE_FAILED", detail: "無法將「" expectedName "」寫入今日完成狀態" }
 
     isCurrent := (targetIndex = SERVER_SCHEDULE_INDEX && expectedName = CURRENT_SERVER_TARGET)
+    if GM_IsGateActive() {
+        global GM_CONTROLLER
+        GM_ControllerScheduleChanged(GM_CONTROLLER)
+        SyncRemoteControlRuntimeState()
+        return {code:"COMPLETED_TODAY",detail:"已標記今日完成；維護等待中的目標已重新核對，不啟動已完成伺服器"}
+    }
     detail := "已將第 " targetIndex " 個伺服器「" expectedName "」標記為今日完成；後續排程會略過"
     if isCurrent
         detail .= "，目前正在執行的流程不會強制中斷"
@@ -2502,7 +2526,8 @@ else
 REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged", "OnRemoteControlSettingsChanged")
 ; 沒有 restart／nextserver handoff 參數代表使用者明確開始新的日循環；這是解除
 ; 前次 durable PAUSE 的安全入口。接手程序則保留 PAUSE，直到網頁送出較新 RUN nonce。
-remoteContinuationLaunch := (A_Args.Length > 0
+maintenanceContinuation := GM_HasActiveContinuation(CFG_FILE)
+remoteContinuationLaunch := maintenanceContinuation || (A_Args.Length > 0
     && (A_Args[1] = "restart" || A_Args[1] = "nextserver"))
 if (REMOTE_CONTROL_ACTIVE && !remoteContinuationLaunch) {
     if RC_BeginFreshRunCycle("normal-fresh-launch")
@@ -2522,11 +2547,6 @@ EnsureAllConfigAtStartup()
 LoadRuntimeDiagnosticsSettings()
 StartRuntimeDiagnostics()
 RecoverPendingRecordingSessions()
-
-; ★ 啟動前檢測：確保三個程式都沒有在運行
-WriteLog("執行啟動前檢測，確保所有目標程式都已關閉...")
-WriteStep("清場", "關閉既有目標進程")
-CheckAndCloseExistingProcesses()
 
 ; 讀取重啟計數器（避免無限循環）
 MAX_RESTART_COUNT := ToIntRange(
@@ -2577,9 +2597,9 @@ if (!isRestart && !isNextServerCycle)
 
 ; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
-StartCrashWatcher()
-
 LoadServerScheduleContext(isNextServerCycle, isRemoteServerSwitchCycle)
+GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),
+    {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET})
 REMOTE_SETTINGS_RUNTIME_READY := true
 if REMOTE_CONTROL_ACTIVE
     RC_EnableCommandProcessing()
@@ -2597,7 +2617,18 @@ if (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_LIST.Length > 0 && CURRENT_SERVER
     ExitApp
 }
 
-if MAIL_NOTIFY_ENABLED {
+gate := GM_WaitForStartupGate()
+if (gate.mode = "stop")
+    ExitApp
+if (gate.mode = "normal" || !IsWutheringProcessRunning()) {
+    WriteLog("維護時間閘門已放行，執行啟動前檢測")
+    WriteStep("清場", "關閉既有目標進程")
+    CheckAndCloseExistingProcesses()
+} else
+    WriteLog("版本更新接續：保留現有遊戲，由既有視窗／主畫面驗證，不重複啟動或清場")
+StartCrashWatcher()
+
+if (MAIL_NOTIFY_ENABLED && gate.mode = "normal") {
     startMailResult := SendStartNotifyMail(isRestart)
     if startMailResult.ok
         WriteLog("開始通知信已寄出")
@@ -2615,7 +2646,11 @@ updateRecoveryStartTick := 0
 noWindowLoopCount := 0
 noWindowSinceTick := 0
 
-if !isRestart
+if (gate.mode = "managed_update") {
+    managedUpdateResult := GM_RunManagedUpdate()
+    if !managedUpdateResult.ok
+        ExitApp
+} else if !isRestart
     TryStartScreenRecording("主流程開始")
 else {
     if AttachManagedScreenRecordingOnRestart("重啟模式接管")
@@ -2623,12 +2658,19 @@ else {
     else
         TryStartScreenRecording("重啟模式未找到既有錄影，改啟動新錄影")
 }
-EnsureWutheringRunning()
+if (gate.mode = "normal")
+    EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
     loginDetected := false
     detectState := DetectWutheringAndExit(&loginDetected)
+    if (detectState = "maintenance") {
+        maintenanceRecovery := GM_WaitForMaintenanceRecovery()
+        if (maintenanceRecovery.phase = "stopped")
+            ExitApp
+        continue
+    }
     if (detectState = "update") {
         updateLoops++
         WriteLog("偵測到鳴潮更新，等待遊戲自動重啟後再次檢測 (" updateLoops "/" maxUpdateLoops ")")
@@ -2708,6 +2750,11 @@ if (loginDetected) {
 
     ; 先切換伺服器，再啟動 OKWW。
     if hwndLogin {
+        if GM_GameMaintenanceProbe(hwndLogin,true) {
+            maintenanceRecovery := GM_WaitForMaintenanceRecovery()
+            if (maintenanceRecovery.phase = "stopped")
+                ExitApp
+        }
         serverSwitchOk := TrySelectScheduledServer(hwndLogin)
         if !serverSwitchOk
             WriteLog("伺服器切換未完成，將停止本輪避免誤進錯服", "WARN")
@@ -2769,6 +2816,14 @@ if okwwStarted {
     WriteLog("開始主畫面模板驗證（最多 90 秒）...")
     gameReadyResult.ok := WaitEscMenuOCR(gameHwnd, 90)
     gameReadyResult.phase := gameReadyResult.ok ? "initial_ready" : "initial_timeout"
+}
+
+if !gameReadyResult.ok {
+    if GM_GAME_MAINTENANCE_HIT {
+        gameReadyResult := GM_WaitForMaintenanceRecovery()
+        if (gameReadyResult.phase = "stopped")
+            ExitApp
+    }
 }
 
 if !gameReadyResult.ok {
@@ -2844,6 +2899,14 @@ if !okwwStarted {
 ; streak 只追蹤「是否能安全取得前景並注入輸入」，不是 OKWW 是否實際處理 F11。
 ; 登入入口另由上面的遊戲主畫面後置條件確認效果；遊戲原已就緒時只確認前景輸入能力恢復。
 ResetForegroundInputFailureStreak("遊戲可操作驗證與 OKWW 前景輸入條件均已通過")
+GM_MarkReady()
+if GM_IsManagedUpdateDay() {
+    TryStartScreenRecording("版本更新完成，遊戲主畫面已驗證")
+    if MAIL_NOTIFY_ENABLED {
+        startMailResult := SendStartNotifyMail(isRestart)
+        WriteLog(startMailResult.ok ? "維護後開始通知信已寄出" : "維護後開始通知信失敗：" startMailResult.message)
+    }
+}
 
 ; 5) 執行聲骸合成流程
 WriteLog("啟動聲骸合成腳本...")
@@ -5089,6 +5152,8 @@ ClickOkwwClientPoint(okwwHwnd, clientX, clientY) {
 }
 
 SendF11ToOkww(okwwHwnd) {
+    if !GM_BeforeF11()
+        return false
     global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
 
@@ -5214,6 +5279,11 @@ SendF11ToOkww(okwwHwnd) {
 
             ; 只送一次明確的按下／放開。ControlSend 對 Qt/pythonw 視窗可能完全無效，
             ; 舊版卻無條件回傳成功，正是 MyTUF 反覆卡在登入頁仍宣告 F11 成功的原因。
+            if !GM_MarkF11Attempt() {
+                LAST_OKWW_F11_FAILURE_CODE := "MAINTENANCE_JOURNAL_WRITE_FAILED"
+                LAST_OKWW_F11_FAILURE_DETAIL := "無法保存 F11 嘗試意圖，取消輸入避免重啟後重送"
+                return false
+            }
             SendEvent("{F11 down}")
             keyDown := true
             RawSleep(60)
@@ -5638,7 +5708,7 @@ CrashWatcherTick() {
     global CFG_FILE, __WAITING_FOR_INTERACTIVE_DESKTOP
     static busy := false
     static lastSkippedSignature := ""
-    if (busy || __WAITING_FOR_INTERACTIVE_DESKTOP)
+    if (busy || __WAITING_FOR_INTERACTIVE_DESKTOP || GM_IsGateActive())
         return
 
     crashWindow := FindActionableUe4CrashWindow()
@@ -5888,6 +5958,10 @@ DetectWutheringAndExit(&loginDetected := false) {
                 "右上角位置已驗證；未改尺寸、未啟用、未改 Z-order")
         }
 
+        ; 在任何備援登入／確認／退出輸入前先辨識明確維護提示。
+        if GM_GameMaintenanceProbe(hwnd,true)
+            return "maintenance"
+
         ; 只有右上角定位通過後，才允許登入模板輔助或後續 OCR。
         TryAssistLoginTemplateBeforeOcr()
 
@@ -6063,6 +6137,8 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
     bestVar := 0
     while (PauseAwareTickMs() < deadline) {
         sampleCount += 1
+        if GM_GameMaintenanceProbe(hwnd)
+            return false
 
         if (!hwnd || !WinExist("ahk_id " hwnd)) {
             newHwnd := GetWutheringGameHwnd()
@@ -6670,6 +6746,8 @@ WaitGameReadyAfterOkwwF11(hwnd, firstWaitSec := 20, afterClickWaitSec := 30,
     }
 
     WriteLog("OKWW F11 後 " firstWaitSec " 秒仍未檢測到主畫面；準備短暫啟用鳴潮並點擊客戶區正中央", "WARN")
+    if GM_GAME_MAINTENANCE_HIT || GM_GameMaintenanceProbe(hwnd,true)
+        return {ok:false,centerClicked:false,phase:"maintenance"}
     WriteStep("OKWW F11 後遊戲就緒", "第一階段逾時，執行一次中心左鍵", "WARN")
 
     hwnd := GetWutheringGameHwnd()
@@ -7070,7 +7148,7 @@ EnsureWutheringRunning() {
         return true
     }
     
-    path := GetPathWithAsk("WUTHERING", "請選擇鳴潮遊戲主程式或捷徑", "可執行檔或捷徑 (*.exe;*.lnk)")
+    path := GetPathWithAsk("WUTHERING", "請選擇鳴潮遊戲主程式或捷徑", "鳴潮入口 (*.exe;*.lnk;*.url)")
     if (!path) {
         WriteLog("未設定鳴潮路徑，無法啟動", "ERROR")
         MsgBox "未設定鳴潮遊戲路徑。請重新執行並選擇。"
@@ -7423,7 +7501,7 @@ EnsureCoreProgramPathsAtStartup() {
 GetPathWithAsk(key, prompt, filter) {
     global CFG_FILE
     path := NormalizePath(IniReadSafe(CFG_FILE, "paths", key, ""))
-    if (path != "" && FileExist(path))
+    if (key = "WUTHERING" ? GM_IsValidGameLaunchEntry(path) : (path != "" && FileExist(path)))
         return path
 
     WriteLog("路徑未設定或檔案不存在，打開整合設定視窗: " key, "WARN")
@@ -7431,7 +7509,7 @@ GetPathWithAsk(key, prompt, filter) {
     EnsureAllConfigAtStartup(false, "偵測到路徑缺失或失效（" key "）")
 
     path := NormalizePath(IniReadSafe(CFG_FILE, "paths", key, ""))
-    if (path != "" && FileExist(path))
+    if (key = "WUTHERING" ? GM_IsValidGameLaunchEntry(path) : (path != "" && FileExist(path)))
         return path
 
     WriteLog("整合設定後仍無有效路徑: " key, "ERROR")
@@ -9188,6 +9266,8 @@ HandleCycleFinishAndShutdown(completedTime := "") {
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", nextServerMode := "") {
+    if !relaunchForNextServer
+        GM_CancelForStop(stopTypeCode)
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_HANDOFF_LAUNCHED
     global __CLEAN_FINAL_EXIT_REQUESTED
     stopType := ResolveShutdownStopType(stopTypeCode)
@@ -9969,7 +10049,7 @@ ReadCombinedConfigState() {
 
     if (state.wuPath = "")
         err.Push("鳴潮路徑為空")
-    else if !FileExist(state.wuPath)
+    else if !GM_IsValidGameLaunchEntry(state.wuPath)
         err.Push("鳴潮路徑不存在")
 
     if MAIL_NOTIFY_ENABLED {
@@ -10460,7 +10540,7 @@ OnCombinedBrowseLrmc(*) {
 
 OnCombinedBrowseWu(*) {
     global __MAIL_SETUP
-    p := FileSelect(, "", "選擇鳴潮可執行檔或捷徑", "可執行檔或捷徑 (*.exe;*.lnk)")
+    p := FileSelect(, "", "選擇鳴潮可執行檔或捷徑", "鳴潮入口 (*.exe;*.lnk;*.url)")
     if (p)
         __MAIL_SETUP.edWu.Value := p
 }
@@ -10563,7 +10643,7 @@ OnCombinedSetupSave(*) {
         MsgBox "LRMCAI 路徑空白或不存在", "整合設定", "Iconx"
         return
     }
-    if (wuPath = "" || !FileExist(wuPath)) {
+    if !GM_IsValidGameLaunchEntry(wuPath) {
         MsgBox "鳴潮路徑空白或不存在", "整合設定", "Iconx"
         return
     }

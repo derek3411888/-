@@ -10,7 +10,7 @@ $suiteTests = [ordered]@{
     Policy=@('GameMaintenancePolicyTest.ahk','GameMaintenancePersistenceTest.ahk')
     Adapters=@('GameUpdateAdaptersTest.ahk')
     Ocr=@('GameUpdateOcrPolicyTest.ahk')
-    Startup=@('GameMaintenanceStartupTest.ahk')
+    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1')
     Transport=@('GameMaintenanceTransportTest.ahk')
 }
 $context = Initialize-ProjectDevelopmentPaths -ProjectRoot (Split-Path $PSScriptRoot -Parent) -RunName "gm-$Suite"

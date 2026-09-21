@@ -33,6 +33,9 @@ TestMaintenancePolicy() {
     GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_NOTICE", "known event not released on source failure")
     state.eventId := "", state.expectedOpenAt := 0, input.elapsedMs := 20000
     GMTest_Assert(GM_Evaluate(state,input).phase = "NORMAL", "unknown-source degraded normal after budget")
+    input.noticeState := "pending"
+    GMTest_Assert(GM_Evaluate(state,input).phase = "CHECKING_NOTICE", "worker cold start must not race its bounded notice query")
+    input.noticeState := "unavailable"
     input.noticeErrorCode := "NOTICE_CONFLICT"
     GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_NOTICE", "conflict is not no-maintenance")
     input := GMTest_Input(10000), state := GMTest_State()
@@ -59,6 +62,10 @@ TestMaintenancePolicy() {
     GMTest_Assert(GM_Evaluate(state,input).phase = "READY", "stable verified main screen is ready")
     input.observation.identityVerified := false
     GMTest_Assert(GM_Evaluate(state,input).phase != "READY", "forged ready rejected")
+    input.observation := {phase:"update_ready",observedAt:10000}
+    GMTest_Assert(GM_Evaluate(state,input).effect.type = "start_update", "already-updated Steam still needs one guarded launch")
+    state.actionId := "started", state.actionStage := "observed"
+    GMTest_Assert(GM_Evaluate(state,input).effect.type = "observe", "update complete after launch waits for actual game instead of relaunch")
     input := GMTest_Input(10000), state := GMTest_State(), state.f11InputAttempted := true
     input.observation := {phase:"maintenance", confirmed:true, identityVerified:true, observedAt:10000}
     decision := GM_Evaluate(state,input)

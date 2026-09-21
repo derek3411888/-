@@ -36,7 +36,7 @@ GMU_Start(install,action,hooks) {
     observation := hooks.ReadObservation.Call(install)
     phase := GM_Value(observation,"phase","unknown")
     if ((phase = "game_running" && GM_Value(observation,"identityVerified",false))
-        || InStr(",downloading,installing,verifying,queued,update_ready,","," phase ",",true))
+        || InStr(",downloading,installing,verifying,queued,","," phase ",",true))
         return GMU_Result(true,"","已觀察到目標更新器／遊戲；不重複啟動")
     if (GM_Value(action,"recoveredIntent",false) || GM_Value(action,"attempted",false))
         return GMU_Result(true,"","動作已保存或嘗試，等待現況確認",false,action.actionId)

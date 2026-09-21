@@ -204,13 +204,21 @@ function Invoke-GMWorker {
     $session=Test-GMWorkerPaths $RequestPath $OutputPath $StopPath $StateDirectory
     $env:TEMP=$session;$env:TMP=$session;$env:TMPDIR=$session
     [void][IO.Directory]::CreateDirectory($StateDirectory)
-    try{$lock=[IO.File]::Open((Join-Path $StateDirectory 'worker.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{return 2}
+    $lock=$null
+    # A just-exiting parent may need a short moment to release its one helper.
+    # Still one exclusive lock; this never opens a second concurrent loop.
+    for($attempt=0;$attempt -lt 8 -and -not $lock;$attempt++){
+        if([IO.File]::Exists($StopPath) -or -not (Test-GMWorkerParent $ParentPid $ParentStartUtc)){return 0}
+        try{$lock=[IO.File]::Open((Join-Path $StateDirectory 'worker.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}
+        catch{Start-Sleep -Milliseconds 250}
+    }
+    if(-not $lock){return 2}
     try {
         try{(Get-Process -Id $PID).PriorityClass='BelowNormal'}catch{}
         $script:GMWorkerAlive={-not [IO.File]::Exists($StopPath) -and (Test-GMWorkerParent $ParentPid $ParentStartUtc)}.GetNewClosure()
         $request=Read-GMWorkerRequest $RequestPath;$requestId=$request.requestId
         $timer=[Diagnostics.Stopwatch]::StartNew();$lastObserve=-5000;$lastNotice=-300000;$lastWrite=-30000;$lastForce=-60000
-        $notice=$null;$install=$null;$observation=$null;$game=$null;$previousPayload='';$sequence=0;$entry='';$generation=-1
+        $notice=$null;$install=$null;$observation=$null;$game=$null;$previousPayload='';$sequence=0;$entry='';$generation=-1;$lastForceId='0'
         while(& $script:GMWorkerAlive){
             try{$next=Read-GMWorkerRequest $RequestPath $requestId;if([long]$next.generation -ge [long]$request.generation){$request=$next}}catch{}
             if($entry -cne $request.launchEntry -or $generation -ne $request.generation){
@@ -219,10 +227,16 @@ function Invoke-GMWorker {
             }
             $now=[DateTimeOffset]::UtcNow
             $deadline=if($notice -and $notice.notice){([DateTimeOffset]$notice.notice.expectedOpenAtUtc).ToUnixTimeMilliseconds()}else{0}
-            $force=$deadline -gt 0 -and $now.ToUnixTimeMilliseconds() -ge $deadline -and ([DateTimeOffset]$notice.checkedAt).ToUnixTimeMilliseconds() -lt $deadline
-            if($request.mode -ne 'install' -and ($timer.ElapsedMilliseconds-$lastNotice -ge 300000 -or ($force -and $timer.ElapsedMilliseconds-$lastForce -ge 60000))){
+            $forceId=[string](Get-GMInstallField $request 'refreshRequestId' '0')
+            $force=($deadline -gt 0 -and $now.ToUnixTimeMilliseconds() -ge $deadline -and ([DateTimeOffset]$notice.checkedAt).ToUnixTimeMilliseconds() -lt $deadline) -or $forceId -ne $lastForceId
+            if($request.mode -ne 'install' -and (Test-GMWorkerNoticeDue $timer.ElapsedMilliseconds $lastNotice $lastForce $forceId $lastForceId $force)){
                 $lastNotice=$timer.ElapsedMilliseconds;if($force){$lastForce=$lastNotice}
+                $lastForceId=$forceId
                 $previous=if($notice){$notice.notice}else{$null}
+                if(-not $previous){
+                    $pinned=[string](Get-GMInstallField $request 'pinnedEventId' '')
+                    if($pinned){$cached=Read-GMNoticeCache $StateDirectory;if($cached){$previous=@($cached.notices | Where-Object {$_.eventId -ceq $pinned}) | Select-Object -First 1}}
+                }
                 $notice=Get-GMOfficialNotice -CacheDirectory $StateDirectory -Now $now -Force $force -Previous $previous -HttpGetter ${function:Invoke-GMWorkerHttp}
                 if(-not (& $script:GMWorkerAlive)){break}
             }
@@ -243,6 +257,11 @@ function Invoke-GMWorker {
         }
         return 0
     }finally{$lock.Dispose()}
+}
+function Test-GMWorkerNoticeDue {
+    param([long]$Elapsed,[long]$LastNotice,[long]$LastForce,[string]$ForceId,[string]$LastForceId,[bool]$DeadlineDue)
+    if($Elapsed-$LastNotice -ge 300000){return $true}
+    return ($DeadlineDue -or $ForceId -cne $LastForceId) -and $Elapsed-$LastForce -ge 60000
 }
 if($MyInvocation.InvocationName -ne '.') {
     try{exit (Invoke-GMWorker -RequestPath $RequestPath -OutputPath $OutputPath -StopPath $StopPath -StateDirectory $StateDirectory -ParentPid $ParentPid -ParentStartUtc $ParentStartUtc)}

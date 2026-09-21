@@ -1,5 +1,6 @@
 #Requires AutoHotkey v2.0+
 #Warn All, StdOut
+FileEncoding("UTF-8")
 #Include TestRuntimePaths.ahk
 
 GMTest_Assert(value, message) {

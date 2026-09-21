@@ -11,6 +11,9 @@ try {
     $paths=@{RequestPath=(Join-Path $session 'request.json');OutputPath=(Join-Path $session 'snapshot.ini');StopPath=(Join-Path $session 'stop');StateDirectory=$state}
     $validated=Test-GMWorkerPaths @paths
     Assert-GMEqual $validated $session 'session containment validated'
+    Assert-GMTrue (Test-GMWorkerNoticeDue 300001 0 0 '0' '0' $false) 'five-minute periodic notice read'
+    Assert-GMTrue (Test-GMWorkerNoticeDue 60001 50000 0 '2' '1' $false) 'explicit recheck after min interval'
+    Assert-GMTrue (-not (Test-GMWorkerNoticeDue 59999 50000 0 '2' '1' $true)) 'rapid manual/deadline rechecks bounded to 60 seconds'
     $bad=$paths.Clone();$bad.OutputPath=Join-Path $context.RunRoot 'escape.ini'
     $rejected=$false;try { Test-GMWorkerPaths @bad } catch { $rejected=$true };Assert-GMTrue $rejected 'output escape rejected'
     $snapshot=[ordered]@{meta=[ordered]@{schemaVersion=1;marker='WUTHERING_GAME_MAINTENANCE_WORKER_V1';requestId='roundtrip';sequence=1;generation=2;observedAtUtcMs=100000}

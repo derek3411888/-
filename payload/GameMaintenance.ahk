@@ -112,8 +112,36 @@ GM_RequireEnum(value, allowed) {
         throw Error("Invalid maintenance protocol enum")
 }
 
+GM_IsValidGameLaunchEntry(path) {
+    if RegExMatch(path,"i)^steam://(?:run|rungameid)/3513350/?$")
+        return true
+    if RegExMatch(path,"i)^steam:")
+        return false
+    if path = "" || !FileExist(path)
+        return false
+    if RegExMatch(path,"i)\.url$") {
+        target := "", section := "", found := 0
+        try {
+            if FileGetSize(path) > 65536
+                return false
+            for line in StrSplit(FileRead(path,"UTF-8"),"`n","`r") {
+                line := Trim(line)
+                if RegExMatch(line,"^\[([^\]]+)\]$",&match)
+                    section := StrLower(match[1])
+                else if section = "internetshortcut" && RegExMatch(line,"i)^URL=(.*)$",&match)
+                    target := Trim(match[1]), found += 1
+            }
+        } catch
+            return false
+        if found != 1
+            return false
+        return !!RegExMatch(target,"i)^steam://(?:run|rungameid)/3513350/?$")
+    }
+    return !!RegExMatch(path,"i)\.(?:exe|lnk)$")
+}
+
 GM_JournalFields() {
-    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs"
+    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage"
 }
 
 GM_TextChecksum(text) {
@@ -153,6 +181,7 @@ GM_ParseJournal(text) {
     GM_RequireEnum(state.phase,"CHECKING_NOTICE,NORMAL,WAIT_OPEN,WAIT_NOTICE,CHECKING_UPDATE,UPDATING,CHECKING_LOGIN,WAIT_SERVER,READY,NEEDS_ATTENTION,STOPPED")
     GM_RequireEnum(state.desiredState,"RUN,PAUSE,STOP")
     GM_RequireEnum(state.actionStage,",intent,observed,cancelled")
+    GM_RequireEnum(state.updaterUiActionStage,",intent,observed,cancelled")
     GM_RequireEnum(state.provider,"unknown,ambiguous,steam,kuro")
     GM_RequireEnum(state.overlay,",PAUSE,WAIT_DESKTOP")
     if (state.cancelled != 0 && state.cancelled != 1) || (state.f11InputAttempted != 0 && state.f11InputAttempted != 1)
@@ -186,15 +215,15 @@ GM_AtomicText(path,text) {
     DirCreate(root)
     temporary := path "." DllCall("GetCurrentProcessId") "_" A_TickCount "_" Random(1,2147483647) ".tmp"
     try {
-        file := FileOpen(temporary,"w","UTF-8-RAW")
-        if !IsObject(file)
+        journalFile := FileOpen(temporary,"w","UTF-8-RAW")
+        if !IsObject(journalFile)
             throw Error("Cannot create atomic maintenance file")
         try {
-            file.Write(text)
-            if !DllCall("FlushFileBuffers","Ptr",file.Handle)
+            journalFile.Write(text)
+            if !DllCall("FlushFileBuffers","Ptr",journalFile.Handle)
                 throw OSError(A_LastError,"Flush maintenance file")
         } finally
-            file.Close()
+            journalFile.Close()
         if !DllCall("MoveFileExW","Str",temporary,"Str",path,"UInt",0x9)
             throw OSError(A_LastError,"Atomic maintenance replace")
     } finally {
@@ -278,4 +307,127 @@ GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJ
             return {committed:true,errorCode:"JOURNAL_OBSERVATION_FAILED",state:next}
     }
     return {committed:true,errorCode:"",state:next,result:result}
+}
+
+; The controller owns scheduling; host hooks own existing application behavior.
+; Tests exercise this exact controller, without loading the game auto-execute body.
+GM_CreateController(journalPath,context,hooks) {
+    loadError := ""
+    try state := GM_LoadJournal(journalPath)
+    catch as err {
+        state := GM_DefaultState(), state.phase := "NEEDS_ATTENTION", loadError := err.Message
+    }
+    if (!GM_HasActiveContinuation(state) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY"))
+        state := GM_DefaultState()
+    if state.runCycle = ""
+        state.runCycle := GM_Value(context,"runCycle","")
+    if state.targetServer = ""
+        state.targetServer := GM_Value(context,"targetServer","")
+    return {state:state,hooks:hooks,journalPath:journalPath,worker:0,readCount:0,lastDecision:0,
+        active:true,managed:state.eventId != "",stopRecordingDone:false,loadError:loadError,
+        lastSavedAt:0,lastSavedKey:"",lastPublishedKey:"",workerFailure:""}
+}
+
+GM_ControllerSave(c,force := false) {
+    state := c.state
+    key := state.phase "|" state.overlay "|" state.eventId "|" state.revision "|" state.expectedOpenAt "|"
+        . state.actionId "|" state.actionStage "|" state.desiredState "|" state.remoteGeneration "|"
+        . state.cancelled "|" state.runCycle "|" state.targetServer "|" state.f11InputAttempted "|" state.helperRestarts
+    if force || key != c.lastSavedKey || state.updatedAtUtcMs - c.lastSavedAt >= 30000 {
+        GM_SaveJournal(c.journalPath,state)
+        c.lastSavedAt := state.updatedAtUtcMs, c.lastSavedKey := key
+    }
+}
+
+GM_ControllerRemoteIntent(c,desired,command := 0) {
+    if !IsObject(c) || !c.active
+        return {handled:false}
+    if desired = "SWITCH_SERVER" {
+        if !GM_Value(command,"validated",false)
+            return {handled:false}
+        c.state.targetServer := GM_Value(command,"serverName",c.state.targetServer)
+    } else if (desired = "RUN" || desired = "PAUSE" || desired = "STOP") {
+        c.state.desiredState := desired
+        if desired = "STOP"
+            c.state.cancelled := true, c.state.phase := "STOPPED", c.state.actionStage := "cancelled"
+        c.state.overlay := desired = "PAUSE" ? "PAUSE" : ""
+    } else
+        return {handled:false}
+    c.state.remoteGeneration := Max(c.state.remoteGeneration,GM_Value(command,"remoteNonce",0))
+    try GM_ControllerSave(c,true)
+    catch
+        return {handled:true,code:"CONFIG_WRITE_FAILED",detail:"維護意圖未能持久保存；不執行遊戲操作"}
+    return {handled:true,code:desired = "SWITCH_SERVER" ? "SWITCH_SCHEDULED" : "APPLIED",
+        detail:desired = "SWITCH_SERVER" ? "已保存目標，等待開服／更新；尚未完成實際切服" : "已保存維護期間意圖，不發送遊戲快捷鍵"}
+}
+
+GM_ControllerScheduleChanged(c) {
+    schedule := c.hooks.ReconcileSchedule.Call(c.state)
+    c.state.runCycle := schedule.runCycle, c.state.targetServer := schedule.targetServer
+    if GM_Value(schedule,"allCompleted",false)
+        c.state.cancelled := true, c.state.phase := "STOPPED", c.state.desiredState := "STOP"
+    GM_ControllerSave(c,true)
+    return schedule
+}
+
+GM_ControllerTick(c,allowStart := false) {
+    if c.state.cancelled {
+        c.lastDecision := GM_Decision(c.state,"STOPPED","stop")
+        return c.lastDecision
+    }
+    if c.loadError != "" {
+        c.lastDecision := GM_Decision(c.state,"NEEDS_ATTENTION","none","MAINTENANCE_JOURNAL_INVALID",c.loadError)
+        return c.lastDecision
+    }
+    if IsObject(c.worker) && !c.hooks.WorkerAlive.Call(c.worker) {
+        try c.hooks.WorkerStop.Call(c.worker)
+        c.worker := 0
+        if c.state.helperRestarts >= 1 {
+            c.workerFailure := "背景維護查詢重建一次後仍失敗，等待人工確認"
+        } else
+            c.state.helperRestarts += 1
+    }
+    if !IsObject(c.worker) && c.workerFailure = "" {
+        try c.worker := c.hooks.WorkerStart.Call(c)
+        catch as err {
+            if c.state.helperRestarts >= 1
+                c.workerFailure := err.Message
+            else
+                c.state.helperRestarts += 1
+        }
+    }
+    c.readCount += 1
+    input := c.hooks.ReadInput.Call(c)
+    if c.workerFailure != "" && input.desiredState != "STOP"
+        decision := GM_Decision(c.state,"NEEDS_ATTENTION","none","MAINTENANCE_WORKER_FAILED",c.workerFailure)
+    else
+        decision := GM_Evaluate(c.state,input)
+    c.managed := c.managed || decision.state.eventId != "" || decision.phase = "WAIT_SERVER"
+    if InStr(",WAIT_OPEN,WAIT_NOTICE,WAIT_SERVER,NEEDS_ATTENTION,","," decision.phase ",",true) && !c.stopRecordingDone {
+        c.hooks.StopRecording.Call()
+        c.stopRecordingDone := true
+    }
+    if (decision.effect.type = "reconcile_schedule") {
+        c.state := decision.state
+        GM_ControllerScheduleChanged(c)
+        decision.state := c.state
+    } else if (decision.effect.type != "none" && decision.effect.type != "resume_flow" && (allowStart || decision.effect.type != "start_update")) {
+        committed := GM_CommitEffect(c.state,decision,(*) => c.hooks.ReadInput.Call(c),c.journalPath,c.hooks.ApplyEffect)
+        decision.state := committed.state
+        if committed.errorCode != "" && committed.errorCode != "INTENT_CHANGED" {
+            decision := GM_Decision(committed.state,"NEEDS_ATTENTION","none",committed.errorCode,"動作尚未安全完成；保留現場，不一般重啟")
+        }
+    }
+    c.state := decision.state, c.lastDecision := decision
+    try GM_ControllerSave(c)
+    catch {
+        c.loadError := "維護狀態保存失敗；停止後續操作"
+        return GM_Decision(c.state,"NEEDS_ATTENTION","none","JOURNAL_WRITE_FAILED",c.loadError)
+    }
+    key := decision.phase "|" decision.overlay "|" decision.errorCode "|" decision.detail "|" c.state.targetServer "|" c.state.expectedOpenAt
+    if key != c.lastPublishedKey {
+        c.hooks.Publish.Call(decision)
+        c.lastPublishedKey := key
+    }
+    return decision
 }

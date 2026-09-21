@@ -13,7 +13,8 @@ GM_DefaultState() {
     return {schemaVersion:1, phase:"CHECKING_NOTICE", overlay:"", eventId:"", revision:"", gameVersion:"", sourceUrl:"",
         startsAt:0, expectedOpenAt:0, provider:"unknown", fingerprint:"", runCycle:"", targetServer:"",
         actionId:"", actionStage:"", f11InputAttempted:0, cancelled:0, desiredState:"RUN", remoteGeneration:0,
-        elapsedMs:0, lastObserveElapsedMs:0, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0}
+        elapsedMs:0, lastObserveElapsedMs:0, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0,
+        updaterUiActionId:"",updaterUiActionStage:""}
 }
 
 GM_CopyState(original) {
@@ -63,8 +64,10 @@ GM_Evaluate(previous, input) {
     if !GM_Value(input,"desktopAvailable",false)
         return GM_Decision(state,state.phase,"none","","桌面鎖定；等待解鎖","WAIT_DESKTOP")
     if !GM_Value(input,"clockStable",false) {
-        state.lastNoticeCheckElapsedMs := elapsed
-        return GM_Decision(state,"WAIT_NOTICE","check_notice","CLOCK_CHANGED","系統時間變更，重新確認公告")
+        effect := elapsed - state.lastNoticeCheckElapsedMs >= 300000 ? "check_notice" : "none"
+        if effect = "check_notice"
+            state.lastNoticeCheckElapsedMs := elapsed
+        return GM_Decision(state,"WAIT_NOTICE",effect,"CLOCK_CHANGED","系統時間變更，重新確認公告")
     }
     if GM_Value(input,"runCycle",state.runCycle) != state.runCycle
         return GM_Decision(state,state.phase,"reconcile_schedule","","循環日已變更，先核對伺服器排程")
@@ -73,7 +76,8 @@ GM_Evaluate(previous, input) {
     if !observationFresh
         observedPhase := "unknown"
     if (observedPhase = "maintenance" && GM_Value(observation,"confirmed",false) && GM_Value(observation,"identityVerified",false)) {
-        state.lastObserveElapsedMs := elapsed
+        if state.phase != "WAIT_SERVER"
+            state.lastObserveElapsedMs := elapsed
         return GM_Decision(state,"WAIT_SERVER","none","","遊戲明確顯示維護，每五分鐘重新確認")
     }
     if (state.phase = "WAIT_SERVER") {
@@ -107,7 +111,7 @@ GM_Evaluate(previous, input) {
     if (state.eventId = "") {
         if (sourceState = "valid" || !GM_Value(input,"enabled",true))
             return GM_Decision(state,"NORMAL","resume_flow")
-        if (elapsed >= 20000)
+        if (sourceState != "pending" && elapsed >= 20000)
             return GM_Decision(state,"NORMAL","resume_flow","NOTICE_UNAVAILABLE","公告確認失敗；沿用平日流程並保留遊戲內維護備援")
         return GM_Decision(state,"CHECKING_NOTICE")
     }
@@ -131,7 +135,12 @@ GM_Evaluate(previous, input) {
         return GM_Decision(state,"READY","resume_flow")
     if (observedPhase = "error" || observedPhase = "login_required" || observedPhase = "offline" || observedPhase = "paused_download")
         return GM_Decision(state,"NEEDS_ATTENTION","none",GM_Value(observation,"errorCode","UPDATER_" StrUpper(observedPhase)),GM_Value(observation,"detail","更新器需要人工確認"))
-    if (observedPhase = "game_running" || observedPhase = "update_ready" || observedPhase = "login_ready")
+    if (observedPhase = "update_ready") {
+        if state.actionId = "" && GM_Value(install,"updateAdapterReady",false)
+            return GM_Decision(state,"CHECKING_UPDATE","start_update")
+        return GM_Decision(state,"CHECKING_UPDATE","observe","","更新器已就緒，仍在等待目標遊戲程序")
+    }
+    if (observedPhase = "game_running" || observedPhase = "login_ready")
         return GM_Decision(state,"CHECKING_LOGIN","resume_flow","","更新器或程序已就緒；尚未宣告遊戲登入成功")
     if InStr(",downloading,installing,verifying,queued,","," observedPhase ",",true) {
         if GM_Value(input,"noProgressMs",0) >= 1800000
