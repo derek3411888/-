@@ -100,9 +100,21 @@ function Select-GMNotice {
     $usable = @($Notices | Where-Object { Test-GMSavedNotice $_ })
     $previousValid = $null -ne $Previous -and (Test-GMSavedNotice $Previous)
     if ($previousValid) {
-        $same = @($usable | Where-Object { $_.eventId -eq $Previous.eventId }) + @($Previous)
+        $previousStart=[DateTimeOffset]$Previous.startsAtUtc
+        $previousEnd=[DateTimeOffset]$Previous.expectedOpenAtUtc
+        $previousDay=$previousStart.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd')
+        $conflicting=@($usable | Where-Object {
+            $start=[DateTimeOffset]$_.startsAtUtc; $end=[DateTimeOffset]$_.expectedOpenAtUtc
+            $_.eventId -ne $Previous.eventId -and (
+                $start.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd') -eq $previousDay -or
+                ($start -le $previousEnd -and $end -ge $previousStart) -or
+                ($_.gameVersion -eq $Previous.gameVersion -and $end -ge $Now -and $start -le $previousStart.AddDays(2)))
+        })
+        if ($conflicting.Count) { return [pscustomobject]@{notice=$Previous;sourceState='conflict';requiresReview=$true;reconfirmed=$false} }
+        $currentMatches = @($usable | Where-Object { $_.eventId -eq $Previous.eventId })
+        $same = $currentMatches + @($Previous)
         $chosen = $same | Sort-Object {[DateTimeOffset]$_.expectedOpenAtUtc} -Descending | Select-Object -First 1
-        return [pscustomobject]@{notice=$chosen;sourceState='known';requiresReview=$false}
+        return [pscustomobject]@{notice=$chosen;sourceState='known';requiresReview=$false;reconfirmed=($currentMatches.Count -gt 0)}
     }
     $todayNotices = @($usable | Where-Object { ([DateTimeOffset]$_.startsAtUtc).ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd') -eq $today })
     $events = @($todayNotices | Group-Object eventId)
@@ -219,6 +231,9 @@ function Get-GMOfficialNotice {
         }
         $selectedFresh = Select-GMNotice $notices $Now $selected.notice
         if ($selectedFresh.requiresReview) { throw 'GM_CONFLICT: conflicting maintenance events' }
+        if ($selected.notice -and -not (Get-GMNoticeValue $selectedFresh 'reconfirmed' $false)) {
+            throw 'GM_UNCONFIRMED: known event missing from current official notices'
+        }
         $merged = @($notices | Group-Object eventId | ForEach-Object {
             $_.Group | Sort-Object {[DateTimeOffset]$_.expectedOpenAtUtc} -Descending | Select-Object -First 1
         })
@@ -234,9 +249,10 @@ function Get-GMOfficialNotice {
         return [pscustomobject]@{outcome='ok';notice=$selectedFresh.notice;checkedAt=$checkedAt;errorCode='';errorDetail='';fromCache=$false}
     } catch {
         $conflict = $_.Exception.Message.StartsWith('GM_CONFLICT:')
+        $unconfirmed = $_.Exception.Message.StartsWith('GM_UNCONFIRMED:')
         $invalid = $conflict -or $_.Exception.Message.StartsWith('GM_INVALID:')
         return [pscustomobject]@{outcome=$(if ($invalid) {'invalid'} else {'unavailable'});notice=$selected.notice
-            checkedAt=$(if ($cache) {$cache.checkedAtUtc} else {''});errorCode=$(if ($conflict) {'NOTICE_CONFLICT'} elseif ($invalid) {'NOTICE_INVALID'} else {'NOTICE_UNAVAILABLE'})
+            checkedAt=$(if ($cache) {$cache.checkedAtUtc} else {''});errorCode=$(if ($conflict) {'NOTICE_CONFLICT'} elseif ($unconfirmed) {'NOTICE_EVENT_NOT_RECONFIRMED'} elseif ($invalid) {'NOTICE_INVALID'} else {'NOTICE_UNAVAILABLE'})
             errorDetail=([regex]::Replace($_.Exception.Message,'[\r\n\x00-\x1f]',' ')).Substring(0,[Math]::Min(500,$_.Exception.Message.Length));fromCache=$false}
     }
 }

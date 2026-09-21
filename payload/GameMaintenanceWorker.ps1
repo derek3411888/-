@@ -189,7 +189,10 @@ function ConvertTo-GMWorkerSnapshot {
         $noticeFields.startsAtUtcMs=([DateTimeOffset]$record.startsAtUtc).ToUnixTimeMilliseconds()
         $noticeFields.expectedOpenAtUtcMs=([DateTimeOffset]$record.expectedOpenAtUtc).ToUnixTimeMilliseconds()
         $noticeFields.sourceUrl=$record.sourceUrl;$noticeFields.sourceState=$record.sourceState
-        $noticeFields.freshForRelease=[int]($Notice.outcome -eq 'ok' -and $checked -and ($Now-[DateTimeOffset]$checked).TotalMinutes -le 15 -and ([DateTimeOffset]$checked).ToUnixTimeMilliseconds() -ge $noticeFields.expectedOpenAtUtcMs)
+        # Fresh source evidence and the ordinary post-deadline recheck are
+        # separate: only the explicit event-scoped skip may relax the latter.
+        $ageMs=if($checked){($Now-[DateTimeOffset]$checked).TotalMilliseconds}else{[double]::PositiveInfinity}
+        $noticeFields.freshForRelease=[int]($Notice.outcome -eq 'ok' -and $checked -and $ageMs -ge -5000 -and $ageMs -le 900000)
     }
     $installation=[ordered]@{provider='unknown';updateAdapterReady=0}
     if($Install){foreach($key in @('provider','appId','gameRoot','launcherPath','fingerprint')){$installation[$key]=$Install.$key};$installation.evidence=$Install.evidence -join ';';$installation.checkedAtUtcMs=([DateTimeOffset]$Install.checkedAtUtc).ToUnixTimeMilliseconds()}
@@ -232,7 +235,8 @@ function Invoke-GMWorker {
             $now=[DateTimeOffset]::UtcNow
             $deadline=if($notice -and $notice.notice){([DateTimeOffset]$notice.notice.expectedOpenAtUtc).ToUnixTimeMilliseconds()}else{0}
             $forceId=[string](Get-GMInstallField $request 'refreshRequestId' '0')
-            $force=($deadline -gt 0 -and $now.ToUnixTimeMilliseconds() -ge $deadline -and ([DateTimeOffset]$notice.checkedAt).ToUnixTimeMilliseconds() -lt $deadline) -or $forceId -ne $lastForceId
+            $checkedMs=if($notice -and $notice.checkedAt){([DateTimeOffset]$notice.checkedAt).ToUnixTimeMilliseconds()}else{0}
+            $force=($deadline -gt 0 -and $now.ToUnixTimeMilliseconds() -ge $deadline -and $checkedMs -lt $deadline) -or $forceId -ne $lastForceId
             if($request.mode -ne 'install' -and (Test-GMWorkerNoticeDue $timer.ElapsedMilliseconds $lastNotice $lastForce $forceId $lastForceId $force)){
                 $lastNotice=$timer.ElapsedMilliseconds;if($force){$lastForce=$lastNotice}
                 $lastForceId=$forceId

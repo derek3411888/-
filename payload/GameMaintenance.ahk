@@ -141,7 +141,7 @@ GM_IsValidGameLaunchEntry(path) {
 }
 
 GM_JournalFields() {
-    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt,recoveryUncertain"
+    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt,recoveryUncertain,f11OkwwIdentity"
 }
 
 GM_TextChecksum(text) {
@@ -167,6 +167,9 @@ GM_ParseJournal(text) {
     }
     numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,notifiedOpenAt,recoveryUncertain,"
     for key in StrSplit(GM_JournalFields(),",") {
+        ; Older journals have no reusable OKWW identity: retain intent, never resend.
+        if key = "f11OkwwIdentity" && !data.Has(key)
+            continue
         if !data.Has(key)
             throw Error("Incomplete maintenance journal")
         if InStr(numeric,"," key ",",true) {
@@ -275,12 +278,14 @@ GM_HasActiveContinuation(stateOrCfg,nowMs := 0) {
         return false
     if (state.eventId = "" && state.phase != "WAIT_SERVER")
         return false
-    if (nowMs > 0 && GM_Value(state,"expectedOpenAt",0) > 0 && state.actionId = "" && nowMs - state.expectedOpenAt > 172800000)
+    if (nowMs > 0 && GM_Value(state,"expectedOpenAt",0) > 0 && state.actionId = ""
+        && !GM_Value(state,"f11InputAttempted",false) && GM_Value(state,"updaterUiActionId","") = ""
+        && nowMs - state.expectedOpenAt > 172800000)
         return false
     return true
 }
 
-GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJournal := GM_SaveJournal) {
+GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJournal := GM_SaveJournal,isCurrent := 0) {
     if decision.effect.type = "none"
         return {committed:false,errorCode:"",state:decision.state}
     ; Re-evaluate from current intent, not only from the loop's earlier snapshot.
@@ -293,9 +298,14 @@ GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJ
     if fresh.effect.type = "start_update"
         next.actionId := fresh.effect.actionId, next.actionStage := "intent"
     if durable {
-        try writeJournal.Call(journalPath,next)
-        catch
-            return {committed:false,errorCode:"JOURNAL_WRITE_FAILED",state:original}
+        previousCritical := Critical("On")
+        try {
+            if IsObject(isCurrent) && !isCurrent.Call()
+                return {committed:false,errorCode:"INTENT_CHANGED",state:original}
+            try writeJournal.Call(journalPath,next)
+            catch
+                return {committed:false,errorCode:"JOURNAL_WRITE_FAILED",state:original}
+        } finally Critical(previousCritical)
         again := GM_Evaluate(original,getCurrentInput.Call())
         if (again.effect.type != fresh.effect.type || again.effect.expectedRevision != fresh.effect.expectedRevision
             || again.effect.expectedRemoteGeneration != fresh.effect.expectedRemoteGeneration || again.effect.actionId != fresh.effect.actionId)
@@ -304,13 +314,18 @@ GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJ
     try result := applyEffect.Call(fresh.effect)
     catch as err
         return {committed:false,errorCode:"EFFECT_FAILED",detail:err.Message,state:next}
-    if (fresh.effect.type = "start_update") {
-        ; An attempt is not an accepted update or successful login.
-        next.actionStage := "observed"
-        try writeJournal.Call(journalPath,next)
-        catch
-            return {committed:true,errorCode:"JOURNAL_OBSERVATION_FAILED",state:next}
-    }
+    previousCritical := Critical("On")
+    try {
+        if IsObject(isCurrent) && !isCurrent.Call()
+            return {committed:false,errorCode:"INTENT_CHANGED_DURING_EFFECT",state:next}
+        if (fresh.effect.type = "start_update") {
+            ; An attempt is not an accepted update or successful login.
+            next.actionStage := "observed"
+            try writeJournal.Call(journalPath,next)
+            catch
+                return {committed:true,errorCode:"JOURNAL_OBSERVATION_FAILED",state:next}
+        }
+    } finally Critical(previousCritical)
     return {committed:true,errorCode:"",state:next,result:result}
 }
 
@@ -322,7 +337,7 @@ GM_CreateController(journalPath,context,hooks) {
     catch as err {
         state := GM_DefaultState(), state.phase := "NEEDS_ATTENTION", loadError := err.Message
     }
-    if (!GM_HasActiveContinuation(state) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY"))
+    if (!GM_HasActiveContinuation(state,GM_Value(context,"nowUtcMs",0)) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY"))
         state := GM_DefaultState()
     if state.runCycle = ""
         state.runCycle := GM_Value(context,"runCycle","")
@@ -330,7 +345,19 @@ GM_CreateController(journalPath,context,hooks) {
         state.targetServer := GM_Value(context,"targetServer","")
     return {state:state,hooks:hooks,journalPath:journalPath,worker:0,readCount:0,lastDecision:0,
         active:true,managed:state.eventId != "",stopRecordingDone:false,loadError:loadError,
-        lastSavedAt:0,lastSavedKey:"",lastPublishedKey:"",workerFailure:""}
+        lastSavedAt:0,lastSavedKey:"",lastPublishedKey:"",workerFailure:"",intentRevision:0}
+}
+
+GM_MergeObservations(worker,localObservation,nowMs) {
+    localFresh := IsObject(localObservation) && GM_Value(localObservation,"observedAt",0) >= nowMs - 60000 && GM_Value(localObservation,"observedAt",0) <= nowMs + 5000
+    if !localFresh || !GM_Value(localObservation,"identityVerified",false) || GM_Value(localObservation,"phase","unknown") = "unknown"
+        return worker
+    if (localObservation.phase = "maintenance" && GM_Value(localObservation,"confirmed",false)) || (localObservation.phase = "game_ready" && GM_Value(localObservation,"stable",false))
+        return localObservation
+    ; The updater's old Play button/unknown state cannot hide its launched game.
+    if GM_Value(worker,"phase","") = "game_running" && GM_Value(worker,"identityVerified",false)
+        return worker
+    return localObservation
 }
 
 GM_PublicQuote(value,maxChars := 400) {
@@ -500,6 +527,8 @@ GM_ControllerSave(c,force := false) {
 GM_ControllerRemoteIntent(c,desired,command := 0) {
     if !IsObject(c) || !c.active
         return {handled:false}
+    previousCritical := Critical("On")
+    try {
     if desired = "SWITCH_SERVER" {
         if !GM_Value(command,"validated",false)
             return {handled:false}
@@ -512,23 +541,51 @@ GM_ControllerRemoteIntent(c,desired,command := 0) {
     } else
         return {handled:false}
     c.state.remoteGeneration := Max(c.state.remoteGeneration,GM_Value(command,"remoteNonce",0))
+    c.intentRevision += 1
     try GM_ControllerSave(c,true)
     catch
         return {handled:true,code:"CONFIG_WRITE_FAILED",detail:"維護意圖未能持久保存；不執行遊戲操作"}
     return {handled:true,code:desired = "SWITCH_SERVER" ? "SWITCH_SCHEDULED" : "APPLIED",
         detail:desired = "SWITCH_SERVER" ? "已保存目標，等待開服／更新；尚未完成實際切服" : "已保存維護期間意圖，不發送遊戲快捷鍵"}
+    } finally Critical(previousCritical)
 }
 
 GM_ControllerScheduleChanged(c) {
+    revision := c.intentRevision
     schedule := c.hooks.ReconcileSchedule.Call(c.state)
+    previousCritical := Critical("On")
+    try {
+    if c.intentRevision != revision
+        return {runCycle:c.state.runCycle,targetServer:c.state.targetServer,allCompleted:!!c.state.cancelled}
     c.state.runCycle := schedule.runCycle, c.state.targetServer := schedule.targetServer
     if GM_Value(schedule,"allCompleted",false)
         c.state.cancelled := true, c.state.phase := "STOPPED", c.state.desiredState := "STOP"
+    c.intentRevision += 1
     GM_ControllerSave(c,true)
     return schedule
+    } finally Critical(previousCritical)
+}
+
+GM_ControllerSuperseded(c) {
+    ; Never publish a copied pre-callback state over an ACKed intent.
+    if c.state.cancelled
+        return GM_Decision(c.state,"STOPPED","stop")
+    return GM_Evaluate(c.state,c.hooks.ReadInput.Call(c))
+}
+
+GM_ControllerPublishState(c,decision,revision) {
+    previousCritical := Critical("On")
+    try {
+        if c.intentRevision != revision
+            return false
+        c.state := decision.state, c.lastDecision := decision
+        GM_ControllerSave(c)
+        return true
+    } finally Critical(previousCritical)
 }
 
 GM_ControllerTick(c,allowStart := false) {
+    tickRevision := c.intentRevision
     if c.state.cancelled {
         c.lastDecision := GM_Decision(c.state,"STOPPED","stop")
         return c.lastDecision
@@ -565,19 +622,27 @@ GM_ControllerTick(c,allowStart := false) {
         c.hooks.StopRecording.Call()
         c.stopRecordingDone := true
     }
+    if c.intentRevision != tickRevision
+        return GM_ControllerSuperseded(c)
     if (decision.effect.type = "reconcile_schedule") {
         c.state := decision.state
         GM_ControllerScheduleChanged(c)
         decision.state := c.state
+        tickRevision := c.intentRevision
     } else if (decision.effect.type != "none" && decision.effect.type != "resume_flow" && (allowStart || decision.effect.type != "start_update")) {
-        committed := GM_CommitEffect(c.state,decision,(*) => c.hooks.ReadInput.Call(c),c.journalPath,c.hooks.ApplyEffect)
+        committed := GM_CommitEffect(c.state,decision,(*) => c.hooks.ReadInput.Call(c),c.journalPath,c.hooks.ApplyEffect,GM_SaveJournal,
+            (*) => c.intentRevision = tickRevision)
+        if c.intentRevision != tickRevision
+            return GM_ControllerSuperseded(c)
         decision.state := committed.state
         if committed.errorCode != "" && committed.errorCode != "INTENT_CHANGED" {
             decision := GM_Decision(committed.state,"NEEDS_ATTENTION","none",committed.errorCode,"動作尚未安全完成；保留現場，不一般重啟")
         }
     }
-    c.state := decision.state, c.lastDecision := decision
-    try GM_ControllerSave(c)
+    try {
+        if !GM_ControllerPublishState(c,decision,tickRevision)
+            return GM_ControllerSuperseded(c)
+    }
     catch {
         c.loadError := "維護狀態保存失敗；停止後續操作"
         return GM_Decision(c.state,"NEEDS_ATTENTION","none","JOURNAL_WRITE_FAILED",c.loadError)
@@ -587,5 +652,7 @@ GM_ControllerTick(c,allowStart := false) {
         c.hooks.Publish.Call(decision)
         c.lastPublishedKey := key
     }
+    if c.intentRevision != tickRevision
+        return GM_ControllerSuperseded(c)
     return decision
 }

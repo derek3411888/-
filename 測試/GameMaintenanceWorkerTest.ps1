@@ -81,6 +81,35 @@ RoundTrip() {
     $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=92;Path=$gameFile})
     Assert-GMEqual $identity.gamePid 92 'exact canonical game adopted only as running'
     Assert-GMEqual $identity.phase 'game_running' 'process alone not ready'
+    $noticeTime=[DateTimeOffset]'2026-08-20T02:00:00Z'
+    $noticeRecord=[pscustomobject]@{eventId='fixture-global-1';revisionHash='r1';gameVersion='9.9';startsAtUtc='2026-08-19T20:00:00Z';expectedOpenAtUtc='2026-08-20T03:00:00Z';sourceUrl='https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/1';sourceState='verified'}
+    $noticeResult=[pscustomobject]@{outcome='ok';notice=$noticeRecord;checkedAt=$noticeTime.ToString('o');errorCode='';errorDetail=''}
+    $skipSnapshot=ConvertTo-GMWorkerSnapshot @{requestId='skip-contract';generation=1} 1 $noticeResult $null $null $noticeTime
+    Assert-GMEqual $skipSnapshot.notice.freshForRelease 1 'Source can be freshly verified before deadline for explicit time-only skip'
+    $skipPath=Join-Path $session 'skip.ini'
+    Write-GMSnapshot $skipPath $skipSnapshot $session
+    $skipTest=Join-Path $context.RunRoot 'snapshot-skip.ahk'
+    $skipNow=$noticeTime.ToUnixTimeMilliseconds()
+    $skipHarness=@"
+#Requires AutoHotkey v2.0
+#Include $root\測試\GameMaintenanceFixtures.ahk
+#Include $root\payload\GameMaintenance.ahk
+GMTest_Run(CheckSkipContract)
+CheckSkipContract() {
+    snapshot := GM_ReadWorkerSnapshot("$skipPath","skip-contract",0,$skipNow,"$session")
+    n := snapshot["notice"], input := GMTest_Input($skipNow), state := GMTest_State()
+    input.notice := {eventId:n["eventId"],revision:n["revision"],startsAt:Number(n["startsAtUtcMs"]),expectedOpenAt:Number(n["expectedOpenAtUtcMs"]),checkedAt:Number(n["checkedAtUtcMs"]),freshForRelease:n["freshForRelease"] = "1"}
+    GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_OPEN","normal clock gate retained")
+    input.skipEventId := state.eventId
+    GMTest_Assert(GM_Evaluate(state,input).effect.type = "start_update","real snapshot permits time-only skip with fresh official source")
+    input.skipEventId := "", input.nowUtcMs := input.notice.expectedOpenAt
+    GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_NOTICE","ordinary release requires post-boundary source check")
+}
+"@
+    [IO.File]::WriteAllText($skipTest,$skipHarness,[Text.UTF8Encoding]::new($true))
+    $skipResult=Invoke-GMTestProcess $skipTest $context
+    if($skipResult.Stderr){Write-Output $skipResult.Stderr}
+    Assert-GMEqual $skipResult.ExitCode 0 'PS worker snapshot to AHK skip policy contract'
     $request=@{schemaVersion=1;requestId='lifecycle';generation=1;launchEntry=(Join-Path $session 'missing.exe');mode='install';createdAtUtc=[DateTimeOffset]::UtcNow.ToString('o')}
     [IO.File]::WriteAllText($paths.RequestPath,($request|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
     $parent=Get-Process -Id $PID

@@ -9,6 +9,7 @@ global GM_GAME_MAINTENANCE_HIT := false
 GM_Init(cfgPath,launchEntry,flowContext) {
     global GM_CONTROLLER
     flowContext.runCycle := GetCurrentServerCycleKey()
+    flowContext.nowUtcMs := RC_UnixMs()
     flowContext.newTask := !flowContext.isRestart && !flowContext.isNextServerCycle
     hooks := {ReadInput:GMHost_ReadInput,WorkerStart:GMHost_StartWorker,WorkerAlive:GMHost_WorkerAlive,
         WorkerStop:GMHost_StopWorker,ApplyEffect:GMHost_ApplyEffect,Publish:GMHost_Publish,
@@ -21,7 +22,8 @@ GM_Init(cfgPath,launchEntry,flowContext) {
     c.observation := 0, c.maintenanceEvidence := 0, c.lastGameCaptureTick := 0, c.forceRevision := 0
     c.clockUnstableAt := 0, c.lastSettingsRefresh := "", c.install := {provider:"unknown",updateAdapterReady:false}
     c.lastInput := 0, c.lastRequestKey := "", c.resumeExistingF11 := c.state.f11InputAttempted, c.ocrEngine := 0
-    if GM_HasActiveContinuation(c.state)
+    c.gameIdentity := 0, c.loginScheduleKey := "", c.f11GateBlocked := false
+    if GM_HasActiveContinuation(c.state,flowContext.nowUtcMs)
         GMHost_RestoreScheduledTarget(c.state.targetServer)
     return c
 }
@@ -34,6 +36,11 @@ GM_IsGateActive() {
 GM_IsManagedUpdateDay() {
     global GM_CONTROLLER
     return IsObject(GM_CONTROLLER) && GM_CONTROLLER.managed
+}
+
+GM_IsMaintenanceStopped() {
+    global GM_CONTROLLER
+    return IsObject(GM_CONTROLLER) && GM_CONTROLLER.state.cancelled
 }
 
 GM_WaitForStartupGate() {
@@ -185,7 +192,7 @@ GMHost_ReadInput(c) {
         sourceState := n["outcome"] = "ok" ? "valid" : n["outcome"], noticeError := n["errorCode"]
         if n["present"] = "1"
             notice := {eventId:n["eventId"],revision:n["revision"],startsAt:Number(n["startsAtUtcMs"]),expectedOpenAt:Number(n["expectedOpenAtUtcMs"]),
-                freshForRelease:n["freshForRelease"] = "1",sourceUrl:n["sourceUrl"],gameVersion:n["gameVersion"]}
+                checkedAt:n["checkedAtUtcMs"] = "" ? 0 : Number(n["checkedAtUtcMs"]),freshForRelease:n["freshForRelease"] = "1",sourceUrl:n["sourceUrl"],gameVersion:n["gameVersion"]}
         c.install := {provider:i["provider"],appId:i["appId"] = "" ? 0 : Integer(i["appId"]),gameRoot:i["gameRoot"],launcherPath:i["launcherPath"],
             fingerprint:i["fingerprint"],identityVerified:InStr(i["evidence"],"installation-files-verified") > 0,updateAdapterReady:false}
         c.install.updateAdapterReady := GMHost_AdapterAccepted(c.install)
@@ -198,12 +205,11 @@ GMHost_ReadInput(c) {
         if c.clockUnstableAt && n["checkedAtUtcMs"] != "" && Number(n["checkedAtUtcMs"]) >= c.clockUnstableAt
             c.clockUnstableAt := 0
     }
-    if IsObject(c.observation) && now - c.observation.observedAt <= 60000
-        observation := c.observation
+    observation := GM_MergeObservations(observation,c.observation,now)
     input := {nowUtcMs:now,elapsedMs:c.activeElapsed,clockStable:c.clockUnstableAt = 0,desiredState:desired,remoteGeneration:generation,
         desktopAvailable:desktopAvailable,noticeState:sourceState,noticeErrorCode:noticeError,notice:notice,install:c.install,observation:observation,
         noProgressMs:c.noProgressMs,actionElapsedMs:c.actionElapsedMs,runCycle:GetCurrentServerCycleKey(),
-        noticeCheckedAt:IsObject(c.snapshot) ? Number(GM_Value(c.snapshot["notice"],"checkedAtUtcMs",0)) : 0,
+        noticeCheckedAt:IsObject(c.snapshot) && c.snapshot["notice"]["checkedAtUtcMs"] != "" ? Number(c.snapshot["notice"]["checkedAtUtcMs"]) : 0,
         enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",
         skipEventId:IniReadSafe(c.cfgPath,"game_maintenance","skip_event_id",""),delayEventId:IniReadSafe(c.cfgPath,"game_maintenance","override_event_id",""),
         delayUntilUtc:0}
@@ -387,15 +393,33 @@ GM_StopInstallProbe(guiState) {
     guiState.maintenanceProbe := 0, guiState.maintenanceProbeOwned := false
 }
 
-GM_MarkF11Attempt() {
+GM_MarkF11Attempt(okwwHwnd) {
     global GM_CONTROLLER
     if !IsObject(GM_CONTROLLER)
         return true
-    GM_CONTROLLER.state.f11InputAttempted := true
-    try GM_ControllerSave(GM_CONTROLLER,true)
-    catch
-        return false
-    return true
+    c := GM_CONTROLLER, c.f11GateBlocked := false
+    previousCritical := Critical("On")
+    try {
+        if c.managed {
+            decision := GM_Evaluate(c.state,GMHost_ReadInput(c))
+            if !GM_LoginActionAllowed(decision) || c.loginScheduleKey != GMHost_ScheduleKey(c) || !GMHost_GetManagedGameHwnd() {
+                c.f11GateBlocked := true
+                return false
+            }
+            if c.state.f11InputAttempted
+                return false
+            c.state := decision.state
+        }
+        identity := GMHost_OkwwIdentity(okwwHwnd)
+        if identity = ""
+            return false
+        c.state.f11OkwwIdentity := identity
+        c.state.f11InputAttempted := true
+        try GM_ControllerSave(c,true)
+        catch
+            return false
+        return true
+    } finally Critical(previousCritical)
 }
 
 GM_BeforeF11() {
@@ -403,22 +427,144 @@ GM_BeforeF11() {
     if !IsObject(GM_CONTROLLER)
         return true
     c := GM_CONTROLLER
+    if !GM_WaitForLoginGate(true)
+        return false
     if GM_GameMaintenanceProbe(GetWutheringGameHwnd(),true) {
         recovered := GM_WaitForMaintenanceRecovery()
         if recovered.phase = "stopped"
             return false
     }
-    if c.state.f11InputAttempted {
-        c.active := true, c.managed := true, c.loadError := "LOGIN_RESUME_UNCONFIRMED：已保存 F11 嘗試，但無法證明可安全重送，請先停止並確認現場"
-        GMHost_Publish(GM_ControllerTick(c,true))
-        loop {
-            if c.state.cancelled
-                return false
-            decision := GM_ControllerTick(c,true)
-            DllCall("Sleep","UInt",1000)
+    return !c.managed || !c.state.f11InputAttempted
+}
+
+GMHost_ScheduleKey(c) {
+    return c.state.runCycle "|" c.state.targetServer
+}
+
+GM_LoginScheduleToken() {
+    global GM_CONTROLLER
+    return IsObject(GM_CONTROLLER) ? GM_CONTROLLER.intentRevision "|" GMHost_ScheduleKey(GM_CONTROLLER) : ""
+}
+
+GM_ConfirmLoginSchedule(token) {
+    global GM_CONTROLLER
+    if IsObject(GM_CONTROLLER) && token = GM_LoginScheduleToken()
+        GM_CONTROLLER.loginScheduleKey := GMHost_ScheduleKey(GM_CONTROLLER)
+}
+
+GM_WasF11GateBlocked() {
+    global GM_CONTROLLER
+    return IsObject(GM_CONTROLLER) && GM_Value(GM_CONTROLLER,"f11GateBlocked",false)
+}
+
+GM_WaitForLoginGate(checkSchedule := false) {
+    global GM_CONTROLLER
+    if !IsObject(GM_CONTROLLER) || !GM_CONTROLLER.managed
+        return true
+    c := GM_CONTROLLER
+    loop {
+        decision := GM_ControllerTick(c)
+        if decision.phase = "STOPPED"
+            return false
+        if GM_LoginActionAllowed(decision) && GMHost_GetManagedGameHwnd() {
+            if !checkSchedule || c.loginScheduleKey = GMHost_ScheduleKey(c)
+                return true
+            ; A switch received while starting OKWW must be verified again before F11.
+            hwnd := GMHost_GetManagedGameHwnd()
+            revision := c.intentRevision, scheduleKey := GMHost_ScheduleKey(c)
+            if hwnd && IsLoginScreenByOcr(hwnd) && TrySelectScheduledServer(hwnd) {
+                if c.intentRevision = revision && GMHost_ScheduleKey(c) = scheduleKey {
+                    c.loginScheduleKey := scheduleKey
+                    continue ; recheck fresh notice/time after slow OCR
+                }
+            } else if c.loginScheduleKey = "" && hwnd && WaitEscMenuOCR(hwnd,2) {
+                ; First entry was already at the main screen; preserve its initial schedule.
+                if c.intentRevision = revision && GMHost_ScheduleKey(c) = scheduleKey
+                    c.loginScheduleKey := scheduleKey
+            } else
+                GMHost_Publish(GM_Decision(GM_CopyState(c.state),"NEEDS_ATTENTION","none","LOGIN_SCHEDULE_UNCONFIRMED","排程已變更；尚未驗證目標伺服器，不送 F11"))
         }
+        DllCall("Sleep","UInt",1000)
     }
-    return true
+}
+
+GMHost_OkwwIdentity(hwnd) {
+    reason := ""
+    if !IsOkwwFinalWindowIdentity(hwnd,&reason)
+        return ""
+    try {
+        pid := WinGetPID("ahk_id " hwnd), started := GMHost_ProcessStartMs(pid)
+        path := GMHost_CanonicalPath(WinGetProcessPath("ahk_id " hwnd))
+        return started > 0 && path != "" ? pid "|" started "|" hwnd "|" StrLower(path) : ""
+    }
+    return ""
+}
+
+GM_PrepareOkwwEntry() {
+    global GM_CONTROLLER
+    if !IsObject(GM_CONTROLLER) || !GM_CONTROLLER.managed
+        return "start"
+    c := GM_CONTROLLER
+    loop {
+        if !GM_WaitForLoginGate(true)
+            return "stop"
+        if !c.state.f11InputAttempted
+            return "start"
+        revision := c.intentRevision
+        GMHost_ObserveWaitingGame()
+        title := "", count := 0
+        hwnd := FindBestOkwwFinalWindow(&title,0,0,false,&count)
+        identity := count = 1 ? GMHost_OkwwIdentity(hwnd) : ""
+        if c.intentRevision = revision && GM_CanResumeF11(c.state,c.observation,identity,RC_UnixMs()) {
+            decision := GM_ControllerTick(c)
+            if c.intentRevision = revision && GM_LoginActionAllowed(decision) && decision.phase = "READY" {
+                c.resumeExistingF11 := true
+                WriteLog("版本更新接續：已驗證原 OKWW 程序與目標遊戲主畫面；不重啟管理器、不重送 F11")
+                return "resumed"
+            }
+        }
+        GMHost_Publish(GM_Decision(GM_CopyState(c.state),"NEEDS_ATTENTION","none","LOGIN_RESUME_UNCONFIRMED","已保存 F11 嘗試；等待原 OKWW 與目標遊戲主畫面，不重送快捷鍵"))
+        DllCall("Sleep","UInt",1000)
+    }
+}
+
+GMHost_ReadGameCandidate(hwnd) {
+    result := {hwnd:hwnd,pid:0,started:0,path:"",valid:false}
+    try {
+        result.pid := WinGetPID("ahk_id " hwnd), result.started := GMHost_ProcessStartMs(result.pid)
+        result.path := GMHost_CanonicalPath(WinGetProcessPath("ahk_id " hwnd))
+        root := DllCall("user32\GetAncestor","Ptr",hwnd,"UInt",2,"Ptr")
+        WinGetPos(,,&width,&height,"ahk_id " hwnd)
+        result.valid := root = hwnd && WinGetClass("ahk_id " hwnd) = "UnrealWindow"
+            && (WinGetMinMax("ahk_id " hwnd) = -1 || (width >= 500 && height >= 280))
+    }
+    return result
+}
+
+GMHost_GetManagedGameHwnd() {
+    global GM_CONTROLLER
+    c := GM_CONTROLLER
+    if !IsObject(c) || !GM_Value(c.install,"identityVerified",false) || GM_Value(c.install,"gameRoot","") = ""
+        return 0
+    expected := GMHost_CanonicalPath(c.install.gameRoot "\Client\Binaries\Win64\Client-Win64-Shipping.exe")
+    candidates := []
+    for hwnd in WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
+        candidates.Push(GMHost_ReadGameCandidate(hwnd))
+    identity := GM_SelectGameIdentity(candidates,expected,c.gameIdentity)
+    if !IsObject(identity)
+        return 0
+    c.gameIdentity := identity
+    return identity.hwnd
+}
+
+GMHost_GameIdentityKey(hwnd) {
+    global GM_CONTROLLER
+    if !GM_IsManagedUpdateDay()
+        return String(hwnd)
+    if GMHost_GetManagedGameHwnd() != hwnd
+        return ""
+    identity := GM_CONTROLLER.gameIdentity
+    return identity.pid "|" identity.started "|" identity.hwnd "|" StrLower(identity.path)
 }
 
 GMHost_CanonicalPath(path) {
@@ -571,7 +717,7 @@ GM_GameMaintenanceProbe(hwnd,force := false,attempt := 0) {
     global GM_CONTROLLER, GM_GAME_MAINTENANCE_HIT
     if !IsObject(GM_CONTROLLER) || !hwnd
         return false
-    c := GM_CONTROLLER, tick := MonotonicTickMs()
+    c := GM_CONTROLLER, tick := MonotonicTickMs(), probeRevision := c.intentRevision
     if !force && tick - c.lastGameCaptureTick < 3000
         return GM_GAME_MAINTENANCE_HIT
     c.lastGameCaptureTick := tick
@@ -580,6 +726,9 @@ GM_GameMaintenanceProbe(hwnd,force := false,attempt := 0) {
     try {
         pid := 0, class := "", reason := ""
         if !GetWutheringWindowIdentity(hwnd,&pid,&class,&reason)
+            return false
+        identityKey := GMHost_GameIdentityKey(hwnd)
+        if identityKey = ""
             return false
         frame := ImagePutBuffer("ahk_id " hwnd)
         temp := RuntimeFiles_NewImagePath("game_maintenance")
@@ -600,8 +749,9 @@ GM_GameMaintenanceProbe(hwnd,force := false,attempt := 0) {
         }
         actualPid := 0, actualClass := "", reason := ""
         if !GetWutheringWindowIdentity(hwnd,&actualPid,&actualClass,&reason) || actualPid != pid
+            || GMHost_GameIdentityKey(hwnd) != identityKey || c.intentRevision != probeRevision
             return false
-        identity := {key:pid ":" hwnd ":" class,provider:c.install.provider,clientWidth:frame.width,clientHeight:frame.height,verified:true}
+        identity := {key:identityKey ":" class,provider:c.install.provider,clientWidth:frame.width,clientHeight:frame.height,verified:true}
         candidate := GMU_ClassifyMaintenance(normalized,identity)
         c.maintenanceEvidence := GMU_ConfirmMaintenance(c.maintenanceEvidence,candidate,tick,String(tick))
         if candidate.confirmed && !c.maintenanceEvidence.confirmed && attempt = 0 {
@@ -626,14 +776,18 @@ GM_GameMaintenanceProbe(hwnd,force := false,attempt := 0) {
 
 GMHost_ObserveWaitingGame() {
     global GM_CONTROLLER
+    revision := GM_CONTROLLER.intentRevision
     hwnd := GetWutheringGameHwnd()
     if !hwnd
         return
+    identityKey := GMHost_GameIdentityKey(hwnd)
+    if identityKey = ""
+        return
     if GM_GameMaintenanceProbe(hwnd,true)
         return
-    if WaitEscMenuOCR(hwnd,2) {
+    if WaitEscMenuOCR(hwnd,2) && GMHost_GameIdentityKey(hwnd) = identityKey && GM_CONTROLLER.intentRevision = revision {
         GM_CONTROLLER.observation := {phase:"game_ready",identityVerified:true,stable:true,observedAt:RC_UnixMs()}
-    } else if IsLoginScreenByOcr(hwnd)
+    } else if IsLoginScreenByOcr(hwnd) && GMHost_GameIdentityKey(hwnd) = identityKey && GM_CONTROLLER.intentRevision = revision
         GM_CONTROLLER.observation := {phase:"login_ready",identityVerified:true,observedAt:RC_UnixMs()}
 }
 
@@ -688,8 +842,12 @@ GM_CancelForStop(reason) {
     if !IsObject(GM_CONTROLLER)
         return
     c := GM_CONTROLLER
-    c.state.cancelled := true, c.state.phase := "STOPPED", c.state.desiredState := "STOP", c.state.actionStage := "cancelled"
-    try GM_ControllerSave(c,true)
+    previousCritical := Critical("On")
+    try {
+        c.intentRevision += 1
+        c.state.cancelled := true, c.state.phase := "STOPPED", c.state.desiredState := "STOP", c.state.actionStage := "cancelled"
+        try GM_ControllerSave(c,true)
+    } finally Critical(previousCritical)
     try IniDelete(c.cfgPath,"game_maintenance","skip_event_id")
     GM_Shutdown(reason)
 }

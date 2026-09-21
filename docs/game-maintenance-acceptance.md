@@ -13,6 +13,18 @@
 - `測試/Build-GameMaintenanceSmoke.ps1` 實際編譯 Payload 與嵌入新 Payload ZIP 的 Launcher，validate／ZIP 檢查通過；產物在 `.dev-runtime/build/game-maintenance-*`，附 SHA-256、長度與 `compile-result.json`，**未執行、不可當成正式發布版**。
 - 打包腳本新增源碼 parser／全部維護測試、必要模組與 ZIP 排除政策；測試並修正 PS 5.1 UTF-8 BOM 與 GUI 子程序 ExitCode 可能為空的問題。
 
+## 最後一輪整合審查修正
+
+一次獨立審查提出 8 項 Important，沒有 Critical／Minor；已依失敗回歸測試修正，並重新跑全套。這不是正式環境上線或真實遊戲更新的驗收。詳細紀錄見 [整合修正與測試](game-maintenance-final-review.md)。
+
+- 15 個維護測試檔全部通過；網站 83 項測試全部通過，沒有跳過。
+- 停錄、更新器／OCR 回呼期間收到的已 ACK 切服／全部完成意圖，不會被旧判斷覆蓋。
+- 登入及送 F11 前重新檢查最新公告、時間、PAUSE、日循環、目標伺服器與實際遊戲視窗；變更時等待，不套用一般前景失敗重啟。
+- 維護路徑只接受設定對應安裝的 canonical exe、PID 建立時間與 HWND；多個候選或身分變更不任選，也不進全域清場。
+- 已送過 F11 的接續，只有原 OKWW 身分與目標主畫面都通過才可跳過管理器／送鍵。未知旧狀態不清除嘗試旗標來重送。
+- 公告替換／消失不會刷新旧開服資料；人工略過只取消時間等待。Kuro 舊的 Play／未知觀察不會蓋掉已啟動的遊戲。
+- 過期且尚無更新動作的事件使用實際 UTC 判斷；已保存的動作意圖仍受保護。
+
 ## 尚未通過的實機／發布門檻
 
 1. Steam 真實啟動與下載／安裝／驗證鏈，以及 Kuro 真實 launcher 按鈕 layout／更新鏈；兩者均未啟動實測。程式因此未建立 `adapter-acceptance.ini`，`updateAdapterReady` 保持 false。

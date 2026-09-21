@@ -2531,7 +2531,7 @@ else
 REMOTE_CONTROL_ACTIVE := RC_Init(CFG_FILE, "OnRemoteControlStateChanged", "OnRemoteControlSettingsChanged")
 ; 沒有 restart／nextserver handoff 參數代表使用者明確開始新的日循環；這是解除
 ; 前次 durable PAUSE 的安全入口。接手程序則保留 PAUSE，直到網頁送出較新 RUN nonce。
-maintenanceContinuation := GM_HasActiveContinuation(CFG_FILE)
+maintenanceContinuation := GM_HasActiveContinuation(CFG_FILE,RC_UnixMs())
 remoteContinuationLaunch := maintenanceContinuation || (A_Args.Length > 0
     && (A_Args[1] = "restart" || A_Args[1] = "nextserver"))
 if (REMOTE_CONTROL_ACTIVE && !remoteContinuationLaunch) {
@@ -2625,13 +2625,14 @@ if (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_LIST.Length > 0 && CURRENT_SERVER
 gate := GM_WaitForStartupGate()
 if (gate.mode = "stop")
     ExitApp
-if (gate.mode = "normal" || !IsWutheringProcessRunning()) {
+if (gate.mode = "normal") {
     WriteLog("維護時間閘門已放行，執行啟動前檢測")
     WriteStep("清場", "關閉既有目標進程")
     CheckAndCloseExistingProcesses()
 } else
     WriteLog("版本更新接續：保留現有遊戲，由既有視窗／主畫面驗證，不重複啟動或清場")
-StartCrashWatcher()
+if (gate.mode = "normal")
+    StartCrashWatcher()
 
 if (MAIL_NOTIFY_ENABLED && gate.mode = "normal") {
     startMailResult := SendStartNotifyMail(isRestart)
@@ -2655,6 +2656,7 @@ if (gate.mode = "managed_update") {
     managedUpdateResult := GM_RunManagedUpdate()
     if !managedUpdateResult.ok
         ExitApp
+    StartCrashWatcher()
 } else if !isRestart
     TryStartScreenRecording("主流程開始")
 else {
@@ -2668,6 +2670,8 @@ if (gate.mode = "normal")
 WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
+    if !GM_WaitForLoginGate()
+        ExitApp
     loginDetected := false
     detectState := DetectWutheringAndExit(&loginDetected)
     if (detectState = "maintenance") {
@@ -2760,7 +2764,10 @@ if (loginDetected) {
             if (maintenanceRecovery.phase = "stopped")
                 ExitApp
         }
+        maintenanceScheduleToken := GM_LoginScheduleToken()
         serverSwitchOk := TrySelectScheduledServer(hwndLogin)
+        if serverSwitchOk
+            GM_ConfirmLoginSchedule(maintenanceScheduleToken)
         if !serverSwitchOk
             WriteLog("伺服器切換未完成，將停止本輪避免誤進錯服", "WARN")
     } else {
@@ -2871,7 +2878,7 @@ if !gameReadyResult.ok {
     }
     return
 }
-if (okwwStarted && IsObject(okwwResult)) {
+if (okwwStarted && IsObject(okwwResult) && !GM_Value(okwwResult,"resumed",false)) {
     okwwResult.f11EffectConfirmed := true
     WriteStepResult("OKWW F11效果", true,
         "F11 鍵盤注入後，鳴潮主畫面已通過同一 HWND/PID 的穩定模板驗證")
@@ -2904,6 +2911,8 @@ if !okwwStarted {
 ; streak 只追蹤「是否能安全取得前景並注入輸入」，不是 OKWW 是否實際處理 F11。
 ; 登入入口另由上面的遊戲主畫面後置條件確認效果；遊戲原已就緒時只確認前景輸入能力恢復。
 ResetForegroundInputFailureStreak("遊戲可操作驗證與 OKWW 前景輸入條件均已通過")
+if !GM_WaitForLoginGate()
+    ExitApp
 GM_MarkReady()
 if GM_IsManagedUpdateDay() {
     TryStartScreenRecording("版本更新完成，遊戲主畫面已驗證")
@@ -3021,6 +3030,12 @@ ExitApp
 StartOKWWFlowWithLocalRecovery(isRestart, entryStage := "") {
     global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
 
+    maintenanceEntry := GM_PrepareOkwwEntry()
+    if maintenanceEntry = "stop"
+        ExitApp
+    if maintenanceEntry = "resumed"
+        return {ok:true,resumed:true,f11InputAttempted:false,f11EffectConfirmed:false,code:"",stage:"維護接續原 OKWW",reason:""}
+
     firstResult := StartOKWWFlow(isRestart)
     if !IsOkwwAutoBattleCheckFailure(firstResult)
         return firstResult
@@ -3077,12 +3092,18 @@ IsOkwwAutoBattleCheckFailure(result) {
 SendF11ToOkwwWithTransientForegroundRetry(okwwHwnd, context := "") {
     global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
 
-    Loop 3 {
-        attempt := A_Index
+    attempt := 0
+    loop {
         if SendF11ToOkww(okwwHwnd)
             return true
 
         failureCode := LAST_OKWW_F11_FAILURE_CODE
+        if failureCode = "MAINTENANCE_GATE_CHANGED" {
+            if !GM_WaitForLoginGate(true)
+                ExitApp
+            continue ; notice/clock/schedule waits are not foreground errors or restarts
+        }
+        attempt += 1
         if !IsForegroundInputFailureCode(failureCode)
             return false
         if (failureCode = "INTERACTIVE_DESKTOP_UNAVAILABLE")
@@ -5157,13 +5178,18 @@ ClickOkwwClientPoint(okwwHwnd, clientX, clientY) {
 }
 
 SendF11ToOkww(okwwHwnd) {
-    if !GM_BeforeF11()
-        return false
     global LAST_OKWW_F11_FAILURE_CODE, LAST_OKWW_F11_FAILURE_DETAIL
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
 
     LAST_OKWW_F11_FAILURE_CODE := ""
     LAST_OKWW_F11_FAILURE_DETAIL := ""
+    if !GM_BeforeF11() {
+        if GM_IsMaintenanceStopped()
+            ExitApp
+        LAST_OKWW_F11_FAILURE_CODE := "MAINTENANCE_F11_ALREADY_ATTEMPTED"
+        LAST_OKWW_F11_FAILURE_DETAIL := "已保存 F11 意圖；拒絕再送，等待原流程接續確認"
+        return false
+    }
     if !okwwHwnd || !WinExist("ahk_id " okwwHwnd) {
         LAST_OKWW_F11_FAILURE_CODE := "OKWW_F11_TARGET_INVALID"
         LAST_OKWW_F11_FAILURE_DETAIL := "目標視窗已失效；hwnd=" okwwHwnd
@@ -5284,9 +5310,9 @@ SendF11ToOkww(okwwHwnd) {
 
             ; 只送一次明確的按下／放開。ControlSend 對 Qt/pythonw 視窗可能完全無效，
             ; 舊版卻無條件回傳成功，正是 MyTUF 反覆卡在登入頁仍宣告 F11 成功的原因。
-            if !GM_MarkF11Attempt() {
-                LAST_OKWW_F11_FAILURE_CODE := "MAINTENANCE_JOURNAL_WRITE_FAILED"
-                LAST_OKWW_F11_FAILURE_DETAIL := "無法保存 F11 嘗試意圖，取消輸入避免重啟後重送"
+            if !GM_MarkF11Attempt(okwwHwnd) {
+                LAST_OKWW_F11_FAILURE_CODE := GM_WasF11GateBlocked() ? "MAINTENANCE_GATE_CHANGED" : "MAINTENANCE_JOURNAL_WRITE_FAILED"
+                LAST_OKWW_F11_FAILURE_DETAIL := "最新公告／時間／排程尚未放行，或無法保存 F11 意圖；未送出按鍵"
                 return false
             }
             SendEvent("{F11 down}")
@@ -7200,6 +7226,8 @@ LaunchWutheringGameFlowAfterUpdate() {
 ; ✅ 只檢查遊戲進程是否存在
 IsWutheringProcessRunning() {
     global PROCESS_DETECT_RETRY_COUNT, PROCESS_DETECT_RETRY_DELAY_MS
+    if GM_IsManagedUpdateDay()
+        return !!GMHost_GetManagedGameHwnd()
 
     Loop PROCESS_DETECT_RETRY_COUNT {
         hwndList := WinGetList("ahk_exe Client-Win64-Shipping.exe ahk_class UnrealWindow")
@@ -7237,6 +7265,8 @@ WaitForProcessRunning(exeName, timeoutSec := 30) {
 }
 
 GetWutheringGameHwnd() {
+    if GM_IsManagedUpdateDay()
+        return GMHost_GetManagedGameHwnd()
     ; 優先沿用目前真正接收輸入的遊戲頂層／owner 視窗。部分 Unreal/覆蓋層
     ; 會讓同一進程同時存在多個大型 HWND，舊版直接取 WinGetList()[1] 後再用
     ; 精確 HWND 等待 active，畫面明明已在前景仍可能被誤判失敗。
@@ -7292,6 +7322,8 @@ GetWutheringGameHwnd() {
 ; ✅ 驗證視窗是否為真正的遊戲視窗（而非臨時初始化視窗）
 IsValidGameWindow(hwnd) {
     if !hwnd
+        return false
+    if GM_IsManagedUpdateDay() && GMHost_GetManagedGameHwnd() != hwnd
         return false
     
     ; 檢查視窗是否存在

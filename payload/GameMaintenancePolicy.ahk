@@ -14,7 +14,39 @@ GM_DefaultState() {
         startsAt:0, expectedOpenAt:0, provider:"unknown", fingerprint:"", runCycle:"", targetServer:"",
         actionId:"", actionStage:"", f11InputAttempted:0, cancelled:0, desiredState:"RUN", remoteGeneration:0,
         elapsedMs:0, lastObserveElapsedMs:0, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0,
-        updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0,recoveryUncertain:0}
+        updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0,recoveryUncertain:0,f11OkwwIdentity:""}
+}
+
+GM_LoginActionAllowed(decision) {
+    return IsObject(decision) && decision.overlay = "" && decision.effect.type = "resume_flow"
+        && InStr(",NORMAL,CHECKING_LOGIN,READY,","," decision.phase ",",true)
+}
+
+GM_SelectGameIdentity(candidates,expectedPath,pinned := 0) {
+    if expectedPath = ""
+        return 0
+    selected := 0
+    for candidate in candidates {
+        if !GM_Value(candidate,"valid",false) || GM_Value(candidate,"started",0) <= 0
+            || StrLower(GM_Value(candidate,"path","")) != StrLower(expectedPath)
+            continue
+        if IsObject(selected)
+            return 0
+        selected := candidate
+    }
+    if !IsObject(selected)
+        return 0
+    if IsObject(pinned) && (selected.pid != pinned.pid || selected.started != pinned.started || selected.hwnd != pinned.hwnd
+        || StrLower(selected.path) != StrLower(pinned.path))
+        return 0
+    return selected
+}
+
+GM_CanResumeF11(state,observation,okwwIdentity,nowMs) {
+    return state.f11InputAttempted && state.f11OkwwIdentity != "" && okwwIdentity = state.f11OkwwIdentity
+        && GM_Value(observation,"phase","") = "game_ready" && GM_Value(observation,"identityVerified",false)
+        && GM_Value(observation,"stable",false) && GM_Value(observation,"observedAt",0) >= nowMs - 60000
+        && GM_Value(observation,"observedAt",0) <= nowMs + 5000
 }
 
 GM_CopyState(original) {
@@ -89,7 +121,8 @@ GM_Evaluate(previous, input) {
         if (state.eventId != "") {
             if (GM_Value(input,"skipEventId","") != state.eventId && now < serverDeadline)
                 return GM_Decision(state,"WAIT_SERVER","none","","維護畫面已恢復，仍須等公告開服時間")
-            if (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision) {
+            if (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision
+                || (GM_Value(input,"skipEventId","") != state.eventId && GM_Value(notice,"checkedAt",0) < state.expectedOpenAt)) {
                 effect := elapsed - state.lastNoticeCheckElapsedMs >= 300000 ? "check_notice" : "none"
                 if effect = "check_notice"
                     state.lastNoticeCheckElapsedMs := elapsed
@@ -124,7 +157,8 @@ GM_Evaluate(previous, input) {
     if (!skip && now < deadline)
         return GM_Decision(state,"WAIT_OPEN","none","","等待官方公告開服時間；不提前更新")
     ; An event-scoped skip changes the clock gate only, never source validation.
-    if (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision) {
+    if (sourceState != "valid" || !IsObject(notice) || !GM_Value(notice,"freshForRelease",false) || GM_Value(notice,"revision","") != state.revision
+        || (!skip && GM_Value(notice,"checkedAt",0) < state.expectedOpenAt)) {
         effect := elapsed - state.lastNoticeCheckElapsedMs >= 300000 ? "check_notice" : "none"
         if effect = "check_notice"
             state.lastNoticeCheckElapsedMs := elapsed

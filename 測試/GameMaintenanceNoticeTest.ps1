@@ -146,6 +146,17 @@ try {
     }
     $conflict=Get-GMOfficialNotice (Join-Path $ctx.RunRoot 'conflict') $now $true $conflictGetter
     Assert-GMEqual $conflict.errorCode 'NOTICE_CONFLICT' 'Two applicable events require review rather than ordinary network degradation'
+    $replacementGetter={ param($uri,$timeoutMs,$maxBytes)
+        $item=New-Article '2026年8月20日05:00 ~ 2026年8月20日13:00（UTC+8）'
+        if ([string]$uri -like '*MainMenu.json') { return ([pscustomobject]@{article=@($item)} | ConvertTo-Json -Depth 5 -Compress) }
+        return ($item | ConvertTo-Json -Depth 5 -Compress)
+    }
+    $replacement=Get-GMOfficialNotice -CacheDirectory (Join-Path $ctx.RunRoot 'replacement') -Now $now.AddHours(2) -Force $true -HttpGetter $replacementGetter -Previous $original.notice
+    Assert-GMEqual $replacement.errorCode 'NOTICE_CONFLICT' 'Pinned previous cannot hide replacement with changed start/end'
+    Assert-GMTrue ($replacement.checkedAt -ne $now.AddHours(2).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')) 'Unconfirmed retained notice never gets fresh checkedAt'
+    $removed=Get-GMOfficialNotice -CacheDirectory (Join-Path $ctx.RunRoot 'removed') -Now $now.AddHours(2) -Force $true -HttpGetter $emptyGetter -Previous $original.notice
+    Assert-GMEqual $removed.errorCode 'NOTICE_EVENT_NOT_RECONFIRMED' 'Removed pinned notice remains known but not freshly confirmed'
+    Assert-GMEqual $removed.notice.eventId $original.notice.eventId 'Removal does not erase prior deadline'
     $budgetResult=Get-GMOfficialNotice -CacheDirectory (Join-Path $ctx.RunRoot 'budget') -Now $now -BudgetMilliseconds 1 -HttpGetter { Start-Sleep -Milliseconds 20; '{"article":[]}' }
     Assert-GMEqual $budgetResult.outcome 'unavailable' 'Total request budget enforced'
     [void](Get-GMOfficialNotice $negativeCache ([DateTimeOffset]'2026-08-20T15:59:00Z') $true $emptyGetter)

@@ -17,7 +17,7 @@ TestMaintenancePolicy() {
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "check_notice", "clock jump rechecks source")
     input.clockStable := true, input.notice.freshForRelease := false
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "check_notice", "deadline recheck required")
-    input.notice.freshForRelease := true
+    input.notice.freshForRelease := true, input.notice.checkedAt := input.nowUtcMs
     decision := GM_Evaluate(state,input)
     GMTest_Assert(decision.effect.type = "start_update", "verified deadline releases update")
     input.notice.expectedOpenAt := 20000, input.notice.revision := "r2"

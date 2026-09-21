@@ -16,7 +16,7 @@ GMTest_Input(nowMs := 9999) {
     return {nowUtcMs:nowMs, elapsedMs:0, clockStable:true, desiredState:"RUN",
         remoteGeneration:1, desktopAvailable:true, noticeState:"valid",
         notice:{eventId:"fixture-global-1", revision:"r1", startsAt:1000,
-            expectedOpenAt:10000, freshForRelease:true},
+            expectedOpenAt:10000, checkedAt:nowMs, freshForRelease:true},
         install:{provider:"steam", updateAdapterReady:true, fingerprint:"i1"},
         observation:{phase:"not_started", observedAt:nowMs}}
 }
