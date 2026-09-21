@@ -27,6 +27,7 @@ try {
 
     AssertTrue(StrLower(RuntimeFiles_ProgramRoot()) = StrLower(programRoot), "程式根目錄解析錯誤")
     AssertTrue(StrLower(RuntimeFiles_ConfigDir()) = StrLower(programRoot "\config"), "設定未固定在程式根目錄")
+    AssertTrue(StrLower(RuntimeFiles_GameMaintenanceDir()) = StrLower(programRoot "\config\game-maintenance"), "維護 journal 必須留在持久設定目錄")
     AssertTrue(StrLower(RuntimeFiles_DiagnosticsDir()) = StrLower(diagnosticsDir), "診斷圖未固定在程式根目錄")
     AssertTrue(StrLower(RuntimeFiles_LogDir("單元測試")) = StrLower(programRoot "\log\單元測試"), "Log 未固定在程式根目錄")
     AssertTrue(StrLower(RuntimeFiles_RecordingsDir()) = StrLower(programRoot "\操作過程"), "錄影成品未固定在程式根目錄")

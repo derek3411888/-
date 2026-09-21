@@ -64,6 +64,12 @@ RuntimeFiles_EnsureProgramSubdir(relativePath) {
     return dir
 }
 
+RuntimeFiles_GameMaintenanceDir() {
+    path := RuntimeFiles_ConfigDir() "\game-maintenance"
+    DirCreate(path)
+    return path
+}
+
 RuntimeFiles_ConfigDir() {
     ; PACK_DATA_DIR 曾有 %TEMP% 後備，導致同一台電腦可能存在兩份設定。
     ; 新版的唯一正式位置固定為 <程式根目錄>\config。
