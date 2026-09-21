@@ -68,6 +68,24 @@ try {
     Assert-True ($violations.Count -eq 0) `
         ("PowerShell 開發路徑政策失敗：`n - " + ($violations -join "`n - "))
 
+    foreach ($scriptName in @(
+        '打包更新.ps1', '完整發布更新.ps1',
+        'self-hosted-server/Install-Server.ps1', 'self-hosted-server/Update-Server.ps1',
+        'self-hosted-server/windows/CodexSupportBridge.ps1',
+        'self-hosted-server/windows/CodexSupportBootstrap.ps1',
+        'self-hosted-server/windows/CodexSupportWatchdog.ps1',
+        'self-hosted-server/windows/Install-CodexSupportBridge.ps1',
+        'self-hosted-server/windows/Uninstall-CodexSupportBridge.ps1'
+    )) {
+        # Parse the on-disk release entrypoint with the current Windows PowerShell
+        # parser: forcing UTF-8 only for source checks masks a missing BOM on 5.1.
+        $releaseParseErrors = $null
+        $releaseTokens = $null
+        [void][Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $projectRoot $scriptName), [ref]$releaseTokens, [ref]$releaseParseErrors)
+        Assert-True (@($releaseParseErrors).Count -eq 0) `
+            ("Release entrypoint cannot be parsed: $scriptName : " + ($releaseParseErrors | Select-Object -First 1))
+    }
     foreach ($scriptName in @('打包更新.ps1', '完整發布更新.ps1')) {
         $text = Get-Content -LiteralPath (Join-Path $projectRoot $scriptName) -Raw -Encoding UTF8
         Assert-True ($text -match "ProjectDevelopmentPaths\.ps1") "$scriptName 未載入專案開發路徑政策。"

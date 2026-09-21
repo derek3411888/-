@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ConfigPath = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\config.json'),
     [switch]$Once,

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BridgeScriptPath = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\CodexSupportBridge.ps1'),
     [string]$ConfigPath = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\config.json'),
