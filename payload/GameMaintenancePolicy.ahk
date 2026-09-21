@@ -14,7 +14,7 @@ GM_DefaultState() {
         startsAt:0, expectedOpenAt:0, provider:"unknown", fingerprint:"", runCycle:"", targetServer:"",
         actionId:"", actionStage:"", f11InputAttempted:0, cancelled:0, desiredState:"RUN", remoteGeneration:0,
         elapsedMs:0, lastObserveElapsedMs:0, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0,
-        updaterUiActionId:"",updaterUiActionStage:""}
+        updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0}
 }
 
 GM_CopyState(original) {

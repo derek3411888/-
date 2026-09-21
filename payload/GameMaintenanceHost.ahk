@@ -203,6 +203,7 @@ GMHost_ReadInput(c) {
     input := {nowUtcMs:now,elapsedMs:c.activeElapsed,clockStable:c.clockUnstableAt = 0,desiredState:desired,remoteGeneration:generation,
         desktopAvailable:desktopAvailable,noticeState:sourceState,noticeErrorCode:noticeError,notice:notice,install:c.install,observation:observation,
         noProgressMs:c.noProgressMs,actionElapsedMs:c.actionElapsedMs,runCycle:GetCurrentServerCycleKey(),
+        noticeCheckedAt:IsObject(c.snapshot) ? Number(GM_Value(c.snapshot["notice"],"checkedAtUtcMs",0)) : 0,
         enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",
         skipEventId:IniReadSafe(c.cfgPath,"game_maintenance","skip_event_id",""),delayEventId:IniReadSafe(c.cfgPath,"game_maintenance","override_event_id",""),
         delayUntilUtc:0}
@@ -304,8 +305,28 @@ GMHost_ReconcileSchedule(state) {
 }
 
 GMHost_Publish(decision) {
+    global GM_CONTROLLER, MAIL_NOTIFY_ENABLED
     WriteStep("遊戲版本維護",decision.phase (decision.overlay != "" ? "／" decision.overlay : "") "｜" decision.detail,
         decision.errorCode != "" ? "WARN" : "INFO")
+    if MAIL_NOTIFY_ENABLED && IsObject(GM_CONTROLLER) {
+        try GM_NotifyStage(GM_CONTROLLER.state,GM_CONTROLLER.journalPath,decision,SendGameMaintenanceNotifyMail)
+        catch as err
+            WriteLog("版本維護通知未完成：" err.Message,"WARN")
+    }
+}
+
+GM_PublicStatusJson() {
+    global GM_CONTROLLER
+    if !IsObject(GM_CONTROLLER)
+        return "null"
+    c := GM_CONTROLLER
+    return GM_BuildPublicJson(c.state,c.lastDecision,c.lastInput,RC_UnixMs())
+}
+
+GM_ValidateRemoteSettings(settings) {
+    global GM_CONTROLLER, CFG_FILE
+    state := IsObject(GM_CONTROLLER) ? GM_CONTROLLER.state : GM_DefaultState()
+    return GM_ValidateMaintenanceSettings(settings,GM_ReadMaintenanceSettings(CFG_FILE),state,RC_UnixMs())
 }
 
 GM_MarkF11Attempt() {
@@ -581,8 +602,13 @@ GM_MarkReady() {
     c := GM_CONTROLLER
     c.observation := {phase:"game_ready",identityVerified:true,stable:true,observedAt:RC_UnixMs()}
     c.state.phase := "READY", c.state.overlay := "", c.active := false
+    c.lastInput := IsObject(c.lastInput) ? c.lastInput : {}
+    c.lastInput.nowUtcMs := RC_UnixMs(), c.lastInput.observation := c.observation
+    c.lastDecision := GM_Decision(c.state,"READY","none","","遊戲主畫面已驗證，可接續鋤地流程")
     c.ocrEngine := 0
     GM_ControllerSave(c,true)
+    if c.state.eventId != ""
+        GMHost_Publish(c.lastDecision)
     GM_Shutdown("ready")
 }
 

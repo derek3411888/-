@@ -1,5 +1,6 @@
 import { analyzeServerSchedule } from "./server-names.js";
 import { HttpError, boundedText, integer } from "./utils.js";
+import { MAINTENANCE_SETTINGS, normalizeMaintenanceSettings } from "./game-maintenance.js";
 
 export const SETTINGS_SCHEMA_VERSION = 1;
 
@@ -8,6 +9,8 @@ export const FIRESTORE_SETTINGS_READ_FIELDS = Object.freeze([
   "desiredSettingsRevision",
   "lastSettingsAckRevision",
   "effectiveSettingsRevision",
+  "gameMaintenanceJson",
+  ...Object.keys(MAINTENANCE_SETTINGS).map((key) => `effective${key[0].toUpperCase()}${key.slice(1)}`),
 ]);
 
 export function normalizeLiveQualityProfile(value) {
@@ -15,7 +18,7 @@ export function normalizeLiveQualityProfile(value) {
   return ["economy", "balanced", "smooth"].includes(profile) ? profile : "balanced";
 }
 
-export function normalizeSettingsInput(body = {}) {
+export function normalizeSettingsInput(body = {}, context = {}) {
   const serverSchedule = analyzeServerSchedule(body.serverScheduleList);
   if (serverSchedule.invalid.length) {
     throw new HttpError(
@@ -40,6 +43,7 @@ export function normalizeSettingsInput(body = {}) {
     runtimeDiagnosticsErrorKeepCount: integer(body.runtimeDiagnosticsErrorKeepCount, 30, 5, 200),
     maxRestartCount: integer(body.maxRestartCount, 10, 1, 50),
     liveQualityProfile: normalizeLiveQualityProfile(body.liveQualityProfile),
+    ...normalizeMaintenanceSettings(body, context),
   };
 }
 
@@ -98,6 +102,10 @@ function normalizedFirestoreSettings(document, prefix, fallback = {}) {
       `${prefix}LiveQualityProfile`,
       fallback.liveQualityProfile ?? "balanced",
     )),
+    ...Object.fromEntries(Object.keys(MAINTENANCE_SETTINGS).flatMap((key) => {
+      const value = firestoreField(document, `${prefix}${key[0].toUpperCase()}${key.slice(1)}`, fallback[key]);
+      return value === undefined ? [] : [[key, value]];
+    })),
   };
 }
 
@@ -119,6 +127,9 @@ export function firestoreDesiredSettingsFields(settings, revision, updatedAt = D
       desiredMaxRestartCount: firestoreInteger(settings.maxRestartCount),
       desiredLiveQualityProfile: firestoreString(normalizeLiveQualityProfile(settings.liveQualityProfile)),
       desiredSettingsUpdatedAt: firestoreInteger(updatedAt),
+      ...Object.fromEntries(Object.entries(MAINTENANCE_SETTINGS).filter(([key]) => Object.hasOwn(settings, key))
+        .map(([key, type]) => [`desired${key[0].toUpperCase()}${key.slice(1)}`,
+          type === "boolean" ? firestoreBoolean(settings[key]) : type === "integer" ? firestoreInteger(settings[key]) : firestoreString(settings[key])])),
     },
   };
 }
@@ -161,6 +172,7 @@ export async function forwardSettingsWithFirestoreCas({
   now = Date.now,
   maxAttempts = 5,
 }) {
+  const submittedSettings = settings;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const document = await readDocument(uid, FIRESTORE_SETTINGS_READ_FIELDS);
     const updateTime = String(document?.updateTime ?? "").trim();
@@ -182,6 +194,10 @@ export async function forwardSettingsWithFirestoreCas({
       revisions.ackRevision,
       revisions.effectiveRevision,
     ) + 1;
+    settings = normalizeSettingsInput(submittedSettings, {
+      previous: normalizedFirestoreSettings(document, "effective"),
+      status: firestoreField(document, "gameMaintenanceJson", null), nowMs: now(),
+    });
     const fields = firestoreDesiredSettingsFields(settings, revision, now());
     try {
       await patchDocument(uid, fields, updateTime);

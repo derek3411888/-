@@ -987,6 +987,8 @@ RC_ProcessRemoteSettings(resp) {
             RC_JsonGetString(resp, "desiredLiveQualityProfile"))
     }
 
+    for key, value in GM_ReadMaintenanceDesired(resp).OwnProps()
+        settings.%key% := value
     resultCode := "REJECTED"
     resultDetail := "裝置未完成遠端設定處理"
     applied := false
@@ -1364,7 +1366,7 @@ RC_ReadEffectiveRemoteSettings() {
         && Trim(RC_IniReadSafe(RC_CFG_PATH, "mail_notify", "to", ""), " `t`r`n") != ""
     )
 
-    return {
+    settings := {
         revision: RC_LAST_SETTINGS_APPLIED_REVISION,
         serverScheduleEnabled: RC_ParseBool01(
             RC_IniReadSafe(RC_CFG_PATH, "server_schedule", "enabled", "0"), 0) ? true : false,
@@ -1394,6 +1396,9 @@ RC_ReadEffectiveRemoteSettings() {
         lastAckAt: RC_ToIntRange(
             RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_at", "0"), 0, 0, 9999999999999)
     }
+    for key, value in GM_ReadMaintenanceSettings(RC_CFG_PATH).OwnProps()
+        settings.%key% := value
+    return settings
 }
 
 RC_ReadServerProgress() {
@@ -1469,6 +1474,7 @@ RC_PatchClientState(state, isShutdown) {
 
     body := "{"
     body .= '"fields":{'
+    body .= '"gameMaintenanceJson":{"stringValue":' GM_PublicQuote(GM_PublicStatusJson(),4096) '},'
     body .= '"docKind":{"stringValue":"client"},'
     body .= '"schemaVersion":{"integerValue":"7"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
@@ -1512,6 +1518,7 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"effectiveRuntimeDiagnosticsErrorKeepCount":{"integerValue":"' effectiveSettings.runtimeDiagnosticsErrorKeepCount '"},'
     body .= '"effectiveMaxRestartCount":{"integerValue":"' effectiveSettings.maxRestartCount '"},'
     body .= '"effectiveLiveQualityProfile":{"stringValue":"' RC_JsonEsc(effectiveSettings.liveQualityProfile) '"},'
+    body .= GM_MaintenanceFirestoreFields(effectiveSettings)
     body .= '"lastSettingsAckRevision":{"integerValue":"' effectiveSettings.lastAckRevision '"},'
     body .= '"lastSettingsAckResult":{"stringValue":"' RC_JsonEsc(effectiveSettings.lastAckResult) '"},'
     body .= '"lastSettingsAckDetail":{"stringValue":"' RC_JsonEsc(effectiveSettings.lastAckDetail) '"},'
@@ -1594,6 +1601,7 @@ RC_PatchClientState(state, isShutdown) {
     url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsErrorKeepCount"
     url .= "&updateMask.fieldPaths=effectiveMaxRestartCount"
     url .= "&updateMask.fieldPaths=effectiveLiveQualityProfile"
+    url .= "&updateMask.fieldPaths=gameMaintenanceJson" GM_MaintenanceFirestoreMask()
     url .= "&updateMask.fieldPaths=lastSettingsAckRevision"
     url .= "&updateMask.fieldPaths=lastSettingsAckResult"
     url .= "&updateMask.fieldPaths=lastSettingsAckDetail"
@@ -2309,6 +2317,7 @@ RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
     body .= '"effectiveRuntimeDiagnosticsErrorKeepCount":{"integerValue":"' effectiveSettings.runtimeDiagnosticsErrorKeepCount '"},'
     body .= '"effectiveMaxRestartCount":{"integerValue":"' effectiveSettings.maxRestartCount '"},'
     body .= '"effectiveLiveQualityProfile":{"stringValue":"' RC_JsonEsc(effectiveSettings.liveQualityProfile) '"},'
+    body .= GM_MaintenanceFirestoreFields(effectiveSettings)
     body .= '"serverScheduleEnabled":{"booleanValue":' (SERVER_SCHEDULE_ENABLED ? "true" : "false") '},'
     body .= '"serverScheduleJson":{"stringValue":"' RC_JsonEsc(serverScheduleJson) '"},'
     body .= '"currentServerIndex":{"integerValue":"' serverIndex '"},'
@@ -2333,6 +2342,7 @@ RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
     url .= "&updateMask.fieldPaths=effectiveRuntimeDiagnosticsErrorKeepCount"
     url .= "&updateMask.fieldPaths=effectiveMaxRestartCount"
     url .= "&updateMask.fieldPaths=effectiveLiveQualityProfile"
+    url .= GM_MaintenanceFirestoreMask()
     url .= "&updateMask.fieldPaths=serverScheduleEnabled"
     url .= "&updateMask.fieldPaths=serverScheduleJson"
     url .= "&updateMask.fieldPaths=currentServerIndex"
@@ -2369,6 +2379,7 @@ RC_FirestoreGetClientDoc() {
     url .= "&mask.fieldPaths=desiredRuntimeDiagnosticsErrorKeepCount"
     url .= "&mask.fieldPaths=desiredMaxRestartCount"
     url .= "&mask.fieldPaths=desiredLiveQualityProfile"
+    url .= GM_MaintenanceFirestoreMask("desired","mask")
     url .= "&mask.fieldPaths=selfHostedServerUrl"
     url .= "&mask.fieldPaths=selfHostedMode"
     url .= "&mask.fieldPaths=selfHostedEpoch"

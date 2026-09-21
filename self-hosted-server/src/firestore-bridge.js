@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { query, withTransaction } from "./db.js";
 import { buildFallbackCommandBaseline } from "./migration-baseline.js";
 import { firestoreSettingsImportState, forwardSettingsWithFirestoreCas } from "./settings.js";
+import { normalizeGameMaintenance } from "./game-maintenance.js";
 import {
   FIRESTORE_COMMAND_READ_FIELDS,
   firestoreCommandState,
@@ -106,6 +107,7 @@ export async function importFirestoreDevices({ publish = true } = {}) {
       const lastAck = integer(field(document, "lastAckNonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
       const importedCommand = firestoreCommandState(document);
       const importedSettings = firestoreSettingsImportState(document);
+      const maintenance = normalizeGameMaintenance(field(document, "gameMaintenanceJson", null));
       const settingsAck = importedSettings.ackRevision > 0 ? {
         revision: importedSettings.ackRevision,
         applied: importedSettings.ackApplied,
@@ -146,6 +148,13 @@ export async function importFirestoreDevices({ publish = true } = {}) {
              importedSettings.effectiveRevision, importedSettings.effectiveSettings, settingsAck,
             nonce, lastAck, importedSettings.desiredRevision, importedSettings.ackRevision, importedCommand],
         );
+        if (maintenance) {
+          await client.query(
+            `UPDATE devices SET status=jsonb_set(COALESCE(status,'{}'::jsonb),'{gameMaintenance}',$2::jsonb,true)
+             WHERE uid=$1 AND COALESCE((status->'gameMaintenance'->>'observedAt')::bigint,0)<=$3`,
+            [uid, JSON.stringify(maintenance), maintenance.observedAt],
+          );
+        }
         if (importedSettings.effectiveRevision > 0) {
           const effectiveAckAt = importedSettings.ackRevision === importedSettings.effectiveRevision
             && importedSettings.ackAt > 0 ? new Date(importedSettings.ackAt) : new Date();

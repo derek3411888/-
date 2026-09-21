@@ -349,6 +349,7 @@ RCSH_SendHeartbeat(state, diagnosticLog := "") {
     status .= '"payloadVersion":"' RC_JsonEsc(PAYLOAD_BUILD_VERSION) '",'
     status .= '"currentStep":"' RC_JsonEsc(Trim(CURRENT_STEP_NAME, " `t`r`n")) '",'
     status .= '"currentStepDetail":"' RC_JsonEsc(Trim(CURRENT_STEP_DETAIL, " `t`r`n")) '",'
+    status .= '"gameMaintenance":' GM_PublicStatusJson() ','
     status .= '"currentStepLevel":"' RC_JsonEsc(Trim(CURRENT_STEP_LEVEL, " `t`r`n")) '",'
     status .= '"currentServer":"' RC_JsonEsc(currentServer) '",'
     status .= '"currentServerLabel":"' RC_JsonEsc(currentServerLabel) '",'

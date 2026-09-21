@@ -141,7 +141,7 @@ GM_IsValidGameLaunchEntry(path) {
 }
 
 GM_JournalFields() {
-    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage"
+    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt"
 }
 
 GM_TextChecksum(text) {
@@ -165,7 +165,7 @@ GM_ParseJournal(text) {
             throw Error("Unsafe journal field")
         data[field[1]] := field[2]
     }
-    numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,"
+    numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,notifiedOpenAt,"
     for key in StrSplit(GM_JournalFields(),",") {
         if !data.Has(key)
             throw Error("Incomplete maintenance journal")
@@ -326,6 +326,150 @@ GM_CreateController(journalPath,context,hooks) {
     return {state:state,hooks:hooks,journalPath:journalPath,worker:0,readCount:0,lastDecision:0,
         active:true,managed:state.eventId != "",stopRecordingDone:false,loadError:loadError,
         lastSavedAt:0,lastSavedKey:"",lastPublishedKey:"",workerFailure:""}
+}
+
+GM_PublicQuote(value,maxChars := 400) {
+    value := SubStr(RegExReplace(String(value),"[\x00-\x1f\x7f]"," "),1,maxChars)
+    return '"' StrReplace(StrReplace(value,"\","\\"),'"','\"') '"'
+}
+
+GM_BuildPublicJson(state,decision,input,nowMs) {
+    observation := GM_Value(input,"observation",0)
+    percent := GM_Value(observation,"progressPercent","")
+    percentJson := IsNumber(percent) && percent != "" && Number(percent) >= 0 && Number(percent) <= 100 ? Number(percent) : "null"
+    source := state.sourceUrl
+    if !RegExMatch(source,"^https://wutheringwaves\.kurogames\.com/tw/main/news/detail/\d+$")
+        source := ""
+    detail := RegExReplace(GM_Value(decision,"detail",""),"(?:[A-Za-z]:\\|\\\\)[^\s|]*","[本機路徑]")
+    result := '{"schemaVersion":1,"capabilityVersion":1'
+    fields := {phase:GM_Value(decision,"phase",state.phase),overlay:GM_Value(decision,"overlay",state.overlay),
+        provider:state.provider,gameVersion:state.gameVersion,eventId:state.eventId,sourceUrl:source,
+        sourceState:GM_Value(input,"noticeState","pending"),progressStage:GM_Value(observation,"phase","unknown"),
+        errorCode:GM_Value(decision,"errorCode",""),detail:detail,targetServer:state.targetServer}
+    for key, value in fields.OwnProps()
+        result .= ',' GM_PublicQuote(key) ':' GM_PublicQuote(value,key = "detail" ? 400 : key = "sourceUrl" ? 180 : 180)
+    result .= ',"expectedOpenAt":' state.expectedOpenAt ',"checkedAt":' GM_Value(input,"noticeCheckedAt",0)
+    result .= ',"observedAt":' GM_Value(input,"nowUtcMs",nowMs) ',"observedUtcNow":' nowMs ',"progressPercent":' percentJson '}'
+    return StrPut(result,"UTF-8") <= 4097 ? result : "null"
+}
+
+GM_MaintenanceSettingKeys() {
+    return Map("maintenanceEnabled","enabled","maintenanceOverrideEventId","override_event_id",
+        "maintenanceDelayUntilUtc","delay_until_utc","maintenanceSkipEventId","skip_event_id","maintenanceRefreshRequestId","refresh_request_id")
+}
+
+GM_ReadMaintenanceSettings(cfgPath) {
+    result := {}
+    for key, iniKey in GM_MaintenanceSettingKeys() {
+        fallback := key = "maintenanceEnabled" ? "1" : key = "maintenanceDelayUntilUtc" ? "0" : ""
+        value := fallback
+        try value := IniRead(cfgPath,"game_maintenance",iniKey,fallback)
+        result.%key% := key = "maintenanceEnabled" ? (value = "1" ? 1 : 0)
+            : key = "maintenanceDelayUntilUtc" ? (RegExMatch(value,"^\d{1,13}$") ? Integer(value) : 0) : value
+    }
+    return result
+}
+
+GM_ValidateMaintenanceSettings(values,previous,state,nowMs) {
+    result := {}, changed := Map()
+    for key, iniKey in GM_MaintenanceSettingKeys() {
+        result.%key% := previous.%key%
+        if !values.HasOwnProp(key)
+            continue
+        value := values.%key%
+        if key = "maintenanceEnabled" {
+            if !(value is Integer) || (value != 0 && value != 1)
+                throw Error("維護開關必須是布林值")
+        } else if key = "maintenanceDelayUntilUtc" {
+            if !(value is Integer) || value < 0 || value > 9999999999999
+                throw Error("維護延後時間格式錯誤")
+        } else if !(value is String) || StrLen(value) > 180 || (value != "" && !RegExMatch(value,"^[A-Za-z0-9._:@-]+$"))
+            throw Error("維護事件格式錯誤")
+        if value != previous.%key%
+            changed[key] := true
+        result.%key% := value
+    }
+    if (changed.Has("maintenanceOverrideEventId") || changed.Has("maintenanceDelayUntilUtc"))
+        && (result.maintenanceOverrideEventId != "" || result.maintenanceDelayUntilUtc > 0) {
+        if state.eventId = "" || result.maintenanceOverrideEventId != state.eventId
+            || result.maintenanceDelayUntilUtc <= nowMs || result.maintenanceDelayUntilUtc > nowMs + 172800000
+            throw Error("延後僅可針對目前維護事件，且在現在至 48 小時內")
+    }
+    if changed.Has("maintenanceSkipEventId") && result.maintenanceSkipEventId != "" && result.maintenanceSkipEventId != state.eventId
+        throw Error("略過事件已過期，請重新讀取裝置狀態")
+    return result
+}
+
+GM_WriteMaintenanceSettings(cfgPath,values) {
+    ; The caller supplies its existing atomic configuration staging file.
+    for key, iniKey in GM_MaintenanceSettingKeys() {
+        IniWrite(values.%key%,cfgPath,"game_maintenance",iniKey)
+        if IniRead(cfgPath,"game_maintenance",iniKey,"!missing") != String(values.%key%)
+            throw Error("維護設定暫存讀回驗證失敗")
+    }
+}
+
+GM_MaintenanceFirestoreFields(values,prefix := "effective") {
+    result := ""
+    for key, iniKey in GM_MaintenanceSettingKeys() {
+        fieldName := prefix StrUpper(SubStr(key,1,1)) SubStr(key,2)
+        item := key = "maintenanceEnabled" ? '{"booleanValue":' (values.%key% ? "true" : "false") '}'
+            : key = "maintenanceDelayUntilUtc" ? '{"integerValue":' GM_PublicQuote(values.%key%) '}'
+            : '{"stringValue":' GM_PublicQuote(values.%key%,180) '}'
+        result .= GM_PublicQuote(fieldName) ':' item ','
+    }
+    return result
+}
+
+GM_MaintenanceFirestoreMask(prefix := "effective",maskType := "updateMask") {
+    result := ""
+    for key, iniKey in GM_MaintenanceSettingKeys()
+        result .= "&" maskType ".fieldPaths=" prefix StrUpper(SubStr(key,1,1)) SubStr(key,2)
+    return result
+}
+
+GM_ReadMaintenanceDesired(json) {
+    result := {}
+    for key, iniKey in GM_MaintenanceSettingKeys() {
+        name := "desired" StrUpper(SubStr(key,1,1)) SubStr(key,2)
+        if !RegExMatch(json,'"' name '"\s*:\s*\{([^}]*)\}',&field)
+            continue
+        value := "!invalid"
+        if key = "maintenanceEnabled" {
+            if RegExMatch(field[1],'^\s*"booleanValue"\s*:\s*(true|false)\s*$',&item)
+                value := item[1] = "true" ? 1 : 0
+        } else if key = "maintenanceDelayUntilUtc" {
+            if RegExMatch(field[1],'^\s*"integerValue"\s*:\s*"?(\d{1,13})"?\s*$',&item)
+                value := Integer(item[1])
+        } else if RegExMatch(field[1],'^\s*"stringValue"\s*:\s*"([A-Za-z0-9._:@-]{0,180})"\s*$',&item)
+            value := item[1]
+        result.%key% := value
+    }
+    return result
+}
+
+GM_NotifyStage(state,journalPath,decision,sendMail) {
+    if state.eventId = ""
+        return false
+    stage := decision.phase = "WAIT_OPEN" || decision.phase = "WAIT_SERVER" ? "waiting"
+        : decision.phase = "UPDATING" ? "updating" : decision.phase = "READY" ? "ready"
+        : decision.phase = "NEEDS_ATTENTION" ? "attention" : ""
+    if state.notifiedOpenAt > 0 && state.expectedOpenAt > state.notifiedOpenAt
+        stage := "extended"
+    if stage = ""
+        return false
+    key := GM_TextChecksum(state.eventId "|" stage "|" state.revision)
+    if InStr("|" state.notificationKeys "|","|" key "|")
+        return false
+    previousKeys := state.notificationKeys, previousOpen := state.notifiedOpenAt
+    state.notificationKeys := SubStr(state.notificationKeys "|" key,-1800)
+    state.notifiedOpenAt := Max(state.notifiedOpenAt,state.expectedOpenAt)
+    try GM_SaveJournal(journalPath,state)
+    catch as err {
+        state.notificationKeys := previousKeys, state.notifiedOpenAt := previousOpen
+        throw err
+    }
+    return sendMail.Call(stage,decision.detail)
 }
 
 GM_ControllerSave(c,force := false) {

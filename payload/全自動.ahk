@@ -2146,6 +2146,9 @@ OnRemoteControlSettingsChanged(settings) {
         return { code: "INVALID_LIVE_QUALITY", detail: "直播畫質必須是省流量、平衡或流暢模式", applied: false }
 
     oldServerEnabled := ParseBool01(IniReadSafe(CFG_FILE, "server_schedule", "enabled", "0"), 0)
+    try maintenanceSettings := GM_ValidateRemoteSettings(settings)
+    catch as err
+        return {code:"INVALID_MAINTENANCE_SETTINGS",detail:err.Message,applied:false}
     oldServerList := RemoteSettingsJoinServerList(ParseServerScheduleList(
         IniReadSafe(CFG_FILE, "server_schedule", "list", "")))
     serverChanged := (oldServerEnabled != serverEnabled || oldServerList != canonicalServerList)
@@ -2181,6 +2184,7 @@ OnRemoteControlSettingsChanged(settings) {
         maxRestartCount: maxRestartCount,
         liveQualityProfile: liveQualityProfile
     }
+    values.maintenance := maintenanceSettings
     commit := RemoteSettingsCommitConfig(values)
     if !commit.ok
         return { code: "CONFIG_WRITE_FAILED", detail: commit.detail, applied: false }
@@ -2278,6 +2282,7 @@ RemoteSettingsCommitConfig(values) {
         IniWrite(values.maxRestartCount, tempPath, "restart_tracking", "max_restart_count")
         IniWrite(values.liveQualityProfile, tempPath, "self_hosted", "live_quality_profile")
         IniWrite(values.revision, tempPath, "remote_control", "applied_settings_revision")
+        GM_WriteMaintenanceSettings(tempPath,values.maintenance)
 
         verifyList := RemoteSettingsJoinServerList(ParseServerScheduleList(
             IniReadSafe(tempPath, "server_schedule", "list", "")))
@@ -9684,6 +9689,27 @@ SendUiInputBlockedNotifyMail(reasonCode, stage, reason, foregroundStreak := 0) {
     body .= "`r`n處理方式：不再連續重啟；保留網頁遠端 STOP 與心跳，恢復後只做一次乾淨重啟。"
     return SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass,
         mailFrom, mailTo, subject, body, useSsl)
+}
+
+SendGameMaintenanceNotifyMail(stage,detail) {
+    global CFG_FILE, MAIL_SECTION, MAIL_NOTIFY_ENABLED
+    if !MAIL_NOTIFY_ENABLED
+        return {ok:true,message:"郵件通知已關閉"}
+    labels := Map("waiting","等待遊戲開服","updating","遊戲版本更新開始","ready","遊戲主畫面就緒，可接續流程",
+        "extended","官方維護時間延長","attention","版本更新需要人工確認")
+    label := labels.Has(stage) ? labels[stage] : "版本維護狀態"
+    smtpHost := IniReadSafe(CFG_FILE,MAIL_SECTION,"smtp_host","")
+    smtpPort := IniReadSafe(CFG_FILE,MAIL_SECTION,"smtp_port","587")
+    smtpUser := IniReadSafe(CFG_FILE,MAIL_SECTION,"smtp_user","")
+    smtpPass := IniReadSafe(CFG_FILE,MAIL_SECTION,"smtp_pass",IniReadSafe(CFG_FILE,MAIL_SECTION,"smtp_password",""))
+    mailFrom := IniReadSafe(CFG_FILE,MAIL_SECTION,"from",""), mailTo := IniReadSafe(CFG_FILE,MAIL_SECTION,"to","")
+    subject := IniReadSafe(CFG_FILE,MAIL_SECTION,"subject_prefix","LRMCAI") " " label
+    body := BuildNotifyMailBody(label "`r`n" detail,FormatTime(,"yyyy-MM-dd HH:mm:ss"))
+    result := SendMailByPowerShell(smtpHost,smtpPort,smtpUser,smtpPass,mailFrom,mailTo,subject,body,
+        IniReadSafe(CFG_FILE,MAIL_SECTION,"use_ssl","1"))
+    if !result.ok
+        WriteLog("版本維護通知寄送失敗（不宣告已送達）：" result.message,"WARN")
+    return result
 }
 
 SendServerSwitchCompletedNotifyMail(target, targetIndex, targetTotal, sourceCode := "") {

@@ -27,7 +27,8 @@ import {
   saveFirestoreCommand,
   saveFirestoreSettings,
 } from "./firestore-bridge.js";
-import { normalizeLiveQualityProfile, normalizeSettingsInput } from "./settings.js";
+import { normalizeLiveQualityProfile, normalizeSettingsInput, firestoreDesiredSettingsFields } from "./settings.js";
+import { normalizeGameMaintenance } from "./game-maintenance.js";
 import { discardFetchBody, withHeaderTimeout } from "./hls-proxy.js";
 import {
   assertCodexDispatcher,
@@ -284,6 +285,8 @@ async function deviceControl(uid, firestoreFormat) {
     desiredRuntimeDiagnosticsErrorKeepCount: firestoreInteger(normalizedSettings.runtimeDiagnosticsErrorKeepCount ?? 30),
     desiredMaxRestartCount: firestoreInteger(normalizedSettings.maxRestartCount ?? 10),
     desiredLiveQualityProfile: firestoreString(normalizedSettings.liveQualityProfile),
+    ...Object.fromEntries(Object.entries(firestoreDesiredSettingsFields(normalizedSettings, settingsRow?.revision ?? 0).fields)
+      .filter(([key]) => key.startsWith("desiredMaintenance"))),
     selfHostedServerUrl: firestoreString(config.publicUrl),
     selfHostedMode: firestoreString(migration.mode ?? "shadow"),
     selfHostedEpoch: firestoreString(migration.epoch ?? "selfhost-v1"),
@@ -304,6 +307,7 @@ async function updateHeartbeat(uid, body) {
   const displayName = boundedText(body.displayName, 160);
   const alias = boundedText(body.deviceAlias, 120);
   const status = typeof body.status === "object" && body.status ? body.status : {};
+  status.gameMaintenance = normalizeGameMaintenance(status.gameMaintenance);
   const performance = normalizePerformancePayload(body.performance, status);
   if (performance) status.performance = { collector: performance.collector, current: performance.current };
   await query(
@@ -476,10 +480,11 @@ async function ackCommand(uid, body) {
   return updated;
 }
 
-async function savePrimarySettings(uid, settings) {
+async function savePrimarySettings(uid, body) {
   const inserted = await withTransaction(async (client) => {
-    const device = await client.query("SELECT settings_revision FROM devices WHERE uid=$1 FOR UPDATE", [uid]);
+    const device = await client.query("SELECT settings_revision,settings,status FROM devices WHERE uid=$1 FOR UPDATE", [uid]);
     if (!device.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
+    const settings = normalizeSettingsInput(body, { previous: device.rows[0].settings ?? {}, status: device.rows[0].status?.gameMaintenance });
     const pending = await client.query(
       "SELECT revision,created_at FROM settings_revisions WHERE uid=$1 AND status='PENDING' ORDER BY revision DESC LIMIT 1 FOR UPDATE",
       [uid],
@@ -500,7 +505,7 @@ async function savePrimarySettings(uid, settings) {
 }
 
 async function saveSettings(uid, body, allowInternalMutation = false) {
-  const settings = normalizeSettingsInput(body);
+  const settings = body;
   if (allowInternalMutation) return savePrimarySettings(uid, settings);
   const mode = await migrationMode();
   if (mode === "primary") return savePrimarySettings(uid, settings);
