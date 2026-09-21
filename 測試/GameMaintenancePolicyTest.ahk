@@ -42,6 +42,10 @@ TestMaintenancePolicy() {
     GMTest_Assert(GM_Evaluate(state,input).errorCode = "UPDATE_ADAPTER_UNVERIFIED", "unverified updater cannot run")
     input := GMTest_Input(10000), state.actionId := "persisted-intent", state.actionStage := "intent"
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "observe", "restart reconciles intent rather than resends")
+    input.actionElapsedMs := 180000
+    GMTest_Assert(GM_Evaluate(state,input).errorCode = "UPDATE_ACTIVITY_UNCONFIRMED", "180 seconds without target activity")
+    input.actionElapsedMs := 0, input.observation.phase := "paused_download"
+    GMTest_Assert(GM_Evaluate(state,input).phase = "NEEDS_ATTENTION", "explicit Steam download pause needs attention")
     input.observation.phase := "downloading", input.noProgressMs := 1799999
     GMTest_Assert(GM_Evaluate(state,input).phase = "UPDATING", "active download allowed")
     input.noProgressMs := 1800000

@@ -129,7 +129,7 @@ GM_Evaluate(previous, input) {
         return GM_Decision(state,"NEEDS_ATTENTION","none","INSTALL_SOURCE_UNKNOWN","無法確認安裝來源，請檢查鳴潮啟動路徑")
     if (observedPhase = "game_ready" && GM_Value(observation,"identityVerified",false) && GM_Value(observation,"stable",false))
         return GM_Decision(state,"READY","resume_flow")
-    if (observedPhase = "error" || observedPhase = "login_required" || observedPhase = "offline")
+    if (observedPhase = "error" || observedPhase = "login_required" || observedPhase = "offline" || observedPhase = "paused_download")
         return GM_Decision(state,"NEEDS_ATTENTION","none",GM_Value(observation,"errorCode","UPDATER_" StrUpper(observedPhase)),GM_Value(observation,"detail","更新器需要人工確認"))
     if (observedPhase = "game_running" || observedPhase = "update_ready" || observedPhase = "login_ready")
         return GM_Decision(state,"CHECKING_LOGIN","resume_flow","","更新器或程序已就緒；尚未宣告遊戲登入成功")

@@ -83,7 +83,7 @@ GM_ReadWorkerSnapshot(path, requestId, previousSequence, nowMs, sessionRoot) {
     GM_RequireEnum(sections["notice"]["outcome"], "ok,invalid,unavailable,pending")
     GM_RequireEnum(sections["notice"]["present"], "0,1")
     GM_RequireEnum(sections["install"]["provider"], "unknown,ambiguous,steam,kuro")
-    GM_RequireEnum(sections["observation"]["phase"], "unknown,not_started,queued,downloading,installing,verifying,update_ready,game_running,login_required,offline,error")
+    GM_RequireEnum(sections["observation"]["phase"], "unknown,not_started,queued,downloading,installing,verifying,update_ready,game_running,paused_download,login_required,offline,error")
     for section, keys in Map("notice", "startsAtUtcMs,expectedOpenAtUtcMs,checkedAtUtcMs,freshForRelease", "install", "appId,checkedAtUtcMs,updateAdapterReady", "observation", "bytesDone,bytesTotal,lastProgressAtUtcMs,gamePid") {
         for key in StrSplit(keys, ",") {
             value := sections[section][key]

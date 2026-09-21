@@ -62,9 +62,12 @@ RoundTrip() {
     [IO.File]::AppendAllText($log,'[2026-08-20 11:10:04] AppID 3513350 state changed : Fully Installed,'+[Environment]::NewLine)
     $ready=Get-GMSteamObservation -Install $install -Previous $staging -Now $now.AddSeconds(5)
     Assert-GMEqual $ready.phase 'update_ready' 'updater ready is not game ready'
+    [IO.File]::AppendAllText($log,'[2026-08-20 11:10:05] AppID 3513350 update changed : Paused,'+[Environment]::NewLine)
+    $paused=Get-GMSteamObservation -Install $install -Previous $ready -Now $now.AddSeconds(6)
+    Assert-GMEqual $paused.phase 'paused_download' 'Steam download pause distinct from client pause'
     [IO.File]::WriteAllText($log,'[2026-08-20 09:00:00] AppID 3513350 update changed : Running,Downloading,'+[Environment]::NewLine)
-    $rotated=Get-GMSteamObservation -Install $install -Previous $ready -Now $now.AddSeconds(6)
-    Assert-GMEqual $rotated.lastProgressAtUtc $ready.lastProgressAtUtc 'rotation old timestamps not progress'
+    $rotated=Get-GMSteamObservation -Install $install -Previous $paused -Now $now.AddSeconds(7)
+    Assert-GMEqual $rotated.lastProgressAtUtc $paused.lastProgressAtUtc 'rotation old timestamps not progress'
     [IO.File]::WriteAllText($manifest,'"AppState" { "appid" "123" }')
     $invalid=Get-GMSteamObservation -Install $install -Previous $rotated -Now $now.AddSeconds(7)
     Assert-GMEqual $invalid.errorCode 'STEAM_MANIFEST_INVALID' 'wrong App ID rejected'

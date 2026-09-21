@@ -122,6 +122,7 @@ function Get-GMSteamObservation {
                 elseif($line -match '(?i)Downloading'){'downloading'}
                 elseif($line -match '(?i)Staging|Committing|Installing'){'installing'}
                 elseif($line -match '(?i)Verifying|Validating'){'verifying'}
+                elseif($line -match '(?i)Paused'){'paused_download'}
                 elseif($line -match '(?i)Queued'){'queued'}else{''}
             if($phase){$result.phase=$phase;$result.lastProgressAtUtc=$Now.ToString('o')}
             if($phase -eq 'error'){$result.errorCode='STEAM_UPDATE_ERROR';$result.detail='Steam 記錄到目標遊戲更新錯誤'}
