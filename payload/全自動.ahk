@@ -32,6 +32,7 @@ catch
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
+#Include ScriptRestartHandoff.ahk
 #Include InteractiveDesktopGuard.ahk
 #Include ForegroundBlockerPolicy.ahk
 #Include ScreenRecordingEncoderPolicy.ahk
@@ -127,8 +128,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.02"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.13"
+global PAYLOAD_BUILD_VERSION := "5.03"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.14"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -1053,6 +1054,17 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
         WriteLog("錄影清理模式退出：略過遊戲聲音、錄影程序、效能採集與遠端控制收尾")
         return
     }
+    ; Only our explicit ExitApp may hand over. Manual replacement, reload or
+    ; shutdown must not leave a worker that unexpectedly starts another run.
+    if (StrLower(exitReason) != "exit" || !(__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)) {
+        cancelConfirmed := false
+        try cancelConfirmed := RestartHandoff_Cancel("exit=" exitReason)
+        if !cancelConfirmed {
+            WriteLog("取消重啟交接未能確認；保留舊程序，避免退出後誤啟動下一輪", "ERROR")
+            return 1
+        }
+        __RESTART_HANDOFF_LAUNCHED := false
+    }
     try ToolTip(, , , TOOLTIP_SLOT)
     try GM_Shutdown(exitReason)
     try StopRuntimeDiagnostics()
@@ -1060,8 +1072,11 @@ RestoreWutheringAudioOnExit(exitReason, exitCode) {
     try SetTimer(ScreenRecordingMaintenanceTick, 0)
     cleanFinalExit := IsCleanFinalScriptExit(exitReason)
     try RC_Shutdown(cleanFinalExit)
+    handoffHealthy := false
     if ((__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART) && __RESTART_HANDOFF_LAUNCHED)
-        WriteLog("重啟模式：保留錄影不中斷，略過結束保底停止", "WARN")
+        try handoffHealthy := RestartHandoff_CanPreserveRecording()
+    if handoffHealthy
+        WriteLog("重啟交接已備妥：保留錄影；獨立 worker 等本 PID 完整退出後才啟動接手程序", "WARN")
     else {
         if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
             WriteLog("重啟旗標存在但接手程序未確認啟動；改走錄影正常封口", "ERROR")
@@ -2519,6 +2534,19 @@ WriteStep("載入設定", "config=" CFG_FILE)
 LoadMailNotifyEnabled()
 LoadScreenRecordingEnabled()
 LoadRuntimeDiagnosticsSettings()
+if (EnvGet("WUTHERING_RESTART_REQUEST") != "") {
+    try {
+        ; Claim the inherited recorder before ACK, not merely when the script
+        ; begins. From here every exit path has a real cleanup owner again.
+        AttachManagedScreenRecordingOnRestart("重啟交接 ACK 前接管")
+        if !RestartHandoff_Acknowledge(__SCREEN_RECORDING_PID)
+            throw Error("交接狀態或 nonce 不符")
+        WriteLog("重啟交接已確認：舊程序已退出、模式一致、錄影已有接管者；遊戲就緒另行驗證")
+    } catch as handoffError {
+        WriteLog("重啟交接拒絕：" handoffError.Message "；停止啟動，避免誤跑新任務", "ERROR")
+        ExitApp 1
+    }
+}
 if CLEANUP_RECORDINGS_ONLY {
     WriteLog("錄影清理模式完成，不啟動遊戲、OKWW、LRMCAI、效能採集或遠端控制")
     ExitApp
@@ -8374,18 +8402,27 @@ TryLaunchRestartThroughUpdater(resumeCurrentTask := false, &detail := "") {
         return false
     }
 
-    try {
-        ; 由目前已提權的 payload 啟動時會沿用權限；launcher 先檢查 GitHub
-        ; manifest、原子套用新 payload，再依 LRMCAI 是否真的開始過選擇
-        ; restart 或 restart resume，不能把尚未開始的鋤地誤當成快捷鍵接續。
-        launcherFlag := resumeCurrentTask ? "--resume-current-task" : "--restart-current-task"
-        Run('"' launcherPath '" ' launcherFlag, rootDir)
-        detail := "launcher=" launcherPath " mode=" launcherFlag
-        return true
-    } catch as e {
-        detail := "launcher_start_failed path=" launcherPath " error=" e.Message
-        return false
-    }
+    ; The updater is deferred too: starting it during OnExit can replace files
+    ; and reach #SingleInstance Force before the old payload finishes cleanup.
+    mode := resumeCurrentTask ? "restart resume" : "restart"
+    QueueSafeRestartHandoff(mode, launcherPath)
+    detail := "launcher=" launcherPath " mode=" mode "（等待舊 PID 退出）"
+    return true
+}
+
+QueueSafeRestartHandoff(mode, launcherPath := "") {
+    global AhkExe, __RESTART_HANDOFF_LAUNCHED, __SCREEN_RECORDING_PID
+    recording := ""
+    if (__SCREEN_RECORDING_PID > 0 && ProcessExist(__SCREEN_RECORDING_PID))
+        recording := RestartHandoff_RecorderIdentity(__SCREEN_RECORDING_PID)
+    handoff := RestartHandoff_Prepare(AhkExe, A_ScriptFullPath, mode,
+        RuntimeFiles_RuntimeDir("腳本交接"), launcherPath, 120000, 180000, recording)
+    ; Mark preservation only after the worker confirms it owns the exact parent
+    ; process handle. This is ARMED, not a claim that the next run has started.
+    __RESTART_HANDOFF_LAUNCHED := true
+    WriteLog("重啟交接已備妥 | mode=" mode " workerPid=" handoff.workerPid " request=" handoff.request)
+    WriteStep("重啟交接", "等待舊程序結束；接手尚未確認 | " mode)
+    return handoff
 }
 
 ; 重啟全自動腳本（帶重啟計數與重啟原因）
@@ -8471,13 +8508,7 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
                 
                 try {
                     global AhkExe
-                    restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" nextserver'
-                    ; #SingleInstance Force 可能在 Run 尚未回傳前就要求舊實例退出；
-                    ; 必須先標記 handoff，catch 再回滾，避免 OnExit 提前封口錄影。
-                    __RESTART_HANDOFF_LAUNCHED := true
-                    Run(restartCmd)
-                    WriteLog("nextserver 重啟命令已發送")
-                    WriteStep("重啟流程", "nextserver 命令已發送")
+                    QueueSafeRestartHandoff("nextserver")
                 } catch as e {
                     WriteLog("nextserver 重啟失敗: " e.Message, "ERROR")
                     WriteStep("重啟流程", "nextserver 重啟失敗 | " e.Message, "ERROR")
@@ -8517,19 +8548,13 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
     WriteStep("重啟流程", "送出 restart 命令")
     try {
         global AhkExe
-        __RESTART_HANDOFF_LAUNCHED := true
         updaterDetail := ""
         if TryLaunchRestartThroughUpdater(CRASH_RESTART_MODE, &updaterDetail) {
-            WriteLog("重啟已交由啟動器檢查更新後接續：" updaterDetail)
-            WriteStep("重啟流程", "啟動器更新檢查與接續命令已發送")
+            WriteLog("重啟已排入交接，舊程序退出後由啟動器檢查更新：" updaterDetail)
         } else {
             ; 啟動器遺失或無法啟動時才沿用本地 payload，確保離線故障仍能恢復。
-            restartCmd := '"' AhkExe '" "' A_ScriptFullPath '" restart'
-            if (CRASH_RESTART_MODE)
-                restartCmd .= ' resume'
-            Run(restartCmd)
-            WriteLog("啟動器不可用，已用本地 payload 發送 restart 命令 | " updaterDetail, "WARN")
-            WriteStep("重啟流程", "本地 restart 命令已發送（啟動器後備）", "WARN")
+            QueueSafeRestartHandoff(CRASH_RESTART_MODE ? "restart resume" : "restart")
+            WriteLog("啟動器不可用，已排入本地 payload 交接 | " updaterDetail, "WARN")
         }
     } catch as e {
         WriteLog("重啟失敗: " e.Message, "ERROR")
@@ -9303,10 +9328,16 @@ HandleCycleFinishAndShutdown(completedTime := "") {
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", nextServerMode := "") {
-    if !relaunchForNextServer
-        GM_CancelForStop(stopTypeCode)
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_HANDOFF_LAUNCHED
     global __CLEAN_FINAL_EXIT_REQUESTED
+    if !relaunchForNextServer {
+        GM_CancelForStop(stopTypeCode)
+        if !RestartHandoff_Cancel("stop=" stopTypeCode)
+            WriteLog("手動停止的交接取消尚未確認；OnExit 會保留舊程序以阻擋誤重啟", "ERROR")
+        __RESTART_IN_PROGRESS := false
+        __NEXTSERVER_RESTART := false
+        __RESTART_HANDOFF_LAUNCHED := false
+    }
     stopType := ResolveShutdownStopType(stopTypeCode)
     if (!relaunchForNextServer && !__RESTART_IN_PROGRESS)
         __CLEAN_FINAL_EXIT_REQUESTED := true
@@ -9371,9 +9402,8 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
         ShowTip("🔁 切換下一個伺服器，準備重啟流程", 2000)
         RawSleep(1200)
         nextServerArg := (nextServerMode = "remote") ? "nextserver remote" : "nextserver"
-        __RESTART_HANDOFF_LAUNCHED := true
         try {
-            Run('"' AhkExe '" "' A_ScriptFullPath '" ' nextServerArg)
+            QueueSafeRestartHandoff(nextServerArg)
         }
         catch as e {
             WriteLog("啟動下一輪伺服器流程失敗: " e.Message, "ERROR")
@@ -9384,8 +9414,13 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
         }
     }
 
-    WriteLog("收尾關閉流程已完成，所有流程已停止")
-    ShowTip("✅ 已關閉並停止所有流程", 2000)
+    if __RESTART_HANDOFF_LAUNCHED {
+        WriteLog("本輪遊戲已關閉；等待腳本 OnExit 完整收尾後，由交接 worker 啟動下一輪")
+        ShowTip("🔁 本輪已關閉，等待安全交接下一輪", 2000)
+    } else {
+        WriteLog("收尾關閉流程已完成，所有流程已停止")
+        ShowTip("✅ 已關閉並停止所有流程", 2000)
+    }
     ; Remote STOP 只有走到所有關閉、錄影封口與通知皆完成的這一點，
     ; 才當場把 APPLIED ACK durable stage 並清除 command claim；OnExit 只補送雲端。
     ; 一般收尾／切服沒有 active STOP，這個 marker 會安全 no-op。

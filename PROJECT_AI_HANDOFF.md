@@ -21,6 +21,15 @@
   - 進入 MonitorRewardAndShutdown 監測 LRMCAI 日誌
   - 達標後關閉流程或切換伺服器續跑
 
+### 切服／重啟交接修正（2026-09-24）
+
+- MYTUF 09/24 第一服完成後，舊 Payload 的 OnExit 尚在收尾，新實例已啟動，觸發 AHK 2.0.19 `#SingleInstance Force` 的等待確認對話框；使用者按「是」才繼續。不是 Asia OCR 未命中，也不是排程未前進。
+- `ScriptRestartHandoff.ahk`／`ScriptRestartWorker.ahk` 共用交接：先核對舊 PID 與建立時間、回報 armed；等待舊 process handle 真正結束後，才啟動下一輪或 Launcher。模式保留 `nextserver`、`nextserver remote`、`restart`、`restart resume`。
+- 舊程序 OnExit 最後重驗 worker 仍存活且 armed 才保留正式錄影。新程序先接管錄影、核對實際參數再 ACK；後置啟動失敗由 worker 對繼承的 FFmpeg PID＋建立時間＋路徑正常封口，30 秒仍不回應才精確停止並標示檔案可能不完整。手動 STOP／非預期替換會取消交接，取消檔寫入失敗則停止精確 worker handle；無法確認取消時不讓舊程序退出。新程序啟動 ACK 與遊戲就緒是兩件事，日誌不可把排入交接寫成下一輪已成功。
+- 交接檔在 `<程式根目錄>/執行暫存/腳本交接/<nonce>/`，`result.ini` 區分 armed／launching／started／accepted／cancelled／failed；兩分鐘未等到舊程序結束或三分鐘未收到新 Payload ACK，記錄 failed，不強殺舊程序、不重複啟動。更新器等待時間與實際遊戲流程無關。
+- `測試/Invoke-RestartHandoffTests.ps1` 以真實隔離 AHK 程序、編譯的假 Launcher 與可正常處理 Ctrl+C 的合成 console recorder 驗證，刻意延遲 OnExit 五秒；不啟停正式遊戲。18 個案例覆蓋四種模式、更新器兩種參數、缺少更新器、重複 worker（含結束後）、取消與取消寫入失敗、舊程序逾時、缺少 ACK、模式遺失、非法模式，以及成功接管／交接失敗／舊程序逾時的錄影保護。
+- 本次規劃發布 Payload 5.03／Launcher 5.14／Server bundle 1.0.66，併入先前網站回報傳輸與進度修正。保留 `.vscode/settings.json` 及 `文字識別/LRMCAI主視窗OCR測試.ahk` 的使用者修改。GitHub 發布不代表現有客戶端已熱更新，也不代表 Docker 已部署；驗收結論以本次實際輸出為準。
+
 ### 版本維護功能的開發／驗收界線（2026-09-22）
 
 本功能在 `codex/game-maintenance-20260921` 實作；2026-09-22 已依使用者授權推送 Payload 5.02／Launcher 5.13／Server bundle 1.0.65 至 GitHub main。產物 commit 為 `318363f`，固定來源 manifest 為 `f84b98b`，公司用 GitHub Pages 部署成功。規格與計畫在 `docs/superpowers/`；驗收摘要與發布界線見 [遊戲維護驗收](docs/game-maintenance-acceptance.md)。server bundle 發布不等於 Docker 已部署，亦不代表正在執行的客戶端已熱更新。

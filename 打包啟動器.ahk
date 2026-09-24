@@ -4,7 +4,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.13"
+global PACK_LAUNCHER_BUILD_VERSION := "5.14"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -1048,7 +1048,7 @@ if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
         WriteLog("跳過複製其他目錄，避免複製不相關檔案")
         
         ; 啟動新位置的exe
-        Run('"' newExePath '"', autoFolderPath)
+        Run('"' newExePath '"' LauncherAdminForwardArgs(), autoFolderPath)
         WriteLog("啟動新位置的程式，準備清理原檔案")
         
         ; 延遲清理原目錄的檔案（給新程序時間啟動）

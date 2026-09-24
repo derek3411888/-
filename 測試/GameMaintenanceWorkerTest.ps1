@@ -115,8 +115,8 @@ CheckSkipContract() {
     $parent=Get-Process -Id $PID
     Assert-GMTrue (Test-GMWorkerParent $PID $parent.StartTime.ToUniversalTime().ToString('o')) 'exact parent accepted'
     Assert-GMTrue (-not (Test-GMWorkerParent $PID $parent.StartTime.AddSeconds(-1).ToUniversalTime().ToString('o'))) 'PID reuse identity rejected'
-    $exe=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $args='-NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $root 'payload\GameMaintenanceWorker.ps1')+'"'
+    $exe=(Get-Process -Id $PID).Path
+    $args='-NoProfile -File "'+(Join-Path $root 'payload\GameMaintenanceWorker.ps1')+'"'
     foreach($key in $paths.Keys){$args+=' -'+$key+' "'+$paths[$key]+'"'}
     $args+=' -ParentPid '+$PID+' -ParentStartUtc "'+$parent.StartTime.ToUniversalTime().ToString('o')+'"'
     $worker=Start-Process $exe -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $session 'worker.err')

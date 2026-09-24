@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.02',
-    [string]$LauncherVersion = '5.13',
-    [string]$ServerVersion = '1.0.65'
+    [string]$PayloadVersion = '5.03',
+    [string]$LauncherVersion = '5.14',
+    [string]$ServerVersion = '1.0.66'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -139,7 +139,8 @@ function Test-GameMaintenanceReleaseSources {
         [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $projectRoot "payload\$relative"), [ref]$tokens, [ref]$errors)
         if (@($errors).Count) { throw "PowerShell 維護模組語法錯誤：$relative : $($errors[0].Message)" }
     }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot '測試\Invoke-GameMaintenanceTests.ps1') -Suite All
+    $testPowerShell = (Get-Process -Id $PID).Path
+    & $testPowerShell -NoProfile -File (Join-Path $projectRoot '測試\Invoke-GameMaintenanceTests.ps1') -Suite All
     Assert-ExitCode '維護／版本更新完整回歸測試'
 }
 
@@ -271,9 +272,11 @@ if ($payloadSource -notmatch ('PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION\s*:=\s*"' + [r
 if ($payloadSource -notmatch ('PAYLOAD_BUILD_VERSION\s*:=\s*"' + [regex]::Escape($PayloadVersion) + '"')) {
     throw "payload 版本不是 $PayloadVersion"
 }
+$restartWorkerSource = Get-Content -LiteralPath 'payload\ScriptRestartWorker.ahk' -Raw -Encoding UTF8
 if ($launcherSource -notmatch [regex]::Escape('--restart-current-task') -or
     $payloadSource -notmatch 'TryLaunchRestartThroughUpdater' -or
-    $payloadSource -notmatch [regex]::Escape('--restart-current-task')) {
+    $payloadSource -notmatch 'QueueSafeRestartHandoff' -or
+    $restartWorkerSource -notmatch [regex]::Escape('--restart-current-task')) {
     throw '錯誤重啟更新政策缺漏：launcher／payload 必須支援先更新再以 restart 接續。'
 }
 if ($payloadSource -notmatch 'SWP_HIDEWINDOW' -or
@@ -295,6 +298,8 @@ Invoke-AhkTest $payloadRuntime '測試\RewardMonitorIncidentPolicyTest.ahk' '收
 Invoke-AhkValidate $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
+Invoke-AhkValidate $payloadRuntime 'payload\ScriptRestartWorker.ahk' '安全重啟交接 worker 語法 validate'
+& (Join-Path $projectRoot '測試\Invoke-RestartHandoffTests.ps1')
 Invoke-AhkValidate $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑測試語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\RuntimeFilePaths測試.ahk' '程式根目錄輸出路徑回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\ScreenRecordingEncoderPolicyTest.ahk' '顯卡錄影編碼策略測試語法 validate'
@@ -387,6 +392,9 @@ foreach ($bridgeScript in @(
     }
 }
 $currentPowerShellPath = (Get-Process -Id $PID).Path
+& $currentPowerShellPath -NoProfile -File `
+    (Join-Path $projectRoot 'self-hosted-server\test\codex-bridge-transport.test.ps1')
+Assert-ExitCode 'Codex 傳輸、網站狀態與增量回覆回歸測試'
 $bridgeRegressionOutput = @(& $currentPowerShellPath -NoProfile -File `
     (Join-Path $projectRoot 'self-hosted-server\windows\CodexSupportBridge.ps1') -RegressionTest)
 Assert-ExitCode 'Codex 網站回報橋接回歸測試'
@@ -428,6 +436,7 @@ Move-Item -LiteralPath $payloadTemp -Destination 'payload\全自動鋤地.exe' -
 Write-Host '建立 payload.zip…'
 New-FilteredZip 'payload' 'payload.zip' (Get-PayloadZipExcludes)
 Assert-ZipContains 'payload.zip' (Get-GameMaintenancePayloadFiles)
+Assert-ZipContains 'payload.zip' @('ScriptRestartHandoff.ahk', 'ScriptRestartWorker.ahk')
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk', 'ForegroundBlockerPolicy.ahk',

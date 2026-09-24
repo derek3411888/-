@@ -502,8 +502,9 @@ function renderCodexProgressOverview(view) {
       ? (["IN_PROGRESS", "COMPLETED", "FAILED", "INTERRUPTED"].includes(responseState) ? 6 : 5)
       : (stateStep[supportState] || 1);
     if (supportState === "QUEUED") {
-      badgeTone = "ok";
-      badge = "已送進 Codex";
+      const hasTurn = Boolean(String(view.turnId || "").trim());
+      badgeTone = hasTurn ? "ok" : "warning";
+      badge = hasTurn ? "Codex 已接收" : "尚未確認聊天室接收";
       if (responseState === "COMPLETED") {
         tone = "ok";
         headline = "Codex 已回覆";
@@ -515,11 +516,15 @@ function renderCodexProgressOverview(view) {
       } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
         tone = "error";
         headline = responseState === "INTERRUPTED" ? "Codex 處理已中斷" : "Codex 回覆同步失敗";
-        summary = replyError || "請求確實已送進 Codex，但沒有取得可顯示的最終回覆。";
+        summary = replyError || (hasTurn
+          ? "請求確實已送進 Codex，但沒有取得可顯示的最終回覆。"
+          : "尚未取得聊天室接收證明；佇列可能已被刪除，未宣告開始處理。");
       } else {
         tone = "pending";
-        headline = "已送進 Codex，等待聊天室接收";
-        summary = "已確認 Codex 佇列接受這筆回報；尚未在目前聊天室找到對應訊息。";
+        badgeTone = "warning";
+        badge = "已排隊，尚未開始";
+        headline = "回報已保存，等待目前聊天室接收";
+        summary = "請保持家中 Codex 桌面版開啟；目前工作完成後接收這筆回報。只有確認對應訊息與 Turn ID 才會顯示正在處理，不需重複送出。";
       }
     } else if (failedDispatch) {
       tone = "error";
@@ -584,6 +589,8 @@ function renderCodexSupportStatus() {
   const responseState = String(data.responseState || "NONE").trim().toUpperCase();
   const responseAt = Math.max(0, Number(data.responseAt) || 0);
   const replyCheckedAt = Math.max(0, Number(data.replyCheckedAt) || 0);
+  const responseTurnId = String(data.codexTurnId || "").trim();
+  const hasResponseTurn = Boolean(responseTurnId) && ["IN_PROGRESS", "COMPLETED", "FAILED", "INTERRUPTED"].includes(responseState);
   const responsePending = supportState === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
   const safelyCancellable = requestPending && attemptCount === 0
     && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(supportState);
@@ -606,7 +613,7 @@ function renderCodexSupportStatus() {
       ? "請求尚未送進 Codex，可以安全取消。若超過 3 分鐘未動作，會開放新編號重送。"
       : supportState === "QUEUED"
         ? (responsePending
-          ? "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。"
+          ? (responseState === "WAITING" ? "回報已保存到聊天室佇列，尚未開始；請保持 Codex 桌面版開啟，不需重複送出。" : "這筆請求正在 Codex 處理；完成後回覆會直接顯示在這裡。")
           : responseRetryable
             ? "這筆 Codex 回覆失敗或中斷，可以保留相同內容與裝置 Log，用新編號重送。"
             : "這筆請求已送進 Codex，不能撤回或重送，避免重複執行。")
@@ -616,7 +623,7 @@ function renderCodexSupportStatus() {
 
   const stateLabels = {
     PENDING: "已送出，等待家中主機", RECEIVED: "家中主機已收到", VALIDATING: "正在驗證訊息",
-    QUEUEING: "正在送往 Codex", RETRYING: "等待取得 Codex Turn ID", QUEUED: "Codex Turn 已開始",
+    QUEUEING: "正在送往 Codex", RETRYING: "等待重試傳送", QUEUED: hasResponseTurn ? "Codex 已接收" : (responseState === "WAITING" ? "已排隊，尚未開始" : "未確認聊天室接收"),
     REJECTED: "訊息被主機拒絕", RATE_LIMITED: "送出過於頻繁", FAILED: "傳送失敗",
     CANCELLED: "已取消（未送進 Codex）", READY: "橋接程式待命",
   };
@@ -640,7 +647,7 @@ function renderCodexSupportStatus() {
   codexDetails.error.textContent = [data.errorCode, data.errorDetail || detail].filter(Boolean).join("：") || "-";
 
   renderCodexProgressOverview({
-    requestNonce, supportState, responseState, requestedAt, receivedAt, validatedAt,
+    requestNonce, supportState, responseState, turnId: hasResponseTurn ? responseTurnId : "", requestedAt, receivedAt, validatedAt,
     lastAttemptAt, queuedAt, responseAt, replyCheckedAt, heartbeatAt, bridgeOnline,
     bridgeVersion: String(data.bridgeVersion || ""), detail,
     replyError: String(data.replyError || ""), sending: state.codexSupportSending,
@@ -665,14 +672,15 @@ function renderCodexSupportStatus() {
     setCodexStage(codexStages.attempted, "active", attemptCount > 0 ? `第 ${attemptCount} 次嘗試` : "準備送往 Codex");
   }
   if (supportState === "QUEUED") {
-    setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次送出成功`);
-    setCodexStage(codexStages.queued, "done", queuedAt ? `啟動於 ${formatTime(queuedAt)}` : "Codex Turn ID 已確認");
+    setCodexStage(codexStages.attempted, "done", `第 ${Math.max(1, attemptCount)} 次已保存訊息`);
+    setCodexStage(codexStages.queued, hasResponseTurn ? "done" : (responseState === "WAITING" ? "active" : "error"),
+      hasResponseTurn ? "已確認對應聊天室 Turn" : "尚無 Turn ID，未確認聊天室接收");
     if (responseState === "COMPLETED") {
       setCodexStage(codexStages.response, "done", data.responseAt ? `完成於 ${formatTime(data.responseAt)}` : "最終回覆已同步");
     } else if (["FAILED", "INTERRUPTED"].includes(responseState)) {
       setCodexStage(codexStages.response, "error", data.replyError || (responseState === "INTERRUPTED" ? "Codex 處理中斷" : "Codex 未產生最終回覆"));
     } else {
-      setCodexStage(codexStages.response, "active", responseState === "IN_PROGRESS" ? "Codex 正在處理" : "等待 Codex 開始處理");
+      setCodexStage(codexStages.response, responseState === "IN_PROGRESS" ? "active" : "waiting", responseState === "IN_PROGRESS" ? "Codex 正在處理" : "等待 Codex 開始處理");
     }
   } else if (supportState === "RETRYING") {
     setCodexStage(codexStages.attempted, "active", nextRetryAt ? `第 ${attemptCount} 次未成功；${formatTime(nextRetryAt)} 重試` : "暫未成功，會自動重試");
@@ -690,7 +698,7 @@ function renderCodexSupportStatus() {
   const responseText = String(data.responseText || "").trim();
   const responseLabels = {
     NONE: ["waiting", "尚未送出", "請求送進 Codex 後，這裡會顯示處理狀態與最後回覆。", "muted"],
-    WAITING: ["waiting", "正在復原", "舊版只排入佇列；Bridge 正在安全尋找並啟動這筆訊息。", "warning"],
+    WAITING: ["waiting", "已排隊，尚未開始", "回報已保存；等待目前聊天室接收。請保持 Codex 桌面版開啟，不需重複送出。", "warning"],
     IN_PROGRESS: ["in-progress", "處理中", "Codex 正在處理這筆網站回報；完成後會自動更新。", "warning"],
     COMPLETED: ["completed", "已完成", "已取得這個 Codex turn 的最終回覆。", "ok"],
     FAILED: ["failed", "失敗", data.replyError || "Codex 任務結束但沒有可顯示的最終回覆。", "danger"],
@@ -709,7 +717,7 @@ function renderCodexSupportStatus() {
   if (state.codexSupportError) return setCodexSupportMessage("error", state.codexSupportError);
   if (requestPending) return setCodexSupportMessage("pending", detail || stateLabels[supportState] || "已送出，等待家中主機接收…");
   if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED" && responsePending) {
-    return setCodexSupportMessage("pending", responseState === "IN_PROGRESS" ? "Codex 正在處理；完成後會在這裡顯示回覆" : "已送進 Codex，等待開始處理");
+    return setCodexSupportMessage("pending", responseState === "IN_PROGRESS" ? "Codex 正在處理；完成後會在這裡顯示回覆" : "回報已排隊，尚未開始處理");
   }
   if (requestNonce > 0 && requestNonce === statusNonce && supportState === "QUEUED" && responseState === "COMPLETED") {
     return setCodexSupportMessage("ok", "Codex 已完成，最終回覆已同步到網站");

@@ -20,6 +20,11 @@ try {
     finalizePath := appDir "\RecordingFinalizeWorker.ahk"
 
     decision := LauncherCleanup_ProcessDecision("AutoHotkey64.exe",
+        AhkWorkerCommand(appDir "\ScriptRestartWorker.ahk", '"E:\runtime\request.ini"'), appDir)
+    AssertLauncherCleanup(!decision.stop,
+        "負責等待新 Payload ACK 的重啟交接 worker 不得被更新器終止")
+
+    decision := LauncherCleanup_ProcessDecision("AutoHotkey64.exe",
         AhkWorkerCommand(finalizePath,
             '--mode finalize --session "E:\Downloads\自動鋤地\操作過程\錄影暫存\session_1"'),
         appDir)

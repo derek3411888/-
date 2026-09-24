@@ -75,7 +75,8 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(script, /CODEX_SUPPORT_PRESETS\s*=\s*Object\.freeze/);
   assert.match(script, /stopCodexSupportPolling/);
   assert.match(script, /function renderCodexProgressOverview/);
-  assert.match(script, /已送進 Codex，等待聊天室接收/);
+  // Queue-only versus actually-started rendering is exercised by
+  // codex-support-progress-web.test.js, not by matching presentation wording.
   assert.match(script, /目前聊天室已辨識到這筆網站回報/);
   assert.match(script, /document\.hidden \? 60_000 : 15_000/);
   assert.match(script, /\/api\/v1\/devices\/\$\{encoded\}\/performance\?range=/);
@@ -197,18 +198,15 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(bridge, /\$LegacyAction\s*=\s*'FIX_SCRIPT'/);
   assert.match(bridge, /\$FixedPrompt\s*=\s*'現在腳本有問題，請你找出問題並修正'/);
   assert.match(bridge, /\$MaxMessageLength\s*=\s*1000/);
-  assert.match(bridge, /\$BridgeVersion\s*=\s*'3\.3\.1'/);
   assert.doesNotMatch(bridge, /&\s*\$codexPath\s+queue\s+--thread/);
-  assert.match(bridge, /\$startInfo\.Arguments\s*=\s*'app-server proxy'/);
   assert.match(bridge, /method\s*=\s*'initialized'/);
   assert.match(bridge, /experimentalApi\s*=\s*\$true/);
-  assert.match(bridge, /'thread\/resume'/);
   assert.match(bridge, /'thread\/turns\/list'/);
   assert.match(bridge, /'thread\/queue\/list'/);
   assert.match(bridge, /'thread\/queue\/add'/);
-  assert.match(bridge, /'thread\/queue\/start'/);
+  // Transport ownership, deduplication and truthful WAITING receipts are
+  // executed against the real bridge functions in codex-bridge-transport.test.ps1.
   assert.match(bridge, /Codex 已開始處理；Turn ID 已確認/);
-  assert.match(bridge, /codexResponseState = 'IN_PROGRESS'/);
   assert.match(bridge, /codexResponseTurnId = \[string\]\$delivery\.TurnId/);
   assert.match(bridge, /bridgeState = \$State/);
   assert.match(bridge, /bridgeMessageSha256/);
@@ -221,13 +219,11 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(bridge, /Invoke-SelfHostedQueue/);
   assert.match(bridge, /Sync-CodexResponses/);
   assert.match(bridge, /Publish-FirestoreCodexResponse/);
-  assert.match(bridge, /Started Firestore support turn nonce=\$nonce turn=\$\(\$delivery\.TurnId\)/);
   assert.doesNotMatch(bridge, /\[[^\]]+\]\(if\s*\(/);
   assert.match(script, /startClientListener\(\)/);
   assert.match(script, /snap\.forEach\(\(s\) => cache\.set\(s\.id, s\.data\(\)\)\);[\s\S]*syncCodexLogDeviceOptions\(false\)/);
   assert.match(script, /startCodexSupportListener\(\)/);
   assert.match(script, /function renderCodexProgressOverview/);
-  assert.match(script, /已送進 Codex，等待聊天室接收/);
   assert.match(script, /目前聊天室已辨識到這筆網站回報/);
   assert.match(script, /LEGACY_RECORDING_STATES/);
   assert.match(script, /舊版分段狀態已停用/);

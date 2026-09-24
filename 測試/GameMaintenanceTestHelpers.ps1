@@ -33,7 +33,7 @@ function Invoke-GMTestProcess {
     $stderrPath = Join-Path $Context.RunRoot "$tag.stderr.log"
     switch ([IO.Path]::GetExtension($scriptFile)) {
         '.ahk' { $exe = Join-Path $Context.ProjectRoot 'AutoHotkey64.exe'; $arguments = '/ErrorStdOut=UTF-8 "' + $scriptFile + '"' }
-        '.ps1' { $exe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'; $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $scriptFile + '"' }
+        '.ps1' { $exe = (Get-Process -Id $PID).Path; $arguments = '-NoProfile -File "' + $scriptFile + '"' }
         default { throw 'Unsupported test script type' }
     }
     $process = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $Context.ProjectRoot `
