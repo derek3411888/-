@@ -11,7 +11,7 @@ SplitPath(requestPath, , &requestDir)
 workerMutex := 0
 parentHandle := 0
 workerOwnsRequest := false
-parentExited := false
+recordingGuardReady := false
 try {
     SetWorkingDir(requestDir)
     nonce := IniRead(requestPath, "request", "nonce")
@@ -36,6 +36,7 @@ try {
         throw OSError(A_LastError, "OpenProcess(parent)")
     if (RestartHandoff_ProcessCreated(parentHandle) != Integer(IniRead(requestPath, "request", "parent_created")))
         throw Error("Parent process identity changed")
+    recordingGuardReady := true
     ahkPath := IniRead(requestPath, "request", "ahk")
     scriptPath := IniRead(requestPath, "request", "script")
     launcherPath := IniRead(requestPath, "request", "launcher", "")
@@ -62,7 +63,6 @@ try {
     }
     if RestartWorker_Cancelled()
         ExitApp 0
-    parentExited := true
     RestartWorker_Result("launching", "Old payload exited; starting successor")
     EnvSet("WUTHERING_RESTART_REQUEST", requestPath)
     launchPid := 0
@@ -97,10 +97,18 @@ try {
     }
 } catch as workerError {
     if workerOwnsRequest {
-        recordingResult := "old_parent_retains_ownership"
-        if parentExited {
-            try recordingResult := RestartHandoff_FinalizeOrphan(requestPath)
-            catch as recordingError
+        recordingResult := "ownership_not_validated"
+        if recordingGuardReady {
+            try {
+                if RestartWorker_AcceptedSuccessor()
+                    recordingResult := "adopted_by_successor"
+                else
+                    ; A terminal handoff failure always finalizes its exact
+                    ; inherited recorder, even if the old parent is still in
+                    ; OnExit. This closes the armed-snapshot/deadline race and
+                    ; also covers a parent that never completes shutdown.
+                    recordingResult := RestartHandoff_FinalizeOrphan(requestPath)
+            } catch as recordingError
                 recordingResult := "cleanup_error: " recordingError.Message
         }
         try FileAppend(A_Now " " workerError.Message "`n", requestDir "\failure.log", "UTF-8")
@@ -112,6 +120,20 @@ try {
         DllCall("CloseHandle", "ptr", parentHandle)
     if workerMutex
         DllCall("CloseHandle", "ptr", workerMutex)
+}
+
+RestartWorker_AcceptedSuccessor() {
+    global requestDir, requestPath, nonce, mode, parentPid
+    acceptedPath := requestDir "\accepted.ini"
+    if (IniRead(acceptedPath, "accepted", "nonce", "") != nonce
+        || IniRead(acceptedPath, "accepted", "mode", "") != mode)
+        return false
+    successorPid := Integer(IniRead(acceptedPath, "accepted", "pid", "0"))
+    if (successorPid <= 0 || successorPid = parentPid)
+        return false
+    expectedRecorder := Integer(IniRead(requestPath, "request", "recording_pid", "0"))
+    return expectedRecorder = 0 || !ProcessExist(expectedRecorder)
+        || Integer(IniRead(acceptedPath, "accepted", "recording_pid", "0")) = expectedRecorder
 }
 
 RestartWorker_Result(state, detail, successorPid := 0) {

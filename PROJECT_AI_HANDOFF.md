@@ -27,7 +27,7 @@
 - `ScriptRestartHandoff.ahk`／`ScriptRestartWorker.ahk` 共用交接：先核對舊 PID 與建立時間、回報 armed；等待舊 process handle 真正結束後，才啟動下一輪或 Launcher。模式保留 `nextserver`、`nextserver remote`、`restart`、`restart resume`。
 - 舊程序 OnExit 最後重驗 worker 仍存活且 armed 才保留正式錄影。新程序先接管錄影、核對實際參數再 ACK；後置啟動失敗由 worker 對繼承的 FFmpeg PID＋建立時間＋路徑正常封口，30 秒仍不回應才精確停止並標示檔案可能不完整。手動 STOP／非預期替換會取消交接，取消檔寫入失敗則停止精確 worker handle；無法確認取消時不讓舊程序退出。新程序啟動 ACK 與遊戲就緒是兩件事，日誌不可把排入交接寫成下一輪已成功。
 - 交接檔在 `<程式根目錄>/執行暫存/腳本交接/<nonce>/`，`result.ini` 區分 armed／launching／started／accepted／cancelled／failed；兩分鐘未等到舊程序結束或三分鐘未收到新 Payload ACK，記錄 failed，不強殺舊程序、不重複啟動。更新器等待時間與實際遊戲流程無關。
-- `測試/Invoke-RestartHandoffTests.ps1` 以真實隔離 AHK 程序、編譯的假 Launcher 與可正常處理 Ctrl+C 的合成 console recorder 驗證，刻意延遲 OnExit 五秒；不啟停正式遊戲。18 個案例覆蓋四種模式、更新器兩種參數、缺少更新器、重複 worker（含結束後）、取消與取消寫入失敗、舊程序逾時、缺少 ACK、模式遺失、非法模式，以及成功接管／交接失敗／舊程序逾時的錄影保護。
+- `測試/Invoke-RestartHandoffTests.ps1` 以真實隔離 AHK 程序、編譯的假 Launcher 與可正常處理 Ctrl+C 的合成 console recorder 驗證，刻意延遲 OnExit 五秒；不啟停正式遊戲。19 個案例覆蓋四種模式、更新器兩種參數、缺少更新器、重複 worker（含結束後）、取消與取消寫入失敗、舊程序逾時、缺少 ACK、模式遺失、非法模式，以及成功接管／交接失敗／舊程序逾時的錄影保護。特別包含舊程序先看到 armed、實際退出前 worker 剛好逾時的邊界；交接一旦終止失敗且無有效接管 ACK，worker 即負責封口繼承錄影，不把責任推回可能即將退出的舊程序。
 - 本次規劃發布 Payload 5.03／Launcher 5.14／Server bundle 1.0.66，併入先前網站回報傳輸與進度修正。保留 `.vscode/settings.json` 及 `文字識別/LRMCAI主視窗OCR測試.ahk` 的使用者修改。GitHub 發布不代表現有客戶端已熱更新，也不代表 Docker 已部署；驗收結論以本次實際輸出為準。
 
 ### 版本維護功能的開發／驗收界線（2026-09-22）
