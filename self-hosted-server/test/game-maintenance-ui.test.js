@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { maintenanceViewModel, maintenanceSettingsAck, buildMaintenancePatch } from "../public/game-maintenance-view.js";
 
 const now = 1770000000000;
@@ -68,4 +69,18 @@ test("both website maintenance modules are byte-identical", async () => {
   const original = await readFile(new URL("../public/game-maintenance-view.js", import.meta.url));
   const company = await readFile(new URL("../../remote-control-web/game-maintenance-view.js", import.meta.url));
   assert.deepEqual(company, original);
+});
+test("every relative browser module import has an explicit JavaScript HTTP route", async () => {
+  const appSource = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
+  const mapSource = appSource.match(/const staticFiles = new Map\(\[.*?\]\);/s)?.[0];
+  assert.ok(mapSource, "static asset routing map must exist");
+  const routes = vm.runInNewContext(`${mapSource}; staticFiles`);
+  const browserSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const imports = [...browserSource.matchAll(/from\s+["'](\.\/[^"']+)["']/g)].map((match) => match[1]);
+  assert.ok(imports.length > 0);
+  for (const imported of imports) {
+    const pathname = new URL(imported, "https://fixture.invalid/app.js").pathname;
+    assert.ok(routes.has(pathname), `Browser import is not served: ${pathname}`);
+    assert.match(routes.get(pathname)[1], /^text\/javascript/);
+  }
 });

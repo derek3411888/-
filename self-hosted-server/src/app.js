@@ -89,6 +89,7 @@ const staticFiles = new Map([
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
   ["/web-work-fallback.html", ["web-work-fallback.html", "text/html; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/game-maintenance-view.js", ["game-maintenance-view.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/vendor/hls.min.js", ["../node_modules/hls.js/dist/hls.min.js", "text/javascript; charset=utf-8"]],
 ]);

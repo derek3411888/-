@@ -24,6 +24,12 @@ async function heartbeat(value) {
 try {
   const ready = await json("/health/ready");
   assert.equal(ready.ok, true);
+  for (const pathname of ["/app.js", "/game-maintenance-view.js?v=maintenance-preview-v2"]) {
+    const module = await fetch(`${base}${pathname}`);
+    assert.equal(module.status, 200, `${pathname}: static JavaScript must actually be served`);
+    assert.match(module.headers.get("content-type"), /^text\/javascript/);
+    assert((await module.text()).includes("attachMaintenanceUI"));
+  }
   const auth = await fetch(`${base}/api/v1/auth/me`);
   assert.equal(auth.ok, true);
   cookie = (auth.headers.get("set-cookie") ?? "").split(";")[0];
@@ -46,7 +52,7 @@ try {
   const oldClient = await heartbeat(legacy);
   assert.equal(oldClient.noticePreviewSupported, false);
   assert.match(maintenanceViewModel(oldClient, now, true).noticeSummary, /裝置版本尚未回報下一次公告/);
-  console.log(JSON.stringify({ ok: true, serverVersion: ready.version, futurePreviewRoundTrip: true,
+  console.log(JSON.stringify({ ok: true, serverVersion: ready.version, staticModuleHttp: true, futurePreviewRoundTrip: true,
     normalFlowPreserved: true, failedQueryRetainsEvidence: true, legacyCapabilityHonest: true }));
 } finally {
   await query("DELETE FROM devices WHERE uid=$1", [uid]);
