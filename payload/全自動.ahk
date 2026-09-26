@@ -128,8 +128,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.03"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.14"
+global PAYLOAD_BUILD_VERSION := "5.04"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.15"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2203,6 +2203,8 @@ OnRemoteControlSettingsChanged(settings) {
     commit := RemoteSettingsCommitConfig(values)
     if !commit.ok
         return { code: "CONFIG_WRITE_FAILED", detail: commit.detail, applied: false }
+    if REMOTE_SETTINGS_RUNTIME_READY
+        try GM_RequestNoticeRefresh()
 
     MAIL_NOTIFY_ENABLED := mailEnabled
     MAX_RESTART_COUNT := maxRestartCount

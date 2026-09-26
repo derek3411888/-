@@ -28,3 +28,22 @@ test("public maintenance status is bounded and contains neither local paths nor 
   assert.equal(normalizeGameMaintenance(JSON.stringify(sample), now).provider, "steam");
   assert.equal(normalizeGameMaintenance("x".repeat(5000), now), null);
 });
+
+test("upcoming announcement reaches the API without becoming the active maintenance event", () => {
+  const upcomingNotice = { eventId: "wuthering-global-3.7-1790712000", gameVersion: "3.7",
+    startsAt: 1790712000000, expectedOpenAt: 1790737200000,
+    sourceUrl: "https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5474" };
+  const value = { ...sample, phase: "NORMAL", sourceState: "valid", upcomingNotice };
+  const result = normalizeGameMaintenance(value, now);
+  assert.deepEqual(result.upcomingNotice, upcomingNotice);
+  assert.equal(result.eventId, "");
+  assert.equal(result.phase, "NORMAL");
+  assert.equal(normalizeGameMaintenance(sample, now).upcomingNotice, null, "older clients remain compatible");
+  assert.equal(normalizeGameMaintenance(sample, now).noticePreviewSupported, false, "absent field is not confirmed no announcement");
+  assert.equal(result.noticePreviewSupported, true);
+  for (const invalid of [{ ...upcomingNotice, sourceUrl: "https://evil.example" },
+    { ...upcomingNotice, expectedOpenAt: upcomingNotice.startsAt - 1 },
+    { ...upcomingNotice, gameVersion: "<script>" }, { ...upcomingNotice, startsAt: "1790712000000" }]) {
+    assert.equal(normalizeGameMaintenance({ ...value, upcomingNotice: invalid }, now).upcomingNotice, null);
+  }
+});

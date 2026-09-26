@@ -35,7 +35,7 @@ function Test-GMWorkerPaths {
 function Get-GMSnapshotSchema {
     return [ordered]@{
         meta='schemaVersion,marker,requestId,sequence,generation,observedAtUtcMs'
-        notice='outcome,present,eventId,revision,gameVersion,startsAtUtcMs,expectedOpenAtUtcMs,checkedAtUtcMs,sourceUrl,sourceState,freshForRelease,errorCode,detail'
+        notice='outcome,present,eventId,revision,gameVersion,startsAtUtcMs,expectedOpenAtUtcMs,checkedAtUtcMs,sourceUrl,sourceState,freshForRelease,errorCode,detail,upcomingEventId,upcomingGameVersion,upcomingStartsAtUtcMs,upcomingExpectedOpenAtUtcMs,upcomingSourceUrl'
         install='provider,appId,gameRoot,launcherPath,fingerprint,updateAdapterReady,evidence,checkedAtUtcMs'
         observation='phase,bytesDone,bytesTotal,progressPercent,lastProgressAtUtcMs,detail,errorCode,gamePid,gamePath'
     }
@@ -193,6 +193,13 @@ function ConvertTo-GMWorkerSnapshot {
         # separate: only the explicit event-scoped skip may relax the latter.
         $ageMs=if($checked){($Now-[DateTimeOffset]$checked).TotalMilliseconds}else{[double]::PositiveInfinity}
         $noticeFields.freshForRelease=[int]($Notice.outcome -eq 'ok' -and $checked -and $ageMs -ge -5000 -and $ageMs -le 900000)
+    }
+    $upcoming=Get-GMInstallField $Notice 'upcomingNotice' $null
+    if($upcoming){
+        $noticeFields.upcomingEventId=$upcoming.eventId;$noticeFields.upcomingGameVersion=$upcoming.gameVersion
+        $noticeFields.upcomingStartsAtUtcMs=([DateTimeOffset]$upcoming.startsAtUtc).ToUnixTimeMilliseconds()
+        $noticeFields.upcomingExpectedOpenAtUtcMs=([DateTimeOffset]$upcoming.expectedOpenAtUtc).ToUnixTimeMilliseconds()
+        $noticeFields.upcomingSourceUrl=$upcoming.sourceUrl
     }
     $installation=[ordered]@{provider='unknown';updateAdapterReady=0}
     if($Install){foreach($key in @('provider','appId','gameRoot','launcherPath','fingerprint')){$installation[$key]=$Install.$key};$installation.evidence=$Install.evidence -join ';';$installation.checkedAtUtcMs=([DateTimeOffset]$Install.checkedAtUtc).ToUnixTimeMilliseconds()}

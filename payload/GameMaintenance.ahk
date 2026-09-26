@@ -4,7 +4,7 @@
 ; UTF-8 protocol, deliberately not IniRead (Windows INI decoding is not UTF-8).
 GM_SnapshotSchema() {
     return Map("meta", "schemaVersion,marker,requestId,sequence,generation,observedAtUtcMs",
-        "notice", "outcome,present,eventId,revision,gameVersion,startsAtUtcMs,expectedOpenAtUtcMs,checkedAtUtcMs,sourceUrl,sourceState,freshForRelease,errorCode,detail",
+        "notice", "outcome,present,eventId,revision,gameVersion,startsAtUtcMs,expectedOpenAtUtcMs,checkedAtUtcMs,sourceUrl,sourceState,freshForRelease,errorCode,detail,upcomingEventId,upcomingGameVersion,upcomingStartsAtUtcMs,upcomingExpectedOpenAtUtcMs,upcomingSourceUrl",
         "install", "provider,appId,gameRoot,launcherPath,fingerprint,updateAdapterReady,evidence,checkedAtUtcMs",
         "observation", "phase,bytesDone,bytesTotal,progressPercent,lastProgressAtUtcMs,detail,errorCode,gamePid,gamePath")
 }
@@ -104,7 +104,23 @@ GM_ReadWorkerSnapshot(path, requestId, previousSequence, nowMs, sessionRoot) {
             throw Error("Invalid maintenance span")
         GM_RequireEnum(notice["freshForRelease"], "0,1")
     }
+    GM_UpcomingFromSnapshot(notice)
     return sections
+}
+
+GM_UpcomingFromSnapshot(notice) {
+    if GM_Value(notice,"upcomingEventId","") = ""
+        return 0
+    version := GM_Value(notice,"upcomingGameVersion",""), eventId := notice["upcomingEventId"]
+    start := GM_Value(notice,"upcomingStartsAtUtcMs",""), finish := GM_Value(notice,"upcomingExpectedOpenAtUtcMs","")
+    source := GM_Value(notice,"upcomingSourceUrl","")
+    if !RegExMatch(version,"^\d+(?:\.\d+){1,3}$") || StrLen(version) > 32 || StrLen(eventId) > 180
+        || !RegExMatch(eventId,"^[A-Za-z0-9._:-]+$") || !RegExMatch(start,"^\d{1,15}$") || !RegExMatch(finish,"^\d{1,15}$")
+        || !RegExMatch(source,"^https://wutheringwaves\.kurogames\.com/zh-tw/main/news/detail/\d+$")
+        throw Error("Invalid upcoming maintenance preview")
+    if Number(start) <= 0 || Number(finish) <= Number(start) || Number(finish)-Number(start) > 172800000
+        throw Error("Invalid upcoming maintenance span")
+    return {eventId:eventId,gameVersion:version,startsAt:Number(start),expectedOpenAt:Number(finish),sourceUrl:source}
 }
 
 GM_RequireEnum(value, allowed) {
@@ -374,13 +390,22 @@ GM_BuildPublicJson(state,decision,input,nowMs) {
         source := ""
     detail := RegExReplace(GM_Value(decision,"detail",""),"(?:[A-Za-z]:\\|\\\\)[^\s|]*","[本機路徑]")
     result := '{"schemaVersion":1,"capabilityVersion":1'
+    noticeError := GM_Value(input,"noticeErrorCode","")
+    statusError := GM_Value(decision,"phase",state.phase) = "NORMAL" ? noticeError : GM_Value(decision,"errorCode",noticeError)
     fields := {phase:GM_Value(decision,"phase",state.phase),overlay:GM_Value(decision,"overlay",state.overlay),
         provider:state.provider,gameVersion:state.gameVersion,eventId:state.eventId,sourceUrl:source,
         sourceState:GM_Value(input,"noticeState","pending"),progressStage:GM_Value(observation,"phase","unknown"),
-        errorCode:GM_Value(decision,"errorCode",""),detail:detail,targetServer:state.targetServer}
+        errorCode:statusError,detail:detail,targetServer:state.targetServer}
     for key, value in fields.OwnProps()
         result .= ',' GM_PublicQuote(key) ':' GM_PublicQuote(value,key = "detail" ? 400 : key = "sourceUrl" ? 180 : 180)
     result .= ',"expectedOpenAt":' state.expectedOpenAt ',"checkedAt":' GM_Value(input,"noticeCheckedAt",0)
+    upcoming := GM_Value(input,"upcomingNotice",0)
+    if IsObject(upcoming) {
+        result .= ',"upcomingNotice":{"eventId":' GM_PublicQuote(upcoming.eventId,180)
+            . ',"gameVersion":' GM_PublicQuote(upcoming.gameVersion,32) ',"startsAt":' upcoming.startsAt
+            . ',"expectedOpenAt":' upcoming.expectedOpenAt ',"sourceUrl":' GM_PublicQuote(upcoming.sourceUrl,180) '}'
+    } else
+        result .= ',"upcomingNotice":null'
     ; Current controller status is observed for every existing heartbeat. Notice
     ; freshness remains independently exposed as checkedAt; no HTTP read here.
     result .= ',"observedAt":' nowMs ',"observedUtcNow":' nowMs ',"progressPercent":' percentJson '}'

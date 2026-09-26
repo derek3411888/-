@@ -2,6 +2,21 @@ const phaseLabels = Object.freeze({ NORMAL: "一般流程", CHECKING_NOTICE: "�
   WAIT_OPEN: "等待官方開服", CHECKING_INSTALL: "辨識安裝來源", CHECKING_UPDATE: "確認更新狀態", UPDATING: "遊戲更新中",
   CHECKING_LOGIN: "驗證遊戲登入", WAIT_SERVER: "遊戲仍顯示維護中", READY: "主畫面已就緒", NEEDS_ATTENTION: "需要人工確認", STOPPED: "已停止" });
 const plain = (value, limit = 400) => typeof value === "string" ? value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, limit) : "";
+const officialNoticeUrl = (value) => typeof value === "string" && value.length <= 180
+  && /^https:\/\/wutheringwaves\.kurogames\.com\/zh-tw\/main\/news\/detail\/\d+$/.test(value) ? value : "";
+const validTime = (value) => Number.isSafeInteger(value) && value > 0 && value <= 9999999999999;
+const taipeiDay = (value) => new Date(value + 28800000).toISOString().slice(0, 10);
+
+// Shared display-only validation; never substitutes for the active eventId.
+export function normalizeUpcomingNotice(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.eventId !== "string"
+    || !/^[A-Za-z0-9._:-]{1,180}$/.test(value.eventId) || typeof value.gameVersion !== "string"
+    || value.gameVersion.length > 32 || !/^\d+(?:\.\d+){1,3}$/.test(value.gameVersion)
+    || !validTime(value.startsAt) || !validTime(value.expectedOpenAt) || value.expectedOpenAt <= value.startsAt
+    || value.expectedOpenAt - value.startsAt > 172800000 || !officialNoticeUrl(value.sourceUrl)) return null;
+  return { eventId: value.eventId, gameVersion: value.gameVersion, startsAt: value.startsAt,
+    expectedOpenAt: value.expectedOpenAt, sourceUrl: value.sourceUrl };
+}
 
 export function maintenanceViewModel(value, nowMs = Date.now(), deviceFresh = false) {
   if (typeof value === "string") { try { value = value.length <= 4096 ? JSON.parse(value) : null; } catch { value = null; } }
@@ -12,13 +27,25 @@ export function maintenanceViewModel(value, nowMs = Date.now(), deviceFresh = fa
   const progress = typeof data.progressPercent === "number" && data.progressPercent >= 0 && data.progressPercent <= 100 ? data.progressPercent : null;
   const sourceUrl = /^https:\/\/wutheringwaves\.kurogames\.com\/zh-tw\/main\/news\/detail\/\d+$/.test(data.sourceUrl || "") ? data.sourceUrl : "";
   const expectedOpenAt = Number.isSafeInteger(data.expectedOpenAt) ? data.expectedOpenAt : 0;
-  return { supported, visible: supported && !(["NORMAL", "READY"].includes(phase) && !data.eventId), stale,
+  const upcomingNotice = normalizeUpcomingNotice(data.upcomingNotice);
+  const noticePreviewSupported = Object.hasOwn(data, "upcomingNotice") && data.noticePreviewSupported !== false;
+  const checkedAt = validTime(data.checkedAt) && data.checkedAt <= nowMs + 5000 ? data.checkedAt : 0;
+  const noticeStale = !checkedAt || nowMs - checkedAt > 21600000 || taipeiDay(checkedAt) !== taipeiDay(nowMs);
+  let noticeSummary = "";
+  if (["invalid", "unavailable"].includes(data.sourceState))
+    noticeSummary = upcomingNotice ? "公告查詢失敗；以下為上次已知公告" : "公告查詢失敗，無法確認維護安排";
+  else if (data.sourceState !== "valid") noticeSummary = "公告狀態尚未確認";
+  else if (noticeStale) noticeSummary = upcomingNotice ? "公告資料待更新；以下為上次已知公告" : "公告資料待更新，不能確認今日維護安排";
+  else if (upcomingNotice && taipeiDay(upcomingNotice.startsAt) <= taipeiDay(nowMs)) noticeSummary = "已到公告維護日；等待裝置重新確認";
+  else if (!data.eventId) noticeSummary = upcomingNotice ? "已公告下次維護；今天照常執行"
+    : noticePreviewSupported ? "今日無維護；尚無下一次維護公告" : "今日無維護；裝置版本尚未回報下一次公告";
+  return { supported, visible: supported, stale, upcomingNotice, noticeSummary, noticeStale,
     phase, title: phaseLabels[phase] || "裝置版本尚未支援維護排程", eventId: plain(data.eventId, 180),
     provider: { steam: "Steam（自動判定）", kuro: "官方啟動器（自動判定）", ambiguous: "安裝來源有衝突" }[data.provider] || "來源尚未確認",
     progressText: progress === null ? "進度未知" : `${progress.toFixed(1)}%（${plain(data.progressStage, 40) || "目前階段"}）`,
     canClaimReady: phase === "READY" && !stale, canOperate: supported && !stale,
     remainingSeconds: Math.max(0, Math.ceil((expectedOpenAt - nowMs) / 1000)), expectedOpenAt,
-    checkedAt: Number(data.checkedAt) || 0, sourceUrl, detail: plain(data.detail), errorCode: plain(data.errorCode, 100),
+    checkedAt, sourceUrl, detail: plain(data.detail), errorCode: plain(data.errorCode || data.noticeErrorCode, 100),
     overlay: data.overlay === "PAUSE" ? "遠端暫停；到時不會自動開始" : data.overlay === "WAIT_DESKTOP" ? "桌面已鎖定；等待解鎖" : "",
     targetServer: plain(data.targetServer, 80), gameVersion: plain(data.gameVersion, 32) };
 }
@@ -53,7 +80,7 @@ function element(document, tag, text = "", className = "") {
   if (className) node.className = className;
   return node;
 }
-function dateText(value) { return value ? new Date(value).toLocaleString("zh-TW", { hour12: false }) : "尚未確認"; }
+function dateText(value) { return value ? new Date(value).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }) : "尚未確認"; }
 
 export function renderMaintenanceCard(root, model) {
   const doc = root.ownerDocument;
@@ -71,7 +98,16 @@ export function renderMaintenanceCard(root, model) {
   if (model.sourceUrl) {
     const link = element(doc, "a", "官方維護公告"); link.href = model.sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; details.append(link);
   }
-  root.replaceChildren(title, summary, element(doc, "p", timing), element(doc, "p", model.overlay, "maintenance-warning"), details);
+  const preview = [];
+  if (model.upcomingNotice) {
+    const next = model.upcomingNotice;
+    preview.push(element(doc, "p", `下一次版本 ${next.gameVersion}｜維護開始 ${dateText(next.startsAt)}｜預計開服 ${dateText(next.expectedOpenAt)}（台灣時間）`));
+    const link = element(doc, "a", "查看下一次官方維護公告");
+    link.href = next.sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; preview.push(link);
+  }
+  root.replaceChildren(title, summary, element(doc, "p", model.noticeSummary), ...preview,
+    element(doc, "p", `公告最後確認：${dateText(model.checkedAt)}（台灣時間）`),
+    element(doc, "p", timing), element(doc, "p", model.overlay, "maintenance-warning"), details);
 }
 
 // Only renders local state and counts down; all network writes use the caller's
@@ -79,7 +115,7 @@ export function renderMaintenanceCard(root, model) {
 export function attachMaintenanceUI({ card, settingsRoot, onSave }) {
   const doc = settingsRoot.ownerDocument;
   const heading = element(doc, "h3", "版本維護與自動更新");
-  const help = element(doc, "p", "自動判定 Steam／官方版。版本日等官方開服後才發起更新；Steam 自行下載不受腳本控制。");
+  const help = element(doc, "p", "自動判定 Steam／官方版。版本日等官方開服後才發起更新；Steam 自行下載不受腳本控制。重新查詢的設定 ACK 只代表要求已接收，請以公告最後確認時間及查詢狀態判斷結果。");
   const provider = element(doc, "p");
   const enabledLabel = element(doc, "label", "啟用官方維護排程 ");
   const enabled = element(doc, "input"); enabled.type = "checkbox"; enabledLabel.append(enabled);

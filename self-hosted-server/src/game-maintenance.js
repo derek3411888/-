@@ -1,4 +1,5 @@
 import { HttpError } from "./utils.js";
+import { normalizeUpcomingNotice } from "../public/game-maintenance-view.js";
 
 const phases = new Set(["NORMAL", "CHECKING_NOTICE", "WAIT_NOTICE", "WAIT_OPEN", "CHECKING_INSTALL", "CHECKING_UPDATE",
   "UPDATING", "CHECKING_LOGIN", "WAIT_SERVER", "READY", "NEEDS_ATTENTION", "STOPPED"]);
@@ -22,6 +23,8 @@ export function normalizeGameMaintenance(value, nowMs = Date.now()) {
     gameVersion: text(value.gameVersion, 32), eventId: text(value.eventId, 180), sourceUrl,
     sourceState: ["valid", "pending", "unavailable", "invalid", "disabled"].includes(value.sourceState) ? value.sourceState : "unavailable",
     expectedOpenAt: time(value.expectedOpenAt), checkedAt: time(value.checkedAt) <= nowMs + 5000 ? time(value.checkedAt) : 0,
+    upcomingNotice: normalizeUpcomingNotice(value.upcomingNotice),
+    noticePreviewSupported: Object.hasOwn(value, "upcomingNotice") && value.noticePreviewSupported !== false,
     observedAt: value.observedAt, observedUtcNow: time(value.observedUtcNow) <= nowMs + 5000 ? time(value.observedUtcNow) : 0,
     progressPercent: typeof value.progressPercent === "number" && Number.isFinite(value.progressPercent)
       && value.progressPercent >= 0 && value.progressPercent <= 100 ? value.progressPercent : null,

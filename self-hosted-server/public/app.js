@@ -1,4 +1,4 @@
-import { attachMaintenanceUI } from "./game-maintenance-view.js?v=maintenance-v1";
+import { attachMaintenanceUI } from "./game-maintenance-view.js?v=maintenance-preview-v2";
 
 const state = {
   me: null,

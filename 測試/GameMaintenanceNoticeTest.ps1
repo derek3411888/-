@@ -131,7 +131,20 @@ try {
         return ($item | ConvertTo-Json -Depth 5 -Compress)
     }
     $futureCache=Join-Path $ctx.RunRoot 'future-cache'
-    [void](Get-GMOfficialNotice $futureCache $now $true $futureGetter)
+    $futureResult=Get-GMOfficialNotice $futureCache $now $true $futureGetter
+    Assert-GMEqual $futureResult.notice $null 'Upcoming announcement cannot block normal farming today'
+    $upcoming=Get-GMNoticeValue $futureResult 'upcomingNotice'
+    Assert-GMEqual (Get-GMNoticeValue $upcoming 'gameVersion') '9.1' 'Nearest future announcement is exposed separately for the website'
+    $cachedFuture=Get-GMOfficialNotice $futureCache $now.AddMinutes(1) $false { throw 'cached future should not fetch' }
+    Assert-GMTrue $cachedFuture.fromCache 'Upcoming announcement uses existing six-hour cache'
+    Assert-GMEqual $cachedFuture.upcomingNotice.expectedOpenAtUtc '2026-08-21T03:00:00Z' 'Cache hit retains future display deadline'
+    $offlineFuture=Get-GMOfficialNotice $futureCache $now.AddMinutes(2) $true { throw 'offline' }
+    Assert-GMEqual $offlineFuture.outcome 'unavailable' 'Future cache does not disguise network failure'
+    Assert-GMEqual $offlineFuture.upcomingNotice.gameVersion '9.1' 'Last known upcoming announcement survives outage'
+    Assert-GMEqual $offlineFuture.checkedAt $futureResult.checkedAt 'Failed refresh cannot claim a new confirmation time'
+    $onMaintenanceDay=Get-GMOfficialNotice $futureCache ([DateTimeOffset]'2026-08-20T20:00:00Z') $false { throw 'offline' }
+    Assert-GMEqual $onMaintenanceDay.notice.gameVersion '9.1' 'Known future event becomes an active gate on its Taipei date even offline'
+    Assert-GMEqual $onMaintenanceDay.upcomingNotice.gameVersion '9.2' 'Preview does not duplicate the current maintenance event'
     $saved=Read-GMNoticeCache $futureCache
     Assert-GMEqual @($saved.notices).Count 3 'Cache stores at most three event summaries'
     Assert-GMEqual $saved.notices[0].gameVersion '9.1' 'Nearest upcoming event retained first'

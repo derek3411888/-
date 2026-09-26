@@ -186,10 +186,11 @@ GMHost_ReadInput(c) {
             c.snapshot := snapshot, c.sequence := snapshot["meta"]["sequence"], c.worker.lastSeenTick := tick
         }
     }
-    notice := 0, sourceState := "pending", noticeError := "", observation := {phase:"unknown",observedAt:0}
+    notice := 0, upcomingNotice := 0, sourceState := "pending", noticeError := "", observation := {phase:"unknown",observedAt:0}
     if IsObject(c.snapshot) && now - c.snapshot["meta"]["observedAtUtcMs"] <= 60000 {
         snapshot := c.snapshot, n := snapshot["notice"], i := snapshot["install"], o := snapshot["observation"]
         sourceState := n["outcome"] = "ok" ? "valid" : n["outcome"], noticeError := n["errorCode"]
+        upcomingNotice := GM_UpcomingFromSnapshot(n)
         if n["present"] = "1"
             notice := {eventId:n["eventId"],revision:n["revision"],startsAt:Number(n["startsAtUtcMs"]),expectedOpenAt:Number(n["expectedOpenAtUtcMs"]),
                 checkedAt:n["checkedAtUtcMs"] = "" ? 0 : Number(n["checkedAtUtcMs"]),freshForRelease:n["freshForRelease"] = "1",sourceUrl:n["sourceUrl"],gameVersion:n["gameVersion"]}
@@ -207,7 +208,7 @@ GMHost_ReadInput(c) {
     }
     observation := GM_MergeObservations(observation,c.observation,now)
     input := {nowUtcMs:now,elapsedMs:c.activeElapsed,clockStable:c.clockUnstableAt = 0,desiredState:desired,remoteGeneration:generation,
-        desktopAvailable:desktopAvailable,noticeState:sourceState,noticeErrorCode:noticeError,notice:notice,install:c.install,observation:observation,
+        desktopAvailable:desktopAvailable,noticeState:sourceState,noticeErrorCode:noticeError,notice:notice,upcomingNotice:upcomingNotice,install:c.install,observation:observation,
         noProgressMs:c.noProgressMs,actionElapsedMs:c.actionElapsedMs,runCycle:GetCurrentServerCycleKey(),
         noticeCheckedAt:IsObject(c.snapshot) && c.snapshot["notice"]["checkedAtUtcMs"] != "" ? Number(c.snapshot["notice"]["checkedAtUtcMs"]) : 0,
         enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",
@@ -326,7 +327,127 @@ GM_PublicStatusJson() {
     if !IsObject(GM_CONTROLLER)
         return "null"
     c := GM_CONTROLLER
+    GMHost_RefreshPublicNotice(c)
     return GM_BuildPublicJson(c.state,c.lastDecision,c.lastInput,RC_UnixMs())
+}
+
+GM_RequestNoticeRefresh() {
+    global GM_CONTROLLER
+    if IsObject(GM_CONTROLLER)
+        GMHost_RefreshPublicNotice(GM_CONTROLLER)
+}
+
+GMHost_RefreshPublicNotice(c) {
+    ; Passive refresh after the normal/ready gate has released. Never tick the
+    ; effect-producing controller, pin a task, or start an updater/game here.
+    if !GMHost_OwnsNoticePreview(c) || !IsObject(c.lastInput) || IsObject(GM_Value(c,"noticePreview",0))
+        return
+    refreshId := IniReadSafe(c.cfgPath,"game_maintenance","refresh_request_id","")
+    tick := MonotonicTickMs()
+    probe := {state:GM_DefaultState(),worker:0,forceRevision:1,launchEntry:c.launchEntry,lastRequestKey:"",workerMode:"notice",startedTick:tick}
+    previousCritical := Critical("On")
+    try {
+        if !GMHost_OwnsNoticePreview(c) || IsObject(GM_Value(c,"noticePreview",0))
+            || refreshId = GM_Value(c,"lastSettingsRefresh","") || tick-GM_Value(c,"lastPreviewAttempt",-60000) < 60000
+            return
+        c.lastSettingsRefresh := refreshId, c.lastPreviewAttempt := tick
+        c.noticePreview := probe
+        c.lastInput.noticeState := "pending", c.lastInput.noticeErrorCode := ""
+    } finally Critical(previousCritical)
+    try {
+        probe.worker := GMHost_StartWorker(probe)
+        previousCritical := Critical("On")
+        try {
+            armed := GMHost_OwnsNoticePreview(c,probe)
+            if armed {
+                probe.timer := (*) => GMHost_PollNoticePreview(c,probe)
+                SetTimer(probe.timer,500)
+            }
+        } finally Critical(previousCritical)
+        if !armed
+            GMHost_StopNoticePreview(c,probe)
+    } catch as err {
+        previousCritical := Critical("On")
+        try {
+            if GMHost_OwnsNoticePreview(c,probe)
+                c.lastInput.noticeState := "unavailable", c.lastInput.noticeErrorCode := "NOTICE_REFRESH_START_FAILED"
+        } finally Critical(previousCritical)
+        GMHost_StopNoticePreview(c,probe)
+        WriteLog("公告只讀重查啟動失敗：" err.Message,"WARN")
+    }
+}
+
+GMHost_OwnsNoticePreview(c,probe := 0) {
+    global GM_CONTROLLER
+    return GM_CONTROLLER = c && !c.active && !c.state.cancelled
+        && (!IsObject(probe) || GM_Value(c,"noticePreview",0) = probe)
+}
+
+GMHost_PollNoticePreview(c,probe) {
+    if !GMHost_OwnsNoticePreview(c,probe) {
+        GMHost_StopNoticePreview(c,probe)
+        return
+    }
+    try {
+        snapshot := GM_ReadWorkerSnapshot(probe.worker.outputPath,probe.worker.requestId,0,RC_UnixMs(),probe.worker.session)
+        n := snapshot["notice"]
+        if n["outcome"] != "pending" {
+            upcoming := GM_UpcomingFromSnapshot(n)
+            ; If today became a maintenance day while farming was running,
+            ; report the announcement without retroactively taking over it.
+            if n["present"] = "1"
+                upcoming := {eventId:n["eventId"],gameVersion:n["gameVersion"],startsAt:Number(n["startsAtUtcMs"]),
+                    expectedOpenAt:Number(n["expectedOpenAtUtcMs"]),sourceUrl:n["sourceUrl"]}
+            previousCritical := Critical("On")
+            try {
+                committed := GMHost_OwnsNoticePreview(c,probe)
+                if committed {
+                    c.lastInput.noticeState := n["outcome"] = "ok" ? "valid" : n["outcome"]
+                    c.lastInput.noticeErrorCode := n["errorCode"]
+                    ; A failed query with no cache must not erase known evidence.
+                    if n["outcome"] = "ok" || IsObject(upcoming) {
+                        c.lastInput.noticeCheckedAt := n["checkedAtUtcMs"] = "" ? 0 : Number(n["checkedAtUtcMs"])
+                        c.lastInput.upcomingNotice := upcoming
+                    }
+                }
+            } finally Critical(previousCritical)
+            GMHost_StopNoticePreview(c,probe)
+            if committed
+                WriteLog("公告只讀重查完成：" n["outcome"] "；結果隨既有心跳回報，未更動執行流程")
+            return
+        }
+    }
+    if MonotonicTickMs()-probe.startedTick >= 30000 || !GMHost_WorkerAlive(probe.worker) {
+        previousCritical := Critical("On")
+        try {
+            if GMHost_OwnsNoticePreview(c,probe)
+                c.lastInput.noticeState := "unavailable", c.lastInput.noticeErrorCode := "NOTICE_REFRESH_TIMEOUT"
+        } finally Critical(previousCritical)
+        GMHost_StopNoticePreview(c,probe)
+    }
+}
+
+GMHost_StopNoticePreview(c,probe := 0) {
+    worker := 0
+    previousCritical := Critical("On")
+    try {
+        if !IsObject(probe)
+            probe := GM_Value(c,"noticePreview",0)
+        if !IsObject(probe)
+            return
+        if GM_Value(c,"noticePreview",0) = probe
+            c.noticePreview := 0
+        if IsObject(GM_Value(probe,"timer",0)) {
+            SetTimer(probe.timer,0)
+            probe.timer := 0
+        }
+        if IsObject(probe.worker) && !GM_Value(probe.worker,"previewStopSent",false) {
+            worker := probe.worker
+            worker.previewStopSent := true
+        }
+    } finally Critical(previousCritical)
+    if IsObject(worker)
+        try GMHost_StopWorker(worker)
 }
 
 GM_ValidateRemoteSettings(settings) {
@@ -829,6 +950,7 @@ GM_Shutdown(reason := "exit") {
     if !IsObject(GM_CONTROLLER)
         return
     c := GM_CONTROLLER
+    GMHost_StopNoticePreview(c)
     if IsObject(c.worker) {
         try GMHost_StopWorker(c.worker)
         c.worker := 0

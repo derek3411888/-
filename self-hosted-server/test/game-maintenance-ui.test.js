@@ -14,9 +14,37 @@ test("updating is not farming, unknown progress is not zero and stale state cann
   assert.equal(maintenanceViewModel(sample, now, false).canOperate, false);
   assert.equal(maintenanceViewModel(sample, now + 180001, true).stale, true);
   assert.equal(maintenanceViewModel({}, now, true).supported, false);
-  assert.equal(maintenanceViewModel({ ...sample, phase: "NORMAL", eventId: "" }, now, true).visible, false);
+  assert.equal(maintenanceViewModel({ ...sample, phase: "NORMAL", eventId: "" }, now, true).visible, true);
   assert.equal(maintenanceViewModel({ ...sample, phase: "WAIT_NOTICE" }, now, true).canClaimReady, false);
   assert.equal(maintenanceViewModel({ ...sample, phase: "WAIT_OPEN" }, now + 1000, true).remainingSeconds, 119);
+});
+
+test("announced future maintenance is visible without enabling skip/delay or claiming today is blocked", () => {
+  const today = 1790380800000;
+  const value = { ...sample, phase: "NORMAL", eventId: "", sourceState: "valid", checkedAt: today,
+    observedAt: today, upcomingNotice: { eventId: "wuthering-global-3.7-1790712000", gameVersion: "3.7",
+      startsAt: 1790712000000, expectedOpenAt: 1790737200000,
+      sourceUrl: "https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5474" } };
+  const model = maintenanceViewModel(value, today, true);
+  assert.equal(model.visible, true);
+  assert.equal(model.noticeSummary, "已公告下次維護；今天照常執行");
+  assert.equal(model.upcomingNotice.gameVersion, "3.7");
+  assert.equal(model.eventId, "");
+  assert.throws(() => buildMaintenancePatch("skip", model, {}, today));
+  assert.throws(() => buildMaintenancePatch("delay", model, { until: today + 3600000 }, today));
+  assert.equal(maintenanceViewModel({ ...value, sourceState: "unavailable" }, today, true).noticeSummary,
+    "公告查詢失敗；以下為上次已知公告");
+  assert.equal(maintenanceViewModel({ ...value, upcomingNotice: null }, today, true).noticeSummary,
+    "今日無維護；尚無下一次維護公告");
+  assert.equal(maintenanceViewModel({ ...value, upcomingNotice: null, sourceState: "unavailable" }, today, true).noticeSummary,
+    "公告查詢失敗，無法確認維護安排");
+  assert.equal(maintenanceViewModel({ ...value, checkedAt: today - 86400000 }, today, true).noticeSummary,
+    "公告資料待更新；以下為上次已知公告");
+  assert.equal(maintenanceViewModel({ ...value, upcomingNotice: { ...value.upcomingNotice, sourceUrl: "javascript:alert(1)" } }, today, true).upcomingNotice, null);
+  const legacy = { ...value }; delete legacy.upcomingNotice;
+  assert.equal(maintenanceViewModel(legacy, today, true).noticeSummary, "今日無維護；裝置版本尚未回報下一次公告");
+  assert.equal(maintenanceViewModel({ ...legacy, upcomingNotice:null, noticePreviewSupported:false }, today, true).noticeSummary,
+    "今日無維護；裝置版本尚未回報下一次公告", "API normalization must not invent legacy preview support");
 });
 test("maintenance settings UI distinguishes pending, ACKed and rejected, not HTTP success", () => {
   assert.equal(maintenanceSettingsAck({ desiredRevision: 4, ackRevision: 3, effectiveRevision: 3 }).kind, "pending");

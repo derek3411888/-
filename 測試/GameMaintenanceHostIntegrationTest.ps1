@@ -44,6 +44,11 @@ TestActualHostInput() {
     GM_NOW := 10000
     c.snapshot := GM_ReadWorkerSnapshot("$snapshotPath","integration",0,GM_NOW,GM_ROOT)
     c.observation := {phase:"unknown",observedAt:GM_NOW,identityVerified:false}
+    c.snapshot["notice"]["upcomingEventId"] := "preview-only", c.snapshot["notice"]["upcomingGameVersion"] := "3.7"
+    c.snapshot["notice"]["upcomingStartsAtUtcMs"] := "1790712000000", c.snapshot["notice"]["upcomingExpectedOpenAtUtcMs"] := "1790737200000"
+    c.snapshot["notice"]["upcomingSourceUrl"] := "https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5474"
+    hostInput := GMHost_ReadInput(c)
+    GMTest_Assert(hostInput.upcomingNotice.gameVersion = "3.7" && hostInput.notice.eventId = "fixture-global-1","actual host retains preview independently from active notice")
     GMTest_Assert(GMHost_ReadInput(c).observation.phase = "game_running","actual host: launcher unknown cannot mask verified worker game")
     c.observation := {phase:"update_ready",observedAt:GM_NOW,identityVerified:true}
     GMTest_Assert(GMHost_ReadInput(c).observation.phase = "game_running","actual host: old play button cannot mask launched game")

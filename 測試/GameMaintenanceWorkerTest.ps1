@@ -11,6 +11,33 @@ try {
     $paths=@{RequestPath=(Join-Path $session 'request.json');OutputPath=(Join-Path $session 'snapshot.ini');StopPath=(Join-Path $session 'stop');StateDirectory=$state}
     $validated=Test-GMWorkerPaths @paths
     Assert-GMEqual $validated $session 'session containment validated'
+    $previewNotice=[pscustomobject]@{outcome='ok';notice=$null;checkedAt='2026-09-26T00:00:00Z';upcomingNotice=[pscustomobject]@{
+        eventId='wuthering-global-3.7-1790712000';gameVersion='3.7';startsAtUtc='2026-09-29T20:00:00Z';
+        expectedOpenAtUtc='2026-09-30T03:00:00Z';sourceUrl='https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5474'}}
+    $previewSnapshot=ConvertTo-GMWorkerSnapshot ([pscustomobject]@{requestId='preview';generation=1}) 1 $previewNotice $null $null ([DateTimeOffset]'2026-09-26T00:00:00Z')
+    Assert-GMEqual $previewSnapshot.notice.present 0 'Preview does not set active maintenance gate'
+    Assert-GMEqual $previewSnapshot.notice['upcomingGameVersion'] '3.7' 'Worker transports future announcement independently'
+    Write-GMSnapshot -Path $paths.OutputPath -Snapshot $previewSnapshot -AllowedRoot $session
+    $previewAhk=Join-Path $context.RunRoot 'preview-roundtrip.ahk'
+    [IO.File]::WriteAllText($previewAhk,@"
+#Requires AutoHotkey v2.0
+#Include $root\測試\GameMaintenanceFixtures.ahk
+#Include $root\payload\GameMaintenance.ahk
+GMTest_Run(PreviewRoundTrip)
+PreviewRoundTrip() {
+    result := GM_ReadWorkerSnapshot("$($paths.OutputPath)", "preview", 0, 1790380800000, "$session")
+    input := GMTest_Input(1790380800000), input.notice := 0
+    input.upcomingNotice := GM_UpcomingFromSnapshot(result["notice"])
+    state := GM_DefaultState(), decision := GM_Evaluate(state,input)
+    GMTest_Assert(decision.phase = "NORMAL" && decision.effect.type = "resume_flow", "future preview must not wait or update")
+    GMTest_Assert(decision.state.eventId = "", "future event is not pinned as an active task")
+    json := GM_BuildPublicJson(decision.state,decision,input,1790380800000)
+    GMTest_Assert(InStr(json,'"upcomingNotice":{') && InStr(json,'"gameVersion":"3.7"'), "PS snapshot to AHK public heartbeat retains preview")
+    GMTest_Assert(InStr(json,'"startsAt":1790712000000') && InStr(json,'"expectedOpenAt":1790737200000'), "official UTC times roundtrip unchanged")
+}
+"@,[Text.UTF8Encoding]::new($true))
+    $previewReadback=Invoke-GMTestProcess $previewAhk $context
+    Assert-GMEqual $previewReadback.ExitCode 0 ('preview PS/AHK roundtrip '+$previewReadback.Stdout+$previewReadback.Stderr)
     Assert-GMTrue (Test-GMWorkerNoticeDue 300001 0 0 '0' '0' $false) 'five-minute periodic notice read'
     Assert-GMTrue (Test-GMWorkerNoticeDue 60001 50000 0 '2' '1' $false) 'explicit recheck after min interval'
     Assert-GMTrue (-not (Test-GMWorkerNoticeDue 59999 50000 0 '2' '1' $true)) 'rapid manual/deadline rechecks bounded to 60 seconds'

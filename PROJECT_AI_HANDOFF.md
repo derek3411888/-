@@ -30,12 +30,19 @@
 - `測試/Invoke-RestartHandoffTests.ps1` 以真實隔離 AHK 程序、編譯的假 Launcher 與可正常處理 Ctrl+C 的合成 console recorder 驗證，刻意延遲 OnExit 五秒；不啟停正式遊戲。19 個案例覆蓋四種模式、更新器兩種參數、缺少更新器、重複 worker（含結束後）、取消與取消寫入失敗、舊程序逾時、缺少 ACK、模式遺失、非法模式，以及成功接管／交接失敗／舊程序逾時的錄影保護。特別包含舊程序先看到 armed、實際退出前 worker 剛好逾時的邊界；交接一旦終止失敗且無有效接管 ACK，worker 即負責封口繼承錄影，不把責任推回可能即將退出的舊程序。
 - 本次規劃發布 Payload 5.03／Launcher 5.14／Server bundle 1.0.66，併入先前網站回報傳輸與進度修正。保留 `.vscode/settings.json` 及 `文字識別/LRMCAI主視窗OCR測試.ahk` 的使用者修改。GitHub 發布不代表現有客戶端已熱更新，也不代表 Docker 已部署；驗收結論以本次實際輸出為準。
 
+### 下次維護公告顯示修正（2026-09-26）
+
+- 5.04／5.15／1.0.67：原程式已抓到 3.7 的 09/30 04:00～11:00（UTC+8）官方公告，但只挑當日事件傳給網站，導致提前公告看不到。新增 `upcomingNotice` 獨立預覽，`GameMaintenancePolicy.ahk` 的當日等待判斷保持不變；不能將未來預覽當成目前 eventId 或提早阻擋鋤地。
+- 公司／自架網站都顯示下一次版本、維護起始、預計開服、官方連結及最後確認時間。舊裝置不支援預覽與新裝置確認沒有公告必須分開；API 保留 `noticePreviewSupported`，來源失敗／過期不能假報「沒有維護」。時間明確採台灣時區。
+- 平日進入主流程後的手動重查走獨立 `mode=notice` helper 與最多 30 秒的暫時計時器，僅更新保留的公開資訊；不用主控制器、不呼叫更新器／遊戲效果、不修改任務 journal，不新增 Firestore 固定讀寫。結果隨既有心跳回報；設定 ACK 不等於公告已重新確認。STOP／退出會停止自己的查詢 helper。
+- 維護回歸新增 PowerShell → AHK → 公開 JSON 的下一次公告往返、實際 host 輸入、舊裝置相容及只讀重查成功／逾時／取消案例；兩網站以隔離 Headless Edge 驗證手機、1080p 與縮放。發布、中央部署及客戶端是否更新須分別驗證，不可拿測試資料當正式裝置已更新的證明。
+
 ### 版本維護功能的開發／驗收界線（2026-09-22）
 
 本功能在 `codex/game-maintenance-20260921` 實作；2026-09-22 已依使用者授權推送 Payload 5.02／Launcher 5.13／Server bundle 1.0.65 至 GitHub main。產物 commit 為 `318363f`，固定來源 manifest 為 `f84b98b`，公司用 GitHub Pages 部署成功。規格與計畫在 `docs/superpowers/`；驗收摘要與發布界線見 [遊戲維護驗收](docs/game-maintenance-acceptance.md)。server bundle 發布不等於 Docker 已部署，亦不代表正在執行的客戶端已熱更新。
 
 - 平日主流程維持；新增啟動前的官方公告查詢，無適用維護事件即返回既有流程。
-- 下一版官方已公告為 3.7、2026-09-30（三）；截至 2026-09-22 查詢，繁中 MainMenu 只有 3.7 前瞻／特別資訊，尚無 3.7 維護時段。不可拿 3.6 時間推定開服，也不可硬編碼預告日期作為可登入證據。
+- 歷史基線：2026-09-22 尚無 3.7 維護時段；2026-09-23 官方公告 5474 已發布 09/30 04:00～11:00（UTC+8），09/25 實際解析與本機快取均確認取得。程式仍從官方本文解析，不硬編碼此日期或將預計開服當成可登入證據。
 
 - Worker 為唯讀 Windows PowerShell，`GameMaintenancePolicy.ahk` 為純策略；`GameMaintenanceHost.ahk` 對接現有主流程。只按實際設定入口自動辨識 Steam App 3513350／官方 Kuro，雙安裝不可猜。
 - 官方公告來源限既定官方 HTTPS；到預計開服時間再以新公告放行，延長優先。無既知事件且來源失敗才降級到平日流程；已知事件不因斷線被忽略。
@@ -241,6 +248,7 @@
 - hotkey 模式通常來自重啟/恢復路徑，不一定是手動啟動。
 - #SingleInstance Force 會導致同秒二次啟動時前者被 Single 結束。
 - 所有開發、測試、編譯、打包、診斷與人工分析產物必須放在 repository 內；一次性內容統一使用 `.dev-runtime`。禁止把截圖、影片抽幀、contact sheet、stdout/stderr、測試 fixture 或下載快取寫到 Windows Temp、AppData、桌面或其他專案外資料夾。完整規則見 `DEVELOPMENT_ARTIFACTS.md`。
+- 2026-09-25 已整理開發資料：入口索引見 `README.md`。舊 `.codex_tmp` 證據在 `.dev-runtime/diagnostics/legacy-codex-202608`，舊人工測試在 `.dev-runtime/tests/archive-20260925`，更新回復副本在 `.dev-runtime/backups`，5.03 建置紀錄在 `.dev-runtime/diagnostics/releases/5.03`。舊 MyTUF 4.86／4.97 清理指令已移到 `docs/archive/2026-09-01` 並標示過期，不可直接重跑。這次沒有更動主程式、打包／更新路徑或正式發布檔。
 
 ## 8) 推版流程（維運）
 1. 修改腳本後先做語法/錯誤檢查

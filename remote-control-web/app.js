@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
-import { attachMaintenanceUI, maintenanceViewModel } from "./game-maintenance-view.js?v=maintenance-v1";
+import { attachMaintenanceUI, maintenanceViewModel } from "./game-maintenance-view.js?v=maintenance-preview-v2";
 import {
   collection,
   doc,
@@ -30,7 +30,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.03-l5.14-s1.0.66";
+const WEB_BUILD = "p5.04-l5.15-s1.0.67";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;

@@ -57,8 +57,29 @@ try {
     assert.ok((await page.getByRole("status").textContent()).includes("已套用"));
     await page.evaluate(() => { input.deviceFresh=false;ui.update(input); });
     assert.equal(await page.getByRole("button", { name: "重新查詢公告" }).isDisabled(), true);
+    await page.evaluate(() => {
+      input = { uid: 'future-fixture', deviceFresh: true, effectiveSettings: {maintenanceEnabled:true}, ack: {},
+        value: { schemaVersion:1, capabilityVersion:1, phase:'NORMAL', eventId:'', provider:'kuro', sourceState:'valid',
+          observedAt:Date.now(), observedUtcNow:Date.now(), checkedAt:Date.now(), upcomingNotice:{
+            eventId:'wuthering-global-3.7-1790712000', gameVersion:'3.7', startsAt:1790712000000,
+            expectedOpenAt:1790737200000, sourceUrl:'https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/5474'} } };
+      ui.update(input);
+    });
+    assert.equal(await page.getByRole("link", { name: "查看下一次官方維護公告" }).isVisible(), true);
+    assert.ok((await page.locator('#card').textContent()).includes('3.7'));
+    assert.ok((await page.locator('#card').textContent()).includes('2026/9/30'));
+    assert.equal(await page.getByRole('button', { name: '只略過本次時間等待' }).isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: '套用延後時間' }).isDisabled(), true);
+    for (const [label, width, height] of [['mobile',390,844],['desktop',1920,1080]]) {
+      await page.setViewportSize({width,height});
+      await page.evaluate(() => { document.body.style.zoom = 1; });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${website}/${label}: future preview stays within viewport`);
+      await page.screenshot({path:path.join(output,`${website.startsWith('self') ? 'self' : 'company'}-upcoming-${label}.png`),fullPage:true});
+    }
+    await page.evaluate(() => { input.value.sourceState='unavailable';ui.update(input); });
+    assert.ok((await page.locator('#card').textContent()).includes('公告查詢失敗；以下為上次已知公告'));
   }
   assert.deepEqual(errors, []);
-  await fs.writeFile(path.join(output, "result.json"), JSON.stringify({ passed: true, layouts: 8, interactions: ["pending", "rejected", "applied", "offline", "draft-preserved"], zoomMethod: "CSS layout zoom 1.25/1.5; headless Edge", externalRequestsAllowed: false }, null, 2));
-  console.log("PASS: both skins, 8 layouts, revision ACK transitions, offline guard, preserved draft; all network restricted to fixture server");
+  await fs.writeFile(path.join(output, "result.json"), JSON.stringify({ passed: true, layouts: 12, interactions: ["pending", "rejected", "applied", "offline", "draft-preserved", "upcoming-preview", "no-early-skip-or-delay", "source-failure-retains-preview"], zoomMethod: "CSS layout zoom 1.25/1.5; headless Edge", externalRequestsAllowed: false }, null, 2));
+  console.log("PASS: both skins, 12 layouts, future preview, source failure, revision ACK transitions, offline guard, preserved draft; all network restricted to fixture server");
 } finally { await context?.close(); await new Promise((resolve) => server.close(resolve)); }

@@ -125,6 +125,18 @@ function Select-GMNotice {
     return [pscustomobject]@{notice=$chosen;sourceState='verified';requiresReview=$false}
 }
 
+function Select-GMUpcomingNotice {
+    param([AllowEmptyCollection()][object[]]$Notices, [DateTimeOffset]$Now)
+    # Display-only evidence. Never feed this preview into the active-day gate.
+    $today = $Now.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd')
+    $upcoming = @($Notices | Where-Object {
+        (Test-GMSavedNotice $_) -and ([DateTimeOffset]$_.startsAtUtc) -le $Now.AddDays(14) -and
+        ([DateTimeOffset]$_.startsAtUtc).ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd') -gt $today
+    } | Sort-Object @{Expression={[DateTimeOffset]$_.startsAtUtc}}, @{Expression={[DateTimeOffset]$_.expectedOpenAtUtc};Descending=$true})
+    if ($upcoming.Count) { return $upcoming[0] }
+    return $null
+}
+
 function Read-GMNoticeCache([string]$Directory) {
     foreach ($name in @('notice-cache.json','notice-cache.json.bak')) {
         try {
@@ -198,7 +210,7 @@ function Get-GMOfficialNotice {
     $ttl = if ($selected.notice) { 300 } else { 21600 }
     $age = ($Now - $lastChecked).TotalSeconds
     if (-not $Force -and $cache -and $cache.dateKey -eq $dateKey -and $age -ge 0 -and $age -lt $ttl -and -not $selected.requiresReview) {
-        return [pscustomobject]@{outcome='ok';notice=$selected.notice;checkedAt=$cache.checkedAtUtc;errorCode='';errorDetail='';fromCache=$true}
+        return [pscustomobject]@{outcome='ok';notice=$selected.notice;upcomingNotice=(Select-GMUpcomingNotice $cachedNotices $Now);checkedAt=$cache.checkedAtUtc;errorCode='';errorDetail='';fromCache=$true}
     }
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $fetch = {
@@ -246,12 +258,12 @@ function Get-GMOfficialNotice {
         }
         $checkedAt = $Now.UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
         Write-GMNoticeCache $CacheDirectory ([pscustomobject]@{schemaVersion=1;checkedAtUtc=$checkedAt;dateKey=$dateKey;notices=$kept})
-        return [pscustomobject]@{outcome='ok';notice=$selectedFresh.notice;checkedAt=$checkedAt;errorCode='';errorDetail='';fromCache=$false}
+        return [pscustomobject]@{outcome='ok';notice=$selectedFresh.notice;upcomingNotice=(Select-GMUpcomingNotice $kept $Now);checkedAt=$checkedAt;errorCode='';errorDetail='';fromCache=$false}
     } catch {
         $conflict = $_.Exception.Message.StartsWith('GM_CONFLICT:')
         $unconfirmed = $_.Exception.Message.StartsWith('GM_UNCONFIRMED:')
         $invalid = $conflict -or $_.Exception.Message.StartsWith('GM_INVALID:')
-        return [pscustomobject]@{outcome=$(if ($invalid) {'invalid'} else {'unavailable'});notice=$selected.notice
+        return [pscustomobject]@{outcome=$(if ($invalid) {'invalid'} else {'unavailable'});notice=$selected.notice;upcomingNotice=(Select-GMUpcomingNotice $cachedNotices $Now)
             checkedAt=$(if ($cache) {$cache.checkedAtUtc} else {''});errorCode=$(if ($conflict) {'NOTICE_CONFLICT'} elseif ($unconfirmed) {'NOTICE_EVENT_NOT_RECONFIRMED'} elseif ($invalid) {'NOTICE_INVALID'} else {'NOTICE_UNAVAILABLE'})
             errorDetail=([regex]::Replace($_.Exception.Message,'[\r\n\x00-\x1f]',' ')).Substring(0,[Math]::Min(500,$_.Exception.Message.Length));fromCache=$false}
     }
