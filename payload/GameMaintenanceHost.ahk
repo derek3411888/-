@@ -781,7 +781,26 @@ GMHost_ReadKuroObservation() {
     if !IsObject(target)
         return unknown
     try {
-        frame := ImagePutBuffer("ahk_id " target.hwnd), temp := RuntimeFiles_NewImagePath("kuro_update"), blocks := []
+        captureReason := ""
+        if !PrepareVerifiedWindowForInput(target.hwnd,target.pid,"版本更新器畫面辨識",&captureReason) {
+            unknown.detail := "官方更新器無法取得可見前景畫面：" captureReason
+            return unknown
+        }
+        prepared := GMHost_InspectLauncherWindow(target.hwnd)
+        if (prepared.pid != target.pid || !prepared.identityVerified || !prepared.foregroundVerified) {
+            unknown.detail := "官方更新器前景身分在擷取前已改變"
+            return unknown
+        }
+        WinGetClientPos(&captureX,&captureY,&captureW,&captureH,"ahk_id " target.hwnd)
+        if (captureW < 500 || captureH < 280) {
+            unknown.detail := "官方更新器客戶區尺寸無效：" captureW "x" captureH
+            return unknown
+        }
+        ; 官方啟動器內容由 GPU/WebView 繪製，背景 Window/PrintWindow 擷取可能只得到
+        ; 空殼。僅在精確 PID/路徑/前景驗證通過後擷取實際螢幕客戶區，OCR 與後續
+        ; 實體滑鼠點擊才能看見同一個使用者畫面。
+        frame := ImagePutBuffer({Screenshot:[captureX,captureY,captureW,captureH]})
+        temp := RuntimeFiles_NewImagePath("kuro_update"), blocks := []
         try {
             ImagePutFile(frame,temp)
             if !IsObject(c.ocrEngine)

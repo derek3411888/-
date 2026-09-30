@@ -29,7 +29,7 @@ try {
     $extracted=($functions -join "`n").Replace('GM_ReadWorkerSnapshot(probe.worker.outputPath,probe.worker.requestId,0,RC_UnixMs(),probe.worker.session)','TEST_ReadSnapshot(probe)')
     [IO.File]::WriteAllText($testPath,@"
 #Requires AutoHotkey v2.0
-#Include $root\測試\GameMaintenanceFixtures.ahk
+#Include $PSScriptRoot\GameMaintenanceFixtures.ahk
 #Include $root\payload\GameMaintenance.ahk
 global TEST_STARTS := 0, TEST_STOPS := 0, TEST_TICK := 100000, TEST_PATH := "$snapshotPath"
 global GM_CONTROLLER := 0, TEST_CANCEL_START := false, TEST_CANCEL_READ := false, TEST_LAST_PROBE := 0

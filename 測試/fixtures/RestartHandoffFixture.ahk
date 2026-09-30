@@ -1,5 +1,9 @@
 #Requires AutoHotkey v2.0
-#SingleInstance Force
+; Each integration case uses an isolated request/nonce and can briefly overlap
+; the previous synthetic successor while Windows tears it down.  Do not let
+; AutoHotkey's process-wide single-instance replacement make the next case
+; disappear before it can write its ACK.
+#SingleInstance Off
 #Warn All, StdOut
 #Include ..\..\payload\ScriptRestartHandoff.ahk
 

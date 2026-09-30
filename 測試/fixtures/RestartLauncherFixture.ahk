@@ -18,5 +18,6 @@ try {
     Run('"' ahk '" /ErrorStdOut=UTF-8 "' target '" ' mode, , "Hide")
     ExitApp 0
 } catch as e {
+    try FileAppend(e.Message " | what=" e.What " | extra=" e.Extra "`n", root "\launcher-error.txt", "UTF-8")
     ExitApp 1
 }

@@ -4,6 +4,9 @@ $root=Split-Path $PSScriptRoot -Parent
 $context=Initialize-ProjectDevelopmentPaths -ProjectRoot $root -RunName 'gm-host-worker'
 try {
     $source=[IO.File]::ReadAllText((Join-Path $root 'payload\GameMaintenanceHost.ahk'))
+    $kuroReader=[regex]::Match($source,'(?ms)^GMHost_ReadKuroObservation\([^\r\n]*\) \{.*?(?=^\w+\([^\r\n]*\) \{|\z)').Value
+    Assert-GMTrue ($kuroReader -match 'PrepareVerifiedWindowForInput') 'Kuro OCR prepares the exact verified launcher in the foreground'
+    Assert-GMTrue ($kuroReader -match 'ImagePutBuffer\(\{Screenshot:') 'Kuro OCR captures visible GPU-rendered launcher pixels instead of a background window bitmap'
     $functions=@()
     foreach($name in @('GMHost_ProcessStartMs','GMHost_JsonQuote','GMHost_WriteRequest','GMHost_StartWorker','GMHost_WorkerAlive','GMHost_StopWorker')){
         $match=[regex]::Match($source,'(?ms)^'+$name+'\([^\r\n]*\) \{.*?(?=^\w+\([^\r\n]*\) \{|\z)')

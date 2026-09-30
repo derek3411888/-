@@ -5,7 +5,7 @@ GMU_NormalizeOcr(text) {
     if IsObject(text) || StrLen(text) > 2048
         return ""
     text := StrLower(text)
-    for pair in [["伺服器","服务器"],["維護","维护"],["暫時","暂时"],["無法","无法"],["遊戲","游戏"],["下載","下载"],["安裝","安装"],["驗證","验证"],["開始","开始"],["繼續","继续"]]
+    for pair in [["伺服器","服务器"],["維護","维护"],["暫時","暂时"],["暫停","暂停"],["無法","无法"],["遊戲","游戏"],["下載","下载"],["安裝","安装"],["驗證","验证"],["開始","开始"],["繼續","继续"]]
         text := StrReplace(text,pair[1],pair[2])
     return RegExReplace(text,"\s+","")
 }
@@ -74,13 +74,18 @@ GMU_ClassifyLauncher(blocks,identity) {
         || !GM_Value(layout,"verified",false) || GM_Value(layout,"launcherVersion","") = ""
         || GM_Value(layout,"launcherVersion","") != GM_Value(identity,"launcherVersion",""))
         return result
-    buttons := [], stages := []
+    buttons := [], stages := [], statusPercent := ""
     for block in blocks {
         text := GMU_NormalizeOcr(GM_Value(block,"text",""))
         if GMU_BlockInRoi(block,identity,GM_Value(layout,"status",0)) {
             kind := RegExMatch(text,"^(下载中|正在下载|downloading)") ? "downloading"
                 : RegExMatch(text,"^(安装中|正在安装|installing)") ? "installing"
                 : RegExMatch(text,"^(验证中|正在验证|verifying|validating)") ? "verifying" : ""
+            if kind = "" && InStr(text,"暂停下载")
+                kind := "downloading"
+            if statusPercent = "" && RegExMatch(text,"(\d{1,3}(?:\.\d{1,2})?)%",&statusMatch)
+                && Number(statusMatch[1]) <= 100
+                statusPercent := Number(statusMatch[1])
             if kind != "" {
                 percent := ""
                 if RegExMatch(text,"(\d{1,3}(?:\.\d{1,2})?)%",&match) && Number(match[1]) <= 100
@@ -94,16 +99,19 @@ GMU_ClassifyLauncher(blocks,identity) {
         }
         if !GMU_BlockInRoi(block,identity,GM_Value(layout,"button",0))
             continue
-        kind := RegExMatch(text,"^(更新|更新游戏|游戏更新|update)$") ? "update"
-            : RegExMatch(text,"^(下载|下载游戏|download)$") ? "download"
-            : RegExMatch(text,"^(开始游戏|启动游戏|startgame|play)$") ? "play"
-            : RegExMatch(text,"^(继续|继续下载|resume)$") ? "resume"
-            : RegExMatch(text,"^(确认|确定|confirm|ok)$") ? "confirm" : ""
+        actionText := RegExReplace(text,"^[^0-9a-z\x{3400}-\x{9fff}]+|[^0-9a-z\x{3400}-\x{9fff}]+$","")
+        kind := RegExMatch(actionText,"^(更新|更新游戏|游戏更新|update)$") ? "update"
+            : RegExMatch(actionText,"^(下载|下载游戏|download)$") ? "download"
+            : RegExMatch(actionText,"^(开始游戏|启动游戏|startgame|play)$") ? "play"
+            : RegExMatch(actionText,"^(继续|继续下载|resume)$") ? "resume"
+            : RegExMatch(actionText,"^(确认|确定|confirm|ok)$") ? "confirm" : ""
         if kind != ""
             buttons.Push({kind:kind,button:{x:(block.left+block.right)/2,y:(block.top+block.bottom)/2},evidence:text})
     }
     if stages.Length = 1 {
-        result.kind := stages[1].kind, result.percent := stages[1].percent, result.evidence := stages[1].evidence
+        result.kind := stages[1].kind
+        result.percent := stages[1].percent != "" ? stages[1].percent : statusPercent
+        result.evidence := stages[1].evidence
         return result
     }
     if buttons.Length = 1 && stages.Length = 0 {

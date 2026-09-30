@@ -47,6 +47,15 @@ TestMaintenanceOcr() {
         got := GMU_ClassifyLauncher([{text:pair[1],left:700,top:520,right:1100,bottom:560}],identity)
         GMTest_Assert(got.kind = pair[2] && got.percent != "","stage percent is known only with evidence")
     }
+    got := GMU_ClassifyLauncher([
+        {text:"↓ 58.9MB/s (127.1MB/25.0GB) 0.50%",left:700,top:540,right:1180,bottom:580},
+        {text:"Ⅱ 暫停下載",left:980,top:620,right:1180,bottom:680}
+    ],identity)
+    GMTest_Assert(got.kind = "downloading" && got.percent = 0.5 && !IsObject(got.button),
+        "official launcher pause-download UI proves active download without becoming a clickable action")
+    got := GMU_ClassifyLauncher([{text:"❯ 更新",left:1000,top:620,right:1150,bottom:680}],identity)
+    GMTest_Assert(got.kind = "update" && IsObject(got.button),
+        "harmless leading OCR glyph does not hide the official update action")
     got := GMU_ClassifyLauncher([{text:"下載中",left:700,top:520,right:1100,bottom:560}],identity)
     GMTest_Assert(got.percent = "","unknown percentage stays unknown")
     identity.launcherVersion := "new-oem"

@@ -132,7 +132,10 @@ RoundTrip() {
     $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=95;Path=$gameFile}) -ImagePathReader {param($ProcessId) (Join-Path $session 'unrelated\Client-Win64-Shipping.exe')}
     Assert-GMEqual $identity $null 'limited query still rejects another installation'
     Assert-GMEqual (Get-GMProcessImagePath 0) '' 'invalid PID cannot provide identity'
-    Assert-GMEqual (Get-GMProcessImagePath $PID) ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) 'real limited native query reads this test process identity'
+    $nativeImagePath = Get-GMProcessImagePath $PID
+    $managedImagePath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    Assert-GMTrue ([string]::Equals($nativeImagePath, $managedImagePath,
+        [StringComparison]::OrdinalIgnoreCase)) 'real limited native query reads this test process identity'
     $noticeTime=[DateTimeOffset]'2026-08-20T02:00:00Z'
     $noticeRecord=[pscustomobject]@{eventId='fixture-global-1';revisionHash='r1';gameVersion='9.9';startsAtUtc='2026-08-19T20:00:00Z';expectedOpenAtUtc='2026-08-20T03:00:00Z';sourceUrl='https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/1';sourceState='verified'}
     $noticeResult=[pscustomobject]@{outcome='ok';notice=$noticeRecord;checkedAt=$noticeTime.ToString('o');errorCode='';errorDetail=''}

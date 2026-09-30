@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.11',
+    [string]$PayloadVersion = '5.12',
     [string]$LauncherVersion = '5.22',
     [string]$ServerVersion = '1.0.73',
     [string]$CommitMessage = '',

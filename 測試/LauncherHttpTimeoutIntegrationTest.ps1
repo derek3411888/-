@@ -21,15 +21,18 @@ try {
     $process = Start-Process -FilePath $runtime -ArgumentList @(
         '/ErrorStdOut', $testScript, "http://127.0.0.1:$port/stall", $destination
     ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    # AutoHotkey is a GUI-subsystem executable. Cache its native handle before
+    # waiting so Windows PowerShell 5.1 reads the real exit code reliably.
+    [void]$process.Handle
 
     if (-not $acceptTask.Wait(3000)) {
-        throw '測試 HTTP 請求沒有連到本機停滯伺服器。'
+        throw 'Test HTTP request did not reach the local stalled server.'
     }
     $client = $acceptTask.Result
 
     if (-not $process.WaitForExit(7000)) {
         try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch {}
-        throw 'Launcher HTTP 逾時整合測試超過 7 秒，請求仍被卡住。'
+        throw 'Launcher HTTP timeout integration test exceeded 7 seconds.'
     }
     $process.WaitForExit()
     $stdout = if (Test-Path -LiteralPath $stdoutPath) {
