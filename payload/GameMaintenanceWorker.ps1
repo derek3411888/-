@@ -96,6 +96,12 @@ function Get-GMSteamObservation {
         if((Get-GMInstallField $app 'appid' '') -ne '3513350'){throw 'Wrong App ID'}
     } catch {$result.errorCode='STEAM_MANIFEST_INVALID';$result.detail='Steam manifest 不完整或不屬於鳴潮';return $result}
     $result.phase=Get-GMInstallField $Previous 'phase' 'unknown'
+    if($result.phase -eq 'error'){
+        $result.errorCode=Get-GMInstallField $Previous 'errorCode' 'STEAM_UPDATE_ERROR'
+        $result.detail=Get-GMInstallField $Previous 'detail' 'Steam 記錄到目標遊戲更新錯誤'
+        if([string]::IsNullOrWhiteSpace($result.errorCode)){$result.errorCode='STEAM_UPDATE_ERROR'}
+        if([string]::IsNullOrWhiteSpace($result.detail)){$result.detail='Steam 記錄到目標遊戲更新錯誤'}
+    }
     try {
         $info=Get-Item -LiteralPath $Install.contentLogPath -ErrorAction Stop
         $result.logIdentity=$info.CreationTimeUtc.Ticks.ToString()
@@ -117,7 +123,10 @@ function Get-GMSteamObservation {
             if($line -notmatch '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\].*\bAppID\s+3513350\b'){continue}
             $timestamp=[DateTimeOffset]([DateTime]::SpecifyKind([DateTime]::ParseExact($Matches[1],'yyyy-MM-dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture),[DateTimeKind]::Local))
             if(($Now-$timestamp).TotalSeconds -gt 60 -or ($timestamp-$Now).TotalSeconds -gt 5){continue}
-            $phase=if($line -match '(?i)disk write|not enough disk|disk full|failed|error'){'error'}
+            # Steam emits "result No Error" after a successful scheduler completion.
+            # Ignore that success phrase for error detection, without masking other failures.
+            $errorText=$line -replace '(?i)\bNo Error\b',''
+            $phase=if($errorText -match '(?i)disk write|not enough disk|disk full|failed|error'){'error'}
                 elseif($line -match '(?i)Fully Installed'){'update_ready'}
                 elseif($line -match '(?i)Downloading'){'downloading'}
                 elseif($line -match '(?i)Staging|Committing|Installing'){'installing'}
@@ -126,6 +135,7 @@ function Get-GMSteamObservation {
                 elseif($line -match '(?i)Queued'){'queued'}else{''}
             if($phase){$result.phase=$phase;$result.lastProgressAtUtc=$Now.ToString('o')}
             if($phase -eq 'error'){$result.errorCode='STEAM_UPDATE_ERROR';$result.detail='Steam 記錄到目標遊戲更新錯誤'}
+            elseif($phase){$result.errorCode='';$result.detail=''}
         }
     }catch{$result.detail='Steam 更新 Log 暫時不可讀；未以缺失 Log 宣告成功'}
     $keys=@(switch($result.phase){'downloading'{@('BytesDownloaded','BytesToDownload')};'installing'{@('BytesStaged','BytesToStage')};default{@()}})

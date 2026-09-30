@@ -92,6 +92,21 @@ RoundTrip() {
     [IO.File]::AppendAllText($log,'[2026-08-20 11:10:04] AppID 3513350 state changed : Fully Installed,'+[Environment]::NewLine)
     $ready=Get-GMSteamObservation -Install $install -Previous $staging -Now $now.AddSeconds(5)
     Assert-GMEqual $ready.phase 'update_ready' 'updater ready is not game ready'
+    [IO.File]::AppendAllText($log,'[2026-08-20 11:10:05] AppID 3513350 scheduler finished : removed from schedule (result No Error, state 0xc) '+[Environment]::NewLine)
+    $success=Get-GMSteamObservation -Install $install -Previous $ready -Now $now.AddSeconds(6)
+    Assert-GMEqual $success.phase 'update_ready' 'successful No Error completion is not an error'
+    Assert-GMEqual $success.errorCode '' 'successful completion has no error code'
+    [IO.File]::AppendAllText($log,'[2026-08-20 11:10:06] AppID 3513350 update failed : disk write failure'+[Environment]::NewLine)
+    $failed=Get-GMSteamObservation -Install $install -Previous $success -Now $now.AddSeconds(7)
+    Assert-GMEqual $failed.phase 'error' 'actual update failure remains an error'
+    $idleError=Get-GMSteamObservation -Install $install -Previous $failed -Now $now.AddSeconds(8)
+    Assert-GMEqual $idleError.errorCode 'STEAM_UPDATE_ERROR' 'error code survives idle observation'
+    Assert-GMTrue (-not [string]::IsNullOrWhiteSpace($idleError.detail)) 'error explanation survives idle observation'
+    [IO.File]::AppendAllText($log,'[2026-08-20 11:10:08] AppID 3513350 state changed : Fully Installed,'+[Environment]::NewLine)
+    $recovered=Get-GMSteamObservation -Install $install -Previous $idleError -Now $now.AddSeconds(9)
+    Assert-GMEqual $recovered.phase 'update_ready' 'new completion recovers previous error'
+    Assert-GMEqual $recovered.errorCode '' 'recovery clears stale error code'
+    Assert-GMEqual $recovered.detail '' 'recovery clears stale error explanation'
     [IO.File]::AppendAllText($log,'[2026-08-20 11:10:05] AppID 3513350 update changed : Paused,'+[Environment]::NewLine)
     $paused=Get-GMSteamObservation -Install $install -Previous $ready -Now $now.AddSeconds(6)
     Assert-GMEqual $paused.phase 'paused_download' 'Steam download pause distinct from client pause'
