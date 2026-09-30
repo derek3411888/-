@@ -187,6 +187,7 @@ GM_Evaluate(previous, input) {
     }
     install := GM_Value(input,"install",0)
     state.provider := GM_Value(install,"provider","unknown"), state.fingerprint := GM_Value(install,"fingerprint",state.fingerprint)
+    launchAdapterReady := GM_Value(install,"launchAdapterReady",GM_Value(install,"updateAdapterReady",false))
     if (state.provider != "steam" && state.provider != "kuro")
         return GM_Decision(state,"NEEDS_ATTENTION","none","INSTALL_SOURCE_UNKNOWN","無法確認安裝來源，請檢查鳴潮啟動路徑")
     if (observedPhase = "game_ready" && GM_Value(observation,"identityVerified",false) && GM_Value(observation,"stable",false))
@@ -194,7 +195,7 @@ GM_Evaluate(previous, input) {
     if (observedPhase = "error" || observedPhase = "login_required" || observedPhase = "offline" || observedPhase = "paused_download")
         return GM_Decision(state,"NEEDS_ATTENTION","none",GM_Value(observation,"errorCode","UPDATER_" StrUpper(observedPhase)),GM_Value(observation,"detail","更新器需要人工確認"))
     if (observedPhase = "update_ready") {
-        if state.actionId = "" && GM_Value(install,"updateAdapterReady",false)
+        if state.actionId = "" && launchAdapterReady
             return GM_Decision(state,"CHECKING_UPDATE","start_update")
         return GM_Decision(state,"CHECKING_UPDATE","observe","","更新器已就緒，仍在等待目標遊戲程序")
     }
@@ -210,7 +211,7 @@ GM_Evaluate(previous, input) {
             return GM_Decision(state,"NEEDS_ATTENTION","none","UPDATE_ACTIVITY_UNCONFIRMED","已發起更新但三分鐘內無法確認活動；不重複啟動")
         return GM_Decision(state,"CHECKING_UPDATE","observe","","接續上次動作，先核對更新器與遊戲")
     }
-    if !GM_Value(install,"updateAdapterReady",false)
+    if !launchAdapterReady
         return GM_Decision(state,"NEEDS_ATTENTION","none","UPDATE_ADAPTER_UNVERIFIED","已辨識安裝來源，但更新操作尚未完成實機驗證")
     return GM_Decision(state,"CHECKING_UPDATE","start_update")
 }

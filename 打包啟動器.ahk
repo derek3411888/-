@@ -5,7 +5,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.21"
+global PACK_LAUNCHER_BUILD_VERSION := "5.22"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -318,7 +318,7 @@ WriteLog("打包啟動器開始: " A_ScriptFullPath " | build=" PACK_LAUNCHER_BU
 WriteLog("生命週期啟動原因: " BuildStartupReason())
 OnExit(LifecycleOnExit)
 WriteStep("啟動", "PID=" DllCall("GetCurrentProcessId") " AHK=" A_AhkVersion)
-WriteStep("工作目錄", A_WorkingDir)
+WriteLog("初始工作目錄: " A_WorkingDir)
 
 CleanupLauncherReplaceBatFiles(baseDir) {
     if (baseDir = "" || !DirExist(baseDir))
@@ -932,6 +932,7 @@ try {
 ; 需要系統管理員（若無權限，提權後結束當前執行）
 if !A_IsAdmin {
     WriteLog("需要管理員權限，嘗試提權...")
+    WriteStep("等待管理員授權", "請在 Windows UAC 視窗按『是』")
     forwardArgs := LauncherAdminForwardArgs()
     if A_IsCompiled {
         ; EXE 直接提權重啟自身，不依賴 .ahk 關聯。
@@ -946,6 +947,7 @@ if !A_IsAdmin {
     }
     ExitApp
 }
+WriteStep("管理員權限", "已確認，繼續檢查更新")
 
 ; #SingleInstance 必須關閉，才能讓同一個 EXE 另開一般權限的資料夾選擇 helper。
 ; 主啟動流程改用「依完整安裝路徑區分」的 mutex，避免重複啟動，同時不妨礙
@@ -1092,6 +1094,7 @@ STAMP     := WORK_DIR "\.version"      ; 版本戳
 REMOTE_VER_FILE := DATA_DIR "\payload_remote_version.txt"
 
 WriteLog("工作目錄設定為：" WORK_DIR)
+WriteStep("工作目錄", WORK_DIR)
 
 oldReplaceBatCount := CleanupLauncherReplaceBatFiles(LauncherRuntimeDir("更新"))
 
@@ -1101,6 +1104,7 @@ if (oldReplaceBatCount > 0)
 ; =========================
 ; Ahk2Exe 打包指令（編譯時加入）
 ;@Ahk2Exe-Base Unicode 64-bit
+;@Ahk2Exe-UpdateManifest 1
 ;@Ahk2Exe-AddResource payload.zip, payload.zip
 ;@Ahk2Exe-AddResource AutoHotkey64.exe, AutoHotkey64.exe
 ; （可選）;@Ahk2Exe-SetMainIcon "your.ico"
@@ -1118,6 +1122,7 @@ if !DirExist(APP_DIR)
 
 ; 釋出內嵌檔案到專用資料夾
 WriteLog("正在處理內嵌檔案...")
+WriteStep("準備更新", "釋出內嵌 Payload 與 AutoHotkey")
 
 ; 確保 payload.zip 存在並解壓
 payloadPath := WORK_DIR "\payload.zip"
@@ -1179,6 +1184,7 @@ payloadHealthy := DirExist(APP_DIR) && FileExist(payloadMainPath)
 ; ========== 獨立檢查 Launcher 更新 ==========
 ; launcher 與 payload 使用同一份 manifest，但版本判斷彼此獨立；即使 payload
 ; 已是最新版，launcher 仍必須能下載並於本輪結束時套用。
+WriteStep("檢查更新", "讀取遠端版本資訊（有明確逾時）")
 manifestForLauncher := FetchRemoteUpdateManifest(DATA_DIR)
 if (manifestForLauncher != "") {
     if TryPrepareRemoteLauncherUpdate(WORK_DIR, DATA_DIR, manifestForLauncher)
@@ -1212,6 +1218,7 @@ WriteLog("是否需要解壓: " (needUnpack ? "是" : "否"))
 
 if needUnpack {
     WriteLog("需要解壓 payload.zip，開始解壓...")
+    WriteStep("解壓 Payload", "停止精確命中的舊流程並安全更新")
     
     ; --- 強制結束正在運行的相關進程，避免檔案鎖定導致無法刪除/覆蓋 ---
     WriteLog("正在檢查並終止舊的進程以釋放檔案鎖定...")
@@ -1547,6 +1554,7 @@ if (MAIN_FILE = "") {
 
 ; 執行主腳本（工作目錄設為 APP_DIR）
 WriteLog("啟動主腳本: " MAIN_PATH)
+WriteStep("啟動主流程", MAIN_PATH)
 WriteLog("使用 AutoHotkey: " ahkPath)
 WriteLog("工作目錄: " APP_DIR)
 

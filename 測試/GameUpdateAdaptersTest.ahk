@@ -4,7 +4,7 @@
 GMTest_Run(TestUpdateAdapters)
 TestUpdateAdapters() {
     calls := [], allowed := false, persisted := false, observation := {phase:"unknown"}
-    install := {provider:"steam",appId:3513350,updateAdapterReady:true,identityVerified:true,
+    install := {provider:"steam",appId:3513350,launchAdapterReady:true,updateAdapterReady:true,identityVerified:true,
         launcherPath:TestRuntime_NewCaseDir("gm-adapter") "\Steam 遊戲庫\steam.exe",fingerprint:"i1"}
     action := {type:"start_update",actionId:"fixture-start",expectedRevision:"r1",expectedRemoteGeneration:1,expectedFingerprint:"i1"}
     hooks := {CanAct:(*) => allowed,ValidateInstall:(*) => true,PersistIntent:(*) => persisted,
@@ -41,7 +41,8 @@ TestUpdateAdapters() {
         install.provider := provider
         GMTest_Assert(!GMU_Start(install,action,hooks).ok,"unsupported provider " provider)
     }
-    install.provider := "steam", action.actionId := "second", action.attempted := false
+    install.provider := "steam", install.appId := 3513350, install.updateAdapterReady := true
+    action.actionId := "second", action.attempted := false
     hooks.PersistIntent := (*) => FlipAdapterGuard(&allowed)
     GMTest_Assert(!GMU_Start(install,action,hooks).ok && calls.Length = 1,"STOP during intent persistence blocks launch")
     install.launcherPath .= '`" & extra'
@@ -59,6 +60,16 @@ TestUpdateAdapters() {
             GMTest_Assert(got.progressPercent = "","ready has no invented stage percentage")
     }
     GMTest_Assert(GMU_Observe(install,{phase:"game_ready"},0).phase = "unknown","worker cannot certify main screen")
+    install.provider := "kuro", install.appId := 0, install.updateAdapterReady := false
+    install.launcherPath := TestRuntime_NewCaseDir("gm-kuro-adapter") "\launcher.exe"
+    install.fingerprint := "kuro-i1", action := {type:"start_update",actionId:"kuro-start",expectedRevision:"r1",
+        expectedRemoteGeneration:1,expectedFingerprint:"kuro-i1"}, observation := {phase:"unknown"}
+    allowed := true, hooks.PersistIntent := (*) => true
+    result := GMU_Start(install,action,hooks)
+    GMTest_Assert(result.ok && result.attempted && calls.Length = 2,
+        "verified official launcher must open even before UI layout acceptance exists")
+    GMTest_Assert(calls[2][1] = install.launcherPath && calls[2][2] = '"' install.launcherPath '"',
+        "official launcher uses its exact verified path without extra arguments")
     target := {pid:123,hwnd:456,path:"fixture",identityVerified:true,foregroundVerified:true,desktopAvailable:true}
     action := {type:"click_update",actionId:"button-1",expectedRemoteGeneration:1}
     allowed := true, persisted := true, calls := []

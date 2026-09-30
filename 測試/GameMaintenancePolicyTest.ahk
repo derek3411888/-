@@ -41,8 +41,12 @@ TestMaintenancePolicy() {
     input := GMTest_Input(10000), state := GMTest_State()
     input.install.provider := "unknown"
     GMTest_Assert(GM_Evaluate(state,input).errorCode = "INSTALL_SOURCE_UNKNOWN", "unknown install never guessed")
-    input.install.provider := "steam", input.install.updateAdapterReady := false
+    input.install.provider := "steam", input.install.launchAdapterReady := false, input.install.updateAdapterReady := false
     GMTest_Assert(GM_Evaluate(state,input).errorCode = "UPDATE_ADAPTER_UNVERIFIED", "unverified updater cannot run")
+    input.install.provider := "kuro", input.install.launchAdapterReady := true
+    decision := GM_Evaluate(state,input)
+    GMTest_Assert(decision.phase = "CHECKING_UPDATE" && decision.effect.type = "start_update",
+        "verified official launcher identity must start the launcher without a machine-specific acceptance file")
     input := GMTest_Input(10000), state.actionId := "persisted-intent", state.actionStage := "intent"
     GMTest_Assert(GM_Evaluate(state,input).effect.type = "observe", "restart reconciles intent rather than resends")
     input.actionElapsedMs := 180000

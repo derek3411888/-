@@ -23,7 +23,8 @@ GMU_BuildLaunchCommand(install) {
 GMU_Start(install,action,hooks) {
     if (GM_Value(action,"type","") != "start_update" || GM_Value(action,"actionId","") = "")
         return GMU_Result(false,"INVALID_UPDATE_ACTION")
-    if (!GM_Value(install,"identityVerified",false) || !GM_Value(install,"updateAdapterReady",false)
+    launchAdapterReady := GM_Value(install,"launchAdapterReady",GM_Value(install,"updateAdapterReady",false))
+    if (!GM_Value(install,"identityVerified",false) || !launchAdapterReady
         || (install.provider != "steam" && install.provider != "kuro"))
         return GMU_Result(false,"UPDATE_ADAPTER_UNVERIFIED")
     if (GM_Value(action,"expectedFingerprint",install.fingerprint) != install.fingerprint)

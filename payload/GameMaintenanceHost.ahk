@@ -195,8 +195,12 @@ GMHost_ReadInput(c) {
             notice := {eventId:n["eventId"],revision:n["revision"],startsAt:Number(n["startsAtUtcMs"]),expectedOpenAt:Number(n["expectedOpenAtUtcMs"]),
                 checkedAt:n["checkedAtUtcMs"] = "" ? 0 : Number(n["checkedAtUtcMs"]),freshForRelease:n["freshForRelease"] = "1",sourceUrl:n["sourceUrl"],gameVersion:n["gameVersion"]}
         c.install := {provider:i["provider"],appId:i["appId"] = "" ? 0 : Integer(i["appId"]),gameRoot:i["gameRoot"],launcherPath:i["launcherPath"],
-            fingerprint:i["fingerprint"],identityVerified:InStr(i["evidence"],"installation-files-verified") > 0,updateAdapterReady:false}
-        c.install.updateAdapterReady := GMHost_AdapterAccepted(c.install)
+            fingerprint:i["fingerprint"],identityVerified:InStr(i["evidence"],"installation-files-verified") > 0,
+            launchAdapterReady:false,updateAdapterReady:false}
+        c.install.launchAdapterReady := GMHost_LauncherStartReady(c.install)
+        ; 目前的自動化能力包含：精確啟動已驗證的 Steam／官方啟動器，
+        ; 以及對官方啟動器受限右下角 ROI 的 OCR／實體滑鼠操作。
+        c.install.updateAdapterReady := c.install.launchAdapterReady
         observation := {phase:o["phase"],observedAt:snapshot["meta"]["observedAtUtcMs"],progressPercent:o["progressPercent"],
             bytesDone:o["bytesDone"],bytesTotal:o["bytesTotal"],errorCode:o["errorCode"],detail:o["detail"],
             identityVerified:o["phase"] = "game_running" && o["gamePid"] != "",gamePid:o["gamePid"],gamePath:o["gamePath"]}
@@ -241,6 +245,21 @@ GMHost_AdapterAccepted(install) {
     return true
 }
 
+GMHost_LauncherStartReady(install) {
+    if !IsObject(install) || !GM_Value(install,"identityVerified",false)
+        || GM_Value(install,"launcherPath","") = "" || !FileExist(install.launcherPath)
+        return false
+    canonical := GMHost_CanonicalPath(install.launcherPath)
+    if canonical = "" || StrLower(canonical) != StrLower(install.launcherPath)
+        return false
+    SplitPath(canonical,&name)
+    if install.provider = "steam"
+        return StrLower(name) = "steam.exe" && GM_Value(install,"appId",0) = 3513350
+    if install.provider = "kuro"
+        return StrLower(name) = "launcher.exe"
+    return false
+}
+
 GMHost_CanAct(action) {
     global GM_CONTROLLER
     c := GM_CONTROLLER
@@ -260,7 +279,7 @@ GMHost_ApplyEffect(action) {
         GMHost_WriteRequest(c)
     } else if action.type = "start_update" {
         action.expectedFingerprint := c.install.fingerprint
-        hooks := {CanAct:GMHost_CanAct,ValidateInstall:GMHost_AdapterAccepted,
+        hooks := {CanAct:GMHost_CanAct,ValidateInstall:GMHost_LauncherStartReady,
             PersistIntent:(*) => GM_LoadJournal(c.journalPath).actionStage = "intent",
             LaunchSteam:(path,appId,command) => Run(command,,"Hide"),LaunchKuro:(path,command) => Run(command,,"Hide"),
             ReadObservation:(*) => c.lastInput.observation}
@@ -274,7 +293,7 @@ GMHost_ApplyEffect(action) {
             c.lastObserveTick := MonotonicTickMs()
             if c.state.phase = "WAIT_SERVER"
                 GMHost_ObserveWaitingGame()
-            else if c.install.provider = "kuro" && c.install.updateAdapterReady
+            else if c.install.provider = "kuro" && c.install.launchAdapterReady
                 GMHost_ObserveKuroLauncher()
         }
     } else if action.type = "stop"
@@ -719,26 +738,33 @@ GMHost_InspectLauncherWindow(hwnd) {
 GMHost_KuroLayout(install) {
     filePath := RuntimeFiles_GameMaintenanceDir() "\adapter-acceptance.ini"
     version := FileGetVersion(install.launcherPath)
-    if version != IniReadSafe(filePath,"kuro","launcher_version","")
-        return 0
-    layout := {verified:true,launcherVersion:version,button:{},status:{}}
-    for region in ["button","status"] {
-        for coord in ["left","top","right","bottom"] {
-            raw := IniReadSafe(filePath,"kuro",region "_" coord,"")
-            if !RegExMatch(raw,"^(?:0(?:\.\d+)?|1(?:\.0+)?)$")
-                return 0
-            layout.%region%.%coord% := Number(raw)
+    if FileExist(filePath) && version = IniReadSafe(filePath,"kuro","launcher_version","") {
+        layout := {verified:true,launcherVersion:version,source:"accepted-device-layout",button:{},status:{}}
+        valid := true
+        for region in ["button","status"] {
+            for coord in ["left","top","right","bottom"] {
+                raw := IniReadSafe(filePath,"kuro",region "_" coord,"")
+                if !RegExMatch(raw,"^(?:0(?:\.\d+)?|1(?:\.0+)?)$") {
+                    valid := false
+                    break
+                }
+                layout.%region%.%coord% := Number(raw)
+            }
+            if !valid || layout.%region%.left >= layout.%region%.right || layout.%region%.top >= layout.%region%.bottom {
+                valid := false
+                break
+            }
         }
-        if layout.%region%.left >= layout.%region%.right || layout.%region%.top >= layout.%region%.bottom
-            return 0
+        if valid
+            return layout
     }
-    return layout
+    return GMU_DefaultKuroLayout(version)
 }
 
 GMHost_ReadKuroObservation() {
     global GM_CONTROLLER
     c := GM_CONTROLLER, install := c.install, unknown := {phase:"unknown",observedAt:RC_UnixMs()}
-    if !GMHost_AdapterAccepted(install)
+    if !GMHost_LauncherStartReady(install)
         return unknown
     layout := GMHost_KuroLayout(install)
     if !IsObject(layout)
@@ -775,7 +801,7 @@ GMHost_ReadKuroObservation() {
         identity := {key:target.pid ":" target.hwnd,provider:"kuro",verified:true,clientWidth:frame.width,clientHeight:frame.height,
             launcherVersion:layout.launcherVersion,layout:layout}
         classified := GMU_ClassifyLauncher(blocks,identity)
-        phase := InStr(",update,download,resume,play,","," classified.kind ",",true) ? "unknown" : classified.kind
+        phase := InStr(",update,download,resume,play,confirm,","," classified.kind ",",true) ? "unknown" : classified.kind
         if classified.kind = "play"
             phase := "update_ready"
         return {phase:phase,progressPercent:classified.percent,observedAt:RC_UnixMs(),identityVerified:true,
@@ -811,7 +837,7 @@ GMHost_ObserveKuroLauncher() {
     c.observation := observed
     if !IsObject(observed.button)
         return
-    id := c.state.eventId ":kuro:" observed.kind
+    id := c.state.eventId ":kuro:" observed.target.pid ":" observed.target.hwnd ":" observed.kind
     if id = c.state.updaterUiActionId
         return
     action := {type:"click_" observed.kind,actionId:id,button:observed.button,expectedRevision:c.state.revision,

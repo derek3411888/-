@@ -56,6 +56,17 @@ GMU_ConfirmMaintenance(previous,candidate,nowMs,captureId) {
     return result
 }
 
+GMU_DefaultKuroLayout(launcherVersion) {
+    ; 官方啟動器的可操作文字僅接受右下角單一、完整命中的動作按鈕。
+    ; 座標仍會由 OCR 文字方塊本身決定；這裡只限制可接受的區域，
+    ; 並不依螢幕解析度硬編碼點擊位置。
+    if IsObject(launcherVersion) || Trim(String(launcherVersion)) = ""
+        return 0
+    return {verified:true,launcherVersion:String(launcherVersion),source:"built-in-safe-roi",
+        button:{left:0.68,top:0.72,right:0.99,bottom:0.99},
+        status:{left:0.48,top:0.50,right:0.99,bottom:0.94}}
+}
+
 GMU_ClassifyLauncher(blocks,identity) {
     result := {kind:"unknown",button:0,percent:"",evidence:"",identityKey:GM_Value(identity,"key","")}
     layout := GM_Value(identity,"layout",0)
@@ -86,7 +97,8 @@ GMU_ClassifyLauncher(blocks,identity) {
         kind := RegExMatch(text,"^(更新|更新游戏|游戏更新|update)$") ? "update"
             : RegExMatch(text,"^(下载|下载游戏|download)$") ? "download"
             : RegExMatch(text,"^(开始游戏|启动游戏|startgame|play)$") ? "play"
-            : RegExMatch(text,"^(继续|继续下载|resume)$") ? "resume" : ""
+            : RegExMatch(text,"^(继续|继续下载|resume)$") ? "resume"
+            : RegExMatch(text,"^(确认|确定|confirm|ok)$") ? "confirm" : ""
         if kind != ""
             buttons.Push({kind:kind,button:{x:(block.left+block.right)/2,y:(block.top+block.bottom)/2},evidence:text})
     }

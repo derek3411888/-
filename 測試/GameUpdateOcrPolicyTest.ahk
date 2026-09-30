@@ -51,6 +51,13 @@ TestMaintenanceOcr() {
     GMTest_Assert(got.percent = "","unknown percentage stays unknown")
     identity.launcherVersion := "new-oem"
     GMTest_Assert(GMU_ClassifyLauncher(blocks,identity).kind = "unknown","unverified launcher version is not actionable")
+    identity.launcherVersion := "fixture-v2", identity.layout := GMU_DefaultKuroLayout("fixture-v2")
+    GMTest_Assert(identity.layout.verified && identity.layout.button.left >= 0.65
+        && identity.layout.button.top >= 0.7 && identity.layout.button.right <= 1
+        && identity.layout.button.bottom <= 1,"built-in official launcher layout is restricted to the lower-right action area")
+    blocks[1] := {text:"開始遊戲",left:1000,top:620,right:1150,bottom:680}
+    GMTest_Assert(GMU_ClassifyLauncher(blocks,identity).kind = "play",
+        "current official launcher version can use the constrained built-in OCR layout")
 }
 OcrFixture(text) {
     return {text:text,left:400,top:300,right:900,bottom:350}

@@ -116,6 +116,7 @@ GMHost_ReconcileSchedule(args*) => {runCycle:"fixture",targetServer:"Asia",allCo
 GMHost_RestoreScheduledTarget(args*) => true
 GMHost_WriteRequest(args*) => 0
 GMHost_AdapterAccepted(args*) => false
+GMHost_LauncherStartReady(args*) => false
 GMHost_OkwwIdentity(args*) {
     global GM_OKWW_KEY
     return GM_OKWW_KEY

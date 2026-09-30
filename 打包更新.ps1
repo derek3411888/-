@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.10',
-    [string]$LauncherVersion = '5.21',
+    [string]$PayloadVersion = '5.11',
+    [string]$LauncherVersion = '5.22',
     [string]$ServerVersion = '1.0.73'
 )
 
@@ -299,6 +299,8 @@ Invoke-AhkValidate $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk'
 Invoke-AhkTest $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTimeoutPolicyTest.ahk' 'Launcher HTTP 逾時策略語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\LauncherHttpTimeoutPolicyTest.ahk' 'Launcher HTTP 逾時策略回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\LauncherElevationProgressPolicyTest.ahk' 'Launcher 管理員與進度策略語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\LauncherElevationProgressPolicyTest.ahk' 'Launcher 管理員與進度策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTimeoutIntegrationTest.ahk' 'Launcher HTTP 逾時整合測試語法 validate'
 & (Join-Path $projectRoot '測試\LauncherHttpTimeoutIntegrationTest.ps1')
 Assert-ExitCode 'Launcher HTTP 逾時整合測試'
