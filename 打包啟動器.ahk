@@ -2,10 +2,11 @@
 #SingleInstance Off
 #Include LauncherProcessCleanupPolicy.ahk
 #Include LauncherHttp.ahk
+#Include LauncherPayloadUpdatePolicy.ahk
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.23"
+global PACK_LAUNCHER_BUILD_VERSION := "5.24"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -498,6 +499,21 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 
         if (forceDownload && remoteVer = currentVer)
             WriteLog("遠端版本相同，但本地 payload 缺失，改為重新下載：" remoteVer)
+
+        ; 新 Launcher 每次啟動都先釋出其內嵌 payload.zip。如果該 ZIP 的
+        ; SHA 已等於 manifest，就直接解壓並在成功後補寫版本，不能再把同一個
+        ; 34MB 檔案從網路下載一次。這也讓手動換入新版 Launcher 可離線修復。
+        localPayloadPath := workDir "\payload.zip"
+        localPayloadSha := ""
+        if FileExist(localPayloadPath) && payloadSha ~= "^[0-9a-f]{64}$"
+            localPayloadSha := GetFileSha256(localPayloadPath)
+        reuseDecision := LauncherPayloadReuse_Decide(currentVer, remoteVer,
+            payloadSha, localPayloadSha, FileExist(localPayloadPath), forceDownload)
+        if reuseDecision.reuseLocalZip {
+            forcedVersion := remoteVer
+            WriteLog("本機內嵌 payload.zip SHA256 已是遠端版本；略過重複下載，直接解壓套用：" remoteVer)
+            return true
+        }
 
         WriteLog("檢測到新版本：" currentVer " -> " remoteVer)
         zipTmp := LauncherNewTempPath("payload_update", ".zip", "更新")

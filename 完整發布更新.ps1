@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.13',
-    [string]$LauncherVersion = '5.23',
+    [string]$PayloadVersion = '5.14',
+    [string]$LauncherVersion = '5.24',
     [string]$ServerVersion = '1.0.73',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
@@ -85,6 +85,7 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 $releasePaths = @(
     '.gitignore', 'PROJECT_AI_HANDOFF.md', 'DEVELOPMENT_ARTIFACTS.md',
     'ProjectDevelopmentPaths.ps1', 'LauncherProcessCleanupPolicy.ahk',
+    'LauncherHttp.ahk', 'LauncherPayloadUpdatePolicy.ahk',
     '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
     'payload', '測試', '文字識別/文字識別測試.ahk', '郵件測試/寄送信件測試.ahk',
     'self-hosted-server', 'remote-control-web', 'WEB_WORK_EMERGENCY_REPAIR.md',

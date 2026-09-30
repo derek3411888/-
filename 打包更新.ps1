@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.13',
-    [string]$LauncherVersion = '5.23',
+    [string]$PayloadVersion = '5.14',
+    [string]$LauncherVersion = '5.24',
     [string]$ServerVersion = '1.0.73'
 )
 
@@ -319,6 +319,8 @@ Assert-ExitCode 'Launcher HTTP 逾時整合測試'
 Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTotalTimeoutIntegrationTest.ahk' 'Launcher HTTP 硬性總逾時整合測試語法 validate'
 & (Join-Path $projectRoot '測試\LauncherHttpTotalTimeoutIntegrationTest.ps1')
 Assert-ExitCode 'Launcher HTTP 硬性總逾時整合測試'
+Invoke-AhkValidate $payloadRuntime '測試\LauncherPayloadReusePolicyTest.ahk' 'Launcher 內嵌 Payload 復用策略語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\LauncherPayloadReusePolicyTest.ahk' 'Launcher 內嵌 Payload 復用策略回歸測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
 Invoke-AhkValidate $payloadRuntime 'payload\ScriptRestartWorker.ahk' '安全重啟交接 worker 語法 validate'
 & (Join-Path $projectRoot '測試\Invoke-RestartHandoffTests.ps1')
