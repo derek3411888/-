@@ -5,7 +5,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.22"
+global PACK_LAUNCHER_BUILD_VERSION := "5.23"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -645,10 +645,10 @@ TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
         ; 下載新 launcher exe
         exeTmp := dataDir "\\launcher_update_" launcherVer "_" A_TickCount ".exe"
         try {
-            WriteLog("正在下載新 launcher 版本 " launcherVer)
+            WriteLog("正在下載新 launcher 版本 " launcherVer "（硬性總上限 100 秒；失敗會沿用本機版本繼續）")
             HttpDownloadFile(launcherUrl, exeTmp)
         } catch as e {
-            WriteLog("下載 launcher 更新失敗: " e.Message, "WARN")
+            WriteLog("下載 launcher 更新失敗，已中止更新並沿用本機 launcher 繼續主流程: " e.Message, "WARN")
             return false
         }
         

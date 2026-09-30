@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.12',
-    [string]$LauncherVersion = '5.22',
+    [string]$PayloadVersion = '5.13',
+    [string]$LauncherVersion = '5.23',
     [string]$ServerVersion = '1.0.73'
 )
 
@@ -231,6 +231,18 @@ function Set-CompanyWebBuildStamp([string]$Payload, [string]$Launcher, [string]$
 }
 
 try {
+$previousManifestPath = Join-Path $projectRoot 'update_manifest.example.json'
+$previousLauncherVersion = ''
+$previousLauncherHash = ''
+if (Test-Path -LiteralPath $previousManifestPath) {
+    try {
+        $previousManifest = Get-Content -LiteralPath $previousManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $previousLauncherVersion = [string]$previousManifest.launcher_version
+        $previousLauncherHash = ([string]$previousManifest.launcher_sha256).ToUpperInvariant()
+    } catch {
+        Write-Warning "既有 manifest 無法解析，略過同版二進位保護：$($_.Exception.Message)"
+    }
+}
 $compiler = Find-AhkCompiler
 $runtime = Join-Path $projectRoot 'AutoHotkey64.exe'
 $payloadRuntime = Join-Path $projectRoot 'payload\AutoHotkey64.exe'
@@ -304,6 +316,9 @@ Invoke-AhkTest $payloadRuntime '測試\LauncherElevationProgressPolicyTest.ahk' 
 Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTimeoutIntegrationTest.ahk' 'Launcher HTTP 逾時整合測試語法 validate'
 & (Join-Path $projectRoot '測試\LauncherHttpTimeoutIntegrationTest.ps1')
 Assert-ExitCode 'Launcher HTTP 逾時整合測試'
+Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTotalTimeoutIntegrationTest.ahk' 'Launcher HTTP 硬性總逾時整合測試語法 validate'
+& (Join-Path $projectRoot '測試\LauncherHttpTotalTimeoutIntegrationTest.ps1')
+Assert-ExitCode 'Launcher HTTP 硬性總逾時整合測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
 Invoke-AhkValidate $payloadRuntime 'payload\ScriptRestartWorker.ahk' '安全重啟交接 worker 語法 validate'
 & (Join-Path $projectRoot '測試\Invoke-RestartHandoffTests.ps1')
@@ -488,6 +503,11 @@ $payloadHash = (Get-FileHash -LiteralPath 'payload.zip' -Algorithm SHA256).Hash
 $launcherHash = (Get-FileHash -LiteralPath '全自動鋤地.exe' -Algorithm SHA256).Hash
 $serverHash = (Get-FileHash -LiteralPath 'self-hosted-server.zip' -Algorithm SHA256).Hash
 $webHash = Get-WebAssetHash 'self-hosted-server'
+if ($previousLauncherVersion -eq $LauncherVersion -and
+    -not [string]::IsNullOrWhiteSpace($previousLauncherHash) -and
+    $previousLauncherHash -ne $launcherHash) {
+    throw "Launcher 二進位已改變但版本仍是 $LauncherVersion；請提升 LauncherVersion，禁止發布同版本不同 SHA256。"
+}
 $releaseId = "p$PayloadVersion-l$LauncherVersion-s$ServerVersion-$($payloadHash.Substring(0,8))-$($launcherHash.Substring(0,8))-$($serverHash.Substring(0,8))-$($webHash.Substring(0,8))"
 $manifest = [ordered]@{
     release_id = $releaseId
