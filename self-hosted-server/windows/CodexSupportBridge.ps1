@@ -365,10 +365,28 @@ function Remove-InFlightMarker([string]$Path) {
     if (Test-Path -LiteralPath $Path -PathType Leaf) { Remove-Item -LiteralPath $Path -Force }
 }
 
-function Get-LatestQueuedAt([string[]]$StatePaths) {
+function Get-LatestQueuedAt([string[]]$StatePaths, $Config = $null) {
     $latest = 0L
     foreach ($path in $StatePaths) {
         $state = Read-State $path
+        if ($null -ne $Config -and $state.LastStatus -eq 'QUEUED' -and
+            $state.LastQueuedAt -gt 0 -and $state.LastMessageSha256 -match '^[a-f0-9]{64}$') {
+            try {
+                # Local exact-message/turn evidence only: never unlock merely
+                # because a website says completed or another turn has ended.
+                $target = [pscustomobject]@{
+                    Source = "cooldown:$path"; Nonce = $state.LastHandledNonce
+                    MessageSha256 = $state.LastMessageSha256
+                    TurnId = ''; QueuedAt = $state.LastQueuedAt
+                }
+                $reply = Find-CodexResponseFromSessionLog $Config $target
+                if ($reply.Found -and $reply.ResponseState -eq 'COMPLETED' -and
+                    $reply.TurnId -and $reply.ResponseText -and
+                    $reply.ResponseAt -ge $state.LastQueuedAt) { continue }
+            } catch {
+                # Reader unavailable: retain the existing bounded cooldown.
+            }
+        }
         if ([long]$state.LastQueuedAt -gt $latest) { $latest = [long]$state.LastQueuedAt }
     }
     return $latest
@@ -633,7 +651,7 @@ function Invoke-SelfHostedQueue(
     }
 
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-    $lastQueuedAt = Get-LatestQueuedAt $AllStatePaths
+    $lastQueuedAt = Get-LatestQueuedAt $AllStatePaths $Config
     if ($lastQueuedAt -gt 0 -and $now - $lastQueuedAt -lt ([int]$Config.MinimumRequestIntervalSeconds * 1000)) {
         $remaining = [Math]::Ceiling((([int]$Config.MinimumRequestIntervalSeconds * 1000) - ($now - $lastQueuedAt)) / 1000)
         $detail = "已限制跨來源重複送出；請在 $remaining 秒後建立新請求"
@@ -1803,7 +1821,7 @@ function Invoke-FirestoreQueue(
     $queuedMessage = Join-RequestAndContext $message $context $correlationId
     $messageHash = Get-MessageSha256 $queuedMessage
     $validatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-    $lastQueuedAt = Get-LatestQueuedAt $AllStatePaths
+    $lastQueuedAt = Get-LatestQueuedAt $AllStatePaths $Config
     if ($lastQueuedAt -gt 0 -and $now - $lastQueuedAt -lt ([int]$Config.MinimumRequestIntervalSeconds * 1000)) {
         $remaining = [Math]::Ceiling((([int]$Config.MinimumRequestIntervalSeconds * 1000) - ($now - $lastQueuedAt)) / 1000)
         $detail = "已限制跨來源重複送出；請在 $remaining 秒後建立新請求"

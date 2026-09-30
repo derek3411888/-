@@ -101,6 +101,14 @@ export function isCodexResponseChronologicallyValid(row = {}) {
   return queuedAt > 0 && responseAt >= queuedAt;
 }
 
+export function hasCompletedCodexResponse(row = {}) {
+  return String(row.state || "").trim().toUpperCase() === "QUEUED"
+    && String(row.response_state || "").trim().toUpperCase() === "COMPLETED"
+    && isCodexResponseChronologicallyValid(row)
+    && Boolean(String(row.codex_turn_id || "").trim())
+    && Boolean(String(row.codex_response || "").trim());
+}
+
 function statusFromRow(row = null, dispatcher = {}) {
   const presence = resolveCodexDispatcherPresence(row, dispatcher);
   if (!row) {
@@ -147,7 +155,8 @@ function statusFromRow(row = null, dispatcher = {}) {
     replyError: invalidResponseChronology
       ? "已拒絕顯示時間早於本次請求的舊 Codex 回覆，等待重新配對"
       : String(row.codex_reply_error || ""),
-    cooldownRemainingMs: queuedAt ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0,
+    cooldownRemainingMs: queuedAt && !hasCompletedCodexResponse(row)
+      ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0,
     transport: "selfhost",
   };
 }
@@ -208,10 +217,10 @@ export async function submitDirectCodexSupport(input = {}) {
       throw new HttpError(409, "上一筆維修請求仍在處理或等待 Codex 回覆", "CODEX_SUPPORT_PENDING", statusFromRow(current));
     }
     const recent = await client.query(
-      "SELECT queued_at FROM codex_support_requests WHERE queued_at IS NOT NULL ORDER BY queued_at DESC LIMIT 1",
+      "SELECT * FROM codex_support_requests WHERE queued_at IS NOT NULL ORDER BY queued_at DESC,id DESC LIMIT 1",
     );
     const queuedAt = milliseconds(recent.rows[0]?.queued_at);
-    if (queuedAt && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
+    if (!hasCompletedCodexResponse(recent.rows[0]) && queuedAt && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
       throw new HttpError(429, "剛剛已送進 Codex，請等候處理結果", "CODEX_SUPPORT_COOLDOWN", {
         cooldownRemainingMs: CODEX_SUPPORT_COOLDOWN_MS - (Date.now() - queuedAt),
       });

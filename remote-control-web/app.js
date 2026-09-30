@@ -30,7 +30,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.07-l5.18-s1.0.70";
+const WEB_BUILD = "p5.08-l5.19-s1.0.71";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -225,6 +225,8 @@ let codexSupportSending = false;
 let codexSupportRecoveryBusy = false;
 let codexSupportError = "";
 let performanceResizeTimer = 0;
+let performanceSnapshotCache = null;
+const performanceChartCache = new WeakMap();
 const clientLastObservedChangeAt = new Map();
 const staleCleanupRetryAfter = new Map();
 
@@ -530,6 +532,18 @@ function renderCodexProgressOverview(view) {
   document.getElementById("codexProgressBridge").textContent = `Bridge：${bridgeOnline ? "在線" : "離線"}${bridgeVersion ? ` v${bridgeVersion}` : ""}${heartbeatAt ? `（${fmtAge(heartbeatAt)}）` : ""}`;
 }
 
+function isCodexSupportCompleted(data) {
+  const nonce = toInteger(readField(data, "supportRequestNonce", 0), 0);
+  const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
+  return nonce > 0 && nonce === toInteger(readField(data, "bridgeStatusNonce", 0), 0)
+    && nonce === toInteger(readField(data, "codexResponseNonce", 0), 0)
+    && String(readField(data, "bridgeState", "")).trim().toUpperCase() === "QUEUED"
+    && String(readField(data, "codexResponseState", "")).trim().toUpperCase() === "COMPLETED"
+    && queuedAt > 0 && toMillis(readField(data, "codexResponseAt", 0)) >= queuedAt
+    && Boolean(String(readField(data, "codexResponseTurnId", "")).trim())
+    && Boolean(String(readField(data, "codexResponseText", "")).trim());
+}
+
 function renderCodexSupportStatus() {
   const data = codexSupportData || {};
   const requestNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
@@ -546,7 +560,8 @@ function renderCodexSupportStatus() {
   const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
   const attemptCount = Math.max(0, toInteger(readField(data, "bridgeAttemptCount", 0), 0));
   const bridgeOnline = heartbeatAt > 0 && Date.now() - heartbeatAt < CODEX_BRIDGE_ONLINE_MS;
-  const cooldownRemaining = Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now());
+  const cooldownRemaining = isCodexSupportCompleted(data) ? 0
+    : Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now());
   const pendingStates = ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"];
   const responseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
   const rawResponseState = state === "QUEUED" && responseNonce === requestNonce
@@ -899,7 +914,7 @@ async function requestCodexSupport() {
           && ["WAITING", "IN_PROGRESS"].includes(existingResponseState)) {
         throw new Error("上一筆維修請求仍在等待 Codex 完成並回覆");
       }
-      if (queuedAt > 0 && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
+      if (!isCodexSupportCompleted(data) && queuedAt > 0 && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
         throw new Error("剛剛已送進 Codex，請等候處理結果");
       }
 
@@ -1311,8 +1326,14 @@ function readPerformanceSnapshot(data) {
   const schemaVersion = Math.max(0, toInteger(readField(data || {}, "performanceSchemaVersion", 0), 0));
   const declaredAvailable = toBoolean(readField(data || {}, "performanceStatusAvailable", false));
   const raw = String(readField(data || {}, "performanceJson", "") || "").trim();
+  if (performanceSnapshotCache?.raw === raw && performanceSnapshotCache.schemaVersion === schemaVersion
+      && performanceSnapshotCache.declaredAvailable === declaredAvailable) return performanceSnapshotCache.value;
+  const remember = (value) => {
+    performanceSnapshotCache = { raw, schemaVersion, declaredAvailable, value };
+    return value;
+  };
   if (!raw) {
-    return {
+    return remember({
       supported: schemaVersion >= 1,
       available: false,
       declaredAvailable,
@@ -1320,7 +1341,7 @@ function readPerformanceSnapshot(data) {
       collector: {},
       current: {},
       points: [],
-    };
+    });
   }
 
   try {
@@ -1333,7 +1354,7 @@ function readPerformanceSnapshot(data) {
       .filter((row) => row.at > 0)
       .sort((a, b) => a.at - b.at)
       .slice(-60);
-    return {
+    return remember({
       supported: true,
       available: true,
       declaredAvailable,
@@ -1341,9 +1362,9 @@ function readPerformanceSnapshot(data) {
       collector: parsed.collector && typeof parsed.collector === "object" ? parsed.collector : {},
       current: parsed.current && typeof parsed.current === "object" ? parsed.current : {},
       points,
-    };
+    });
   } catch (error) {
-    return {
+    return remember({
       supported: schemaVersion >= 1,
       available: false,
       declaredAvailable,
@@ -1351,7 +1372,7 @@ function readPerformanceSnapshot(data) {
       collector: {},
       current: {},
       points: [],
-    };
+    });
   }
 }
 
@@ -1380,6 +1401,9 @@ function drawPerformanceChart(canvas, points, series, { fixedMax = 0, suffix = "
   const width = Math.max(300, Math.round(canvas.getBoundingClientRect().width || canvas.clientWidth || 480));
   const height = Math.max(160, Math.round(canvas.getBoundingClientRect().height || canvas.clientHeight || 210));
   const ratio = Math.min(2, window.devicePixelRatio || 1);
+  const chartKey = JSON.stringify([width, height, ratio, points, series, fixedMax, suffix,
+    readField(selectedClientData() || {}, "recentEventsJson", "")]);
+  if (performanceChartCache.get(canvas) === chartKey) return;
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
   const context = canvas.getContext("2d");
@@ -1397,6 +1421,7 @@ function drawPerformanceChart(canvas, points, series, { fixedMax = 0, suffix = "
   if (!points.length || !values.length) {
     context.textAlign = "center";
     context.fillText("等待每分鐘彙整資料", width / 2, height / 2);
+    performanceChartCache.set(canvas, chartKey);
     return;
   }
 
@@ -1460,6 +1485,7 @@ function drawPerformanceChart(canvas, points, series, { fixedMax = 0, suffix = "
   context.fillText(new Date(firstAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }), padding.left, height - 6);
   context.textAlign = "right";
   context.fillText(new Date(lastAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }), width - padding.right, height - 6);
+  performanceChartCache.set(canvas, chartKey);
 }
 
 function renderPerformance() {
@@ -1981,7 +2007,7 @@ function setButtonsDisabled(disabled) {
   btnSwitchServer.disabled = Boolean(value || noSwitchTarget || !serverTargetSelect.value);
 }
 
-function renderClients() {
+function renderClients(refreshSelected = true) {
   const now = Date.now();
   const rows = [];
   let onlineCount = 0;
@@ -2041,7 +2067,14 @@ function renderClients() {
   statusMsg.textContent = `可見 ${rows.length} 台，在線 ${onlineCount} 台`
     + (maintenanceNotice ? `｜${maintenanceNotice}` : "");
   startSelectedMediaSubscription();
-  renderSelectedClient();
+  if (refreshSelected || keep !== pcDropdown.value) renderSelectedClient();
+  else {
+    // A quiet selected device can cross the offline threshold while another
+    // device updates. Keep these time-dependent summaries fresh without
+    // rebuilding its diagnostics, settings, histories or canvas charts.
+    renderDeviceSummary();
+    renderFlowServerStatus();
+  }
 }
 
 function renderDeviceSummary() {
@@ -2910,11 +2943,13 @@ function renderSelectedClient() {
   renderDeviceSummary();
   renderFlowServerStatus();
   refreshMeta();
-  renderPerformance();
-  renderRecordingStatus();
   renderSnapshot();
-  renderRuntimeEvents();
-  renderHistory();
+  if (activeView === "diagnostics") {
+    renderPerformance();
+    renderRecordingStatus();
+    renderRuntimeEvents();
+    renderHistory();
+  }
   renderCommandStatus();
   renderServerProgress();
   renderServerSwitch();
@@ -2989,17 +3024,19 @@ function startClientListener() {
     clientsQuery,
     (snap) => {
       const observedNow = Date.now();
-      snap.docChanges().forEach((change) => {
+      const selectedIdBefore = pcDropdown.value;
+      const changes = snap.docChanges();
+      changes.forEach((change) => {
         if (change.type === "removed") {
+          cache.delete(change.doc.id);
           clientLastObservedChangeAt.delete(change.doc.id);
           staleCleanupRetryAfter.delete(change.doc.id);
         } else {
+          cache.set(change.doc.id, change.doc.data());
           clientLastObservedChangeAt.set(change.doc.id, observedNow);
         }
       });
-      cache.clear();
-      snap.forEach((s) => cache.set(s.id, s.data()));
-      renderClients();
+      renderClients(changes.some((change) => change.doc.id === selectedIdBefore));
       // 公司網路載入 Firestore 較慢時，使用者可能在第一批裝置抵達前就打開
       // 回報視窗。每次 listener 更新都同步選單，避免永久停在「沒有可選裝置」。
       syncCodexLogDeviceOptions(false);

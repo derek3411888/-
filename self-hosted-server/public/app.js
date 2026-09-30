@@ -566,6 +566,17 @@ function renderCodexProgressOverview(view) {
   setText("codexProgressBridge", `Bridge：${bridgeOnline ? "在線" : "離線"}${bridgeVersion ? ` v${bridgeVersion}` : ""}${heartbeatAt ? `（${formatAge(heartbeatAt)}）` : ""}`);
 }
 
+function isCodexSupportCompleted(data) {
+  const nonce = Number(data.requestNonce) || 0;
+  const queuedAt = Number(data.queuedAt) || 0;
+  return nonce > 0 && nonce === Number(data.statusNonce)
+    && String(data.state || "").trim().toUpperCase() === "QUEUED"
+    && String(data.responseState || "").trim().toUpperCase() === "COMPLETED"
+    && queuedAt > 0 && Number(data.responseAt) >= queuedAt
+    && Boolean(String(data.codexTurnId || "").trim())
+    && Boolean(String(data.responseText || "").trim());
+}
+
 function renderCodexSupportStatus() {
   const data = state.codexSupportData || {};
   const requestNonce = Math.max(0, Number(data.requestNonce) || 0);
@@ -582,7 +593,8 @@ function renderCodexSupportStatus() {
   const queuedAt = Math.max(0, Number(data.queuedAt) || 0);
   const attemptCount = Math.max(0, Number(data.attemptCount) || 0);
   const bridgeOnline = heartbeatAt > 0 && Date.now() - heartbeatAt < CODEX_BRIDGE_ONLINE_MS;
-  const cooldownRemaining = queuedAt > 0 ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0;
+  const cooldownRemaining = !isCodexSupportCompleted(data) && queuedAt > 0
+    ? Math.max(0, queuedAt + CODEX_SUPPORT_COOLDOWN_MS - Date.now()) : 0;
   const requestPending = requestNonce > statusNonce || (
     requestNonce === statusNonce && CODEX_SUPPORT_PENDING_STATES.includes(supportState)
   );

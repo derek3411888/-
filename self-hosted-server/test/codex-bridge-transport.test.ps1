@@ -189,6 +189,21 @@ Assert-Equal $replyRetry.ResponseState 'COMPLETED' 'A failed website write must 
 Assert-Equal $replyRetry.ResponseText 'REPLY_CURSOR_OK' 'The next poll must be able to publish the same final reply'
 Write-Output 'PASS: incremental session reader retains the first newly appended final reply'
 
+# Completion of the exact queued report releases cooldown, not merely elapsed
+# wall time or an unrelated final answer. Preserve the cross-source guard.
+$completedState = Join-Path $runtime 'completed-cooldown.json'
+$pendingState = Join-Path $runtime 'pending-cooldown.json'
+Save-State $completedState 22 'QUEUED' 'fixture' $replyQueuedAt @{
+    MessageSha256=(Get-MessageSha256 $replyText)
+}
+Assert-Equal (Get-LatestQueuedAt @($completedState) $config) 0L 'Verified final reply must immediately release bridge cooldown'
+Save-State $pendingState 23 'QUEUED' 'fixture' ($replyQueuedAt+3) @{
+    MessageSha256=(Get-MessageSha256 'another uncompleted report')
+}
+Assert-Equal (Get-LatestQueuedAt @($completedState,$pendingState) $config) ($replyQueuedAt+3) 'Uncompleted report from another source still enforces cooldown'
+Assert-Equal (Get-LatestQueuedAt @($completedState)) $replyQueuedAt 'Missing response reader configuration keeps cooldown fail-closed'
+Write-Output 'PASS: exact completed response releases cooldown without unlocking unrelated queued input'
+
 $script:selfHostedPosts = @()
 $script:selfHostedRequest = [pscustomobject]@{
     nonce=3;claimGeneration=1;dispatcherId='fixture-dispatcher';message='central fixture report';attemptCount=0

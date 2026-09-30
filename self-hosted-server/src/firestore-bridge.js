@@ -42,6 +42,15 @@ const CODEX_SUPPORT_STATUS_FIELDS = Object.freeze([
   "bridgeErrorCode",
   "bridgeErrorDetail",
   "bridgeVersion",
+  "codexResponseNonce",
+  "codexResponseState",
+  "codexResponseText",
+  "codexResponseAt",
+  "codexResponseSha256",
+  "codexResponseTurnId",
+  "codexResponseTurnStatus",
+  "codexResponseCheckedAt",
+  "codexResponseError",
 ]);
 const CODEX_SUPPORT_CACHE_MS = 2_000;
 let codexSupportCache = { at: 0, status: null };
@@ -396,6 +405,19 @@ function normalizedCodexSupportStatus(document = null) {
   const state = requestNonce > statusNonce ? "PENDING" : storedState;
   const heartbeatAt = integer(field(document, "bridgeHeartbeatAt", 0), 0, 0, Number.MAX_SAFE_INTEGER);
   const queuedAt = integer(field(document, "bridgeQueuedAt", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  const responseNonce = integer(field(document, "codexResponseNonce", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  const rawResponseState = state === "QUEUED" && responseNonce === requestNonce
+    ? String(field(document, "codexResponseState", "WAITING") || "WAITING").trim().toUpperCase() : "NONE";
+  const responseAt = integer(field(document, "codexResponseAt", 0), 0, 0, Number.MAX_SAFE_INTEGER);
+  const invalidResponseChronology = ["COMPLETED", "FAILED", "INTERRUPTED"].includes(rawResponseState)
+    && queuedAt > 0 && responseAt < queuedAt;
+  const responseState = invalidResponseChronology ? "FAILED" : rawResponseState;
+  const responseText = invalidResponseChronology ? "" : String(field(document, "codexResponseText", "") || "");
+  const codexTurnId = invalidResponseChronology ? "" : String(field(document, "codexResponseTurnId", "") || "");
+  const responsePending = state === "QUEUED" && ["WAITING", "IN_PROGRESS"].includes(responseState);
+  const completed = requestNonce > 0 && requestNonce === statusNonce && responseNonce === requestNonce
+    && state === "QUEUED" && responseState === "COMPLETED" && queuedAt > 0 && responseAt >= queuedAt
+    && Boolean(codexTurnId.trim()) && Boolean(responseText.trim());
   return {
     requestNonce,
     statusNonce,
@@ -419,8 +441,15 @@ function normalizedCodexSupportStatus(document = null) {
     errorDetail: String(field(document, "bridgeErrorDetail", "") ?? ""),
     bridgeVersion: String(field(document, "bridgeVersion", "") ?? ""),
     online: heartbeatAt > 0 && Date.now() - heartbeatAt < 3 * 60_000,
-    pending: isCodexSupportPending(requestNonce, statusNonce, state),
-    cooldownRemainingMs: codexSupportCooldownRemaining(queuedAt),
+    pending: isCodexSupportPending(requestNonce, statusNonce, state) || responsePending,
+    responsePending, responseState, responseText, responseNonce, codexTurnId,
+    responseAt: invalidResponseChronology ? 0 : responseAt,
+    responseSha256: invalidResponseChronology ? "" : String(field(document, "codexResponseSha256", "") || ""),
+    codexTurnStatus: invalidResponseChronology ? "" : String(field(document, "codexResponseTurnStatus", "") || ""),
+    replyCheckedAt: integer(field(document, "codexResponseCheckedAt", 0), 0, 0, Number.MAX_SAFE_INTEGER),
+    replyError: invalidResponseChronology ? "已拒絕顯示時間早於本次請求的舊 Codex 回覆，等待重新配對"
+      : String(field(document, "codexResponseError", "") || ""),
+    cooldownRemainingMs: completed ? 0 : codexSupportCooldownRemaining(queuedAt),
   };
 }
 
@@ -455,7 +484,7 @@ export async function submitCodexSupportMessage(input = {}) {
     if (current.pending) {
       throw new HttpError(409, "上一筆維修請求仍在等待家中主機接收", "CODEX_SUPPORT_PENDING", current);
     }
-    const cooldownRemainingMs = codexSupportCooldownRemaining(current.queuedAt);
+    const cooldownRemainingMs = current.cooldownRemainingMs;
     if (cooldownRemainingMs > 0) {
       throw new HttpError(429, "剛剛已送進 Codex，請等候處理結果", "CODEX_SUPPORT_COOLDOWN", {
         cooldownRemainingMs,
@@ -487,6 +516,15 @@ export async function submitCodexSupportMessage(input = {}) {
         bridgeMessageSha256: { stringValue: "" },
         bridgeErrorCode: { stringValue: "" },
         bridgeErrorDetail: { stringValue: "" },
+        codexResponseNonce: { integerValue: String(nextNonce) },
+        codexResponseState: { stringValue: "WAITING" },
+        codexResponseText: { stringValue: "" },
+        codexResponseAt: { integerValue: "0" },
+        codexResponseSha256: { stringValue: "" },
+        codexResponseTurnId: { stringValue: "" },
+        codexResponseTurnStatus: { stringValue: "" },
+        codexResponseCheckedAt: { integerValue: "0" },
+        codexResponseError: { stringValue: "" },
       },
     };
 
