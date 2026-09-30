@@ -116,13 +116,23 @@ RoundTrip() {
     [IO.File]::WriteAllText($manifest,'"AppState" { "appid" "123" }')
     $invalid=Get-GMSteamObservation -Install $install -Previous $rotated -Now $now.AddSeconds(7)
     Assert-GMEqual $invalid.errorCode 'STEAM_MANIFEST_INVALID' 'wrong App ID rejected'
-    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=91;Path=(Join-Path $session 'unrelated\Client-Win64-Shipping.exe')})
+    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=91}) -ImagePathReader {param($ProcessId) (Join-Path $session 'unrelated\Client-Win64-Shipping.exe')}
     Assert-GMEqual $identity $null 'same process name outside root not adopted'
     $gameFile=Join-Path $session 'Client\Binaries\Win64\Client-Win64-Shipping.exe'
     [void][IO.Directory]::CreateDirectory((Split-Path $gameFile -Parent));[IO.File]::WriteAllText($gameFile,'fixture')
-    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=92;Path=$gameFile})
+    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=92}) -ImagePathReader {param($ProcessId) $gameFile}
     Assert-GMEqual $identity.gamePid 92 'exact canonical game adopted only as running'
     Assert-GMEqual $identity.phase 'game_running' 'process alone not ready'
+    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=93;Path=''}) -ImagePathReader {param($ProcessId) if($ProcessId -eq 93){$gameFile}else{''}}
+    Assert-GMTrue ($null -ne $identity) 'limited-information identity must work when Process.Path is unavailable'
+    Assert-GMEqual $identity.gamePid 93 'limited-information result remains bound to exact PID'
+    Assert-GMEqual $identity.phase 'game_running' 'limited identity does not claim login readiness'
+    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=94;Path=$gameFile}) -ImagePathReader {param($ProcessId) ''}
+    Assert-GMEqual $identity $null 'unavailable limited query cannot trust a stale Path property'
+    $identity=Get-GMObservedGame -Install $install -Candidates @([pscustomobject]@{Id=95;Path=$gameFile}) -ImagePathReader {param($ProcessId) (Join-Path $session 'unrelated\Client-Win64-Shipping.exe')}
+    Assert-GMEqual $identity $null 'limited query still rejects another installation'
+    Assert-GMEqual (Get-GMProcessImagePath 0) '' 'invalid PID cannot provide identity'
+    Assert-GMEqual (Get-GMProcessImagePath $PID) ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) 'real limited native query reads this test process identity'
     $noticeTime=[DateTimeOffset]'2026-08-20T02:00:00Z'
     $noticeRecord=[pscustomobject]@{eventId='fixture-global-1';revisionHash='r1';gameVersion='9.9';startsAtUtc='2026-08-19T20:00:00Z';expectedOpenAtUtc='2026-08-20T03:00:00Z';sourceUrl='https://wutheringwaves.kurogames.com/zh-tw/main/news/detail/1';sourceState='verified'}
     $noticeResult=[pscustomobject]@{outcome='ok';notice=$noticeRecord;checkedAt=$noticeTime.ToString('o');errorCode='';errorDetail=''}
@@ -165,10 +175,14 @@ CheckSkipContract() {
     [void]$worker.Handle
     try {
         $timer=[Diagnostics.Stopwatch]::StartNew()
+        $published=$false
         while($timer.ElapsedMilliseconds -lt 10000 -and -not $worker.HasExited){
-            if([IO.File]::ReadAllText($paths.OutputPath) -match 'requestId=lifecycle'){break};Start-Sleep -Milliseconds 100
+            try { $published=[IO.File]::ReadAllText($paths.OutputPath) -match 'requestId=lifecycle' }
+            catch [IO.IOException] { $published=$false }
+            if($published){break}
+            Start-Sleep -Milliseconds 100
         }
-        Assert-GMTrue ([IO.File]::ReadAllText($paths.OutputPath) -match 'requestId=lifecycle') 'worker publishes without game launch'
+        Assert-GMTrue $published 'worker publishes without game launch'
         $duplicate=Start-Process $exe -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $session 'duplicate.err')
         [void]$duplicate.Handle
         Assert-GMTrue $duplicate.WaitForExit(5000) 'second helper exits rather than duplicate loop'

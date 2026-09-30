@@ -175,14 +175,45 @@ function Invoke-GMWorkerHttp {
         return [Text.Encoding]::UTF8.GetString($memory.ToArray())
     }finally{$request.Abort();if($stream){$stream.Dispose()};if($response){$response.Dispose()};$memory.Dispose()}
 }
+function Get-GMProcessImagePath {
+    param([int]$ProcessId)
+    if($ProcessId -le 0){return ''}
+    if(-not ('GMWorkerNative.ProcessImage' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+namespace GMWorkerNative {
+    public static class ProcessImage {
+        [DllImport("kernel32.dll", SetLastError=true)]
+        public static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        public static extern bool QueryFullProcessImageName(IntPtr handle, uint flags, StringBuilder path, ref uint length);
+        [DllImport("kernel32.dll")]
+        public static extern bool CloseHandle(IntPtr handle);
+    }
+}
+'@
+    }
+    # Process.Path can require module/VM access unavailable after game protection
+    # initializes. Query only the executable identity with the documented limited
+    # information right; no elevation, debug privilege, or name-only fallback.
+    $handle=[GMWorkerNative.ProcessImage]::OpenProcess(0x1000,$false,$ProcessId)
+    if($handle -eq [IntPtr]::Zero){return ''}
+    try {
+        $length=[uint32]32768;$path=[Text.StringBuilder]::new(32768)
+        if(-not [GMWorkerNative.ProcessImage]::QueryFullProcessImageName($handle,0,$path,[ref]$length)){return ''}
+        return $path.ToString()
+    }finally{[void][GMWorkerNative.ProcessImage]::CloseHandle($handle)}
+}
 function Get-GMObservedGame {
-    param($Install,[object[]]$Candidates)
+    param($Install,[object[]]$Candidates,[scriptblock]$ImagePathReader=${function:Get-GMProcessImagePath})
     if(-not $Install -or -not $Install.gameRoot){return $null}
     try{$expected=Get-GMRealPath (Join-Path $Install.gameRoot 'Client\Binaries\Win64\Client-Win64-Shipping.exe')}catch{return $null}
     if(-not $PSBoundParameters.ContainsKey('Candidates')){$Candidates=@(Get-Process -Name 'Client-Win64-Shipping' -ErrorAction SilentlyContinue)}
     $found=@()
     foreach($process in $Candidates){
-        try{if($expected -ieq (Get-GMRealPath $process.Path)){$found+=$process}}catch{}
+        try{if($expected -ieq (Get-GMRealPath (& $ImagePathReader $process.Id))){$found+=$process}}catch{}
     }
     if($found.Count -ne 1){return $null}
     return [pscustomobject]@{phase='game_running';gamePid=$found[0].Id;gamePath=$expected}
