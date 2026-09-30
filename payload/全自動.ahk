@@ -128,8 +128,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.06"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.17"
+global PAYLOAD_BUILD_VERSION := "5.07"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.18"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2700,7 +2700,9 @@ if (gate.mode = "normal")
 WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
-    if !GM_WaitForLoginGate()
+    ; The game update dialog must be inspected before requiring login readiness.
+    ; Login/F11 call sites keep the strict default gate.
+    if !GM_WaitForLoginGate(false,true)
         ExitApp
     loginDetected := false
     detectState := DetectWutheringAndExit(&loginDetected)
@@ -2711,19 +2713,11 @@ loop {
         continue
     }
     if (detectState = "update") {
-        updateLoops++
-        WriteLog("偵測到鳴潮更新，等待遊戲自動重啟後再次檢測 (" updateLoops "/" maxUpdateLoops ")")
-
-        ; 啟用更新後恢復追蹤：若後續長時間 no_window，就主動重跑啟動流程。
-        updateRecoveryActive := true
-        updateRecoveryStartTick := MonotonicTickMs()
-        Sleep 8000
-
-        if (updateLoops >= maxUpdateLoops) {
-            WriteLog("鳴潮更新檢測達上限，停止自動迴圈，繼續後續流程", "WARN")
-            break
-        }
-        continue
+        ; Only the signalled handle of the original process permits this transition.
+        ; A normal game update is not a crash and must not consume crash retries.
+        WriteStep("遊戲更新", "已確認舊遊戲退出，交接原任務並重新執行啟動驗證")
+        RestartAutoScript("遊戲更新完成且舊程序已確認退出", false)
+        return
     }
 
     if (detectState = "no_window") {
@@ -6112,11 +6106,32 @@ DetectWutheringAndExit(&loginDetected := false) {
 
         if (foundUpdate && IsObject(btnCenter)) {
             ShowTip("✅ 偵測到更新完成 → 點擊按鈕", 800)
-            if ClickWutheringClientPointForInput(hwnd, btnCenter[1], btnCenter[2],
-                "更新／重新啟動確認 OCR") {
-                ShowTip("已點擊按鈕，準備重新執行腳本。", 1200)
-                WriteStepResult("鳴潮檢測", true, "update")
-                return "update"
+            ; Hold the exact process object before input. PID reuse cannot signal this handle.
+            exitHandle := DllCall("OpenProcess", "UInt", 0x100000, "Int", false,
+                "UInt", WinGetPID("ahk_id " hwnd), "Ptr")
+            if !exitHandle {
+                WriteStep("遊戲更新等待", "無法取得退出確認權限；不送出點擊、不強制終止、不宣告完成", "ERROR")
+                Sleep 30000
+                continue
+            }
+            try {
+                if ClickWutheringClientPointForInput(hwnd, btnCenter[1], btnCenter[2],
+                    "更新／重新啟動確認 OCR") {
+                    WriteStep("遊戲更新等待", "已送出確認／退出，等待原遊戲程序確實結束")
+                    hooks := {Now:MonotonicTickMs, Wait:(ms) => Sleep(ms),
+                        Alive:(*) => WutheringUpdateProcessAlive(exitHandle)}
+                    loop {
+                        exitResult := GM_WaitForUpdateExit(hooks)
+                        if exitResult = "exited" {
+                            WriteStepResult("鳴潮檢測", true, "update：原遊戲程序已確認退出")
+                            return "update"
+                        }
+                        WriteStep("遊戲更新等待", "確認／退出尚未生效（" exitResult "）；保留任務等待，不重複點擊或強制終止", "ERROR")
+                        Sleep 1000
+                    }
+                }
+            } finally {
+                DllCall("CloseHandle", "Ptr", exitHandle)
             }
             WriteLog("更新確認文字已命中，但安全點擊未通過；保留在迴圈內重試", "WARN")
         }
@@ -6150,6 +6165,11 @@ DetectWutheringAndExit(&loginDetected := false) {
     ShowTip("未檢測到更新或登入畫面，回傳 unknown。", 900)
     WriteStepResult("鳴潮檢測", false, "unknown")
     return "unknown"
+}
+
+WutheringUpdateProcessAlive(handle) {
+    result := DllCall("WaitForSingleObject", "Ptr", handle, "UInt", 0, "UInt")
+    return result = 0 ? false : result = 258 ? true : "unknown"
 }
 
 ; B) 去抖動主畫面模板比對（背景 client 截圖的右下 ROI）

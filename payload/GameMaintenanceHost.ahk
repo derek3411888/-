@@ -578,7 +578,7 @@ GM_WasF11GateBlocked() {
     return IsObject(GM_CONTROLLER) && GM_Value(GM_CONTROLLER,"f11GateBlocked",false)
 }
 
-GM_WaitForLoginGate(checkSchedule := false) {
+GM_WaitForLoginGate(checkSchedule := false, updateUi := false) {
     global GM_CONTROLLER
     if !IsObject(GM_CONTROLLER) || !GM_CONTROLLER.managed
         return true
@@ -587,7 +587,7 @@ GM_WaitForLoginGate(checkSchedule := false) {
         decision := GM_ControllerTick(c)
         if decision.phase = "STOPPED"
             return false
-        if GM_LoginActionAllowed(decision) && GMHost_GetManagedGameHwnd() {
+        if GM_LoginActionAllowed(decision,updateUi) && GMHost_GetManagedGameHwnd() {
             if !checkSchedule || c.loginScheduleKey = GMHost_ScheduleKey(c)
                 return true
             ; A switch received while starting OKWW must be verified again before F11.

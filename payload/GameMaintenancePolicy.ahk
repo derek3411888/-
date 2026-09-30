@@ -17,8 +17,29 @@ GM_DefaultState() {
         updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0,recoveryUncertain:0,f11OkwwIdentity:""}
 }
 
-GM_LoginActionAllowed(decision) {
-    return IsObject(decision) && decision.overlay = "" && decision.effect.type = "resume_flow"
+GM_WaitForUpdateExit(hooks, timeoutMs := 30000) {
+    started := hooks.Now.Call()
+    loop {
+        alive := hooks.Alive.Call()
+        if alive == "unknown"
+            return "unverified"
+        if !alive
+            return "exited"
+        if hooks.Now.Call() - started >= timeoutMs
+            return "timeout"
+        hooks.Wait.Call(Min(250, timeoutMs - (hooks.Now.Call() - started)))
+    }
+}
+
+GM_LoginActionAllowed(decision, updateUi := false) {
+    if !IsObject(decision) || decision.overlay != ""
+        return false
+    ; Update-dialog inspection is not permission to log in or send F11.
+    ; The host additionally requires the verified selected game HWND.
+    if updateUi && decision.effect.type = "observe"
+        && InStr(",CHECKING_UPDATE,UPDATING,","," decision.phase ",",true)
+        return true
+    return decision.effect.type = "resume_flow"
         && InStr(",NORMAL,CHECKING_LOGIN,READY,","," decision.phase ",",true)
 }
 

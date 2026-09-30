@@ -3,6 +3,7 @@
 #Include ..\payload\GameMaintenance.ahk
 GMTest_Run(TestMaintenanceStartup)
 TestMaintenanceStartup() {
+    TestUpdateExitVerification()
     TestMaintenanceCallbackPublication()
     TestManagedLoginSafety()
     dir := TestRuntime_NewCaseDir("gm-startup"), calls := [], input := GMTest_Input(9999), alive := true, starts := 0
@@ -76,7 +77,28 @@ TestMaintenanceStartup() {
     GMTest_Assert(InStr(source,"return GMHost_GetManagedGameHwnd()"),"managed window selection is bound to selected install")
 }
 
+TestUpdateExitVerification() {
+    now := 0
+    hooks := {Now:(*) => now,Wait:(ms) => now += ms,Alive:(*) => true}
+    GMTest_Assert(GM_WaitForUpdateExit(hooks,1000) = "timeout","click without exit must time out")
+    GMTest_Assert(now = 1000,"exit verification is bounded")
+    now := 0
+    hooks.Alive := (*) => now < 500
+    GMTest_Assert(GM_WaitForUpdateExit(hooks,1000) = "exited","only observed process exit confirms update exit")
+    hooks.Alive := (*) => "unknown"
+    GMTest_Assert(GM_WaitForUpdateExit(hooks,1000) = "unverified","unreadable process state is not successful exit")
+}
+
 TestManagedLoginSafety() {
+    updateDecision := {phase:"CHECKING_UPDATE",overlay:"",effect:{type:"observe"}}
+    GMTest_Assert(GM_LoginActionAllowed(updateDecision,true),"update OCR must run while waiting for in-game update completion")
+    GMTest_Assert(!GM_LoginActionAllowed(updateDecision),"update OCR permission must not authorize login or F11")
+    for blockedPhase in ["WAIT_OPEN","WAIT_NOTICE","WAIT_SERVER","NEEDS_ATTENTION","STOPPED"] {
+        updateDecision.phase := blockedPhase
+        GMTest_Assert(!GM_LoginActionAllowed(updateDecision,true),"update UI cannot bypass " blockedPhase)
+    }
+    updateDecision.phase := "CHECKING_UPDATE", updateDecision.overlay := "PAUSE"
+    GMTest_Assert(!GM_LoginActionAllowed(updateDecision,true),"paused update UI never sends input")
     expected := "D:\fixture\Client-Win64-Shipping.exe"
     good := {hwnd:12,pid:20,started:100,path:expected,valid:true}
     other := {hwnd:11,pid:21,started:100,path:"D:\other\Client-Win64-Shipping.exe",valid:true}
