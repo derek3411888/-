@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.05',
-    [string]$LauncherVersion = '5.16',
-    [string]$ServerVersion = '1.0.68'
+    [string]$PayloadVersion = '5.10',
+    [string]$LauncherVersion = '5.21',
+    [string]$ServerVersion = '1.0.73'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -297,6 +297,11 @@ Invoke-AhkValidate $payloadRuntime '測試\RewardMonitorIncidentPolicyTest.ahk' 
 Invoke-AhkTest $payloadRuntime '測試\RewardMonitorIncidentPolicyTest.ahk' '收尾遊戲退出確認策略回歸測試'
 Invoke-AhkValidate $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略語法 validate'
 Invoke-AhkTest $payloadRuntime '測試\LauncherProcessCleanupPolicyTest.ahk' 'Launcher 程序清理安全策略回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTimeoutPolicyTest.ahk' 'Launcher HTTP 逾時策略語法 validate'
+Invoke-AhkTest $payloadRuntime '測試\LauncherHttpTimeoutPolicyTest.ahk' 'Launcher HTTP 逾時策略回歸測試'
+Invoke-AhkValidate $payloadRuntime '測試\LauncherHttpTimeoutIntegrationTest.ahk' 'Launcher HTTP 逾時整合測試語法 validate'
+& (Join-Path $projectRoot '測試\LauncherHttpTimeoutIntegrationTest.ps1')
+Assert-ExitCode 'Launcher HTTP 逾時整合測試'
 Invoke-AhkValidate $payloadRuntime 'payload\全自動.ahk' 'Payload AHK validate'
 Invoke-AhkValidate $payloadRuntime 'payload\ScriptRestartWorker.ahk' '安全重啟交接 worker 語法 validate'
 & (Join-Path $projectRoot '測試\Invoke-RestartHandoffTests.ps1')

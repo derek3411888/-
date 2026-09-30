@@ -1,13 +1,13 @@
 {
-  "release_id": "p5.09-l5.20-s1.0.72-A78AC513-3A09ED91-4C942BF6-9E6ECE37",
-  "version": "5.09",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/9bc5d6812967f515d987d8c00191758050b69f58/payload.zip?release=p5.09-l5.20-s1.0.72-A78AC513-3A09ED91-4C942BF6-9E6ECE37",
-  "payload_sha256": "A78AC513B27277B0AF65596A2B51D9AC135593715B90DFAC3FA09D231DFEF020",
-  "launcher_version": "5.20",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/9bc5d6812967f515d987d8c00191758050b69f58/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.09-l5.20-s1.0.72-A78AC513-3A09ED91-4C942BF6-9E6ECE37",
-  "launcher_sha256": "3A09ED9187111FFDA0F359EB8D065DB6B6C3B8FB99E0790E5389332F4D73D727",
-  "server_version": "1.0.72",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/9bc5d6812967f515d987d8c00191758050b69f58/self-hosted-server.zip?release=p5.09-l5.20-s1.0.72-A78AC513-3A09ED91-4C942BF6-9E6ECE37",
-  "server_sha256": "4C942BF69FBDE7E7926F9E4BD2A8844F6864A5CD50CC99B3E0D1DB07427B6088",
+  "release_id": "p5.10-l5.21-s1.0.73-13761043-145C3717-0EB4B565-9E6ECE37",
+  "version": "5.10",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip?release=p5.10-l5.21-s1.0.73-13761043-145C3717-0EB4B565-9E6ECE37",
+  "payload_sha256": "13761043B5E588960856A5A85AF6E382BDE6852B19B991681CE51E023BD1A38D",
+  "launcher_version": "5.21",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.10-l5.21-s1.0.73-13761043-145C3717-0EB4B565-9E6ECE37",
+  "launcher_sha256": "145C3717A95EC170180F0F05511BD189D85CC4F1CA25A00A67595371F635E20C",
+  "server_version": "1.0.73",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip?release=p5.10-l5.21-s1.0.73-13761043-145C3717-0EB4B565-9E6ECE37",
+  "server_sha256": "0EB4B5657F3F9B01886C3A33888ADF6E11CFD7C7E3AACB68E7D5D6A6EB7CF095",
   "web_sha256": "9E6ECE377964FAC68C48BAC46014E72B49DC03925E75BEADAD07E21563CAFC22"
 }

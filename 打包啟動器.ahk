@@ -1,10 +1,11 @@
 ﻿#Requires AutoHotkey v2.0+
 #SingleInstance Off
 #Include LauncherProcessCleanupPolicy.ahk
+#Include LauncherHttp.ahk
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.20"
+global PACK_LAUNCHER_BUILD_VERSION := "5.21"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -381,41 +382,6 @@ ConvertToGitHubApiUrl(url) {
     if RegExMatch(url, "^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$", &m)
         return "https://api.github.com/repos/" m[1] "/" m[2] "/contents/" m[4] "?ref=" m[3]
     return url
-}
-
-; HTTP GET 並返回文字（使用系統 Proxy，附帶 no-cache 標頭）
-HttpGetText(url, extraHeaders := Map()) {
-    http := ComObject("Msxml2.XMLHTTP.6.0")
-    http.open("GET", url, false)
-    http.setRequestHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-    http.setRequestHeader("Pragma", "no-cache")
-    http.setRequestHeader("User-Agent", "AHK-Launcher/2.0")
-    for k, v in extraHeaders
-        http.setRequestHeader(k, v)
-    http.send()
-    if (http.status != 200)
-        throw Error("HTTP " http.status " for: " url)
-    return http.responseText
-}
-
-; HTTP GET 並將二進位結果寫入檔案（使用系統 Proxy，附帶 no-cache 標頭）
-HttpDownloadFile(url, destPath, extraHeaders := Map()) {
-    http := ComObject("Msxml2.XMLHTTP.6.0")
-    http.open("GET", url, false)
-    http.setRequestHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-    http.setRequestHeader("Pragma", "no-cache")
-    http.setRequestHeader("User-Agent", "AHK-Launcher/2.0")
-    for k, v in extraHeaders
-        http.setRequestHeader(k, v)
-    http.send()
-    if (http.status != 200)
-        throw Error("HTTP " http.status " for: " url)
-    stream := ComObject("ADODB.Stream")
-    stream.Type := 1  ; adTypeBinary
-    stream.Open()
-    stream.Write(http.responseBody)
-    stream.SaveToFile(destPath, 2)  ; adSaveCreateOverWrite
-    stream.Close()
 }
 
 WriteTextFileReplace(path, text, encoding := "UTF-8-RAW") {
