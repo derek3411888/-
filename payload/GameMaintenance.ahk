@@ -157,7 +157,7 @@ GM_IsValidGameLaunchEntry(path) {
 }
 
 GM_JournalFields() {
-    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt,recoveryUncertain,f11OkwwIdentity"
+    return "schemaVersion,phase,overlay,eventId,revision,gameVersion,sourceUrl,startsAt,expectedOpenAt,provider,fingerprint,runCycle,targetServer,actionId,actionStage,f11InputAttempted,cancelled,desiredState,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,updaterUiActionId,updaterUiActionStage,notificationKeys,notifiedOpenAt,recoveryUncertain,f11OkwwIdentity,lastActivityElapsedMs"
 }
 
 GM_TextChecksum(text) {
@@ -181,10 +181,10 @@ GM_ParseJournal(text) {
             throw Error("Unsafe journal field")
         data[field[1]] := field[2]
     }
-    numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,notifiedOpenAt,recoveryUncertain,"
+    numeric := ",schemaVersion,startsAt,expectedOpenAt,f11InputAttempted,cancelled,remoteGeneration,elapsedMs,lastObserveElapsedMs,lastNoticeCheckElapsedMs,helperRestarts,updatedAtUtcMs,notifiedOpenAt,recoveryUncertain,lastActivityElapsedMs,"
     for key in StrSplit(GM_JournalFields(),",") {
         ; Older journals have no reusable OKWW identity: retain intent, never resend.
-        if key = "f11OkwwIdentity" && !data.Has(key)
+        if (key = "f11OkwwIdentity" || key = "lastActivityElapsedMs") && !data.Has(key)
             continue
         if !data.Has(key)
             throw Error("Incomplete maintenance journal")
@@ -292,13 +292,35 @@ GM_HasActiveContinuation(stateOrCfg,nowMs := 0) {
         return true
     if (GM_Value(state,"cancelled",false) || InStr(",NORMAL,READY,STOPPED,","," state.phase ",",true))
         return false
-    if (state.eventId = "" && state.phase != "WAIT_SERVER")
+    if (state.eventId = "" && state.phase != "WAIT_SERVER"
+        && !(InStr(",steam,kuro,","," state.provider ",",true)
+            && (state.actionId != "" || state.phase = "UPDATING")))
         return false
     if (nowMs > 0 && GM_Value(state,"expectedOpenAt",0) > 0 && state.actionId = ""
         && !GM_Value(state,"f11InputAttempted",false) && GM_Value(state,"updaterUiActionId","") = ""
         && nowMs - state.expectedOpenAt > 172800000)
         return false
     return true
+}
+
+GM_ReleaseLaunchAttemptForRestart(c,gameExitVerified) {
+    ; Only the explicit clean-restart handoff calls this after confirming exit.
+    ; An unexpected script exit keeps every intent for observation, not replay.
+    previousCritical := Critical("On")
+    try {
+        if !gameExitVerified || c.state.cancelled || c.state.desiredState = "STOP" || c.state.recoveryUncertain
+            return false
+        next := GM_CopyState(c.state)
+        next.actionId := "", next.actionStage := "", next.updaterUiActionId := "", next.updaterUiActionStage := ""
+        next.f11InputAttempted := false, next.f11OkwwIdentity := "", next.lastActivityElapsedMs := -1
+        ; READY is finished, not a continuation. Preserve that boundary so the
+        ; next controller adopts the current schedule (including remote switches).
+        if next.phase != "READY"
+            next.phase := "CHECKING_UPDATE"
+        GM_SaveJournal(c.journalPath,next)
+        c.state := next, c.intentRevision += 1
+        return true
+    } finally Critical(previousCritical)
 }
 
 GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJournal := GM_SaveJournal,isCurrent := 0) {
@@ -312,7 +334,7 @@ GM_CommitEffect(original,decision,getCurrentInput,journalPath,applyEffect,writeJ
     next := fresh.state
     durable := (fresh.effect.type = "start_update" || fresh.effect.type = "stop")
     if fresh.effect.type = "start_update"
-        next.actionId := fresh.effect.actionId, next.actionStage := "intent"
+        next.actionId := fresh.effect.actionId, next.actionStage := "intent", next.lastActivityElapsedMs := -1
     if durable {
         previousCritical := Critical("On")
         try {

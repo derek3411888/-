@@ -91,6 +91,28 @@ try {
             if ($case.Expected -eq 'accepted' -or $case.Scenario -like 'noack*' -or $case.Scenario -eq 'wrong-mode') {
                 $starts = @(Get-Content -LiteralPath $childPath | Where-Object { $_ })
                 if ($starts.Count -ne 1 -or ($case.Scenario -ne 'wrong-mode' -and $starts[0] -cne $case.Mode)) { throw 'Successor mode changed or launched more than once' }
+                $exitPath = Join-Path $caseRoot 'child-exit.ini'
+                $exitDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                while (-not (Test-Path -LiteralPath $exitPath) -and [DateTime]::UtcNow -lt $exitDeadline) {
+                    Start-Sleep -Milliseconds 50
+                }
+                if (-not (Test-Path -LiteralPath $exitPath)) { throw 'Synthetic successor did not exit; an error dialog may be blocking it' }
+                $exitText = Get-Content -LiteralPath $exitPath -Raw
+                if ($exitText -notmatch '(?m)^pid=(\d+)\s*$') { throw 'Successor exit report has no process identity' }
+                $childProcess = Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue
+                if ($childProcess) {
+                    try {
+                        if (-not $childProcess.WaitForExit(2000)) { throw 'Synthetic successor is still running after its exit report' }
+                    } finally { $childProcess.Dispose() }
+                }
+                $expectedExit = if ($case.Scenario -eq 'wrong-mode') { 1 } else { 0 }
+                if ($exitText -notmatch ('(?m)^code=' + $expectedExit + '\s*$')) { throw "Unexpected successor exit: $exitText" }
+                $childErrorPath = Join-Path $caseRoot 'child-error.txt'
+                if ($case.Scenario -eq 'wrong-mode') {
+                    if (-not (Test-Path -LiteralPath $childErrorPath) -or (Get-Content -LiteralPath $childErrorPath -Raw).Trim() -cne 'Restart handoff mode mismatch; refusing a fresh or different task') {
+                        throw 'Wrong-mode child did not durably report the expected rejection'
+                    }
+                } elseif (Test-Path -LiteralPath $childErrorPath) { throw 'Synthetic successor reported an unexpected error' }
             } elseif (Test-Path -LiteralPath $childPath) { throw 'Cancelled/timed-out handoff launched a successor' }
             if ($case.Scenario -eq 'launcher') {
                 $launcherStarts = @(Get-Content -LiteralPath (Join-Path $caseRoot 'launcher-starts.txt'))

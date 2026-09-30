@@ -7,6 +7,8 @@
 #Warn All, StdOut
 #Include ..\..\payload\ScriptRestartHandoff.ahk
 
+root := ""
+OnExit(RecordFixtureExit)
 try {
     request := EnvGet("WUTHERING_RESTART_REQUEST")
     parentPid := Integer(IniRead(request, "request", "parent_pid"))
@@ -31,6 +33,15 @@ try {
     }
     ExitApp 0
 } catch as e {
-    FileAppend(e.Message "`n", "*")
+    ; Launcher-spawned children have no inherited stdout handle. Reporting an
+    ; expected rejection to stdout used to throw and leave a blocking dialog.
+    if root != ""
+        try FileAppend(e.Message "`n", root "\child-error.txt", "UTF-8")
     ExitApp 1
+}
+
+RecordFixtureExit(reason, code) {
+    global root
+    if root != ""
+        try FileAppend("[exit]`npid=" DllCall("GetCurrentProcessId", "uint") "`ncode=" code "`n", root "\child-exit.ini", "UTF-8")
 }

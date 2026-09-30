@@ -3,6 +3,7 @@
 #Include ..\payload\GameUpdateAdapters.ahk
 GMTest_Run(TestUpdateAdapters)
 TestUpdateAdapters() {
+    TestLauncherModalSelection()
     calls := [], allowed := false, persisted := false, observation := {phase:"unknown"}
     install := {provider:"steam",appId:3513350,launchAdapterReady:true,updateAdapterReady:true,identityVerified:true,
         launcherPath:TestRuntime_NewCaseDir("gm-adapter") "\Steam 遊戲庫\steam.exe",fingerprint:"i1"}
@@ -83,7 +84,7 @@ TestUpdateAdapters() {
     target.foregroundVerified := true, action := {type:"click_update",actionId:"button-3"}
     hooks.ClickVerified := (*) => false, hooks.ReadObservation := (*) => {phase:"downloading"}
     GMTest_Assert(!GMU_ApplyAction(target,action,hooks).ok,"rejected click cannot be called an applied action")
-    launcher := {pid:80,hwnd:81,path:install.launcherPath,identityVerified:true,foregroundVerified:true,desktopAvailable:true}
+    launcher := {pid:80,hwnd:81,started:100,path:install.launcherPath,identityVerified:true,foregroundVerified:true,desktopAvailable:true}
     live := launcher.Clone(), taps := [], guard := {CanAct:(*) => true,InspectWindow:(*) => live,
         PrepareWindow:(*) => true,ClickPoint:(args*) => RecordAdapterClick(taps,args)}
     button := {x:100,y:200}, action := {type:"click_update",button:button}
@@ -92,6 +93,27 @@ TestUpdateAdapters() {
     GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 1,"OKWW never masquerades as launcher")
     live := launcher.Clone(), live.pid := 82
     GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 1,"HWND with replaced PID rejected")
+    live := launcher.Clone(), live.started := 101
+    GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 1,"launcher PID reuse must reject the click")
+    SplitPath(install.launcherPath,,&officialRoot)
+    launcher.path := officialRoot "\2.6.5.0\launcher_main.exe", live := launcher.Clone()
+    GMTest_Assert(GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 2,
+        "official versioned launcher_main window receives verified physical click")
+    launcher.path := officialRoot "-other\2.6.5.0\launcher_main.exe", live := launcher.Clone()
+    GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard) && taps.Length = 2,"sibling install is not the selected official launcher")
+    launcher.path := officialRoot "\untrusted\launcher_main.exe", live := launcher.Clone()
+    GMTest_Assert(!GMU_ClickLauncherVerified(install,launcher,action,guard),"unrecognized helper subfolder cannot receive updater input")
+}
+
+TestLauncherModalSelection() {
+    parent := {hwnd:10,pid:20,started:100,identityVerified:true,visible:true,enabled:false,owner:0}
+    dialog := {hwnd:11,pid:20,started:100,identityVerified:true,visible:true,enabled:true,owner:10}
+    selected := GMU_SelectLauncherWindow([parent,dialog])
+    GMTest_Assert(IsObject(selected) && selected.hwnd = 11,"launcher-owned update dialog overrides disabled main window")
+    unrelated := dialog.Clone(), unrelated.hwnd := 12, unrelated.owner := 0
+    GMTest_Assert(!IsObject(GMU_SelectLauncherWindow([parent,dialog,unrelated])),"two independent launcher windows must not be guessed")
+    dialog.identityVerified := false
+    GMTest_Assert(!IsObject(GMU_SelectLauncherWindow([parent,dialog])),"foreign updater dialog cannot be adopted")
 }
 FlipAdapterGuard(&allowed) {
     allowed := false

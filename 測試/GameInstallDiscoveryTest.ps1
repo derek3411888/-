@@ -31,6 +31,8 @@ try {
     }
     $entry.kind='exe'; $entry.target='D:\遊戲\Wuthering Waves Game\Client\Binaries\Win64\Client-Win64-Shipping.exe'; $entry.realPath=$entry.target
     Assert-GMEqual (Resolve-GMInstallEvidence $entry $inventory).provider 'kuro' 'Selected Kuro entry wins over a separate Steam installation'
+    $entry.realPath='D:\遊戲\2.6.5.0\launcher_main.exe'
+    Assert-GMEqual (Resolve-GMInstallEvidence $entry $inventory).provider 'kuro' 'Selected versioned Kuro UI resolves to verified bootstrap launcher'
     $entry.realPath='d:\steamlibrary\steamapps\common\Wuthering Waves\Client\Binaries\Win64\Client-Win64-Shipping.exe'
     Assert-GMEqual (Resolve-GMInstallEvidence $entry $inventory).provider 'steam' 'Canonical target, not shortcut spelling, selects provider'
     $entry.realPath=$steam.realRoot+'-other\Client.exe'
@@ -58,6 +60,8 @@ try {
     [IO.File]::WriteAllText((Join-Path $apps 'libraryfolders.vdf'),('"libraryfolders" { "0" { "path" "'+$library.Replace('\','\\')+'" } }'))
     $inventory=Get-GMInstallInventory -LaunchEntry $gameExe -SteamRoots @($library) -SkipRegistry
     Assert-GMEqual (Resolve-GMInstallEvidence $inventory.launchEntry $inventory).provider 'steam' 'Real file inventory with non-default library'
+    $inferred=Get-GMInstallInventory -LaunchEntry $gameExe -SkipRegistry
+    Assert-GMEqual (Resolve-GMInstallEvidence $inferred.launchEntry $inferred).launcherPath (Join-Path $library 'steam.exe') 'Original game path finds ancestor Steam launcher without registry'
     $oldFingerprint=$inventory.fingerprint
     [IO.File]::AppendAllText($manifest,' // metadata changed')
     $changed=Get-GMInstallInventory -LaunchEntry $gameExe -SteamRoots @($library) -SkipRegistry

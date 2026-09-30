@@ -3,6 +3,8 @@
 #Include ..\payload\GameMaintenance.ahk
 GMTest_Run(TestMaintenanceStartup)
 TestMaintenanceStartup() {
+    TestOrdinaryLauncherContinuation()
+    TestCleanLauncherRestart()
     TestUpdateExitVerification()
     TestMaintenanceCallbackPublication()
     TestManagedLoginSafety()
@@ -75,6 +77,51 @@ TestMaintenanceStartup() {
     GMTest_Assert(InStr(source,"maintenanceContinuation := GM_HasActiveContinuation(CFG_FILE,RC_UnixMs())"),"continuation checked with current UTC before fresh-cycle pause reset")
     GMTest_Assert(!InStr(source,'gate.mode = "normal" || !IsWutheringProcessRunning()'),"managed update never enters global cleanup")
     GMTest_Assert(InStr(source,"return GMHost_GetManagedGameHwnd()"),"managed window selection is bound to selected install")
+}
+
+TestCleanLauncherRestart() {
+    dir := TestRuntime_NewCaseDir("gm-clean-launcher-restart")
+    input := GMTest_Input(10000), input.runCycle := "fixture", input.notice := 0, input.requireLauncher := true
+    effects := [], hooks := {ReadInput:(*) => input,WorkerStart:(*) => {pid:1},WorkerAlive:(*) => true,
+        WorkerStop:(*) => 0,ApplyEffect:(effect) => effects.Push(effect.type),Publish:(*) => 0,StopRecording:(*) => 0}
+    c := GM_CreateController(dir "\state.ini",{runCycle:"fixture",targetServer:"Asia",newTask:true},hooks)
+    GM_ControllerTick(c,true)
+    input.observation := {phase:"game_running",observedAt:10000,identityVerified:true}
+    GM_ControllerTick(c,true)
+    c.state.updaterUiActionId := "old:kuro:play", c.state.f11InputAttempted := true
+    GMTest_Assert(!GM_ReleaseLaunchAttemptForRestart(c,false),"unconfirmed game exit cannot release launcher intent")
+    GMTest_Assert(c.state.actionId != "","unconfirmed exit retains action")
+    GMTest_Assert(GM_ReleaseLaunchAttemptForRestart(c,true),"explicit clean restart with verified exit releases old attempt")
+    reloaded := GM_LoadJournal(c.journalPath)
+    GMTest_Assert(reloaded.actionId = "" && reloaded.updaterUiActionId = "" && !reloaded.f11InputAttempted,
+        "released launch and UI intents are durable before handoff")
+    GMTest_Assert(reloaded.targetServer = "Asia" && reloaded.remoteGeneration = 1,"restart retains schedule and command progress")
+    input.observation := {phase:"update_ready",observedAt:10000}
+    resumed := GM_CreateController(c.journalPath,{runCycle:"fixture",newTask:false},hooks)
+    GM_ControllerTick(resumed,true), GM_ControllerTick(resumed,true)
+    count := 0
+    for effect in effects {
+        if effect = "start_update"
+            count++
+    }
+    GMTest_Assert(count = 2,"clean restart allows exactly one new launcher request")
+    resumed.state.phase := "READY", resumed.state.eventId := "fixture-maintenance", resumed.state.targetServer := "HMT"
+    GMTest_Assert(GM_ReleaseLaunchAttemptForRestart(resumed,true),"ready maintenance can hand off a server switch")
+    switched := GM_CreateController(c.journalPath,{runCycle:"fixture",newTask:false,targetServer:"Asia"},hooks)
+    GMTest_Assert(switched.state.targetServer = "Asia" && !GM_HasActiveContinuation(switched.state),
+        "completed maintenance must not restore old HMT over a new remote Asia target")
+    resumed.state.cancelled := true, resumed.state.desiredState := "STOP"
+    GMTest_Assert(!GM_ReleaseLaunchAttemptForRestart(resumed,true),"manual STOP is never cleared by restart preparation")
+}
+
+TestOrdinaryLauncherContinuation() {
+    state := GM_DefaultState(), state.phase := "UPDATING", state.provider := "kuro"
+    state.actionId := ":fixture:update", state.actionStage := "observed"
+    GMTest_Assert(GM_HasActiveContinuation(state,10000),"ordinary launcher update survives script restart without maintenance event")
+    state.phase := "READY"
+    GMTest_Assert(!GM_HasActiveContinuation(state,10000),"completed ordinary launch does not pin a future run")
+    state.phase := "STOPPED", state.cancelled := true
+    GMTest_Assert(!GM_HasActiveContinuation(state,10000),"manual STOP cancels ordinary launcher continuation")
 }
 
 TestUpdateExitVerification() {

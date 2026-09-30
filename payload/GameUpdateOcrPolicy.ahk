@@ -5,7 +5,7 @@ GMU_NormalizeOcr(text) {
     if IsObject(text) || StrLen(text) > 2048
         return ""
     text := StrLower(text)
-    for pair in [["伺服器","服务器"],["維護","维护"],["暫時","暂时"],["暫停","暂停"],["無法","无法"],["遊戲","游戏"],["下載","下载"],["安裝","安装"],["驗證","验证"],["開始","开始"],["繼續","继续"]]
+    for pair in [["伺服器","服务器"],["維護","维护"],["暫時","暂时"],["暫停","暂停"],["無法","无法"],["遊戲","游戏"],["下載","下载"],["安裝","安装"],["驗證","验证"],["開始","开始"],["繼續","继续"],["啟動","启动"],["確認","确认"],["確定","确定"],["發現","发现"],["重啟","重启"],["請","请"]]
         text := StrReplace(text,pair[1],pair[2])
     return RegExReplace(text,"\s+","")
 }
@@ -74,6 +74,9 @@ GMU_ClassifyLauncher(blocks,identity) {
         || !GM_Value(layout,"verified",false) || GM_Value(layout,"launcherVersion","") = ""
         || GM_Value(layout,"launcherVersion","") != GM_Value(identity,"launcherVersion",""))
         return result
+    selfUpdate := GMU_ClassifyLauncherSelfUpdate(blocks,identity)
+    if selfUpdate.kind != "unknown"
+        return selfUpdate
     buttons := [], stages := [], statusPercent := ""
     for block in blocks {
         text := GMU_NormalizeOcr(GM_Value(block,"text",""))
@@ -117,5 +120,38 @@ GMU_ClassifyLauncher(blocks,identity) {
     if buttons.Length = 1 && stages.Length = 0 {
         result.kind := buttons[1].kind, result.button := buttons[1].button, result.evidence := buttons[1].evidence
     }
+    return result
+}
+
+GMU_ClassifyLauncherSelfUpdate(blocks,identity) {
+    result := {kind:"unknown",button:0,percent:"",evidence:"",identityKey:GM_Value(identity,"key","")}
+    ; Explicit launcher-update text in a bounded prompt region is mandatory.
+    ; Generic OK/Exit buttons and news mentioning a game version are never enough.
+    promptRoi := {left:0.15,top:0.08,right:0.9,bottom:0.7}
+    actionRoi := {left:0.2,top:0.5,right:0.9,bottom:0.95}
+    hasContext := false, completed := false, buttons := [], restartButtons := []
+    for block in blocks {
+        text := GMU_NormalizeOcr(GM_Value(block,"text",""))
+        if GMU_BlockInRoi(block,identity,promptRoi) {
+            if RegExMatch(text,"^启动器更新(?:已)?完成|^launcherupdate(?:is)?complete(?:d)?")
+                completed := true, result.evidence := text
+            if RegExMatch(text,"^(?:发现|检测到|檢測到|有可用的|新版本)?启动器(?:有)?(?:新版本|更新)|^(?:发现|检测到|檢測到)启动器新版本|^launcher(?:update|newversion)")
+                hasContext := true, result.evidence := text
+            if RegExMatch(text,"^(?:正在)?(?:更新启动器|启动器(?:正在)?(?:更新中|下载中|安装中))|^updatinglauncher") {
+                result.kind := "installing", result.evidence := text
+                if RegExMatch(text,"(\d{1,3}(?:\.\d{1,2})?)%",&match) && Number(match[1]) <= 100
+                    result.percent := Number(match[1])
+                return result
+            }
+        }
+        if GMU_BlockInRoi(block,identity,actionRoi) && RegExMatch(text,"^(立即更新|更新启动器|更新|确认|确定|update(?:now)?|confirm|ok)$")
+            buttons.Push({x:(block.left+block.right)/2,y:(block.top+block.bottom)/2})
+        if GMU_BlockInRoi(block,identity,actionRoi) && RegExMatch(text,"^(立即重启|重启启动器|重启|重新启动|重新启动启动器|restart(?:now|launcher)?)$")
+            restartButtons.Push({x:(block.left+block.right)/2,y:(block.top+block.bottom)/2})
+    }
+    if completed && restartButtons.Length = 1
+        result.kind := "launcher_restart", result.button := restartButtons[1]
+    else if hasContext && !completed && buttons.Length = 1
+        result.kind := "launcher_update", result.button := buttons[1]
     return result
 }

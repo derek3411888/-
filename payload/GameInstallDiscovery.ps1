@@ -181,6 +181,11 @@ function Resolve-GMInstallEvidence {
                 if ($real -and $real.Equals($launcher,[StringComparison]::OrdinalIgnoreCase)) {
                     $entryMatches=($provider -eq 'kuro' -and -not $arguments) -or ($provider -eq 'steam' -and $arguments -match '^\s*-applaunch\s+3513350\s*$')
                 }
+                if($provider -eq 'kuro' -and $real -and $launcher -and -not $arguments) {
+                    $launcherRoot=(Split-Path $launcher -Parent).TrimEnd('\')+'\'
+                    if($real.StartsWith($launcherRoot,[StringComparison]::OrdinalIgnoreCase) -and
+                        $real.Substring($launcherRoot.Length) -match '^\d+(?:\.\d+){1,3}\\launcher_main\.exe$') { $entryMatches=$true }
+                }
             }
             if ($entryMatches) { $matchingInstalls+= [pscustomobject]@{provider=$provider;install=$install} }
         }
@@ -204,6 +209,14 @@ function Get-GMInstallInventory {
     param([string]$LaunchEntry,[string[]]$SteamRoots=@(),[switch]$SkipRegistry)
     $entry=Resolve-GMLaunchEntry $LaunchEntry
     $roots=@($SteamRoots)
+    # Resolve from the existing selection before consulting machine-level metadata.
+    # This also works for portable Steam installs without a registry entry.
+    $ancestor=if($entry.realPath){Split-Path $entry.realPath -Parent}else{''}
+    for($depth=0;$ancestor -and $depth -lt 10;$depth++) {
+        if([IO.File]::Exists((Join-Path $ancestor 'steam.exe')) -and
+            [IO.Directory]::Exists((Join-Path $ancestor 'steamapps'))) { $roots+=$ancestor }
+        $ancestor=Split-Path $ancestor -Parent
+    }
     if (-not $SkipRegistry) {
         foreach ($lookup in @(@('CurrentUser','Software\Valve\Steam','SteamPath'),@('LocalMachine','SOFTWARE\WOW6432Node\Valve\Steam','InstallPath'))) {
             $key=$null

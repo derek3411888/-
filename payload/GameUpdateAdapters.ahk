@@ -108,8 +108,54 @@ GMU_TargetMatchesLauncher(install,expected,current) {
     return IsObject(current) && GM_Value(current,"identityVerified",false)
         && GM_Value(current,"pid",0) = GM_Value(expected,"pid",-1)
         && GM_Value(current,"hwnd",0) = GM_Value(expected,"hwnd",-1)
-        && StrLower(GM_Value(current,"path","")) = StrLower(GM_Value(install,"launcherPath","not-verified"))
+        && GM_Value(expected,"started",0) > 0 && GM_Value(current,"started",0) = expected.started
+        && StrLower(GM_Value(current,"path","")) = StrLower(GM_Value(expected,"path","not-verified"))
+        && GMU_IsLauncherProcessPath(install,GM_Value(current,"path",""))
         && GM_Value(current,"desktopAvailable",false)
+}
+
+GMU_IsLauncherProcessPath(install,path) {
+    launcher := GM_Value(install,"launcherPath","")
+    if path = "" || launcher = ""
+        return false
+    if StrLower(path) = StrLower(launcher)
+        return true
+    if GM_Value(install,"provider","") != "kuro"
+        return false
+    SplitPath(launcher,,&root)
+    prefix := RTrim(root,"\") "\"
+    if StrLower(SubStr(path,1,StrLen(prefix))) != StrLower(prefix)
+        return false
+    ; New Kuro bootstrap launches its UI from an exact numeric version folder.
+    ; Both arguments come from canonical paths at the host boundary.
+    return !!RegExMatch(SubStr(path,StrLen(prefix)+1),"i)^\d+(?:\.\d+){1,3}\\launcher_main\.exe$")
+}
+
+GMU_SelectLauncherWindow(candidates) {
+    verified := Map(), selected := 0
+    for candidate in candidates {
+        if GM_Value(candidate,"identityVerified",false) && GM_Value(candidate,"visible",false)
+            verified[candidate.hwnd] := candidate
+    }
+    for hwnd, candidate in verified {
+        if !GM_Value(candidate,"enabled",false)
+            continue
+        ; Ignore an enabled owner while one of its visible verified dialogs exists.
+        hasChild := false
+        for otherHwnd, other in verified {
+            if GM_Value(other,"owner",0) = hwnd
+                hasChild := true
+        }
+        if hasChild
+            continue
+        owner := GM_Value(candidate,"owner",0)
+        if owner && !verified.Has(owner)
+            return 0
+        if IsObject(selected)
+            return 0
+        selected := candidate
+    }
+    return selected
 }
 
 GMU_ClickLauncherVerified(install,target,action,hooks) {

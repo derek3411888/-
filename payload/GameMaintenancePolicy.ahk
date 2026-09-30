@@ -13,7 +13,7 @@ GM_DefaultState() {
     return {schemaVersion:1, phase:"CHECKING_NOTICE", overlay:"", eventId:"", revision:"", gameVersion:"", sourceUrl:"",
         startsAt:0, expectedOpenAt:0, provider:"unknown", fingerprint:"", runCycle:"", targetServer:"",
         actionId:"", actionStage:"", f11InputAttempted:0, cancelled:0, desiredState:"RUN", remoteGeneration:0,
-        elapsedMs:0, lastObserveElapsedMs:0, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0,
+        elapsedMs:0, lastObserveElapsedMs:0, lastActivityElapsedMs:-1, lastNoticeCheckElapsedMs:-300000, helperRestarts:0, updatedAtUtcMs:0,
         updaterUiActionId:"",updaterUiActionStage:"",notificationKeys:"",notifiedOpenAt:0,recoveryUncertain:0,f11OkwwIdentity:""}
 }
 
@@ -165,6 +165,9 @@ GM_Evaluate(previous, input) {
     if (GM_Value(input,"noticeErrorCode","") = "NOTICE_CONFLICT")
         return GM_Decision(state,"WAIT_NOTICE","none","NOTICE_CONFLICT","多份公告時間衝突，等待重新確認")
     if (state.eventId = "") {
+        if GM_Value(input,"requireLauncher",false) && (sourceState = "valid" || !GM_Value(input,"enabled",true)
+            || (sourceState != "pending" && elapsed >= 20000))
+            return GM_EvaluateLauncher(state,input,observedPhase)
         if (sourceState = "valid" || !GM_Value(input,"enabled",true))
             return GM_Decision(state,"NORMAL","resume_flow")
         if (sourceState != "pending" && elapsed >= 20000)
@@ -185,6 +188,13 @@ GM_Evaluate(previous, input) {
             state.lastNoticeCheckElapsedMs := elapsed
         return GM_Decision(state,"WAIT_NOTICE",effect,"NOTICE_RECHECK_REQUIRED","到達時間，仍需最新官方公告確認")
     }
+    return GM_EvaluateLauncher(state,input,observedPhase)
+}
+
+GM_EvaluateLauncher(state,input,observedPhase) {
+    observation := GM_Value(input,"observation",0)
+    if (observedPhase = "game_running" || observedPhase = "login_ready") && !GM_Value(observation,"identityVerified",false)
+        observedPhase := "unknown"
     install := GM_Value(input,"install",0)
     state.provider := GM_Value(install,"provider","unknown"), state.fingerprint := GM_Value(install,"fingerprint",state.fingerprint)
     launchAdapterReady := GM_Value(install,"launchAdapterReady",GM_Value(install,"updateAdapterReady",false))
@@ -204,10 +214,13 @@ GM_Evaluate(previous, input) {
     if InStr(",downloading,installing,verifying,queued,","," observedPhase ",",true) {
         if GM_Value(input,"noProgressMs",0) >= 1800000
             return GM_Decision(state,"NEEDS_ATTENTION","none","UPDATE_STALLED","三十分鐘沒有可證實的更新進展")
+        state.lastActivityElapsedMs := GM_Value(input,"elapsedMs",0)
         return GM_Decision(state,"UPDATING","observe")
     }
     if (state.actionId != "" && (state.actionStage = "intent" || state.actionStage = "observed")) {
-        if GM_Value(input,"actionElapsedMs",0) >= 180000
+        idleMs := state.lastActivityElapsedMs < 0 ? GM_Value(input,"actionElapsedMs",0)
+            : Min(GM_Value(input,"actionElapsedMs",0),Max(0,GM_Value(input,"elapsedMs",0)-state.lastActivityElapsedMs))
+        if idleMs >= 180000
             return GM_Decision(state,"NEEDS_ATTENTION","none","UPDATE_ACTIVITY_UNCONFIRMED","已發起更新但三分鐘內無法確認活動；不重複啟動")
         return GM_Decision(state,"CHECKING_UPDATE","observe","","接續上次動作，先核對更新器與遊戲")
     }

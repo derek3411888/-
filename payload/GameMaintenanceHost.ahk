@@ -23,6 +23,9 @@ GM_Init(cfgPath,launchEntry,flowContext) {
     c.clockUnstableAt := 0, c.lastSettingsRefresh := "", c.install := {provider:"unknown",updateAdapterReady:false}
     c.lastInput := 0, c.lastRequestKey := "", c.resumeExistingF11 := c.state.f11InputAttempted, c.ocrEngine := 0
     c.gameIdentity := 0, c.loginScheduleKey := "", c.f11GateBlocked := false
+    c.requireLauncher := c.state.eventId = "" && GM_HasActiveContinuation(c.state,flowContext.nowUtcMs)
+    if c.requireLauncher
+        c.managed := true
     if GM_HasActiveContinuation(c.state,flowContext.nowUtcMs)
         GMHost_RestoreScheduledTarget(c.state.targetServer)
     return c
@@ -71,6 +74,61 @@ GM_RunManagedUpdate() {
         if (decision.overlay = "" && (decision.phase = "CHECKING_LOGIN" || decision.phase = "READY"))
             return {ok:true,readyForLogin:true,errorCode:"",detail:decision.detail}
         DllCall("Sleep","UInt",100)
+    }
+}
+
+GM_StartLauncherFlow() {
+    global GM_CONTROLLER
+    c := GM_CONTROLLER
+    if !IsObject(c)
+        return {ok:false,errorCode:"LAUNCHER_CONTROLLER_MISSING",detail:"啟動器控制器未初始化"}
+    ; The normal-day gate decides only whether cleanup is allowed. The actual
+    ; launch always returns to the same verified Steam/Kuro adapter as update day.
+    c.requireLauncher := true, c.active := true, c.managed := true
+    c.observation := 0, c.snapshot := 0, c.gameIdentity := 0
+    WriteStep("啟動器啟動", "依原設定路徑辨識 Steam／官方啟動器；禁止直開遊戲本體")
+    return GM_RunManagedUpdate()
+}
+
+GM_PrepareCleanLauncherRestart() {
+    global GM_CONTROLLER
+    c := GM_CONTROLLER
+    if !IsObject(c)
+        return true
+    if c.state.cancelled || c.state.desiredState = "STOP"
+        return false
+    if c.state.actionId = "" && !c.state.f11InputAttempted && c.state.updaterUiActionId = ""
+        return true
+    if !GM_Value(c.install,"identityVerified",false) || GM_Value(c.install,"gameRoot","") = ""
+        return false
+    expected := []
+    for relative in ["\Wuthering Waves.exe","\Client\Binaries\Win64\Client-Win64-Shipping.exe"] {
+        path := GMHost_CanonicalPath(c.install.gameRoot relative)
+        if path = ""
+            return false
+        expected.Push(StrLower(path))
+    }
+    try {
+        loop 2 {
+            for proc in ComObjGet("winmgmts:").ExecQuery("Select ProcessId, ExecutablePath From Win32_Process Where Name='Wuthering Waves.exe' OR Name='Client-Win64-Shipping.exe'") {
+                path := GMHost_CanonicalPath(proc.ExecutablePath)
+                if path = ""
+                    return false
+                for target in expected {
+                    if StrLower(path) = target
+                        return false
+                }
+            }
+            if A_Index = 1
+                DllCall("Sleep","UInt",250)
+        }
+        released := GM_ReleaseLaunchAttemptForRestart(c,true)
+        if released
+            WriteLog("已確認本輪遊戲退出；保存原任務／開服時間／命令進度，下一輪重新經啟動器啟動")
+        return released
+    } catch as err {
+        WriteLog("啟動器重啟交接未完成：" err.Message,"WARN")
+        return false
     }
 }
 
@@ -215,7 +273,7 @@ GMHost_ReadInput(c) {
         desktopAvailable:desktopAvailable,noticeState:sourceState,noticeErrorCode:noticeError,notice:notice,upcomingNotice:upcomingNotice,install:c.install,observation:observation,
         noProgressMs:c.noProgressMs,actionElapsedMs:c.actionElapsedMs,runCycle:GetCurrentServerCycleKey(),
         noticeCheckedAt:IsObject(c.snapshot) && c.snapshot["notice"]["checkedAtUtcMs"] != "" ? Number(c.snapshot["notice"]["checkedAtUtcMs"]) : 0,
-        enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",
+        enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",requireLauncher:GM_Value(c,"requireLauncher",false),
         skipEventId:IniReadSafe(c.cfgPath,"game_maintenance","skip_event_id",""),delayEventId:IniReadSafe(c.cfgPath,"game_maintenance","override_event_id",""),
         delayUntilUtc:0}
     rawDelay := IniReadSafe(c.cfgPath,"game_maintenance","delay_until_utc","0")
@@ -281,7 +339,7 @@ GMHost_ApplyEffect(action) {
         action.expectedFingerprint := c.install.fingerprint
         hooks := {CanAct:GMHost_CanAct,ValidateInstall:GMHost_LauncherStartReady,
             PersistIntent:(*) => GM_LoadJournal(c.journalPath).actionStage = "intent",
-            LaunchSteam:(path,appId,command) => Run(command,,"Hide"),LaunchKuro:(path,command) => Run(command,,"Hide"),
+            LaunchSteam:(path,appId,command) => GMHost_RunLauncher(path,command),LaunchKuro:(path,command) => GMHost_RunLauncher(path,command),
             ReadObservation:(*) => c.lastInput.observation}
         result := GMU_Start(c.install,action,hooks)
         if !result.ok
@@ -299,6 +357,12 @@ GMHost_ApplyEffect(action) {
     } else if action.type = "stop"
         GM_Shutdown("stopped")
     return {ok:true}
+}
+
+GMHost_RunLauncher(path,command) {
+    SplitPath(path,,&workingDirectory)
+    WriteLog("透過已驗證啟動器啟動鳴潮 | launcher=" path)
+    Run(command,workingDirectory)
 }
 
 GMHost_StopRecording() {
@@ -725,19 +789,24 @@ GMHost_CanonicalPath(path) {
 
 GMHost_InspectLauncherWindow(hwnd) {
     global GM_CONTROLLER
-    result := {pid:0,hwnd:hwnd,path:"",identityVerified:false,foregroundVerified:false,desktopAvailable:false}
+    result := {pid:0,hwnd:hwnd,started:0,path:"",identityVerified:false,foregroundVerified:false,desktopAvailable:false,
+        visible:false,enabled:false,owner:0}
     try {
         result.pid := WinGetPID("ahk_id " hwnd), result.path := GMHost_CanonicalPath(WinGetProcessPath("ahk_id " hwnd))
-        result.identityVerified := result.path != "" && StrLower(result.path) = StrLower(GM_CONTROLLER.install.launcherPath)
+        result.started := GMHost_ProcessStartMs(result.pid)
+        result.identityVerified := result.started > 0 && GMU_IsLauncherProcessPath(GM_CONTROLLER.install,result.path)
+        result.visible := !!DllCall("IsWindowVisible","Ptr",hwnd)
+        result.enabled := !!DllCall("IsWindowEnabled","Ptr",hwnd)
+        result.owner := DllCall("GetWindow","Ptr",hwnd,"UInt",4,"Ptr")
         result.desktopAvailable := GetInteractiveDesktopState().ok
         result.foregroundVerified := GetForegroundRelationToTarget(hwnd) = "exact"
     }
     return result
 }
 
-GMHost_KuroLayout(install) {
+GMHost_KuroLayout(install,uiPath := "") {
     filePath := RuntimeFiles_GameMaintenanceDir() "\adapter-acceptance.ini"
-    version := FileGetVersion(install.launcherPath)
+    version := FileGetVersion(uiPath != "" ? uiPath : install.launcherPath)
     if FileExist(filePath) && version = IniReadSafe(filePath,"kuro","launcher_version","") {
         layout := {verified:true,launcherVersion:version,source:"accepted-device-layout",button:{},status:{}}
         valid := true
@@ -766,33 +835,30 @@ GMHost_ReadKuroObservation() {
     c := GM_CONTROLLER, install := c.install, unknown := {phase:"unknown",observedAt:RC_UnixMs()}
     if !GMHost_LauncherStartReady(install)
         return unknown
-    layout := GMHost_KuroLayout(install)
-    if !IsObject(layout)
-        return unknown
-    target := 0
-    for hwnd in WinGetList("ahk_exe launcher.exe") {
-        candidate := GMHost_InspectLauncherWindow(hwnd)
-        if candidate.identityVerified {
-            if IsObject(target)
-                return unknown
-            target := candidate
-        }
+    candidates := []
+    for exe in ["launcher.exe","launcher_main.exe"] {
+        for hwnd in WinGetList("ahk_exe " exe)
+            candidates.Push(GMHost_InspectLauncherWindow(hwnd))
     }
+    target := GMU_SelectLauncherWindow(candidates)
     if !IsObject(target)
         return unknown
     try {
+        layout := GMHost_KuroLayout(install,target.path)
+        if !IsObject(layout)
+            return unknown
         captureReason := ""
         if !PrepareVerifiedWindowForInput(target.hwnd,target.pid,"版本更新器畫面辨識",&captureReason) {
             unknown.detail := "官方更新器無法取得可見前景畫面：" captureReason
             return unknown
         }
         prepared := GMHost_InspectLauncherWindow(target.hwnd)
-        if (prepared.pid != target.pid || !prepared.identityVerified || !prepared.foregroundVerified) {
+        if (prepared.pid != target.pid || prepared.started != target.started || !prepared.identityVerified || !prepared.foregroundVerified) {
             unknown.detail := "官方更新器前景身分在擷取前已改變"
             return unknown
         }
         WinGetClientPos(&captureX,&captureY,&captureW,&captureH,"ahk_id " target.hwnd)
-        if (captureW < 500 || captureH < 280) {
+        if (captureW < 300 || captureH < 160) {
             unknown.detail := "官方更新器客戶區尺寸無效：" captureW "x" captureH
             return unknown
         }
@@ -811,20 +877,21 @@ GMHost_ReadKuroObservation() {
                 FileDelete(temp)
         }
         after := GMHost_InspectLauncherWindow(target.hwnd)
-        if after.pid != target.pid || !after.identityVerified
+        if after.pid != target.pid || after.started != target.started || !after.identityVerified || !after.foregroundVerified
             return unknown
         for block in rawBlocks {
             if block.HasOwnProp("boxPoint") && block.boxPoint.Length >= 3
                 blocks.Push({text:block.text,left:block.boxPoint[1].x,top:block.boxPoint[1].y,right:block.boxPoint[3].x,bottom:block.boxPoint[3].y})
         }
-        identity := {key:target.pid ":" target.hwnd,provider:"kuro",verified:true,clientWidth:frame.width,clientHeight:frame.height,
+        identity := {key:target.pid ":" target.started ":" target.hwnd,provider:"kuro",verified:true,clientWidth:frame.width,clientHeight:frame.height,
             launcherVersion:layout.launcherVersion,layout:layout}
         classified := GMU_ClassifyLauncher(blocks,identity)
-        phase := InStr(",update,download,resume,play,confirm,","," classified.kind ",",true) ? "unknown" : classified.kind
+        phase := InStr(",update,download,resume,play,confirm,launcher_update,launcher_restart,","," classified.kind ",",true) ? "unknown" : classified.kind
         if classified.kind = "play"
             phase := "update_ready"
         return {phase:phase,progressPercent:classified.percent,observedAt:RC_UnixMs(),identityVerified:true,
-            detail:classified.evidence,errorCode:classified.kind = "error" ? "KURO_UPDATE_ERROR" : "",target:target,button:classified.button,kind:classified.kind}
+            detail:classified.evidence,errorCode:classified.kind = "error" ? "KURO_UPDATE_ERROR" : "",target:target,button:classified.button,kind:classified.kind,
+            launcherVersion:layout.launcherVersion,identityKey:identity.key}
     } catch as err {
         unknown.detail := "官方更新器觀察失敗：" err.Message
         return unknown
@@ -847,6 +914,7 @@ GMHost_ObserveKuroLauncher() {
     global GM_CONTROLLER
     c := GM_CONTROLLER, observed := GMHost_ReadKuroObservation()
     if GM_Value(observed,"kind","") = "" {
+        c.lastKuroButton := 0
         c.observation := observed
         return
     }
@@ -854,9 +922,17 @@ GMHost_ObserveKuroLauncher() {
     if token != GM_Value(c,"lastKuroProgress","")
         c.noProgressMs := 0, c.lastKuroProgress := token
     c.observation := observed
-    if !IsObject(observed.button)
+    if !IsObject(observed.button) {
+        c.lastKuroButton := 0
         return
-    id := c.state.eventId ":kuro:" observed.target.pid ":" observed.target.hwnd ":" observed.kind
+    }
+    tick := MonotonicTickMs()
+    candidate := {confirmed:true,identityKey:observed.identityKey,
+        evidence:observed.kind "|" observed.launcherVersion "|" Round(observed.button.x/5) "|" Round(observed.button.y/5)}
+    c.lastKuroButton := GMU_ConfirmMaintenance(GM_Value(c,"lastKuroButton",0),candidate,tick,String(tick))
+    if !c.lastKuroButton.confirmed
+        return
+    id := c.state.eventId ":kuro:" observed.identityKey ":" observed.launcherVersion ":" observed.kind
     if id = c.state.updaterUiActionId
         return
     action := {type:"click_" observed.kind,actionId:id,button:observed.button,expectedRevision:c.state.revision,

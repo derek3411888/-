@@ -3,6 +3,7 @@
 #Include ..\payload\GameUpdateOcrPolicy.ahk
 GMTest_Run(TestMaintenanceOcr)
 TestMaintenanceOcr() {
+    TestKuroSelfUpdateDialog()
     identity := {key:"game-p1-h1",provider:"kuro",clientWidth:1280,clientHeight:720,verified:true}
     for text in ["無法連接伺服器，請檢查網路","網路異常","连接超时","正在更新游戏","維護公告","Server connection timed out",""] {
         result := GMU_ClassifyMaintenance([OcrFixture(text)],identity)
@@ -67,6 +68,33 @@ TestMaintenanceOcr() {
     blocks[1] := {text:"開始遊戲",left:1000,top:620,right:1150,bottom:680}
     GMTest_Assert(GMU_ClassifyLauncher(blocks,identity).kind = "play",
         "current official launcher version can use the constrained built-in OCR layout")
+}
+
+TestKuroSelfUpdateDialog() {
+    identity := {key:"launcher-dialog",provider:"kuro",clientWidth:800,clientHeight:500,verified:true,
+        launcherVersion:"2.0",layout:GMU_DefaultKuroLayout("2.0"),modal:true}
+    context := {text:"發現啟動器新版本，請更新啟動器",left:150,top:100,right:650,bottom:150}
+    button := {text:"立即更新",left:460,top:340,right:610,bottom:380}
+    result := GMU_ClassifyLauncher([context,button],identity)
+    GMTest_Assert(result.kind = "launcher_update" && IsObject(result.button),"trusted self-update dialog has distinct action")
+    button.text := "確認"
+    GMTest_Assert(GMU_ClassifyLauncher([context,button],identity).kind = "launcher_update","traditional confirm allowed only in explicit self-update prompt")
+    GMTest_Assert(GMU_ClassifyLauncher([button],identity).kind = "unknown","generic confirm without updater context is not clicked")
+    context.text := "遊戲版本更新公告"
+    GMTest_Assert(GMU_ClassifyLauncher([context,button],identity).kind = "unknown","game announcement is not launcher self-update")
+    context.text := "啟動器更新中 37%", button.text := "取消"
+    result := GMU_ClassifyLauncher([context,button],identity)
+    GMTest_Assert(result.kind = "installing" && result.percent = 37 && !IsObject(result.button),"self-update progress is observed without canceling")
+    context.text := "啟動器更新完成，請重新啟動啟動器", button.text := "立即重啟"
+    result := GMU_ClassifyLauncher([context,button],identity)
+    GMTest_Assert(result.kind = "launcher_restart" && IsObject(result.button),"explicit completed self-update can restart its launcher")
+    context.text := "啟動器更新失敗，請重試"
+    GMTest_Assert(GMU_ClassifyLauncher([context,button],identity).kind != "launcher_restart","failed update never accepts a restart-complete action")
+    context.text := "遊戲版本更新公告"
+    GMTest_Assert(GMU_ClassifyLauncher([context,button],identity).kind = "unknown","news cannot authorize launcher restart")
+    identity.verified := false
+    context.text := "發現啟動器新版本，請更新啟動器", button.text := "立即更新"
+    GMTest_Assert(GMU_ClassifyLauncher([context,button],identity).kind = "unknown","other program cannot become a self-updater")
 }
 OcrFixture(text) {
     return {text:text,left:400,top:300,right:900,bottom:350}

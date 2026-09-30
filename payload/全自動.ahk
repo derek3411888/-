@@ -128,8 +128,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.14"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.24"
+global PAYLOAD_BUILD_VERSION := "5.15"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.25"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2687,16 +2687,16 @@ if (gate.mode = "managed_update") {
     if !managedUpdateResult.ok
         ExitApp
     StartCrashWatcher()
-} else if !isRestart
-    TryStartScreenRecording("主流程開始")
-else {
-    if AttachManagedScreenRecordingOnRestart("重啟模式接管")
+} else {
+    if !EnsureWutheringRunning()
+        ExitApp
+    if !isRestart
+        TryStartScreenRecording("主流程開始")
+    else if AttachManagedScreenRecordingOnRestart("重啟模式接管")
         WriteLog("重啟模式：已接管既有錄影，不重新觸發錄影啟動")
     else
         TryStartScreenRecording("重啟模式未找到既有錄影，改啟動新錄影")
 }
-if (gate.mode = "normal")
-    EnsureWutheringRunning()
 WriteStep("鳴潮檢查", "更新與登入流程")
 
 loop {
@@ -2938,7 +2938,7 @@ ResetForegroundInputFailureStreak("遊戲可操作驗證與 OKWW 前景輸入條
 if !GM_WaitForLoginGate()
     ExitApp
 GM_MarkReady()
-if GM_IsManagedUpdateDay() {
+if (gate.mode = "managed_update") {
     TryStartScreenRecording("版本更新完成，遊戲主畫面已驗證")
     if MAIL_NOTIFY_ENABLED {
         startMailResult := SendStartNotifyMail(isRestart)
@@ -7218,47 +7218,10 @@ ResolveWutheringPrimaryInputWindow(preferredHwnd := 0) {
 
 ; E) 取得並啟動鳴潮路徑（可記憶）
 EnsureWutheringRunning() {
-    global WUTHERING_STARTUP_WAIT_SEC
-
-    WriteStep("啟動鳴潮", "入口")
-
-    ; ✅ 只檢查遊戲進程是否存在，不檢查視窗尺寸
-    ;    這樣防止因視窗最小化而誤判為「遊戲未運行」
-    if (IsWutheringProcessRunning()) {
-        WriteStepResult("啟動鳴潮", true, "進程已存在")
-        return true
-    }
-    
-    path := GetPathWithAsk("WUTHERING", "請選擇鳴潮遊戲主程式或捷徑", "鳴潮入口 (*.exe;*.lnk;*.url)")
-    if (!path) {
-        WriteLog("未設定鳴潮路徑，無法啟動", "ERROR")
-        MsgBox "未設定鳴潮遊戲路徑。請重新執行並選擇。"
-        WriteStepResult("啟動鳴潮", false, "未設定路徑")
-        ExitApp
-    }
-    WriteLog("啟動鳴潮: " path)
-    ShowTip("🎮 正在啟動鳴潮...", 1500)
-    try Run(path)
-    catch as e {
-        WriteLog("啟動鳴潮失敗: " e.Message, "ERROR")
-        ShowTip("❌ 鳴潮啟動失敗", 1500)
-        WriteStepResult("啟動鳴潮", false, "Run失敗")
-        return false
-    }
-
-    ShowTip("⏳ 等待鳴潮進程初始化...", 1500)
-    if !WaitForProcessRunning("Client-Win64-Shipping.exe", WUTHERING_STARTUP_WAIT_SEC) {
-        WriteLog("鳴潮啟動後逾時，未偵測到進程（" WUTHERING_STARTUP_WAIT_SEC " 秒）", "ERROR")
-        ShowTip("❌ 鳴潮啟動逾時", 1800)
-        WriteStepResult("啟動鳴潮", false, "進程逾時")
-        return false
-    }
-
-    ; 給初始化中的視窗一點緩衝，避免剛啟動就誤判 no_window。
-    Sleep 2000
-    WriteLog("已偵測到鳴潮進程，繼續後續視窗檢測")
-    WriteStepResult("啟動鳴潮", true, "進程已就緒")
-    return true
+    WriteStep("啟動鳴潮", "統一透過 Steam／官方啟動器")
+    result := GM_StartLauncherFlow()
+    WriteStepResult("啟動鳴潮", result.ok, result.detail)
+    return result.ok
 }
 
 LaunchWutheringGameFlowAfterUpdate() {
@@ -8434,6 +8397,8 @@ TryLaunchRestartThroughUpdater(resumeCurrentTask := false, &detail := "") {
 
 QueueSafeRestartHandoff(mode, launcherPath := "") {
     global AhkExe, __RESTART_HANDOFF_LAUNCHED, __SCREEN_RECORDING_PID
+    if !GM_PrepareCleanLauncherRestart()
+        throw Error("未能確認遊戲已退出或停止意圖已變更；不建立新的啟動器交接")
     recording := ""
     if (__SCREEN_RECORDING_PID > 0 && ProcessExist(__SCREEN_RECORDING_PID))
         recording := RestartHandoff_RecorderIdentity(__SCREEN_RECORDING_PID)

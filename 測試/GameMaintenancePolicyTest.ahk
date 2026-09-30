@@ -4,6 +4,8 @@
 #Include ..\payload\GameMaintenancePolicy.ahk
 GMTest_Run(TestMaintenancePolicy)
 TestMaintenancePolicy() {
+    TestLauncherOnlyEveryDay()
+    TestLauncherUpdateStageTransition()
     state := GMTest_State(), input := GMTest_Input()
     decision := GM_Evaluate(state, input)
     GMTest_Assert(decision.phase = "WAIT_OPEN" && decision.effect.type = "none", "not one millisecond early")
@@ -120,4 +122,57 @@ TestMaintenancePolicy() {
         result := GM_CommitEffect(state,decision,() => input,journal,(effect) => calls.Push(effect.type))
         GMTest_Assert(!result.committed && calls.Length = 0, "no physical effects while " condition)
     }
+}
+
+TestLauncherUpdateStageTransition() {
+    state := GM_CopyState(GMTest_State()), input := GMTest_Input(400000)
+    input.runCycle := "fixture", input.elapsedMs := 300000, input.actionElapsedMs := 300000
+    state.actionId := "launcher-attempt", state.actionStage := "observed"
+    input.observation := {phase:"installing",observedAt:400000,identityVerified:true}
+    updating := GM_Evaluate(state,input)
+    GMTest_Assert(updating.phase = "UPDATING","long self-update with progress is not startup failure")
+    input.nowUtcMs := 401000, input.elapsedMs := 301000, input.actionElapsedMs := 301000
+    input.observation := {phase:"unknown",observedAt:401000}
+    transition := GM_Evaluate(updating.state,input)
+    GMTest_Assert(transition.effect.type = "observe" && transition.errorCode = "",
+        "self-update handover gets independent activity timeout after more than three minutes of updating")
+    input.nowUtcMs := 410000, input.elapsedMs := 310000
+    input.observation := {phase:"downloading",observedAt:410000,identityVerified:true}
+    GMTest_Assert(GM_Evaluate(transition.state,input).phase = "UPDATING","game update follows launcher self-update")
+    input.nowUtcMs := 580000, input.elapsedMs := 480000
+    input.observation := {phase:"unknown",observedAt:580000}
+    GMTest_Assert(GM_Evaluate(updating.state,input).errorCode = "UPDATE_ACTIVITY_UNCONFIRMED",
+        "three minutes without further activity is still bounded")
+}
+
+TestLauncherOnlyEveryDay() {
+    for provider in ["steam","kuro"] {
+        state := GM_DefaultState(), state.runCycle := "fixture"
+        input := GMTest_Input(10000), input.runCycle := "fixture", input.notice := 0
+        input.requireLauncher := true, input.install.provider := provider
+        decision := GM_Evaluate(state,input)
+        GMTest_Assert(decision.effect.type = "start_update","ordinary day must start verified " provider " launcher")
+        input.enabled := false
+        GMTest_Assert(GM_Evaluate(state,input).effect.type = "start_update","disabling notice schedule cannot permit direct game start")
+        input.noticeState := "unavailable", input.elapsedMs := 20000
+        GMTest_Assert(GM_Evaluate(state,input).effect.type = "start_update","notice outage still uses launcher")
+        input.install.provider := "unknown"
+        GMTest_Assert(GM_Evaluate(state,input).errorCode = "INSTALL_SOURCE_UNKNOWN","unknown original path must not run game executable")
+        input.install.provider := provider, input.desiredState := "PAUSE"
+        GMTest_Assert(GM_Evaluate(state,input).effect.type = "none","ordinary launcher honors pause")
+        input.desiredState := "RUN", input.desktopAvailable := false
+        GMTest_Assert(GM_Evaluate(state,input).effect.type = "none","ordinary launcher honors locked desktop")
+        input := GMTest_Input(9999), input.runCycle := "fixture", input.requireLauncher := true
+        GMTest_Assert(GM_Evaluate(state,input).phase = "WAIT_OPEN","launcher-only policy cannot bypass maintenance deadline")
+    }
+    state := GM_DefaultState(), state.runCycle := "fixture"
+    input := GMTest_Input(10000), input.runCycle := "fixture", input.notice := 0, input.requireLauncher := true
+    input.observation := {phase:"update_ready",observedAt:10000}
+    decision := GM_Evaluate(state,input)
+    GMTest_Assert(decision.effect.type = "start_update" && decision.effect.actionId != state.actionId,
+        "Steam finishing an autonomous download must receive one launcher play request")
+    state.actionId := decision.effect.actionId, state.actionStage := "observed"
+    GMTest_Assert(GM_Evaluate(state,input).effect.type = "observe","Steam play request must not repeat each poll")
+    input.observation := {phase:"game_running",observedAt:10000,identityVerified:false}
+    GMTest_Assert(GM_Evaluate(state,input).effect.type != "resume_flow","unverified process cannot release startup")
 }
