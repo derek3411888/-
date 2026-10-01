@@ -10,8 +10,8 @@ $suiteTests = [ordered]@{
     Policy=@('GameMaintenancePolicyTest.ahk','GameMaintenancePersistenceTest.ahk')
     Adapters=@('GameUpdateAdaptersTest.ahk','ManagedProcessGuardTest.ps1')
     Ocr=@('GameUpdateOcrPolicyTest.ahk')
-    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1')
-    Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1','RemoteControlStartupHookTest.ps1')
+    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1','LauncherStartupGuardTest.ps1','LauncherStartupNativeTest.ps1','InstallStartupLockTest.ps1')
+    Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1','RemoteControlStartupHookTest.ps1','RuntimeSnapshotThrottleTest.ps1')
     Ui=@('GameMaintenanceLocalUiTest.ps1')
     Release=@('GameMaintenancePackageTest.ps1')
 }

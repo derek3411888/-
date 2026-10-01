@@ -129,8 +129,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.17"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.29"
+global PAYLOAD_BUILD_VERSION := "5.18"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.30"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -11562,6 +11562,10 @@ CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
     if !__RUNTIME_DIAGNOSTICS_ACTIVE || __RUNTIME_SNAPSHOT_BUSY
         return false
     __RUNTIME_SNAPSHOT_BUSY := true
+    ; 節流的是「嘗試」而非成功圖片。桌面／GDI 暫時不可擷取時也必須
+    ; 保留冷卻，否則每筆背景模板警告都會再觸發一次失敗截圖。
+    if preserveErrorCopy
+        __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := MonotonicTickMs()
 
     try {
         diagDir := ResolveRuntimeDiagnosticsDir()
@@ -11580,7 +11584,6 @@ CaptureRuntimeSnapshot(reason := "定時快照", preserveErrorCopy := false) {
         if preserveErrorCopy {
             errorPath := diagDir "\error_" FormatTime(, "yyyyMMdd_HHmmss") "_" A_TickCount ".jpg"
             FileCopy(latestPath, errorPath, 1)
-            __RUNTIME_LAST_ERROR_SNAPSHOT_TICK := MonotonicTickMs()
             PruneRuntimeDiagnosticScreenshots(RUNTIME_DIAGNOSTICS_ERROR_KEEP_COUNT)
         }
 

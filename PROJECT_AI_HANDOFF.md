@@ -1,11 +1,29 @@
 # 一鍵啟動鋤地腳本：AI 接手速覽
 
+## Codex 跨裝置工作方式（2026-10-01 使用者更正）
+
+- 原 root chat `019f74ff-7f7b-7e22-9f53-ec049a5c723a` 固定留在 MYDESKPC；正式原始碼仍以本專案為準。日常遠端工作不 Handoff root。
+- 使用專案內 [codex-remote-worker skill](.agents/skills/codex-remote-worker/SKILL.md)，以原生 `send_message_to_thread`／`wait_threads`／`read_thread` 呼叫固定 MYTUF worker。已知 host／thread／遠端開發目錄由 skill 的 `hosts.json` 管理，每次呼叫仍須驗證即時狀態。
+- 單一命令採 command 模式：精確執行指定 PowerShell 本文一次，分開回傳 stdout／stderr／exit code／hostname／cwd 與請求識別碼，不自行延伸修復；較大工作才明列 agentic 範圍。未知傳送結果不可直接重送，忙碌 worker 不得當作命令佇列。
+- 這是原生跨聊天委派流程，不是新增原生 shell RPC，也不是鋤地 API／DeskIn。根聊天室同一 turn 的本機 `exec_command` 仍在 MYDESKPC。Handoff 僅保留整個聊天移交的額外明確需求。
+- Mac mini 尚未配置，不能沿用 MYTUF host 或宣稱 GUI／Xcode 可用。另驗證 macOS 身分、目錄、命令擷取與工具鏈後才能啟用。
+- 本次 fresh 驗收證據保存在 `.dev-runtime/diagnostics/game-maintenance/remote-worker/`。遠端命令驗收與兩台鋤地正常上線／實機進度是不同條件，不能互相替代。
+- 11:41～11:46 已完成同一 root turn 的本機 → MYTUF → 本機證據：兩次本機都是 MYDESKPC，遠端為 MyTUFPC、相同 Git origin，遠端命令 exit 0；另驗證分離 stdout/stderr、真實 exit 7、相同請求識別碼不重複執行。本機 11 項擷取回歸與 skill 驗證通過。這不是 GUI／Mac 或兩台鋤地已恢復的驗收。
+
 ## 1) 專案目的
 本專案是 AutoHotkey v2 自動化流程，核心目標是：
 - 啟動並維護鳴潮流程
 - 協調 LRMCAI、OKWW、聲骸合成等子腳本
 - 透過 OCR/模板判定流程狀態
 - 進行收尾監測、重啟恢復、伺服器排程與完成記錄
+
+### 啟動器重複啟動與搬移交接（2026-10-01）
+
+- 5.18／5.30 修正桌機第二次啟動以舊 AHK PID 誤認新 child 成功的問題。啟動器在釋出內嵌檔案與更新前核對已安裝主腳本；同一路徑即使由另一份 AHK runtime 執行，也拒絕重複啟動。無法取得完整身分時安全停止，不以程式名稱廣殺。
+- `LauncherStartupGuard.ahk` 透過 `CreateProcessW` 保留新 child 的真正 process handle，再比對 PID、路徑、腳本與建立時間；程序存在或 handoff ACK 不等於网站在線或遊戲已開始工作。
+- `payload/InstallStartupLock.ahk` 讓不同名稱的 launcher 與 direct restart worker 共用安裝根目錄 reservation。首次自我搬移前，父程序必須先釋放鎖並將 handle 清零，才能啟動新位置的 child；搬移啟動失敗須退出，不得在已失去 reservation 後繼續更新。
+- 完整打包回歸包含 24 組維護測試、19 個隔離 AHK 重啟交接案例、108 項網站／伺服器測試及其餘發布前語法、OCR、HTTP timeout、錄影、憑證與橋接測試。真實子程序測試覆蓋 parent 尚存活時 relocation child 取得鎖，以及實際失敗 handler 不繼續修改 payload。
+- 11:58 的新證據仍是桌機離線、心跳停在 09:52:14，nonce／ACK 都為 120、無 pending command。修正通過回歸不能作為桌機已恢復的證據；正式啟動後仍需 fresh online/RUN、主畫面/F11/LRMCAI 任務進度驗收。
 
 ## 2) 目前主流程重點（payload/全自動.ahk）
 - 啟動前：

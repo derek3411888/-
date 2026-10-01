@@ -3,6 +3,7 @@
 #Warn All, StdOut
 #NoTrayIcon
 #Include ScriptRestartHandoff.ahk
+#Include InstallStartupLock.ahk
 
 requestPath := A_Args.Length = 1 ? A_Args[1] : ""
 if (requestPath = "" || !FileExist(requestPath))
@@ -12,6 +13,7 @@ workerMutex := 0
 parentHandle := 0
 workerOwnsRequest := false
 recordingGuardReady := false
+installHandle := 0
 try {
     SetWorkingDir(requestDir)
     nonce := IniRead(requestPath, "request", "nonce")
@@ -75,6 +77,20 @@ try {
     }
     if !launchPid {
         SplitPath(scriptPath, , &scriptDir)
+        SplitPath(scriptDir, , &installRoot)
+        reserveDeadline := A_TickCount + ackWaitMs
+        loop {
+            if RestartWorker_Cancelled()
+                ExitApp 0
+            installHandle := InstallStartupLock_Acquire(installRoot)
+            if installHandle > 0
+                break
+            if !installHandle || A_TickCount >= reserveDeadline
+                throw Error("Installation is updating or startup reservation unavailable; no successor launched")
+            DllCall("Sleep", "uint", 50)
+        }
+        if !InstallStartupLock_MainAbsent(scriptPath)
+            throw Error("Existing or uninspectable payload after update reservation; duplicate successor NOT launched")
         Run('"' ahkPath '" /ErrorStdOut=UTF-8 "' scriptPath '" ' mode, scriptDir, "Hide", &launchPid)
     }
     RestartWorker_Result("started", "Successor process started; awaiting payload acknowledgement", launchPid)
@@ -116,6 +132,7 @@ try {
     }
     ExitApp 1
 } finally {
+    InstallStartupLock_Release(installHandle)
     if parentHandle
         DllCall("CloseHandle", "ptr", parentHandle)
     if workerMutex

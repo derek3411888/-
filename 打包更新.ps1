@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.17',
-    [string]$LauncherVersion = '5.29',
-    [string]$ServerVersion = '1.0.76'
+    [string]$PayloadVersion = '5.18',
+    [string]$LauncherVersion = '5.30',
+    [string]$ServerVersion = '1.0.77'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -259,7 +259,7 @@ if ((Get-FileHash -LiteralPath (Join-Path $projectRoot 'self-hosted-server\publi
 $launcherSource = Get-Content -LiteralPath '打包啟動器.ahk' -Raw -Encoding UTF8
 $payloadSource = Get-Content -LiteralPath 'payload\全自動.ahk' -Raw -Encoding UTF8
 $runtimeSources = @(
-    '打包啟動器.ahk', 'LauncherProcessCleanupPolicy.ahk',
+    '打包啟動器.ahk', 'LauncherProcessCleanupPolicy.ahk', 'LauncherStartupGuard.ahk',
     'payload\全自動.ahk', 'payload\開啟LRMC.ahk',
     'payload\自動開啟OKWW.ahk', 'payload\聲骸合成.ahk',
     'payload\RecordingFinalizeWorker.ahk', 'payload\RemoteControlFirestore.ahk',
@@ -460,7 +460,7 @@ Move-Item -LiteralPath $payloadTemp -Destination 'payload\全自動鋤地.exe' -
 Write-Host '建立 payload.zip…'
 New-FilteredZip 'payload' 'payload.zip' (Get-PayloadZipExcludes)
 Assert-ZipContains 'payload.zip' (Get-GameMaintenancePayloadFiles)
-Assert-ZipContains 'payload.zip' @('ScriptRestartHandoff.ahk', 'ScriptRestartWorker.ahk')
+Assert-ZipContains 'payload.zip' @('ScriptRestartHandoff.ahk', 'ScriptRestartWorker.ahk', 'InstallStartupLock.ahk')
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk', 'ForegroundBlockerPolicy.ahk',

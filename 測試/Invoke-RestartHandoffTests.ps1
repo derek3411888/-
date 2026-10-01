@@ -5,9 +5,38 @@ $projectRoot = Split-Path $PSScriptRoot -Parent
 . (Join-Path $projectRoot 'ProjectDevelopmentPaths.ps1')
 $context = Initialize-ProjectDevelopmentPaths -ProjectRoot $projectRoot -RunName 'restart-handoff-tests'
 $runtime = Join-Path $projectRoot 'AutoHotkey64.exe'
-$testFile = Join-Path $PSScriptRoot 'ScriptRestartHandoffTest.ahk'
 $passed = 0
 try {
+    # Use unchanged handoff/worker code in a contained fixture installation.
+    # Only the process-inventory boundary is namespaced to this test's files.
+    # Unreadable unrelated elevated AHK processes must block the real product,
+    # but must not determine the outcome of synthetic protocol tests.
+    $harnessRoot = Join-Path $context.RunRoot 'harness'
+    $harnessPayload = Join-Path $harnessRoot 'payload'
+    $harnessTests = Join-Path $harnessRoot '測試'
+    $harnessFixtures = Join-Path $harnessTests 'fixtures'
+    foreach ($dir in @($harnessPayload,$harnessFixtures)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
+    foreach ($file in @('ScriptRestartHandoff.ahk','ScriptRestartWorker.ahk')) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot ('payload\'+$file)) -Destination (Join-Path $harnessPayload $file)
+    }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ScriptRestartHandoffTest.ahk') -Destination $harnessTests
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures\RestartHandoffFixture.ahk') -Destination $harnessFixtures
+    $inventorySource = Get-Content -LiteralPath (Join-Path $projectRoot 'payload\InstallStartupLock.ahk') -Raw -Encoding UTF8
+    $fixtureInventory = @'
+InstallStartupLock_QueryProcesses() {
+    ownedRecords := []
+    for record in ComObjGet("winmgmts:").ExecQuery("Select CommandLine from Win32_Process where Name like 'AutoHotkey%'") {
+        if record.CommandLine && InStr(record.CommandLine, "__HARNESS_ROOT__")
+            ownedRecords.Push(record)
+    }
+    return ownedRecords
+}
+'@
+    $inventorySource = [regex]::Replace($inventorySource,'(?ms)^InstallStartupLock_QueryProcesses\(\) \{.*?^\}',
+        [Text.RegularExpressions.MatchEvaluator]{ param($match) $fixtureInventory.Replace('__HARNESS_ROOT__',$harnessRoot) })
+    [IO.File]::WriteAllText((Join-Path $harnessPayload 'InstallStartupLock.ahk'),$inventorySource,[Text.UTF8Encoding]::new($false))
+    $testFile = Join-Path $harnessTests 'ScriptRestartHandoffTest.ahk'
+    $workerPath = Join-Path $harnessPayload 'ScriptRestartWorker.ahk'
     $launcherFixture = Join-Path $context.RunRoot 'launcher-fixture.exe'
     $compiler = Join-Path $env:ProgramFiles 'AutoHotkey\Compiler\Ahk2Exe.exe'
     $compileArgs = '/in "{0}" /out "{1}" /base "{2}" /silent verbose' -f `
@@ -82,7 +111,7 @@ try {
             $childPath = Join-Path $caseRoot 'child-starts.txt'
             if ($case.Scenario -eq 'late-duplicate') {
                 $duplicate = Start-Process -FilePath $runtime -ArgumentList ('/ErrorStdOut=UTF-8 "{0}" "{1}"' -f `
-                    (Join-Path $projectRoot 'payload\ScriptRestartWorker.ahk'), $request) -WindowStyle Hidden -PassThru
+                    $workerPath, $request) -WindowStyle Hidden -PassThru
                 [void]$duplicate.Handle
                 if (-not $duplicate.WaitForExit(5000)) { $duplicate.Kill(); throw 'Late duplicate worker did not exit' }
                 if ($duplicate.ExitCode -ne 0) { throw 'Late duplicate worker failed' }

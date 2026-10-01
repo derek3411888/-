@@ -1,0 +1,6 @@
+interface:
+  display_name: "MYTUF Remote Worker"
+  short_description: "Keep root on MYDESKPC and run verified MYTUF commands"
+  default_prompt: "Use $codex-remote-worker to run the requested MYTUF command while this root chat stays on MYDESKPC."
+policy:
+  allow_implicit_invocation: true

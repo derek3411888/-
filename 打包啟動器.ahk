@@ -1,12 +1,14 @@
 ﻿#Requires AutoHotkey v2.0+
 #SingleInstance Off
 #Include LauncherProcessCleanupPolicy.ahk
+#Include LauncherStartupGuard.ahk
+#Include payload\InstallStartupLock.ahk
 #Include LauncherHttp.ahk
 #Include LauncherPayloadUpdatePolicy.ahk
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.29"
+global PACK_LAUNCHER_BUILD_VERSION := "5.30"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -299,16 +301,7 @@ LauncherHashText(textValue) {
 }
 
 LauncherAcquireMainMutex() {
-    name := "Local\WutheringAutoLauncher_" LauncherHashText(A_ScriptFullPath)
-    handle := DllCall("CreateMutexW", "ptr", 0, "int", true, "str", name, "ptr")
-    lastErr := A_LastError
-    if (!handle)
-        return 0
-    if (lastErr = 183) { ; ERROR_ALREADY_EXISTS
-        DllCall("CloseHandle", "ptr", handle)
-        return -1
-    }
-    return handle
+    return InstallStartupLock_Acquire(LauncherProjectRoot())
 }
 
 LifecycleOnExit(exitReason, exitCode) {
@@ -974,8 +967,21 @@ if (PACK_MAIN_MUTEX_HANDLE = -1) {
     MsgBox("全自動鋤地啟動器已在執行。", "啟動器", 48)
     ExitApp
 }
-if (PACK_MAIN_MUTEX_HANDLE = 0)
-    WriteLog("建立啟動器 mutex 失敗，仍繼續執行", "WARN")
+if (PACK_MAIN_MUTEX_HANDLE = 0) {
+    WriteLog("無法取得安裝目錄啟動／更新鎖，保留目前檔案並停止", "ERROR")
+    ExitApp 1
+}
+
+; Must run before releasing/replacing any embedded file or updating payload.
+; Repeated clicks must leave the active task and recorder untouched.
+existingMainGate := LauncherStartup_Inspect(LauncherProjectRoot() "\AutoHotkey64.exe",
+    LauncherProjectRoot() "\payload\全自動.ahk")
+if !existingMainGate.allow {
+    WriteLog("既有主流程保護：" existingMainGate.reason " | PID=" existingMainGate.pid
+        "；略過更新與重複啟動，不中斷目前任務", "WARN")
+    WriteStep("保留既有主流程", existingMainGate.reason " | PID=" existingMainGate.pid)
+    ExitApp
+}
 
 ; =========================
 ; 自我組織功能：建立專用資料夾並移動exe
@@ -1032,6 +1038,10 @@ if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
         WriteLog("跳過複製其他目錄，避免複製不相關檔案")
         
         ; 啟動新位置的exe
+        ; 搬移前後共用安裝目錄鎖：先交出保留權，子程序才能接手。
+        ; 此界線之後父程序只能退出；Run 失敗也不可繼續解壓／啟動。
+        InstallStartupLock_Release(PACK_MAIN_MUTEX_HANDLE)
+        PACK_MAIN_MUTEX_HANDLE := 0
         Run('"' newExePath '"' LauncherAdminForwardArgs(), autoFolderPath)
         WriteLog("啟動新位置的程式，準備清理原檔案")
         
@@ -1081,8 +1091,8 @@ if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
         
     } catch as e {
         WriteLog("自我組織失敗: " e.Message, "ERROR")
-        MsgBox("無法完成自我組織：" e.Message "`n`n將在當前位置繼續執行。", "警告", 48)
-        ; 繼續在當前位置執行
+        MsgBox("無法完成自我組織：" e.Message "`n`n已安全停止，原始檔案保留；不在未持有啟動保留權時繼續執行。", "警告", 48)
+        ExitApp(1)
     }
 } else {
     WriteLog("已在專用資料夾內，跳過自我組織")
@@ -1249,6 +1259,10 @@ if needUnpack {
             try {
                 cmdLine := process.CommandLine
                 decision := LauncherCleanup_ProcessDecision(process.Name, cmdLine, APP_DIR)
+                if (decision.role = "managed-全自動.ahk") {
+                    WriteLog("更新前發現主流程，拒絕終止或覆寫；請由既有交接流程更新", "ERROR")
+                    ExitApp 1
+                }
                 if decision.stop {
                     pid := process.ProcessId
                     ProcessClose(pid)
@@ -1591,40 +1605,17 @@ try {
         WriteLog("主腳本將以 restart resume 接續已開始的 LRMCAI 任務")
     else if (payloadArgs = " restart")
         WriteLog("主腳本將以 restart 模式重跑尚未開始的流程")
-    Run('"' ahkPath '" "' MAIN_PATH '"' payloadArgs, APP_DIR)
-    mainLaunchSucceeded := true
-    WriteLog("主腳本已成功啟動")
-    
-    ; 等待一小段時間確認腳本啟動
-    Sleep 2000
-    
-    ; cleanup-recordings 是一次性維護入口，成功載入設定後會立刻 ExitApp；
-    ; 不可用「數秒後仍常駐」判定它失敗。正式流程仍保留原本的程序確認。
-    processStarted := cleanupRecordingsOnly
     if cleanupRecordingsOnly {
-        WriteLog("安全錄影清理模式已成功交給主腳本；完成後快速退出屬預期，不要求常駐程序")
+        cleanupGate := LauncherStartup_Inspect(ahkPath, MAIN_PATH)
+        if !cleanupGate.allow
+            throw Error("主流程仍存在或無法確認，拒絕用清理入口取代它")
+        Run('"' ahkPath '" "' MAIN_PATH '"' payloadArgs, APP_DIR, , &cleanupPid)
+        WriteLog("安全錄影清理請求已交給 PID=" cleanupPid "；完成結果需另行核對")
     } else {
-        Loop 5 {
-            for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name like '%AutoHotkey%'") {
-                try {
-                    cmdLine := proc.CommandLine
-                    if (InStr(cmdLine, "全自動.ahk")) {
-                        WriteLog("確認全自動腳本已啟動: PID=" proc.ProcessId)
-                        processStarted := true
-                        break
-                    }
-                } catch {
-                    ; 忽略錯誤
-                }
-            }
-            if (processStarted)
-                break
-            Sleep 1000
-        }
-    }
-    
-    if (!processStarted) {
-        WriteLog("警告：無法確認全自動腳本是否成功啟動", "WARN")
+        mainStartResult := LauncherStartup_Start(ahkPath, MAIN_PATH, payloadArgs, APP_DIR)
+        mainLaunchSucceeded := mainStartResult.started
+        if !mainLaunchSucceeded
+            WriteLog("本次主腳本尚未確認啟動 | reason=" mainStartResult.reason " pid=" mainStartResult.pid, "WARN")
     }
     
 } catch as e {

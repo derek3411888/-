@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "root": {
+    "thread_id": "019f74ff-7f7b-7e22-9f53-ec049a5c723a",
+    "host_id": "local",
+    "hostname": "MYDESKPC",
+    "project_root": "E:\\Downloads\\一鍵啟動鋤地腳本"
+  },
+  "workers": {
+    "MYTUF": {
+      "enabled": true,
+      "host_id": "remote-control:env_e_6abce03b254c83239b528090f9d1fd17",
+      "thread_id": "01a0f478-ae1b-7bc0-aa66-3336b8e708c1",
+      "hostname": "MYTUFPC",
+      "shell": "powershell7",
+      "cwd": "C:\\Users\\derek\\Documents\\Codex\\2026-10-01\\mytuf-mytufpc-c-users-derek-downloads\\handoff-repository",
+      "artifacts_relative": ".dev-runtime\\diagnostics\\game-maintenance\\remote-worker",
+      "runner_relative": ".dev-runtime\\diagnostics\\game-maintenance\\remote-worker\\Invoke-WorkerCommand-v3.ps1",
+      "runner_sha256": "E8308AB83278F77124760C7BE8F13551E5367AAA9F3241FEC01A2951AE6D98CA",
+      "runner_verified_at": "2026-10-01T11:41:04+08:00",
+      "origin": "https://github.com/derek3411888/-.git"
+    },
+    "MACMINI": {
+      "enabled": false,
+      "host_id": null,
+      "thread_id": null,
+      "hostname": null,
+      "cwd": null,
+      "shell": "zsh",
+      "reason": "Not yet paired and verified; no remote Mac acceptance claimed"
+    }
+  }
+}
