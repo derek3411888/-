@@ -970,16 +970,19 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
 
   const healing = status.selfHealing || {};
   const healingState = String(healing.state || "healthy").toLowerCase();
-  const retrySeconds = healing.nextRetryAt
+  const recovered = healingState === "recovered";
+  const retrySeconds = !recovered && healing.nextRetryAt
     ? Math.max(0, Math.ceil((Number(healing.nextRetryAt) - Date.now()) / 1000)) : 0;
   const healingLabel = {
     healthy: "正常", idle: "正常", restart_scheduled: "準備修復",
     repairing: "正在修復", cooldown: "冷卻等待", retrying: "正在重試",
     circuit_open: "已抑制重啟迴圈", halted: "已停止並等待處理", cancelled: "已取消",
+    recovered: "已恢復任務進度（保留重啟保護）",
   }[healingState] || healingState;
   const healingParts = [`自動偵錯：${healingLabel}`];
-  if (healing.code) healingParts.push(`${healing.code}${healing.consecutive ? `（連續 ${healing.consecutive} 次）` : ""}`);
-  if (healing.action) healingParts.push(healing.action);
+  if (healing.code) healingParts.push(`${recovered ? "歷史錯誤：" : ""}${healing.code}${healing.consecutive ? (recovered ? `（保留計數 ${healing.consecutive}）` : `（連續 ${healing.consecutive} 次）`) : ""}`);
+  if (healing.action) healingParts.push(`${recovered ? "先前處理：" : ""}${healing.action}`);
+  if (recovered && healing.recoveryDetail) healingParts.push(`恢復證據：${healing.recoveryDetail}`);
   if (retrySeconds) healingParts.push(`${retrySeconds} 秒後再試`);
   if (healing.detail && !healing.action) healingParts.push(healing.detail);
   setText("selfHealingStatus", healingParts.join("｜"));

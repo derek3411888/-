@@ -125,6 +125,13 @@ InstallStartupLock_QueryProcesses() {
                 $duplicate.Dispose()
             }
             if ($case.Expected -eq 'accepted' -or $case.Scenario -like 'noack*' -or $case.Scenario -eq 'wrong-mode') {
+                # The deliberately short 400-ms no-ACK deadline can finish
+                # before a busy machine schedules the inert successor. Wait
+                # for its independent evidence, without changing product timeouts.
+                $startDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                while (-not (Test-Path -LiteralPath $childPath) -and [DateTime]::UtcNow -lt $startDeadline) {
+                    Start-Sleep -Milliseconds 50
+                }
                 $starts = @(Get-Content -LiteralPath $childPath | Where-Object { $_ })
                 if ($starts.Count -ne 1 -or ($case.Scenario -ne 'wrong-mode' -and $starts[0] -cne $case.Mode)) { throw 'Successor mode changed or launched more than once' }
                 $exitPath = Join-Path $caseRoot 'child-exit.ini'

@@ -48,6 +48,10 @@ global IMAGEPUT_GDIPLUS_PROCESS_PIN := ImagePut.gdiplusStartup()
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include ScriptRestartHandoff.ahk
+#Include RestartRecovery.ahk
+global __RESTART_RECOVERY_WAITING := false, __RESTART_RECOVERY_RETRY_ID := 0
+global __RESTART_RECOVERY_REPORT_KEY := "", __RESTART_RECOVERY_REPORT_TICK := 0
+global __RESTART_RECOVERY_RECORDING_STOPPED := false
 #Include InteractiveDesktopGuard.ahk
 #Include ForegroundBlockerPolicy.ahk
 #Include ScreenRecordingEncoderPolicy.ahk
@@ -146,8 +150,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.21"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.33"
+global PAYLOAD_BUILD_VERSION := "5.22"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.34"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -1092,12 +1096,29 @@ IsCleanFinalScriptExit(exitReason) {
 
 OnRemoteControlStateChanged(state, command := "") {
     global REMOTE_STOP_IN_PROGRESS, __REMOTE_WAS_PAUSED, __WAITING_FOR_INTERACTIVE_DESKTOP
+    global __RESTART_RECOVERY_WAITING, __RESTART_RECOVERY_RETRY_ID
     generationNonce := (IsObject(command) && command.HasOwnProp("remoteNonce"))
         ? command.remoteNonce : 0
     if (state = "PAUSE")
         SetSoftPauseClockState(true)
     else if (state = "RUN" || state = "STOP")
         SetSoftPauseClockState(false)
+    if (__RESTART_RECOVERY_WAITING && state != "STOP") {
+        if state = "RUN" {
+            saved := GM_HandleRemoteIntent(state, command)
+            if saved.handled && saved.code != "APPLIED"
+                return saved
+            __RESTART_RECOVERY_RETRY_ID += 1
+            return {code:"APPLIED", detail:"已要求重試原交接；仍需等待新心跳與實機進度確認恢復"}
+        }
+        if state = "PAUSE" {
+            saved := GM_HandleRemoteIntent(state, command)
+            if saved.handled && saved.code != "APPLIED"
+                return saved
+            return {code:"APPLIED", detail:"已暫停交接，不操作遊戲或啟動下一輪"}
+        }
+        return {code:"BUSY", detail:"原任務重啟交接待處理；請先 RUN 重試或 STOP 取消"}
+    }
     maintenanceIntent := GM_HandleRemoteIntent(state, command)
     if (maintenanceIntent.handled && state != "STOP")
         return maintenanceIntent
@@ -2270,7 +2291,8 @@ RemoteServerSwitchCommitTick() {
         return
 
     REMOTE_SERVER_SWITCH_PENDING := false
-    REMOTE_STOP_IN_PROGRESS := true
+    ; __RESTART_IN_PROGRESS serializes this close/handoff. This is NOT STOP:
+    ; a held nextserver handoff must still accept a later real STOP or RUN.
     REMOTE_PAUSE_WAITING := false
     __RESTART_IN_PROGRESS := true
     __NEXTSERVER_RESTART := true
@@ -2280,7 +2302,7 @@ RemoteServerSwitchCommitTick() {
     ShutdownGameLrmcOkww(true, "WEB_SERVER_SWITCH", "remote")
 }
 
-WriteStep(stepName, detail := "", level := "INFO") {
+WriteStep(stepName, detail := "", level := "INFO", reportRuntime := true) {
     global STEP_SEQ, CURRENT_STEP_NAME, CURRENT_STEP_DETAIL, CURRENT_STEP_LEVEL, REMOTE_CONTROL_ACTIVE
     STEP_SEQ += 1
     stepId := Format("{:03}", STEP_SEQ)
@@ -2299,7 +2321,8 @@ WriteStep(stepName, detail := "", level := "INFO") {
     if (detail != "")
         tip .= "`nℹ " detail
     ShowTip(tip)
-    if (REMOTE_CONTROL_ACTIVE)
+    ; 狀態需原子提交的呼叫端可延後同步心跳，避免 HTTP／直播處理落在 Critical 內。
+    if (REMOTE_CONTROL_ACTIVE && reportRuntime)
         RC_ReportRuntimeState()
 }
 
@@ -2409,7 +2432,6 @@ RecoverPendingRecordingSessions()
 MAX_RESTART_COUNT := ToIntRange(
     IniReadSafe(CFG_FILE, "restart_tracking", "max_restart_count", "10"), 10, 1, 50)
 global restartCount := Integer(IniReadSafe(CFG_FILE, "restart_tracking", "auto_restart_count", "0"))
-WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; 檢查是否為重啟模式（遊戲更新後需要重新啟動OKWW）
 isRestart := false
@@ -2450,7 +2472,8 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
 }
 
 if (!isRestart && !isNextServerCycle)
-    PreserveRestartTrackingOnFreshStart()
+    ResetRestartTrackingOnFreshStart()
+WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
@@ -7620,6 +7643,35 @@ ReadSelfHealingRuntimeState() {
     }
 }
 
+RecordSelfHealingGameplayProgress(line) {
+    global CFG_FILE, RUN_ID, REMOTE_CONTROL_ACTIVE
+    if !SelfHealHasGameplayProgress(line, SubStr(RUN_ID, 1, 14))
+        return false
+    previousCritical := Critical("On")
+    try {
+        if (REMOTE_CONTROL_ACTIVE && RC_IsPaused())
+            return false
+        previous := ReadSelfHealingRuntimeState()
+        if (previous.code = "" || previous.state = "recovered"
+            || previous.state = "healthy" || previous.state = "idle" || previous.state = "cancelled")
+            return false
+        nowMs := RC_UnixMs()
+        ; 不呼叫 ResetSelfHealingTracking：fingerprint、計數、錯誤與接續資料都保留。
+        IniWrite SubStr(line, 1, 500), CFG_FILE, "self_healing", "recovery_detail"
+        IniWrite nowMs, CFG_FILE, "self_healing", "recovered_at_unix_ms"
+        IniWrite 0, CFG_FILE, "self_healing", "next_retry_at_unix_ms"
+        IniWrite nowMs, CFG_FILE, "self_healing", "updated_at_unix_ms"
+        IniWrite "recovered", CFG_FILE, "self_healing", "state"
+        WriteLog("已觀察到 LRMCAI 本次任務進度；舊錯誤改列歷史，重啟保護仍保留 | " line)
+        return true
+    } catch as e {
+        WriteLog("回報任務恢復狀態失敗：" e.Message, "WARN")
+        return false
+    } finally {
+        Critical(previousCritical)
+    }
+}
+
 WriteSelfHealingRuntimeState(state, reasonCode := "", stage := "", consecutive := 0,
     category := "", action := "", detail := "", nextRetryAt := 0,
     fingerprint := "", lastFailureAt := 0) {
@@ -7705,10 +7757,11 @@ ParseManagedCommandLine(commandLine) {
 ResolveManagedTargetExePath(exeName) {
     global CFG_FILE, GM_CONTROLLER
     name := StrLower(exeName)
-    if name = "client-win64-shipping.exe" {
+    if name = "client-win64-shipping.exe" || name = "wuthering waves.exe" {
         if !IsObject(GM_CONTROLLER) || !GM_Value(GM_CONTROLLER.install,"identityVerified",false)
             return ""
-        return GMHost_CanonicalPath(GM_CONTROLLER.install.gameRoot "\Client\Binaries\Win64\Client-Win64-Shipping.exe")
+        relative := name = "wuthering waves.exe" ? "\Wuthering Waves.exe" : "\Client\Binaries\Win64\Client-Win64-Shipping.exe"
+        return GMHost_CanonicalPath(GM_CONTROLLER.install.gameRoot relative)
     }
     key := name = "lrmcai.exe" ? "LRMC" : name = "ok-ww.exe" ? "OKWW" : ""
     if key = ""
@@ -7737,10 +7790,10 @@ ReadManagedProcessRecord(pid, expectedWmiCreated := "") {
     return matched && GMU_ProcessIdentityMatches(current,pid,record.path,record.started) ? record : 0
 }
 
-CloseManagedProcessRecord(record,displayName) {
+CloseManagedProcessRecord(record,displayName,mayTerminate := 0) {
     if !IsObject(record)
         return false
-    if !MPG_CloseRecord(record) {
+    if !MPG_CloseRecord(record,mayTerminate) {
         WriteLog("身分已改變、權限不足或尚未退出；保留 " displayName " PID=" record.pid,"WARN")
         return false
     }
@@ -7748,7 +7801,7 @@ CloseManagedProcessRecord(record,displayName) {
     return true
 }
 
-CloseExactProcessForSelfHealing(exeName, displayName) {
+CloseExactProcessForSelfHealing(exeName, displayName, mayTerminate := 0) {
     closed := 0
     expectedPath := ResolveManagedTargetExePath(exeName)
     if expectedPath = "" {
@@ -7765,7 +7818,7 @@ CloseExactProcessForSelfHealing(exeName, displayName) {
             record := ReadManagedProcessRecord(pid)
             if !IsObject(record) || StrLower(record.path) != StrLower(expectedPath)
                 continue
-            if CloseManagedProcessRecord(record, displayName)
+            if CloseManagedProcessRecord(record, displayName, mayTerminate)
                 closed += 1
         }
     } catch as e {
@@ -8175,9 +8228,95 @@ TryLaunchRestartThroughUpdater(resumeCurrentTask := false, &detail := "") {
 }
 
 QueueSafeRestartHandoff(mode, launcherPath := "") {
+    global __RESTART_RECOVERY_WAITING, __RESTART_RECOVERY_REPORT_KEY
+    global __RESTART_RECOVERY_RECORDING_STOPPED
+    __RESTART_RECOVERY_WAITING := true
+    __RESTART_RECOVERY_REPORT_KEY := "", __RESTART_RECOVERY_RECORDING_STOPPED := false
+    try SetTimer(CrashWatcherTick, 0)
+    hooks := {Read:ReadRestartRecoveryIntent, Prepare:PrepareRestartRecoveryAttempt.Bind(mode, launcherPath),
+        Wait:RawSleep, Publish:PublishRestartRecoveryState,
+        Commit:CommitRestartRecoveryHandoff, Cancel:CancelRestartRecoveryHandoff}
+    try {
+        result := RestartRecovery_Run(hooks)
+        if result = "stopped"
+            throw Error("重啟交接已被停止要求取消")
+        return result
+    } finally __RESTART_RECOVERY_WAITING := false
+}
+
+CommitRestartRecoveryHandoff() {
+    global __RESTART_RECOVERY_WAITING
+    previousCritical := Critical("On")
+    try {
+        if ReadRestartRecoveryIntent().state != "RUN"
+            return false
+        ; From this instant, commands belong to the replacement, exactly as in
+        ; the existing armed handoff. Do not yield between checking and closing
+        ; the recovery-command admission window.
+        __RESTART_RECOVERY_WAITING := false
+        return true
+    } finally Critical(previousCritical)
+}
+
+CancelRestartRecoveryHandoff() {
+    global __RESTART_HANDOFF_LAUNCHED
+    cancelled := RestartHandoff_Cancel("intent changed while arming")
+    __RESTART_HANDOFF_LAUNCHED := false
+    if !cancelled
+        WriteLog("重啟取消尚未確認，保留父程序與鎖；不允許下一個 worker", "ERROR")
+    return cancelled
+}
+
+ReadRestartRecoveryIntent() {
+    global __RESTART_RECOVERY_RETRY_ID, REMOTE_STOP_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+    global EXITING_FROM_TRAY, REMOTE_CONTROL_ACTIVE
+    state := (REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED || EXITING_FROM_TRAY || GM_IsMaintenanceStopped())
+        ? "STOP" : (REMOTE_CONTROL_ACTIVE && RC_IsPaused()) ? "PAUSE" : "RUN"
+    return {state:state, retry:__RESTART_RECOVERY_RETRY_ID}
+}
+
+PrepareRestartRecoveryAttempt(mode, launcherPath) {
+    if ReadRestartRecoveryIntent().state != "RUN"
+        throw Error("停止或暫停意圖已變更，保留原任務")
+    ; A previous failed prepare may have dispatched a helper. Never create a
+    ; second worker until cancellation and the held kernel object's exit agree.
+    if !RestartHandoff_ResetCancelled()
+        throw Error("前次交接 worker 尚未確認取消退出；保留舊主腳本與 ownership")
+    ; Cleanup and the exit gate must cover the SAME verified install, including
+    ; Kuro's wrapper. MPG revalidates creation/image on a retained process handle.
+    mayTerminate := () => ReadRestartRecoveryIntent().state = "RUN"
+    CloseExactProcessForSelfHealing("Client-Win64-Shipping.exe", "鳴潮遊戲", mayTerminate)
+    if ReadRestartRecoveryIntent().state != "RUN"
+        throw Error("清理期間停止或暫停意圖已變更")
+    CloseExactProcessForSelfHealing("Wuthering Waves.exe", "鳴潮外層程序", mayTerminate)
+    return TryQueueSafeRestartHandoff(mode, launcherPath)
+}
+
+PublishRestartRecoveryState(state, detail, attempts) {
+    global __RESTART_RECOVERY_REPORT_KEY, __RESTART_RECOVERY_REPORT_TICK
+    global __RESTART_RECOVERY_RECORDING_STOPPED
+    if state = "failed" && !__RESTART_RECOVERY_RECORDING_STOPPED {
+        ForceStopManagedScreenRecording("重啟交接尚未成功，先正常封口避免空錄")
+        __RESTART_RECOVERY_RECORDING_STOPPED := true
+    }
+    key := state "|" attempts "|" detail, nowTick := MonotonicTickMs()
+    if key = __RESTART_RECOVERY_REPORT_KEY && nowTick - __RESTART_RECOVERY_REPORT_TICK < 30000
+        return
+    __RESTART_RECOVERY_REPORT_KEY := key, __RESTART_RECOVERY_REPORT_TICK := nowTick
+    text := "交接嘗試 " attempts "/3 | " detail
+    if state = "held"
+        text .= "；腳本保持在線，原任務已保留。請於網站 RUN 重試或 STOP 取消"
+    WriteStep("重啟交接等待", text, state = "failed" || state = "held" ? "ERROR" : "INFO")
+    try SyncRemoteControlRuntimeState()
+}
+
+TryQueueSafeRestartHandoff(mode, launcherPath := "") {
     global AhkExe, __RESTART_HANDOFF_LAUNCHED, __SCREEN_RECORDING_PID
-    if !GM_PrepareCleanLauncherRestart()
-        throw Error("未能確認遊戲已退出或停止意圖已變更；不建立新的啟動器交接")
+    detail := ""
+    if !GM_PrepareCleanLauncherRestart(&detail)
+        throw Error("啟動器交接未就緒：" detail)
+    if ReadRestartRecoveryIntent().state != "RUN"
+        throw Error("建立 worker 前停止或暫停意圖已變更")
     recording := ""
     if (__SCREEN_RECORDING_PID > 0 && ProcessExist(__SCREEN_RECORDING_PID))
         recording := RestartHandoff_RecorderIdentity(__SCREEN_RECORDING_PID)
@@ -8186,8 +8325,8 @@ QueueSafeRestartHandoff(mode, launcherPath := "") {
     ; Mark preservation only after the worker confirms it owns the exact parent
     ; process handle. This is ARMED, not a claim that the next run has started.
     __RESTART_HANDOFF_LAUNCHED := true
-    WriteLog("重啟交接已備妥 | mode=" mode " workerPid=" handoff.workerPid " request=" handoff.request)
-    WriteStep("重啟交接", "等待舊程序結束；接手尚未確認 | " mode)
+    try WriteLog("重啟交接已備妥 | mode=" mode " workerPid=" handoff.workerPid " request=" handoff.request)
+    try WriteStep("重啟交接", "等待舊程序結束；接手尚未確認 | " mode)
     return handoff
 }
 
@@ -8245,7 +8384,8 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
             0, previousHealing.fingerprint, previousHealing.lastAt)
 
         Sleep 5000
-        ; 耗盡值必須持久保留，不能退出後讓重新啟動取得全新額度。
+        ; 耗盡值持久保留供內部 restart/nextserver 接續；使用者或排程明確
+        ; 全新啟動時，才由 ResetRestartTrackingOnFreshStart 更新一般額度。
         IniWrite restartCount, CFG_FILE, "restart_tracking", "auto_restart_count"
         ExitApp
     }
@@ -8390,6 +8530,7 @@ MonitorRewardAndShutdown() {
     global REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC
     global REMOTE_CONTROL_ACTIVE, __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
     global SERVER_SCHEDULE_ENABLED, CURRENT_SERVER_TARGET
+    global RUN_ID
 
     logPath := ResolveRewardLogPath()
     if (logPath = "") {
@@ -8450,6 +8591,7 @@ MonitorRewardAndShutdown() {
             chunk := ReadLogAppended(logPath, &lastPos)
             state.lastPos := lastPos
             stateChanged := false
+            progressLine := ""
             if (chunk != "") {
                 for line in StrSplit(chunk, "`n") {
                     line := Trim(line, "`r`t ")
@@ -8458,6 +8600,9 @@ MonitorRewardAndShutdown() {
 
                     if !IsRecentRewardMonitorLogLine(line, REWARD_LOG_RECENT_WINDOW_SEC)
                         continue
+
+                    if SelfHealHasGameplayProgress(line, SubStr(RUN_ID, 1, 14))
+                        progressLine := line
 
                     ; 暫停時只解析並保存命中，不做錄影、視窗、程序等外部動作。
                     if (!paused && warmupFinished && !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()))
@@ -8549,7 +8694,25 @@ MonitorRewardAndShutdown() {
                 state.taskAbandonCompletionHeld := false
                 stateChanged := true
                 WriteLog("LRMCAI 放棄任務觀察窗已安全結束；現在才允許採信已保存的領獎完成訊號")
+                previousCritical := Critical("On")
+                try {
+                    paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+                    if paused
+                        WriteStep("收尾監測", "觀察窗已結束；PAUSE期間保持被動讀檔", "WARN", false)
+                    else if !warmupFinished
+                        WriteStep("收尾監測", "觀察窗已結束；暖機中，持續讀取新增日誌", "INFO", false)
+                    else
+                        WriteStep("收尾監測", "觀察窗已結束，繼續監測任務與領獎條件", "INFO", false)
+                } finally {
+                    Critical(previousCritical)
+                }
+                if REMOTE_CONTROL_ACTIVE
+                    RC_ReportRuntimeState()
             }
+
+            if (!paused && !holdCompletion && completionReason = ""
+                && state.invalidHwndHits < REWARD_INVALID_HWND_NEED_COUNT && progressLine != "")
+                RecordSelfHealingGameplayProgress(progressLine)
 
             if (state.pendingReason = "" && completionReason != "") {
                 state.pendingReason := completionReason
@@ -8682,7 +8845,19 @@ MonitorRewardAndShutdown() {
             if (!warmupFinishedLogged && warmupFinished) {
                 warmupFinishedLogged := true
                 WriteLog("收尾監測暖機完成；新增日誌在暖機期間已持續讀取並保存")
-                WriteStep("收尾監測", "暖機完成，開始主動檢查")
+                stepPublished := false
+                previousCritical := Critical("On")
+                try {
+                    paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+                    if (!paused && !holdCompletion && state.pendingReason = "") {
+                        WriteStep("收尾監測", "暖機完成，開始主動檢查", "INFO", false)
+                        stepPublished := true
+                    }
+                } finally {
+                    Critical(previousCritical)
+                }
+                if (stepPublished && REMOTE_CONTROL_ACTIVE)
+                    RC_ReportRuntimeState()
             }
 
             if !WaitRewardMonitorForShutdown(REWARD_CHECK_INTERVAL_MS, "收尾監測輪詢間隔") {
@@ -9058,10 +9233,14 @@ IsInvalidWindowHandleLogLine(line) {
     return (line ~= "i)(無效(的)?視窗控制代碼|无效(的)?窗口控制代码|无效(的)?视窗控制代码|無效(的)?視窗句柄|无效(的)?窗口句柄|无效(的)?窗口控件句柄|invalid\s+(window\s+)?(handle|hwnd))")
 }
 
-PreserveRestartTrackingOnFreshStart() {
+ResetRestartTrackingOnFreshStart() {
     global CFG_FILE, restartCount
-    restartCount := Integer(IniReadSafe(CFG_FILE, "restart_tracking", "auto_restart_count", "0"))
-    WriteLog("首次啟動：保留重啟計數、錯誤紀錄與 LRMCAI 接續狀態；count=" restartCount)
+    previous := restartCount
+    ; Only the external fresh-launch entry calls this. Internal restart and
+    ; nextserver always retain their durable budget, even across midnight.
+    IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
+    restartCount := 0
+    WriteLog("全新啟動：一般重啟次數 " previous " → 0；保留錯誤證據、命令／伺服器進度及 LRMCAI 接續狀態")
 }
 
 ResetRestartTrackingAfterCompletedCycle() {

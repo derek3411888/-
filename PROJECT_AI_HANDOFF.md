@@ -1,5 +1,27 @@
 # 一鍵啟動鋤地腳本：AI 接手速覽
 
+## 最新發布 checkpoint（2026-10-02；優先於下方歷史紀錄）
+
+- 本輪目標為 Launcher 5.34／Payload 5.22／server bundle 1.0.81。使用者已明確要求「背景測試完成 OK 就打包更新」；不停止兩台正在跑的正式流程。發布結果以本輪完整發布腳本、固定 commit 下載及 SHA-256 證據為準，不能把本段候選版號當成已安裝。
+- MYTUF 04:00 流程在遊戲更新後的重啟前置檢查失敗，舊主腳本於 04:02:39 退出，沒有成功建立接班者；手動 06:13 重開後已有主畫面／F11／LRMCAI 進度證據。歷史 Log 未記錄前置檢查的精確失敗分支，不宣稱已證實外層 wrapper 殘留。
+- 更新交接現在同時核對同一安裝的 shipping 與外層 wrapper；失敗保留原主腳本、任務與遠端控制，最多三次後保持在線等待明確 RUN 重試或 STOP。PAUSE／STOP 在取消、清理、建立 worker 到交接提交各邊界均重驗；終止前以已保留 handle 原子核對意圖，不新增裸 PID 終止。
+- 使用者要求的全新啟動會把 `auto_restart_count` 歸零；腳本自行 `restart`／`resume`／`nextserver` 不清零。不清除完成伺服器、命令 nonce、LRMCAI 接續狀態或 90 秒保護。
+- 一併發布前輪狀態回報補丁：暖機／放棄任務觀察窗結束更新步驟；只以新鮮正向進度標記舊錯誤已恢復；PAUSE 和 Critical 邊界維持安全。
+- `-ValidationProfile Background` 是本輪明確授權的發布驗收範圍：執行 41 個維護測試檔及其他打包回歸，明列延後的六個零基線測試，不宣稱完整 All 已通過。All 仍為預設，原 baseline 保護沒有移除。詳細清單見 `docs/game-maintenance-acceptance.md`。
+- 本輪僅發布，不重啟正式裝置、不部署／重啟中央 Docker。套件發布與執行端已載入新版本是不同驗收；現有工作不中斷。
+
+## 最新驗收 checkpoint（2026-10-01 晚間；優先於下方歷史紀錄）
+
+- **已發布且兩台已執行**：Launcher 5.33／Payload 5.21／server bundle 1.0.80；固定 manifest commit `47b0a2e7e1a4292d04d7c9feed856966568836b5`，產物 commit `9dd27d5eb1e0596935c3eaf191c1fc859d9ab5bb`。兩台正式 launcher SHA256 均為 `C37BB82C855802E1E82B685EA26A6ACCC2C94F66B4A7D5B3ED5CA877B5BBD037`。中央 Docker 未因這次發布而部署／重啟。
+- 5.33 發布前的 All 40 檔、19 項 restart handoff、108 項網站／服務端測試、編譯與內嵌 helper PE 資源雜湊檢查已通過。`try FileInstall` 缺少內嵌資源的 5.32 問題已修正；不能再把 19:18 的候選狀態或 09:52 舊心跳當成現況。
+- MYDESKPC 19:26 單次正式啟動、19:29 經已驗證 Steam `-applaunch 3513350` 恢復入口，主畫面／F11 效果與 LRMCAI 任務進度已驗證；MYTUF 19:46 單次正式啟動，官方啟動器啟動、Asia 切服雙重後置檢查、主畫面／F11 效果和 LRMCAI 進度已驗證。19:59 兩台 fresh heartbeat／online=true／RUN 均有紀錄，之後 20:52 兩端仍有新路線完成證據；每次操作前仍須重新查即時狀態，不能把這個時間點永久視為在線。
+- 正式啟動可達的公告、效能採集、SMTP、audio、hash／下載／解壓輔助流程使用原生 helper，未更改 ExecutionPolicy、未使用 Bypass。不要因歷史 PS5.1 限制再停在舊 blocker，也不能以開發 PS7 測試代替正式 runtime 證據。
+- **追加狀態補丁未發布**：已修正觀察窗結束後未更新 currentStep、真實任務恢復後仍顯示舊 self-healing 錯誤，以及 PAUSE／Critical 心跳邊界；保留 90 秒保護和既有重啟計數。Policy 4 檔、Transport 5 檔、網站 110 項及語法／編譯通過，review Critical 0／Important 0；不能據此宣稱新版完整 All 43 檔已通過或正式程式已套用。
+- 完整發布 gate 仍要求乾淨 AHK／遊戲 baseline。兩台正在執行時，不跳過 gate、不清空重啟保護、不為這個狀態顯示補丁重啟正常裝置；等待安全 checkpoint。任何真正故障另依當下身分與進度處理。
+- MYTUF 有部分 LRMCAI 路線傳送失敗，後續其他路線仍完成。失敗在找到位置後、完成傳送前；兩張既有快照不能證實未解鎖或模板損壞。正在比對原始錄影中的失敗畫格；不能以在線、模板檔存在或偶爾成功宣稱所有路線正常。
+- 真實待下載／安裝的 Steam、Kuro 遊戲更新，以及 Kuro 啟動器自身更新事件，尚未取得本輪完整實機證據；目前只證明已安裝版本的啟動及遊戲就緒。不得修改 build 或偽造 `adapter-acceptance.ini` 補齊驗收。
+- 證據在 `.dev-runtime/diagnostics/game-maintenance/release-live-acceptance-20261001.md`、`both-host-live-checkpoint-20261001-1959.json`、`recovery-status-20261001/checkpoint.md` 及 `remote-worker/`。下方具時間戳的舊 checkpoint 保留為歷史，不是現在的操作指令。
+
 ## Codex 跨裝置工作方式（2026-10-01 使用者更正）
 
 - 原 root chat `019f74ff-7f7b-7e22-9f53-ec049a5c723a` 固定留在 MYDESKPC；正式原始碼仍以本專案為準。日常遠端工作不 Handoff root。

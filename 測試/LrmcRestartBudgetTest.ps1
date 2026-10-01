@@ -96,7 +96,9 @@ TestParentBudget() {
     global CFG_FILE, launches, ticks, shutdowns, __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK, injectBudgetFailure, budgetErrors
     SeedMainProtection()
     $freshEntry()
-    AssertMainProtection("fresh launch")
+    GMTest_Assert(IniRead(CFG_FILE,"restart_tracking","auto_restart_count") = "0","explicit fresh launch resets yesterday's main retry budget")
+    GMTest_Assert(IniRead(CFG_FILE,"lrmc_runtime","run_started") = "1","fresh budget does not erase the interrupted task")
+    GMTest_Assert(IniRead(CFG_FILE,"self_healing","last_failure_at_unix_ms") = "1790810342906","fresh budget retains historical failure evidence")
     SeedMainProtection()
     StartupCompletion()
     AssertMainProtection("entering reward monitoring before verified task completion")

@@ -1,12 +1,13 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.21',
-    [string]$LauncherVersion = '5.33',
-    [string]$ServerVersion = '1.0.80',
+    [string]$PayloadVersion = '5.22',
+    [string]$LauncherVersion = '5.34',
+    [string]$ServerVersion = '1.0.81',
     [string]$CommitMessage = '',
     [switch]$SkipPush,
     [switch]$SkipDocker,
-    [switch]$SkipIntegrationSmoke
+    [switch]$SkipIntegrationSmoke,
+    [ValidateSet('All','Background')][string]$ValidationProfile = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,7 +73,7 @@ function Wait-RemoteManifest($Expected, [string]$CommitSha, [int]$TimeoutSeconds
 try {
 Write-Host "建立完整釋出：Payload $PayloadVersion / Launcher $LauncherVersion / Server $ServerVersion"
 & (Join-Path $projectRoot '打包更新.ps1') -PayloadVersion $PayloadVersion `
-    -LauncherVersion $LauncherVersion -ServerVersion $ServerVersion
+    -LauncherVersion $LauncherVersion -ServerVersion $ServerVersion -ValidationProfile $ValidationProfile
 
 $manifestPath = Join-Path $projectRoot 'update_manifest.example.json'
 $manifest = Read-Manifest $manifestPath
@@ -83,7 +84,7 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 }
 
 $releasePaths = @(
-    '.gitignore', 'PROJECT_AI_HANDOFF.md', 'DEVELOPMENT_ARTIFACTS.md',
+    '.gitignore', 'PROJECT_AI_HANDOFF.md', 'DEVELOPMENT_ARTIFACTS.md', 'docs/game-maintenance-acceptance.md',
     '.agents/skills/codex-remote-worker',
     'ProjectDevelopmentPaths.ps1', 'LauncherProcessCleanupPolicy.ahk', 'LauncherStartupGuard.ahk',
     'native-helper',

@@ -1,6 +1,21 @@
 # 遊戲維護與自動來源辨識：驗收紀錄
 
-初始驗收日期：2026-09-21；開發分支：`codex/game-maintenance-20260921`。當時僅開發、隔離測試與編譯，沒有推送、發布、部署或執行遊戲。2026-09-22 已獲授權發布，結果另見下方補充；正式 `E:\Downloads\自動鋤地` 未覆寫或重啟。
+初始驗收日期：2026-09-21；開發分支：`codex/game-maintenance-20260921`。以下保留歷史驗收，不能把當時未啟動／未發布的狀態當成現況。
+
+## 2026-10-01 最新驗收與剩餘界線
+
+| 項目 | 本輪已取得的證據 | 不代表什麼 |
+| --- | --- | --- |
+| 發布完整性 | Launcher 5.33／Payload 5.21／server bundle 1.0.80；manifest `47b0a2e7e1a4292d04d7c9feed856966568836b5` 固定產物來源 `9dd27d5eb1e0596935c3eaf191c1fc859d9ab5bb`，三份公開下載 SHA 與兩端正式 EXE SHA 已核對 | server bundle 發布不等於中央 Docker 已部署 |
+| 啟動衝突與內嵌檔 | 發布前 All 40 檔、19 項 restart handoff、108 項網站／服務端測試、AHK 編譯及最終 PE 內嵌 helper SHA 通過 | 不代表之後任何 dirty patch 已重新通過同一發布 gate |
+| MYDESKPC／Steam | 19:26 正式啟動；19:29 經 Steam 入口恢復；主畫面、OKWW F11 效果、LRMCAI 真實尋路／戰鬥／下一任務已驗證；19:59 online=true／RUN、ACK120；20:52 仍有路線完成證據 | 程序存在、啟動 ACK 或這份歷史 checkpoint 不能代替之後的即時狀態 |
+| MYTUF／Kuro | 19:46 正式啟動；經官方啟動器開遊戲；Asia 切服後置檢查、主畫面、F11 效果及 LRMCAI 進度已驗證；19:59 online=true／RUN、ACK119，HMT 已完成狀態保留；20:52 仍有路線完成證據 | 部分任務仍會傳送失敗，不能宣稱每條路線正常或當日全部任務完成 |
+| 真實版本升級 | 來源辨識、更新策略與 adapter 邊界有隔離測試，兩種現有安裝均取得真實啟動證據 | 本輪沒有可用的真實待更新事件；Steam／Kuro 遊戲下載安裝及 Kuro 啟動器自身更新，仍不得標成完整實機通過 |
+| 正式 runtime | 原生 helper 已接替可達的 PowerShell 輔助流程，未更改 ExecutionPolicy，未使用 Bypass | 開發 PS7 通過不是 PS5.1 產品相容性的替代證據；歷史 worker 的描述亦不是現行 runtime |
+
+20:00 後新增的狀態回報補丁尚未發布：觀察窗結束時更新步驟、只以新鮮正向進度標記歷史錯誤恢復、PAUSE 重驗，以及把同步心跳留在 Critical 之外。Policy 4 檔、Transport 5 檔與網站 110 項測試通過，review Critical 0／Important 0；新版完整 All 43 檔仍待乾淨 baseline，不能借用 5.33 的發布結果宣稱補丁已部署。
+
+可重讀原始證據均在開發專案 `.dev-runtime/diagnostics/game-maintenance/`：`release-live-acceptance-20261001.md`、`both-host-live-checkpoint-20261001-1959.json`、`published-verification-20261001-192429/result.json`、`recovery-status-20261001/checkpoint.md` 與 `remote-worker/`。不將診斷資料打包到客戶端，不偽造 adapter 驗收檔，不重下載或修改 build 製造待更新狀態。
 
 ## 2026-09-22 發布補充
 
@@ -38,7 +53,7 @@
 - 公告替換／消失不會刷新旧開服資料；人工略過只取消時間等待。Kuro 舊的 Play／未知觀察不會蓋掉已啟動的遊戲。
 - 過期且尚無更新動作的事件使用實際 UTC 判斷；已保存的動作意圖仍受保護。
 
-## 尚未通過的實機／發布門檻
+## 2026-09-22 當時尚未通過的門檻（歷史紀錄；現況以上方最新章節為準）
 
 1. Steam 真實啟動與下載／安裝／驗證鏈，以及 Kuro 真實 launcher 按鈕 layout／更新鏈；兩者均未啟動實測。程式因此未建立 `adapter-acceptance.ini`，`updateAdapterReady` 保持 false。
 2. 沒有真實待更新包，因此不能宣稱已通過版本升級。合成公告、spy、假安裝只能證明程式邏輯；Steam 自主排程下載也不受腳本控制。
@@ -47,10 +62,27 @@
 
 ## 驗證命令
 
+使用專案開發 PowerShell 7，不改系統 ExecutionPolicy，也不加 Bypass。完整 All 只在已安全結束正式流程、確認 AHK／遊戲的乾淨 baseline 後執行；不能移除其 baseline 保護。產品使用原生 helper，這些是開發測試命令，不是遊戲啟動入口。
+
+### 2026-10-02 使用者指定的背景發布驗收
+
+兩台正在執行，使用者明確指定「可以背景測試，完成 OK 就打包更新」。本輪以 `Background` 為發布範圍，不停止正式鋤地、不使用滑鼠／鍵盤、不啟動正式主腳本。隔離測試只操作自己的 fixture 程序與資料夾。
+
+`Background` 執行 41 個維護測試檔；以下六項在輸出中明列 `DEFERRED`，不是 PASS：`NativeMaintenanceTest.ps1`、`NativePerformanceTelemetryTest.ps1`、`NativeRuntimeUtilitiesTest.ps1`、`ImagePutLifetimeTest.ps1`、`MainInstanceOwnershipTest.ps1`、`LauncherNativeHelperDrainTest.ps1`。前述完整零基線／ownership 驗收保留在預設 `All`，不得以背景測試結果宣稱本輪完整 All 或新版本實機驗收已完成。
+
+打包仍執行其餘 AHK 語法／編譯、19 項隔離 restart handoff、網站／服務端、ZIP 內容與 PE 內嵌資源驗證。交接重試、遠端命令進入、PAUSE 清理競態與新啟動預算重置均有實際 production function 隔離回歸。發布後核對固定 commit 與三份遠端產物雜湊；不因此熱重啟現有執行端或部署 Docker。
+
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File 測試/Invoke-GameMaintenanceTests.ps1 -Suite All
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File 測試/PowerShellDevelopmentPathPolicyTest.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File 測試/Build-GameMaintenanceSmoke.ps1
+pwsh -NoProfile -File 測試/Invoke-GameMaintenanceTests.ps1 -Suite Background
+pwsh -NoProfile -File 完整發布更新.ps1 -ValidationProfile Background -SkipDocker
+```
+
+### 完整零基線驗收（另在安全停機時進行）
+
+```powershell
+pwsh -NoProfile -File 測試/Invoke-GameMaintenanceTests.ps1 -Suite All
+pwsh -NoProfile -File 測試/PowerShellDevelopmentPathPolicyTest.ps1
+pwsh -NoProfile -File 測試/Build-GameMaintenanceSmoke.ps1
 # npm／browser 命令先呼叫 ProjectDevelopmentPaths.ps1，讓所有 cache/log 留在專案
 npm --prefix self-hosted-server run check
 npm --prefix self-hosted-server test

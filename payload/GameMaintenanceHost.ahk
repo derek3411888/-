@@ -90,33 +90,42 @@ GM_StartLauncherFlow() {
     return GM_RunManagedUpdate()
 }
 
-GM_PrepareCleanLauncherRestart() {
+GM_PrepareCleanLauncherRestart(&detail := "") {
     global GM_CONTROLLER
+    detail := ""
     c := GM_CONTROLLER
     if !IsObject(c)
         return true
-    if c.state.cancelled || c.state.desiredState = "STOP"
+    if c.state.cancelled || c.state.desiredState = "STOP" {
+        detail := "STOP_OR_CANCELLED"
         return false
-    if c.state.actionId = "" && !c.state.f11InputAttempted && c.state.updaterUiActionId = ""
-        return true
-    if !GM_Value(c.install,"identityVerified",false) || GM_Value(c.install,"gameRoot","") = ""
+    }
+    if !GM_Value(c.install,"identityVerified",false) || GM_Value(c.install,"gameRoot","") = "" {
+        detail := "INSTALL_IDENTITY_UNVERIFIED"
         return false
+    }
     expected := []
     for relative in ["\Wuthering Waves.exe","\Client\Binaries\Win64\Client-Win64-Shipping.exe"] {
         path := GMHost_CanonicalPath(c.install.gameRoot relative)
-        if path = ""
+        if path = "" {
+            detail := "EXPECTED_IMAGE_UNRESOLVED | " relative
             return false
+        }
         expected.Push(StrLower(path))
     }
     try {
         loop 2 {
             for proc in ComObjGet("winmgmts:").ExecQuery("Select ProcessId, ExecutablePath From Win32_Process Where Name='Wuthering Waves.exe' OR Name='Client-Win64-Shipping.exe'") {
                 path := GMHost_CanonicalPath(proc.ExecutablePath)
-                if path = ""
+                if path = "" {
+                    detail := "PROCESS_IMAGE_UNREADABLE | pid=" proc.ProcessId
                     return false
+                }
                 for target in expected {
-                    if StrLower(path) = target
+                    if StrLower(path) = target {
+                        detail := "GAME_PROCESS_STILL_ALIVE | pid=" proc.ProcessId " path=" path
                         return false
+                    }
                 }
             }
             if A_Index = 1
@@ -125,8 +134,12 @@ GM_PrepareCleanLauncherRestart() {
         released := GM_ReleaseLaunchAttemptForRestart(c,true)
         if released
             WriteLog("已確認本輪遊戲退出；保存原任務／開服時間／命令進度，下一輪重新經啟動器啟動")
+        else
+            detail := "JOURNAL_RELEASE_REJECTED | cancelled=" c.state.cancelled " desired=" c.state.desiredState
+                . " recoveryUncertain=" c.state.recoveryUncertain
         return released
     } catch as err {
+        detail := "EXIT_VERIFICATION_FAILED | " err.Message
         WriteLog("啟動器重啟交接未完成：" err.Message,"WARN")
         return false
     }

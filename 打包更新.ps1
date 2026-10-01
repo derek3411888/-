@@ -1,8 +1,9 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.21',
-    [string]$LauncherVersion = '5.33',
-    [string]$ServerVersion = '1.0.80'
+    [string]$PayloadVersion = '5.22',
+    [string]$LauncherVersion = '5.34',
+    [string]$ServerVersion = '1.0.81',
+    [ValidateSet('All','Background')][string]$ValidationProfile = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -142,8 +143,8 @@ function Test-GameMaintenanceReleaseSources {
         if (@($errors).Count) { throw "PowerShell 維護模組語法錯誤：$relative : $($errors[0].Message)" }
     }
     $testPowerShell = (Get-Process -Id $PID).Path
-    & $testPowerShell -NoProfile -File (Join-Path $projectRoot '測試\Invoke-GameMaintenanceTests.ps1') -Suite All
-    Assert-ExitCode '維護／版本更新完整回歸測試'
+    & $testPowerShell -NoProfile -File (Join-Path $projectRoot '測試\Invoke-GameMaintenanceTests.ps1') -Suite $ValidationProfile
+    Assert-ExitCode "維護／版本更新回歸測試（$ValidationProfile）"
 }
 
 function New-FilteredZip([string]$SourceRoot, [string]$TargetPath, [string[]]$ExcludedParts) {
@@ -463,7 +464,7 @@ Move-Item -LiteralPath $payloadTemp -Destination 'payload\全自動鋤地.exe' -
 Write-Host '建立 payload.zip…'
 New-FilteredZip 'payload' 'payload.zip' (Get-PayloadZipExcludes)
 Assert-ZipContains 'payload.zip' (Get-GameMaintenancePayloadFiles)
-Assert-ZipContains 'payload.zip' @('ScriptRestartHandoff.ahk', 'ScriptRestartWorker.ahk', 'InstallStartupLock.ahk')
+Assert-ZipContains 'payload.zip' @('ScriptRestartHandoff.ahk', 'ScriptRestartWorker.ahk', 'InstallStartupLock.ahk', 'RestartRecovery.ahk')
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk', 'ForegroundBlockerPolicy.ahk',

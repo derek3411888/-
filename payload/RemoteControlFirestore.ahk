@@ -364,9 +364,15 @@ RC_PollCommandTick() {
     }
 }
 
+RC_ShouldDeferCommandsForRestart() {
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_RECOVERY_WAITING
+    return (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+        && !(IsSet(__RESTART_RECOVERY_WAITING) && __RESTART_RECOVERY_WAITING)
+}
+
 RC_PollCommandTickCore() {
     global RC_ENABLED, RC_LAST_NONCE, RC_LAST_ERROR_MSG, RC_COMMAND_PROCESSING_READY
-    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
+    global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_RECOVERY_WAITING
     if !RC_ENABLED
         return
 
@@ -375,7 +381,7 @@ RC_PollCommandTickCore() {
 
     ; 舊程序已進入重啟／切服關閉階段時，不可再把新命令抓下來回 BUSY 並推進 nonce。
     ; 保留雲端命令給接手的新程序，由啟動排隊機制在排程載入後執行。
-    if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART)
+    if RC_ShouldDeferCommandsForRestart()
         return
 
     firestoreResp := RCSH_ShouldReadFirestore(false) ? RC_FirestoreGetClientDoc() : ""
@@ -393,7 +399,7 @@ RC_PollCommandTickCore() {
 
     ; GET 是可讓出執行緒的網路操作。若等待回應期間已進入重啟／切服，
     ; 舊程序不可再排隊、claim 或 ACK 新命令，必須留給接手的新程序。
-    if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART) {
+    if RC_ShouldDeferCommandsForRestart() {
         RC_Log("Skipped command after GET because process entered restart handoff")
         return
     }
@@ -1054,7 +1060,7 @@ RC_ApplyRemoteState(desired, nonce, command := "", recoverClaim := false) {
     try {
         if RC_COMMAND_APPLY_IN_PROGRESS {
             skippedForActiveApply := true
-        } else if (__RESTART_IN_PROGRESS || __NEXTSERVER_RESTART) {
+        } else if RC_ShouldDeferCommandsForRestart() {
             skippedForRestart := true
         } else if (recoverClaim && nonce >= RC_LAST_NONCE
             && RC_CommandClaimMatches(RC_PENDING_COMMAND_CLAIM, d, nonce, command)) {
@@ -1347,7 +1353,10 @@ RC_ReadSelfHealingStatus() {
         nextRetryAt: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section,
             "next_retry_at_unix_ms", "0"), 0, 0, 9999999999999),
         updatedAt: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section,
-            "updated_at_unix_ms", "0"), 0, 0, 9999999999999)
+            "updated_at_unix_ms", "0"), 0, 0, 9999999999999),
+        recoveredAt: RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, section,
+            "recovered_at_unix_ms", "0"), 0, 0, 9999999999999),
+        recoveryDetail: Trim(RC_IniReadSafe(RC_CFG_PATH, section, "recovery_detail", ""), " `t`r`n")
     }
 }
 

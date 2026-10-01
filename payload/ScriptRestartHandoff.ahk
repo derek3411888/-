@@ -157,6 +157,24 @@ RestartHandoff_CanPreserveRecording() {
         && DllCall("WaitForSingleObject", "ptr", RestartHandoff_WorkerHandle, "uint", 0, "uint") = 258
 }
 
+RestartHandoff_ResetCancelled() {
+    global RestartHandoff_ActiveRequest, RestartHandoff_WorkerHandle
+    if RestartHandoff_ActiveRequest = ""
+        return true
+    if !RestartHandoff_Cancel("retry failed preparation")
+        return false
+    ; A cancellation file alone is not proof the old worker is gone. Keep the
+    ; exact process handle and request until its exit has actually been observed.
+    if RestartHandoff_WorkerHandle {
+        if DllCall("WaitForSingleObject", "ptr", RestartHandoff_WorkerHandle, "uint", 0, "uint") != 0
+            return false
+        DllCall("CloseHandle", "ptr", RestartHandoff_WorkerHandle)
+    }
+    RestartHandoff_WorkerHandle := 0
+    RestartHandoff_ActiveRequest := ""
+    return true
+}
+
 RestartHandoff_Acknowledge(recordingPid := 0) {
     request := EnvGet("WUTHERING_RESTART_REQUEST")
     ; Do not pass the handoff marker to gameplay helpers or future restarts.

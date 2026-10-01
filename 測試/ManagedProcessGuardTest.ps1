@@ -32,6 +32,8 @@ TestExactProcess() {
     GMTest_Assert(!GMU_ProcessIdentityMatches(record,childPid+1,record.path,record.started),"different PID is rejected")
     GMTest_Assert(!GMU_ProcessIdentityMatches(record,childPid,record.path,""),"empty creation identity is rejected")
     GMTest_Assert(!MPG_CloseRecord({}) && !MPG_CloseRecord(0),"malformed cleanup records fail closed")
+    GMTest_Assert(!MPG_CloseRecord(record,() => false) && !!ProcessExist(childPid),"final paused intent preserves verified child")
+    GMTest_Assert(!A_IsCritical,"termination guard restores caller interruptibility")
     GMTest_Assert(MPG_CloseRecord(record),"matching isolated child can close")
     GMTest_Assert(!ProcessExist(childPid),"only owned child exited")
     GMTest_Assert(MPG_CloseRecord(record),"already closed exact child is idempotent")
@@ -136,6 +138,19 @@ TestBoundHandle() {
     record := {pid:900001,path:"C:\owned\fixture.exe",started:"original"}
     GMTest_Assert(MPG_CloseRecord(record),"owned handle reports termination")
     GMTest_Assert(pidReused && terminatedHandle = 77 && unsafePidClose = 0,"PID reuse after query cannot retarget the fixed process handle")
+    terminatedHandle := 0, pidReused := false
+    GMTest_Assert(!MPG_CloseRecord(record,TestFinalIntent),"intent changed during handle identity lookup rejects termination")
+    GMTest_Assert(terminatedHandle = 0 && !A_IsCritical,"rejected intent never terminates and restores Critical state")
+    pidReused := false
+    GMTest_Assert(MPG_CloseRecord(record,TestAllowedIntent),"allowed final intent terminates atomically")
+}
+TestFinalIntent() {
+    GMTest_Assert(A_IsCritical && pidReused,"final intent is sampled atomically after identity query")
+    return false
+}
+TestAllowedIntent() {
+    GMTest_Assert(A_IsCritical,"allowed intent and termination share critical section")
+    return true
 }
 TestReadHandle(handle,pid) {
     global pidReused

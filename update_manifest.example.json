@@ -1,13 +1,13 @@
 {
-  "release_id": "p5.21-l5.33-s1.0.80-D2EF2583-C37BB82C-8B89979F-9E6ECE37",
-  "version": "5.21",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/9dd27d5eb1e0596935c3eaf191c1fc859d9ab5bb/payload.zip?release=p5.21-l5.33-s1.0.80-D2EF2583-C37BB82C-8B89979F-9E6ECE37",
-  "payload_sha256": "D2EF2583F341B37E3864A5EF748EF20AF661F43BEA453DCAFFFA8F11B1B5FA9B",
-  "launcher_version": "5.33",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/9dd27d5eb1e0596935c3eaf191c1fc859d9ab5bb/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.21-l5.33-s1.0.80-D2EF2583-C37BB82C-8B89979F-9E6ECE37",
-  "launcher_sha256": "C37BB82C855802E1E82B685EA26A6ACCC2C94F66B4A7D5B3ED5CA877B5BBD037",
-  "server_version": "1.0.80",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/9dd27d5eb1e0596935c3eaf191c1fc859d9ab5bb/self-hosted-server.zip?release=p5.21-l5.33-s1.0.80-D2EF2583-C37BB82C-8B89979F-9E6ECE37",
-  "server_sha256": "8B89979FC530A457F07C383F1789EBC9B6BB59FE313FA67A0D49F79A2CA449CC",
-  "web_sha256": "9E6ECE377964FAC68C48BAC46014E72B49DC03925E75BEADAD07E21563CAFC22"
+  "release_id": "p5.22-l5.34-s1.0.81-0E9F54C2-E9673290-2B9F80D8-66D81964",
+  "version": "5.22",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip?release=p5.22-l5.34-s1.0.81-0E9F54C2-E9673290-2B9F80D8-66D81964",
+  "payload_sha256": "0E9F54C2A0FE07C8552DD678C12DE29C4FC60213894A1CE96BFAA978CC7BE06B",
+  "launcher_version": "5.34",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.22-l5.34-s1.0.81-0E9F54C2-E9673290-2B9F80D8-66D81964",
+  "launcher_sha256": "E9673290077D6CCE9EC612CB20CA6327BC9021EC162CD870CE21E25EB70E268E",
+  "server_version": "1.0.81",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip?release=p5.22-l5.34-s1.0.81-0E9F54C2-E9673290-2B9F80D8-66D81964",
+  "server_sha256": "2B9F80D84FAEBA9856BD18AE0A58994B9C4C7541F4007F738A1313F9B851E151",
+  "web_sha256": "66D81964EC56BA8A4BDB791BECDECB6C8720DDDFEDA8904D8AD413A7702E5A58"
 }

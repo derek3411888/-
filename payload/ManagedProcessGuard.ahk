@@ -53,7 +53,7 @@ MPG_ReadHandleRecord(handle,pid) {
     return {pid:pid,path:actual,started:String(started)}
 }
 
-MPG_CloseRecord(record) {
+MPG_CloseRecord(record, mayTerminate := 0) {
     if !IsObject(record) || !IsNumber(GM_Value(record,"pid","")) || GM_Value(record,"pid",0) <= 0
         || GM_Value(record,"path","") = "" || GM_Value(record,"started","") = ""
         return false
@@ -70,8 +70,21 @@ MPG_CloseRecord(record) {
         current := MPG_ReadHandleRecord(handle,record.pid)
         if !GMU_ProcessIdentityMatches(current,record.pid,record.path,record.started)
             return false
-        if !DllCall("TerminateProcess","ptr",handle,"uint",0)
-            return false
+        ; Inventory and handle identity reads stay interruptible. Only the final
+        ; in-memory intent check and termination share this short atomic region.
+        previousCritical := A_IsCritical
+        try {
+            if IsObject(mayTerminate) {
+                Critical("On")
+                if !mayTerminate.Call()
+                    return false
+            }
+            if !DllCall("TerminateProcess","ptr",handle,"uint",0)
+                return false
+        } finally {
+            if IsObject(mayTerminate)
+                Critical(previousCritical)
+        }
         return DllCall("WaitForSingleObject","ptr",handle,"uint",500,"uint") = 0
     } finally DllCall("CloseHandle","ptr",handle)
 }
@@ -83,4 +96,3 @@ GMU_ProcessIdentityMatches(record,pid,expectedPath,started) {
         && StrLower(GM_Value(record,"path","")) = StrLower(expectedPath)
         && String(GM_Value(record,"started","")) = String(started)
 }
-

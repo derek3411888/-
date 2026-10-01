@@ -16,6 +16,27 @@ SelfHealFailureFingerprint(reasonCode, stage := "") {
     return code "|" normalizedStage
 }
 
+; 只接受本次執行之後、最近兩分鐘內的具體任務進度；啟動／一般
+; 「腳本執行完成」不能證明遊戲已恢復。這只影響顯示，不重置保護額度。
+SelfHealHasGameplayProgress(line, runStartedAt, nowTimestamp := "") {
+    if !(runStartedAt ~= "^\d{14}$")
+        return false
+    if !RegExMatch(line, "^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})"
+        "(?:[,\.]\d+)? - LRMCAI - INFO - (.*)$", &match)
+        return false
+    timestamp := match[1] match[2] match[3] match[4] match[5] match[6]
+    nowTimestamp := nowTimestamp != "" ? nowTimestamp : A_Now
+    try {
+        age := DateDiff(nowTimestamp, timestamp, "Seconds")
+        if (age < 0 || age > 120 || DateDiff(timestamp, runStartedAt, "Seconds") < 0)
+            return false
+    } catch {
+        return false
+    }
+    return RegExMatch(Trim(match[7]),
+        "^(?:到[达達][终終][点點]了[!！]?|任[务務]完成[:：].+[:：]耗[时時][:：]\d+秒[!！]?)$") > 0
+}
+
 SelfHealFailureCategory(reasonCode) {
     code := SelfHealNormalizeToken(reasonCode, "UNSPECIFIED")
     if (InStr(code, "OKWW_") = 1)
