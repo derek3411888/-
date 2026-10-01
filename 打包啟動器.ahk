@@ -8,7 +8,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.32"
+global PACK_LAUNCHER_BUILD_VERSION := "5.33"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -1153,8 +1153,11 @@ WriteStep("準備更新", "釋出內嵌 Payload 與 AutoHotkey")
 ; Kept outside payload because extraction replaces that directory. A unique
 ; copy also avoids overwriting a replacement helper from an earlier launch.
 PACK_NATIVE_HELPER_PATH := LauncherNewTempPath("LauncherMaintenance", ".exe")
-try FileInstall("payload\LauncherMaintenance.exe", PACK_NATIVE_HELPER_PATH, 1)
-catch as e {
+; Ahk2Exe only collects FileInstall when it starts its own statement line.
+; An inline `try FileInstall(...)` compiles without the embedded resource.
+try {
+    FileInstall("payload\LauncherMaintenance.exe", PACK_NATIVE_HELPER_PATH, 1)
+} catch as e {
     WriteLog("無法釋出原生更新工具: " e.Message, "ERROR")
     ExitApp 1
 }

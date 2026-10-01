@@ -19,6 +19,7 @@
 
 ### 啟動器重複啟動與搬移交接（2026-10-01）
 
+- 19:18 checkpoint：5.20／5.32／1.0.79 已在 `7b09c08` 發布且三份遠端檔 SHA 均驗證；19:13 的唯一正式桌機啟動在釋出 `LauncherMaintenance.exe` 時退出，沒有啟動主腳本或遊戲，不能算恢復。根因是 Ahk2Exe 不會收集單行 `try FileInstall(...)` 的資源；已改 block-form FileInstall。新 `LauncherNativeEmbeddingTest.ps1` 真正編譯隔離 fixture，舊寫法 RED／新寫法 GREEN；另外以 data-file-only PE 資源檢查在最終 EXE 發布前驗證內嵌 helper SHA，舊 5.32 實際資源數為 0。候選升為 5.21／5.33／1.0.80，完整 All 現為 40 個檔案，須重新通過整套發布／review 後才可再單次正式啟動。MYTUF 未安裝失敗的 5.32。
 - 19:02 pre-release gate：最新完整 All 回歸 39 個測試檔全部通過；19 項 restart handoff 與 108 項網站／服務端測試通過，獨立 final-source review Critical 0／Important 0／Minor 0。SMTP／audio／telemetry／bootstrap 正式可達路徑已無 PowerShell runtime fallback；沒有改 ExecutionPolicy。取消中 I/O buffer 生命週期與受管 FFmpeg 絕對路徑驗證均已完成 RED/GREEN，測後本機 AHK／正式流程為 0。接下來僅透過完整發布腳本建立 5.20／5.32／1.0.79，跳過 Docker 部署；雜湊驗證後單次正式啟動，仍須 fresh heartbeat/online/RUN 與遊戲／LRMCAI 進度，不能把 code gate 視為已恢復。
 - 18:46 checkpoint（取代下方 17:45 的「輔助功能仍依賴 PS5.1」現況）：正式可達路徑的效能採集、SMTP、精確遊戲音量、SHA-256、FFmpeg 下載／驗證／解壓／原子安裝均已接到原生 .NET Framework helper，不改 ExecutionPolicy、不以 Bypass 或另一個 PowerShell host 規避。舊分段錄影 worker 沒有正式呼叫入口，仍留作舊資料相容；開發回歸可用 PS7，不等於產品依賴 PS7。候選版本已升為 Payload 5.20／Launcher 5.32／Server bundle 1.0.79，**尚未發布或正式啟動**。最新審查仍在收尾取消 I/O buffer 生命週期與 FFmpeg 設定路徑驗證；須新一輪完整回歸與 Critical 0／Important 0 才可發布。
 - 本機已隔離重現 ImagePut 在 GDI+ unload/counter 更新間被 timer 重入造成 `pBitmap cannot be zero`，主腳本在 ImagePut 載入後、logger/timers 前保留 process-lifetime pin，無 OnExit 提早卸載。合成 PNG 測試不是遠端畫面已修復的證明。MYTUF 的原生 Remote worker 於 18:25～18:27 讀到真實 LRMCAI 傳送／拾取／下一任務進度，但執行中的 5.15 仍持續影像擷取錯誤，不能宣稱完整驗收。

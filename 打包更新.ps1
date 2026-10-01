@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.20',
-    [string]$LauncherVersion = '5.32',
-    [string]$ServerVersion = '1.0.79'
+    [string]$PayloadVersion = '5.21',
+    [string]$LauncherVersion = '5.33',
+    [string]$ServerVersion = '1.0.80'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -477,6 +477,7 @@ Write-Host '編譯內嵌最新版 Payload 的 Launcher EXE…'
 $launcherTemp = Join-Path $projectRoot '全自動鋤地.new.exe'
 if (Test-Path -LiteralPath $launcherTemp) { Remove-Item -LiteralPath $launcherTemp -Force }
 Invoke-AhkCompile $compiler '打包啟動器.ahk' $launcherTemp $runtime 'Launcher 編譯'
+& (Join-Path $projectRoot '測試\LauncherNativeEmbeddingTest.ps1') -CompiledLauncherPath $launcherTemp
 Move-Item -LiteralPath $launcherTemp -Destination '全自動鋤地.exe' -Force
 
 Write-Host '建立同版 self-hosted-server.zip…'
