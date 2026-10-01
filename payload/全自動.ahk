@@ -128,8 +128,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.15"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.25"
+global PAYLOAD_BUILD_VERSION := "5.16"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.26"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -1187,11 +1187,17 @@ ReleaseRemoteHookGenerationGuard(&hMutex) {
 
 RemotePauseHookTick(generationNonce := 0) {
     global __REMOTE_PAUSE_HOTKEY_BUSY, __REMOTE_PAUSE_HOOK_NONCE, __REWARD_MONITOR_ACTIVE
-    global __WAITING_FOR_INTERACTIVE_DESKTOP
+    global __WAITING_FOR_INTERACTIVE_DESKTOP, RC_COMMAND_APPLY_IN_PROGRESS
 
     if (GM_IsGateActive() || __WAITING_FOR_INTERACTIVE_DESKTOP
         || !IsRemoteHookGenerationCurrent("PAUSE", generationNonce, "遠端PAUSE"))
         return
+    ; HTTP/狀態回報會讓 AHK 計時器插隊。先讓 durable command/ACK 返回，
+    ; 不讓慢速 UI 同步壓住尚未完成的命令執行緒。
+    if RC_COMMAND_APPLY_IN_PROGRESS {
+        SetTimer(RemotePauseHookTick.Bind(generationNonce), -200)
+        return
+    }
     ; 同一 nonce 不重入；較新 nonce 可取代仍在背景等待的舊 hook。
     if (__REMOTE_PAUSE_HOTKEY_BUSY && __REMOTE_PAUSE_HOOK_NONCE = generationNonce)
         return
@@ -1214,7 +1220,8 @@ RemotePauseHookTick(generationNonce := 0) {
             return
 
         if !ProcessExist("LRMCAI.exe") {
-            WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9", "INFO")
+            WriteLog("遠端PAUSE：LRMCAI 未執行，略過 F9 與確認畫面等待；保留主流程暫停", "INFO")
+            return
         } else {
             if SendHotkeyToLrmc("{F9}", "遠端PAUSE", "PAUSE", generationNonce)
                 WriteLog("遠端PAUSE：已送出 F9 到 LRMCAI")
@@ -1263,11 +1270,15 @@ RemoteRunResumeHookTick(generationNonce := 0) {
         return
     global __REMOTE_RESUME_SYNC_BUSY, __REMOTE_RESUME_HOOK_NONCE
     global __REWARD_MONITOR_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
-    global __WAITING_FOR_INTERACTIVE_DESKTOP
+    global __WAITING_FOR_INTERACTIVE_DESKTOP, RC_COMMAND_APPLY_IN_PROGRESS
 
     if (__WAITING_FOR_INTERACTIVE_DESKTOP
         || !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN"))
         return
+    if RC_COMMAND_APPLY_IN_PROGRESS {
+        SetTimer(RemoteRunResumeHookTick.Bind(generationNonce), -200)
+        return
+    }
     if (__REMOTE_RESUME_SYNC_BUSY && __REMOTE_RESUME_HOOK_NONCE = generationNonce)
         return
 
@@ -1287,6 +1298,11 @@ RemoteRunResumeHookTick(generationNonce := 0) {
         }
         if !IsRemoteHookGenerationCurrent("RUN", generationNonce, "遠端RUN恢復子腳本後")
             return
+
+        if !ProcessExist("LRMCAI.exe") {
+            WriteLog("遠端RUN：LRMCAI 尚未啟動，略過登入/OCR/Ctrl+F1同步，交由原啟動流程接續", "INFO")
+            return
+        }
 
         ; 收尾條件已在 PAUSE 期間保存時，RUN 的唯一工作是解除暫停。
         ; 不再進入登入模板/OCR等待或送 Ctrl+F1，以免把安全收尾平白延後一分鐘以上。

@@ -11,7 +11,7 @@ $suiteTests = [ordered]@{
     Adapters=@('GameUpdateAdaptersTest.ahk')
     Ocr=@('GameUpdateOcrPolicyTest.ahk')
     Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1')
-    Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1')
+    Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1','RemoteControlStartupHookTest.ps1')
     Ui=@('GameMaintenanceLocalUiTest.ps1')
     Release=@('GameMaintenancePackageTest.ps1')
 }

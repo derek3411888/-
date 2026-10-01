@@ -105,7 +105,7 @@ GMU_ClassifyLauncher(blocks,identity) {
         actionText := RegExReplace(text,"^[^0-9a-z\x{3400}-\x{9fff}]+|[^0-9a-z\x{3400}-\x{9fff}]+$","")
         kind := RegExMatch(actionText,"^(更新|更新游戏|游戏更新|update)$") ? "update"
             : RegExMatch(actionText,"^(下载|下载游戏|download)$") ? "download"
-            : RegExMatch(actionText,"^(开始游戏|启动游戏|startgame|play)$") ? "play"
+            : RegExMatch(actionText,"^(开始游戏|启动游戏|[進进]入游戏|startgame|play)$") ? "play"
             : RegExMatch(actionText,"^(继续|继续下载|resume)$") ? "resume"
             : RegExMatch(actionText,"^(确认|确定|confirm|ok)$") ? "confirm" : ""
         if kind != ""

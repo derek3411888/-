@@ -37,13 +37,15 @@ TestMaintenanceOcr() {
     blocks := [{text:"更新",left:1000,top:620,right:1150,bottom:680}]
     GMTest_Assert(GMU_ClassifyLauncher(blocks,identity).kind = "unknown","no real verified layout means unknown")
     identity.layout := {verified:true,launcherVersion:"fixture-v1",button:{left:0.7,top:0.8,right:0.98,bottom:0.98},status:{left:0.5,top:0.65,right:0.98,bottom:0.95}}
-    for pair in [["更新","update"],["下載","download"],["開始遊戲","play"],["Start Game","play"],["繼續","resume"]] {
+    for pair in [["更新","update"],["下載","download"],["開始遊戲","play"],["進入遊戲","play"],["进入游戏","play"],["Start Game","play"],["繼續","resume"]] {
         blocks[1].text := pair[1]
         got := GMU_ClassifyLauncher(blocks,identity)
         GMTest_Assert(got.kind = pair[2] && IsObject(got.button),"verified button " pair[1])
     }
     GMTest_Assert(GMU_ClassifyLauncher([OcrFixture("版本更新公告")],identity).kind = "unknown","news body is not button")
     GMTest_Assert(GMU_ClassifyLauncher([{text:"開始遊戲",left:10,top:630,right:200,bottom:680}],identity).kind = "unknown","other row/column ignored")
+    GMTest_Assert(GMU_ClassifyLauncher([{text:"進入遊戲",left:10,top:630,right:200,bottom:680}],identity).kind = "unknown","enter-game text outside action ROI is not clicked")
+    GMTest_Assert(GMU_ClassifyLauncher([{text:"進入遊戲前請更新",left:1000,top:620,right:1200,bottom:680}],identity).kind = "unknown","enter-game instructions are not an exact action button")
     for pair in [["下載中 25%","downloading"],["安装中 12%","installing"],["Verifying 99%","verifying"]] {
         got := GMU_ClassifyLauncher([{text:pair[1],left:700,top:520,right:1100,bottom:560}],identity)
         GMTest_Assert(got.kind = pair[2] && got.percent != "","stage percent is known only with evidence")
