@@ -207,8 +207,25 @@ GMHost_StartWorker(c) {
 }
 
 GMHost_WorkerAlive(worker) {
-    return worker.pid > 0 && GMHost_ProcessStartMs(worker.pid) = worker.started
-        && MonotonicTickMs() - worker.lastSeenTick <= 65000
+    if worker.pid <= 0 || worker.started <= 0 || GMHost_ProcessStartMs(worker.pid) != worker.started
+        return false
+    tick := MonotonicTickMs()
+    if tick - worker.lastSeenTick <= 65000
+        return true
+    ; Foreground OCR can keep the parent away from ReadInput for over a minute.
+    ; Check the producer's current, session-bound snapshot before declaring it
+    ; dead. A cached consumer timestamp alone is not evidence the child stopped.
+    try {
+        now := RC_UnixMs()
+        snapshot := GM_ReadWorkerSnapshot(worker.outputPath,worker.requestId,0,now,worker.session)
+        generation := snapshot["meta"]["generation"]
+        if generation <= 0 || generation > worker.generation
+            return false
+        worker.lastSeenTick := tick - Max(0,now-snapshot["meta"]["observedAtUtcMs"])
+        return true
+    } catch {
+        return false
+    }
 }
 
 GMHost_StopWorker(worker) {

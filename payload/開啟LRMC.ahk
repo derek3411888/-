@@ -6,6 +6,7 @@ SetWorkingDir A_ScriptDir
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
+#Include ManagedProcessGuard.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("開啟LRMC")
@@ -196,17 +197,20 @@ CaptureWindowVisibleRegionForOcr(hwnd, outFile) {
 ; ===== 重啟計數器和安全機制 =====
 global RESTART_COUNT_KEY := "LRMC_restart_count"
 global MAX_RESTART_ATTEMPTS := 3  ; 最多重啟3次
-global RESTART_RESET_TIME := 1800  ; 30分鐘後重置計數器（秒）
 global SCRIPT_START_TIME := A_Now  ; 記錄腳本啟動時間
 
-; 重置重啟計數器（每次腳本啟動時調用）
-ResetRestartCounter() {
+; 啟動只補齊缺少的欄位，不能藉由重新啟動子腳本清除既有保護。
+InitializeRestartCounter() {
     global CFG_FILE, RESTART_COUNT_KEY, SCRIPT_START_TIME
-    
-    Log("腳本啟動，重置 LRMCAI 重啟計數器")
-    IniWrite "0", CFG_FILE, "restart_tracking", RESTART_COUNT_KEY
-    IniWrite SCRIPT_START_TIME, CFG_FILE, "restart_tracking", RESTART_COUNT_KEY "_time"
-    Log("重啟計數器已歸零")
+
+    count := IniReadSafe(CFG_FILE, "restart_tracking", RESTART_COUNT_KEY, "")
+    if count = "" {
+        IniWrite "0", CFG_FILE, "restart_tracking", RESTART_COUNT_KEY
+        count := "0"
+    }
+    if IniReadSafe(CFG_FILE, "restart_tracking", RESTART_COUNT_KEY "_time", "") = ""
+        IniWrite SCRIPT_START_TIME, CFG_FILE, "restart_tracking", RESTART_COUNT_KEY "_time"
+    Log("腳本啟動，保留 LRMCAI 重啟計數與時間；當前計數=" count)
 }
 
 ; 檢查重啟計數器
@@ -222,7 +226,7 @@ CheckRestartCounter() {
     ; 檢查是否超過最大重啟次數
     if (restartCount >= MAX_RESTART_ATTEMPTS) {
         Log("已達到最大重啟次數限制 (" MAX_RESTART_ATTEMPTS " 次)，停止自動重啟", "ERROR")
-        MsgBox "❌ LRMCAI 重啟次數已達上限 (" MAX_RESTART_ATTEMPTS " 次)`n`n請檢查 LRMCAI 程式是否正常，或稍後手動重新執行。`n`n重新啟動全自動腳本將重置計數器。", "重啟限制", "T10"
+        MsgBox "❌ LRMCAI 重啟次數已達上限 (" MAX_RESTART_ATTEMPTS " 次)`n`n已保留任務與重啟計數，請先診斷並修復啟動失敗原因。`n`n重新啟動腳本不會清除保護或繼續重試。", "重啟限制", "T10"
         ExitApp
     }
     
@@ -321,9 +325,9 @@ IniReadSafe(file, section, key, default) {
 
 ; ===== 原流程（僅將寫死路徑改為動態）=====
 
-; 每次腳本啟動時重置重啟計數器
-WriteStep("重啟計數器", "重置並檢查上限")
-ResetRestartCounter()
+; 每次啟動均保留既有計數，僅首次使用補齊欄位。
+WriteStep("重啟計數器", "保留既有計數並檢查上限")
+InitializeRestartCounter()
 
 ; 檢查重啟計數器，防止無限循環
 currentRestartCount := CheckRestartCounter()
@@ -343,6 +347,12 @@ WriteStep("讀取LRMCAI路徑", "成功 | " lnkPath)
 Log("執行 LRMCAI: " lnkPath)
 Run lnkPath,,, &pid
 ProcessWait(pid)
+global LRMC_PROCESS_RECORD := MPG_ReadRecord(pid,lnkPath)
+if !IsObject(LRMC_PROCESS_RECORD) {
+    WriteStep("LRMCAI 程序身分", "完整路徑／PID／建立時間未確認，保留程序並停止操作", "ERROR")
+    ExitApp
+}
+Log("已核對 LRMCAI 程序身分: PID=" pid " path=" LRMC_PROCESS_RECORD.path " created=" LRMC_PROCESS_RECORD.started)
 Sleep 3000  ; 從3秒減少到2秒
 WriteStep("進程已啟動", "PID=" pid)
 
@@ -545,21 +555,12 @@ if !targetHwnd {
     Log("準備執行第 " newRestartCount " 次重啟")
     WriteStep("重啟流程", "第 " newRestartCount " 次")
     
-    ; 關閉 LRMCAI 進程
-    try {
-        ProcessClose(pid)
-        Log("已關閉超時的 LRMCAI 進程 PID: " pid)
-    } catch as e {
-        Log("關閉 LRMCAI 進程失敗: " e.Message, "ERROR")
+    ; 僅處理本次啟動且路徑／PID／建立時間一致的實例。
+    if !MPG_CloseRecord(LRMC_PROCESS_RECORD) {
+        Log("LRMCAI 程序身分改變或權限不足；保留程序，停止本次重新啟動", "ERROR")
+        ExitApp
     }
-    
-    ; 強制關閉所有 LRMCAI 相關進程
-    try {
-        Run("taskkill /F /IM LRMCAI.exe", , "Hide")
-        Log("執行強制關閉 LRMCAI.exe")
-    } catch as e {
-        Log("強制關閉 LRMCAI 失敗: " e.Message, "WARN")
-    }
+    Log("已關閉本次超時且身分一致的 LRMCAI 進程 PID: " pid)
     
     Sleep 2000  ; 等待進程完全關閉
     

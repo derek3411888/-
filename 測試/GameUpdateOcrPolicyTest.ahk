@@ -4,6 +4,7 @@
 GMTest_Run(TestMaintenanceOcr)
 TestMaintenanceOcr() {
     TestKuroSelfUpdateDialog()
+    TestObservedKuroPlayAlias()
     identity := {key:"game-p1-h1",provider:"kuro",clientWidth:1280,clientHeight:720,verified:true}
     for text in ["無法連接伺服器，請檢查網路","網路異常","连接超时","正在更新游戏","維護公告","Server connection timed out",""] {
         result := GMU_ClassifyMaintenance([OcrFixture(text)],identity)
@@ -70,6 +71,23 @@ TestMaintenanceOcr() {
     blocks[1] := {text:"開始遊戲",left:1000,top:620,right:1150,bottom:680}
     GMTest_Assert(GMU_ClassifyLauncher(blocks,identity).kind = "play",
         "current official launcher version can use the constrained built-in OCR layout")
+}
+
+TestObservedKuroPlayAlias() {
+    identity := {key:"verified-launcher",provider:"kuro",clientWidth:1280,clientHeight:720,
+        verified:true,launcherVersion:"2.6.5.0",layout:GMU_DefaultKuroLayout("2.6.5.0")}
+    button := {text:"進入游",left:1040,top:650,right:1160,bottom:690}
+    GMTest_Assert(GMU_ClassifyLauncher([button],identity).kind = "play","MYTUF observed exact OCR alias identifies play")
+    identity.launcherVersion := "2.6.4.0", identity.layout := GMU_DefaultKuroLayout("2.6.4.0")
+    GMTest_Assert(GMU_ClassifyLauncher([button],identity).kind = "unknown","alias cannot leak to untested launcher version")
+    identity.launcherVersion := "2.6.5.0", identity.layout := GMU_DefaultKuroLayout("2.6.5.0")
+    button.text := "進入游指南"
+    GMTest_Assert(GMU_ClassifyLauncher([button],identity).kind = "unknown","alias is not a fuzzy prefix")
+    button.text := "進入游", identity.verified := false
+    GMTest_Assert(GMU_ClassifyLauncher([button],identity).kind = "unknown","alias never bypasses process identity")
+    identity.verified := true
+    GMTest_Assert(GMU_ClassifyLauncher([{text:"進入游",left:20,top:20,right:140,bottom:60}],identity).kind = "unknown","alias outside action ROI is ignored")
+    GMTest_Assert(GMU_ClassifyLauncher([button,{text:"Confirm",left:1000,top:600,right:1100,bottom:640}],identity).kind = "unknown","ambiguous action buttons cannot be clicked")
 }
 
 TestKuroSelfUpdateDialog() {

@@ -108,6 +108,10 @@ GMU_ClassifyLauncher(blocks,identity) {
             : RegExMatch(actionText,"^(开始游戏|启动游戏|[進进]入游戏|startgame|play)$") ? "play"
             : RegExMatch(actionText,"^(继续|继续下载|resume)$") ? "resume"
             : RegExMatch(actionText,"^(确认|确定|confirm|ok)$") ? "confirm" : ""
+        ; MYTUF 實際 2.6.5.0 官方按鈕「進入遊戲」固定被讀成「進入游」。
+        ; 僅此完整誤讀、版本及已驗證按鈕 ROI；不接受前綴或模糊比對。
+        if kind = "" && identity.launcherVersion = "2.6.5.0" && RegExMatch(actionText,"^[進进]入游$")
+            kind := "play"
         if kind != ""
             buttons.Push({kind:kind,button:{x:(block.left+block.right)/2,y:(block.top+block.bottom)/2},evidence:text})
     }

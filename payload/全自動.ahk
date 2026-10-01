@@ -45,6 +45,7 @@ catch
 #Include WutheringServerNames.ahk
 #Include SelfHealingPolicy.ahk
 #Include GameMaintenanceHost.ahk
+#Include ManagedProcessGuard.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -128,8 +129,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.16"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.26"
+global PAYLOAD_BUILD_VERSION := "5.17"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.29"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -1586,8 +1587,20 @@ EnumerateAuxManagedAhkProcesses() {
                 continue
 
             for _, name in wantedNames {
-                if InStr(cmdLine, name) {
-                    result.Push({ pid: proc.ProcessId, name: name })
+                args := ParseManagedCommandLine(cmdLine)
+                expectedScript := GMHost_CanonicalPath(A_ScriptDir "\" name)
+                processPath := GMHost_CanonicalPath(proc.ExecutablePath)
+                interpreterAllowed := false
+                for interpreter in [A_ScriptDir "\AutoHotkey64.exe",A_ScriptDir "\..\AutoHotkey64.exe"]
+                    if processPath != "" && StrLower(processPath) = StrLower(GMHost_CanonicalPath(interpreter))
+                        interpreterAllowed := true
+                if args.Length >= 2 && expectedScript != "" && interpreterAllowed
+                    && StrLower(GMHost_CanonicalPath(args[2])) = StrLower(expectedScript) {
+                    record := ReadManagedProcessRecord(proc.ProcessId,String(proc.CreationDate))
+                    if !IsObject(record) || StrLower(record.path) != StrLower(processPath)
+                        continue
+                    record.name := name
+                    result.Push(record)
                     break
                 }
             }
@@ -2644,7 +2657,7 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
 }
 
 if (!isRestart && !isNextServerCycle)
-    ResetRestartTrackingOnFreshStart()
+    PreserveRestartTrackingOnFreshStart()
 
 ; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
@@ -3050,11 +3063,9 @@ Run(lrmcCmd)
 ShowTip("🟢 已啟動 LRMC 管理腳本", 3000)
 
 
-; 成功完成流程，重置重啟計數器
-IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
-ResetSelfHealingTracking("主流程已成功進入收尾監測")
-WriteLog("流程成功完成，已重置重啟計數器")
-WriteStep("主流程完成", "重啟計數已歸零")
+; 派送 LRMC 及進入監測不代表尋路／戰鬥已完成，不能在此清除保護。
+WriteLog("主流程已進入收尾監測；保留重啟計數與自動修復紀錄")
+WriteStep("主流程完成", "已進入監測；重啟保護已保留")
 StartPendingServerSwitchCompletionMonitor()
 
 WriteLog("全自動流程完成，進入收尾監測（等待電台一鍵領取達標）")
@@ -5501,8 +5512,17 @@ MinimizeOKWWWindows(context := "") {
 }
 
 ; 僅識別由 OKWW 使用的 Python 進程，避免誤殺其他 python.exe/pythonw.exe。
-IsOkwwPythonProcess(pid, commandLine := "") {
+IsOkwwPythonProcess(pid, commandLine := "", record := 0) {
     if (pid <= 0)
+        return false
+
+    expected := ResolveManagedTargetExePath("ok-ww.exe")
+    if expected = ""
+        return false
+    SplitPath(expected,,&expectedDir)
+    if !IsObject(record)
+        record := ReadManagedProcessRecord(pid)
+    if !IsObject(record) || InStr(StrLower(record.path),StrLower(expectedDir "\")) != 1
         return false
 
     cmdLower := StrLower(commandLine)
@@ -5527,22 +5547,18 @@ CloseOkwwPythonProcesses() {
     closedCount := 0
     try {
         wmi := ComObjGet("winmgmts:")
-        query := "Select ProcessId, Name, CommandLine from Win32_Process where Name='pythonw.exe' or Name='python.exe'"
+        query := "Select ProcessId, Name, CommandLine, ExecutablePath, CreationDate from Win32_Process where Name='pythonw.exe' or Name='python.exe'"
         for proc in wmi.ExecQuery(query) {
             pid := proc.ProcessId + 0
             cmdLine := ""
             try cmdLine := proc.CommandLine
-            if !IsOkwwPythonProcess(pid, cmdLine)
+            record := ReadManagedProcessRecord(pid,String(proc.CreationDate))
+            if !IsObject(record) || !IsOkwwPythonProcess(pid, cmdLine, record)
                 continue
 
             WriteLog("關閉 OKWW Python 進程：PID=" pid " Name=" proc.Name)
-            try ProcessClose(pid)
-            Sleep 250
-            if ProcessExist(pid) {
-                WriteLog("OKWW Python 進程仍存在，依 PID 強制關閉：" pid, "WARN")
-                try RunWait("taskkill /F /PID " pid, , "Hide")
-            }
-            closedCount += 1
+            if IsObject(record) && CloseManagedProcessRecord(record, "OKWW Python")
+                closedCount += 1
         }
     } catch as e {
         WriteLog("掃描 OKWW Python 進程失敗：" e.Message, "WARN")
@@ -5550,54 +5566,20 @@ CloseOkwwPythonProcesses() {
     return closedCount
 }
 
-CloseOkwwProcessPid(pid, displayName) {
-    if (pid <= 0 || !ProcessExist(pid))
-        return false
-
-    WriteLog("局部關閉 " displayName "：PID=" pid)
-    try ProcessClose(pid)
-
-    waitUntil := MonotonicTickMs() + 2000
-    while (ProcessExist(pid) && MonotonicTickMs() < waitUntil)
-        Sleep 100
-
-    if ProcessExist(pid) {
-        WriteLog(displayName " 未在 2 秒內退出，僅依已確認 PID 強制關閉：" pid, "WARN")
-        try RunWait("taskkill /F /PID " pid, , "Hide")
-        Sleep 200
-    }
-
-    if ProcessExist(pid) {
-        WriteLog("無法關閉 " displayName " PID=" pid, "ERROR")
-        return false
-    }
-    return true
-}
 
 CloseOkwwManagerScriptsOnly() {
     closedCount := 0
     for item in EnumerateAuxManagedAhkProcesses() {
         if (item.name != "自動開啟OKWW.ahk")
             continue
-        if CloseOkwwProcessPid(item.pid, "自動開啟OKWW.ahk")
+        if CloseManagedProcessRecord(item, "自動開啟OKWW.ahk")
             closedCount += 1
     }
     return closedCount
 }
 
 CloseOkwwLauncherProcessesOnly() {
-    closedCount := 0
-    try {
-        query := "Select ProcessId, Name from Win32_Process where Name='ok-ww.exe' or Name='OK-WW.exe'"
-        for proc in ComObjGet("winmgmts:").ExecQuery(query) {
-            pid := proc.ProcessId + 0
-            if CloseOkwwProcessPid(pid, proc.Name)
-                closedCount += 1
-        }
-    } catch as e {
-        WriteLog("掃描 ok-ww.exe 進程失敗：" e.Message, "WARN")
-    }
-    return closedCount
+    return CloseExactProcessForSelfHealing("ok-ww.exe", "OKWW")
 }
 
 RestartOnlyOkwwForAutoBattleRetry() {
@@ -5617,90 +5599,16 @@ RestartOnlyOkwwForAutoBattleRetry() {
 
 ; ★ 啟動前檢測：關閉所有目標程式
 CheckAndCloseExistingProcesses() {
-    WriteStep("清場流程", "入口：檢測並關閉既有進程")
-    WriteLog("開始檢測現有程式...")
-    
-    ; 定義要檢測的程式（使用實際檢測到的程式名稱）
-    processes := [
-        {name: "ok-ww.exe", display: "OKWW主程式"},
-        {name: "Client-Win64-Shipping.exe", display: "鳴潮遊戲"},
-        {name: "LRMCAI.exe", display: "LRMC自動"}
-    ]
-    
-    ; 檢測並關閉程式
-    foundAny := false
-    for process in processes {
-        ; 檢查進程是否存在
-        processExists := false
-        targetPID := 0
-        
-        ; 先用ProcessExist快速檢查
-        pid := ProcessExist(process.name)
-        if (pid) {
-            processExists := true
-            targetPID := pid
-        }
-        
-        if (processExists) {
-            foundAny := true
-            WriteLog("檢測到運行中的 " process.display " (" process.name " PID:" targetPID ")，正在關閉...")
-            ShowTip("🔄 關閉現有的 " process.display " 程式...", 1200)
-            
-            try {
-                if (targetPID > 0) {
-                    ProcessClose(targetPID)
-                } else {
-                    ProcessClose(process.name)
-                }
-                Sleep 1000  ; 等待程式關閉
-                
-                ; 確認是否已關閉
-                if ProcessExist(process.name) {
-                    WriteLog("嘗試強制關閉 " process.name, "WARN")
-                    Run("taskkill /F /IM " process.name, , "Hide")
-                    Sleep 1000
-                }
-                WriteLog("已成功關閉 " process.display)
-            } catch as e {
-                WriteLog("關閉 " process.name " 時出錯: " e.Message, "ERROR")
-            }
-        }
-    }
-
-    ; Python 只依命令列或所屬視窗標題辨識 OKWW，再關閉命中的特定 PID。
-    if (CloseOkwwPythonProcesses() > 0)
-        foundAny := true
-    
-    ; 額外檢測：關閉所有 AutoHotkey 進程（除了自己）
-    currentPID := DllCall("GetCurrentProcessId")
-    try {
-        for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name like '%AutoHotkey%'") {
-            if (proc.ProcessId != currentPID) {
-                try {
-                    cmdLine := proc.CommandLine
-                    if (InStr(cmdLine, "自動開啟OKWW.ahk") || InStr(cmdLine, "開啟LRMC.ahk")) {
-                        WriteLog("關閉現有的 AutoHotkey 腳本: PID=" proc.ProcessId " 命令行=" cmdLine)
-                        ProcessClose(proc.ProcessId)
-                        foundAny := true
-                    }
-                } catch {
-                    ; 忽略訪問被拒絕的錯誤
-                }
-            }
-        }
-    } catch as e {
-        WriteLog("檢測AutoHotkey進程時出錯: " e.Message, "WARN")
-    }
-    
-    if foundAny {
-        WriteLog("等待程式完全關閉...")
-        ShowTip("⏳ 等待程式完全關閉...", 3000)
-        WriteLog("啟動前清理完成")
-        WriteStepResult("清場流程", true, "已有進程已清理")
-    } else {
-        WriteLog("沒有檢測到運行中的目標程式，可以開始主流程")
-        WriteStepResult("清場流程", true, "無需清理")
-    }
+    WriteStep("清場流程", "入口：核對完整路徑與程序身分")
+    closed := 0
+    for target in [{name:"ok-ww.exe",display:"OKWW"},
+        {name:"Client-Win64-Shipping.exe",display:"鳴潮遊戲"},
+        {name:"LRMCAI.exe",display:"LRMCAI"}]
+        closed += CloseExactProcessForSelfHealing(target.name,target.display)
+    closed += CloseOkwwPythonProcesses()
+    closed += CloseManagedAhkForSelfHealing("自動開啟OKWW\.ahk|開啟LRMC\.ahk")
+    WriteLog("啟動前精確清理結束；已確認退出=" closed "；身分不符或無法確認者已保留")
+    WriteStepResult("清場流程", true, "精確掃描結束；已關閉=" closed)
 }
 
 ; ★ 全域 UE4 崩潰監看（獨立 UE4-Client 視窗）
@@ -5884,9 +5792,7 @@ CrashWatcherTick() {
             WriteLog("UE4 崩潰視窗仍存在，但已記錄事件指紋，不會跨重啟重複觸發；事件指紋=" incidentSignature, "WARN")
 
         ; 關閉 OKWW 程式，因為遊戲崩潰重啟時 OKWW 也需要重新啟動
-        try ProcessClose "ok-ww.exe"
-        catch
-            try ProcessClose "OK-WW.exe"
+        CloseExactProcessForSelfHealing("ok-ww.exe", "OKWW")
         Sleep 2000
 
         ; 統一走 RequestRestart：
@@ -7244,9 +7150,7 @@ LaunchWutheringGameFlowAfterUpdate() {
     WriteLog("準備重新執行鳴潮啟動流程（更新後視窗逾時）")
     ShowTip("🎮 重新啟動鳴潮中...", 1500)
 
-    try ProcessClose("Client-Win64-Shipping.exe")
-    catch
-        try Run("taskkill /F /IM Client-Win64-Shipping.exe", , "Hide")
+    CloseExactProcessForSelfHealing("Client-Win64-Shipping.exe", "鳴潮遊戲")
 
     Sleep 1500
     return EnsureWutheringRunning()
@@ -7993,8 +7897,71 @@ PrepareSelfHealingPolicy(reasonCode, stage, reason) {
     return policy
 }
 
+ParseManagedCommandLine(commandLine) {
+    result := [], count := 0
+    argv := DllCall("Shell32\CommandLineToArgvW","str",commandLine,"int*",&count,"ptr")
+    if !argv
+        return result
+    try {
+        Loop count
+            result.Push(StrGet(NumGet(argv,(A_Index-1)*A_PtrSize,"ptr")))
+    } finally DllCall("LocalFree","ptr",argv)
+    return result
+}
+
+ResolveManagedTargetExePath(exeName) {
+    global CFG_FILE, GM_CONTROLLER
+    name := StrLower(exeName)
+    if name = "client-win64-shipping.exe" {
+        if !IsObject(GM_CONTROLLER) || !GM_Value(GM_CONTROLLER.install,"identityVerified",false)
+            return ""
+        return GMHost_CanonicalPath(GM_CONTROLLER.install.gameRoot "\Client\Binaries\Win64\Client-Win64-Shipping.exe")
+    }
+    key := name = "lrmcai.exe" ? "LRMC" : name = "ok-ww.exe" ? "OKWW" : ""
+    if key = ""
+        return ""
+    path := IniReadSafe(CFG_FILE,"paths",key,"")
+    try {
+        if RegExMatch(path,"i)\.lnk$")
+            FileGetShortcut(path,&path)
+    } catch
+        return ""
+    return GMHost_CanonicalPath(path)
+}
+
+ReadManagedProcessRecord(pid, expectedWmiCreated := "") {
+    record := MPG_ReadRecord(pid)
+    if !IsObject(record)
+        return 0
+    if expectedWmiCreated = ""
+        return record
+    matched := false
+    try {
+        for proc in ComObjGet("winmgmts:").ExecQuery("Select CreationDate from Win32_Process where ProcessId=" pid)
+            matched := String(proc.CreationDate) = expectedWmiCreated
+    }
+    current := MPG_ReadRecord(pid)
+    return matched && GMU_ProcessIdentityMatches(current,pid,record.path,record.started) ? record : 0
+}
+
+CloseManagedProcessRecord(record,displayName) {
+    if !IsObject(record)
+        return false
+    if !MPG_CloseRecord(record) {
+        WriteLog("身分已改變、權限不足或尚未退出；保留 " displayName " PID=" record.pid,"WARN")
+        return false
+    }
+    WriteLog("已關閉已驗證程序: " displayName " PID=" record.pid " path=" record.path)
+    return true
+}
+
 CloseExactProcessForSelfHealing(exeName, displayName) {
     closed := 0
+    expectedPath := ResolveManagedTargetExePath(exeName)
+    if expectedPath = "" {
+        WriteLog("無法確認 " displayName " 的設定路徑，略過程序清理", "WARN")
+        return 0
+    }
     try {
         escapedName := StrReplace(exeName, "'", "''")
         query := "Select ProcessId,Name from Win32_Process where Name='" escapedName "'"
@@ -8002,7 +7969,10 @@ CloseExactProcessForSelfHealing(exeName, displayName) {
             pid := proc.ProcessId + 0
             if (pid <= 0 || pid = DllCall("GetCurrentProcessId"))
                 continue
-            if CloseOkwwProcessPid(pid, displayName)
+            record := ReadManagedProcessRecord(pid)
+            if !IsObject(record) || StrLower(record.path) != StrLower(expectedPath)
+                continue
+            if CloseManagedProcessRecord(record, displayName)
                 closed += 1
         }
     } catch as e {
@@ -8016,7 +7986,7 @@ CloseManagedAhkForSelfHealing(scriptNames) {
     for item in EnumerateAuxManagedAhkProcesses() {
         if !(item.name ~= "i)^(" scriptNames ")$")
             continue
-        if CloseOkwwProcessPid(item.pid, item.name)
+        if CloseManagedProcessRecord(item, item.name)
             closed += 1
     }
     return closed
@@ -8473,7 +8443,7 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
         __RESTART_IN_PROGRESS := false
         __NEXTSERVER_RESTART := false
         try SetTimer(CrashWatcherTick, 0)
-        SetLrmcRunResumeReady(false, "重啟次數達上限")
+        WriteLog("重啟次數達上限：停止自動重試，保留 LRMCAI 中斷任務接續紀錄", "WARN")
         ForceStopManagedScreenRecording("重啟次數達上限")
         previousHealing := ReadSelfHealingRuntimeState()
         WriteSelfHealingRuntimeState("halted", LAST_RESTART_CODE, LAST_RESTART_STAGE,
@@ -8482,8 +8452,8 @@ RestartAutoScript(reason := "", countTowardsLimit := true) {
             0, previousHealing.fingerprint, previousHealing.lastAt)
 
         Sleep 5000
-        ; 重置計數器
-        IniWrite "0", CFG_FILE, "restart_tracking", "auto_restart_count"
+        ; 耗盡值必須持久保留，不能退出後讓重新啟動取得全新額度。
+        IniWrite restartCount, CFG_FILE, "restart_tracking", "auto_restart_count"
         ExitApp
     }
     
@@ -9146,7 +9116,8 @@ ResolveRewardLogPath() {
 }
 
 TryRecoverLrmcDuringRewardMonitor() {
-    global REWARD_LRMCAI_RESTART_COOLDOWN_MS, __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK, AhkExe
+    global REWARD_LRMCAI_RESTART_COOLDOWN_MS, __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK, AhkExe, CFG_FILE
+    static reportedBudgetBlock := ""
 
     if ProcessExist("LRMCAI.exe") {
         __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := 0
@@ -9155,6 +9126,20 @@ TryRecoverLrmcDuringRewardMonitor() {
 
     if (__REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK > 0 && (MonotonicTickMs() - __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK) < REWARD_LRMCAI_RESTART_COOLDOWN_MS)
         return false
+
+    ; 與開啟LRMC.ahk 的既有三次保護一致。子腳本到上限後不能再由父程序
+    ; 每 15 秒重開一次，否則會重複彈出上限提示，且把派送誤報成恢復。
+    restartBudget := "unreadable"
+    try restartBudget := Trim(IniRead(CFG_FILE, "restart_tracking", "LRMC_restart_count", "0"))
+    if !RegExMatch(restartBudget, "^\d{1,9}$") || Integer(restartBudget) >= 3 {
+        if reportedBudgetBlock != restartBudget {
+            reportedBudgetBlock := restartBudget
+            WriteLog("收尾監測：LRMCAI 重試額度已耗盡或無效，不再派送啟動子腳本；保留目前任務與計數 | count=" restartBudget, "ERROR")
+            WriteStep("LRMCAI 恢復受阻", "重試額度已耗盡或無效；未重新啟動，任務進度保留", "ERROR")
+        }
+        return false
+    }
+    reportedBudgetBlock := ""
 
     if (!IsSet(AhkExe) || AhkExe = "" || !FileExist(AhkExe)) {
         WriteLog("收尾監測：LRMCAI 已退出，但找不到可用 AutoHotkey 執行檔，無法重啟", "ERROR")
@@ -9166,8 +9151,8 @@ TryRecoverLrmcDuringRewardMonitor() {
     try {
         Run(cmd)
         __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := MonotonicTickMs()
-        WriteLog("收尾監測：偵測 LRMCAI 已退出，已用 resume 快捷鍵模式重啟（不走 OCR）", "WARN")
-        ShowTip("⚠️ LRMCAI 退出，已自動熱鍵重啟", 1200)
+        WriteLog("收尾監測：偵測 LRMCAI 已退出，已派送 resume 啟動子腳本（不走 OCR）；尚待實際任務進度確認", "WARN")
+        ShowTip("⚠️ LRMCAI 退出，已派送接續；等待實際進度", 1200)
         return true
     } catch as e {
         __REWARD_MONITOR_LRMCAI_LAST_RESTART_TICK := MonotonicTickMs()
@@ -9280,7 +9265,13 @@ IsInvalidWindowHandleLogLine(line) {
     return (line ~= "i)(無效(的)?視窗控制代碼|无效(的)?窗口控制代码|无效(的)?视窗控制代码|無效(的)?視窗句柄|无效(的)?窗口句柄|无效(的)?窗口控件句柄|invalid\s+(window\s+)?(handle|hwnd))")
 }
 
-ResetRestartTrackingOnFreshStart() {
+PreserveRestartTrackingOnFreshStart() {
+    global CFG_FILE, restartCount
+    restartCount := Integer(IniReadSafe(CFG_FILE, "restart_tracking", "auto_restart_count", "0"))
+    WriteLog("首次啟動：保留重啟計數、錯誤紀錄與 LRMCAI 接續狀態；count=" restartCount)
+}
+
+ResetRestartTrackingAfterCompletedCycle() {
     global CFG_FILE, restartCount, LAST_RESTART_REASON, LAST_RESTART_CODE, LAST_RESTART_STAGE
     global LAST_RESTART_RECOVERY, LAST_RESTART_PROCESS_SNAPSHOT, LAST_RESTART_LRMC_STATE, CRASH_RESTART_MODE
 
@@ -9302,14 +9293,21 @@ ResetRestartTrackingOnFreshStart() {
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_process_snapshot"
     IniWrite "", CFG_FILE, "restart_tracking", "last_restart_lrmc_state"
     IniWrite "0", CFG_FILE, "restart_tracking", "foreground_input_failure_streak"
-    ResetSelfHealingTracking("正常首次啟動")
-    SetLrmcRunResumeReady(false, "正常首次啟動")
-    WriteLog("正常首次啟動：已重置重啟計數器、重啟原因與 LRMCAI 接續狀態")
+    ResetSelfHealingTracking("收尾條件已驗證完成")
+    SetLrmcRunResumeReady(false, "收尾條件已驗證完成")
+    WriteLog("已驗證本輪完成：下一輪重啟額度已更新，既有日誌仍保留故障證據")
 }
 
 HandleCycleFinishAndShutdown(completedTime := "") {
     ; 標記當前伺服器為已完成（收尾監測完成時才記錄）
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
+    ; 此入口僅由收尾監測通過領獎條件、90 秒放棄任務觀察窗、暖機及
+    ; PAUSE 檢查後呼叫。手動 STOP / RUN / 跳服均不能清除重試保護。
+    if RenewLrmcRestartBudgetAfterCompletedCycle(completedTime) {
+        try ResetRestartTrackingAfterCompletedCycle()
+        catch as e
+            WriteLog("本輪完成後主重試額度僅部分更新，仍繼續安全收尾；請檢查設定寫入：" e.Message, "ERROR")
+    }
     if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
         ; 使用實際命中時間，不用恢復 RUN 後的當下時間覆寫。
         ; 如 PAUSE 跨過凌晨 4 點，仍會歸到命中當時的正確日循環。
@@ -9328,6 +9326,29 @@ HandleCycleFinishAndShutdown(completedTime := "") {
 
     TryStopScreenRecording("收尾監測達標（保底停止）")
     ShutdownGameLrmcOkww(false, "LOG_DETECTED")
+}
+
+RenewLrmcRestartBudgetAfterCompletedCycle(completedTime) {
+    global CFG_FILE
+    if !RegExMatch(completedTime, "^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$", &parts)
+        return false
+    normalized := parts[1] parts[2] parts[3] parts[4] parts[5] parts[6]
+    try {
+        if FormatTime(normalized, "yyyy-MM-dd HH:mm:ss") != completedTime
+            return false
+    } catch {
+        return false
+    }
+    try {
+        ; 先記錄真正完成的邊界，再更新下一輪額度；啟動與程序存在不是完成證據。
+        IniWrite normalized, CFG_FILE, "restart_tracking", "LRMC_restart_count_time"
+        IniWrite "0", CFG_FILE, "restart_tracking", "LRMC_restart_count"
+        WriteLog("收尾條件已驗證完成，下一輪 LRMCAI 重試額度已更新 | completed=" completedTime)
+        return true
+    } catch as e {
+        WriteLog("LRMCAI 完成後更新下一輪重試額度失敗，保留原保護：" e.Message, "ERROR")
+        return false
+    }
 }
 
 ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", nextServerMode := "") {
@@ -9354,43 +9375,17 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
     WriteLog("開始關閉收尾目標程式：鳴潮、LRMCAI、OKWW")
     ShowTip("🛑 正在關閉鳴潮/LRMCAI/OKWW...", 1500)
 
-    ; 1) 鳴潮
-    try ProcessClose("Client-Win64-Shipping.exe")
-    catch
-        try Run("taskkill /F /IM Client-Win64-Shipping.exe", , "Hide")
-    ; 關閉／錄影封口不可受遠端軟暫停閘門阻塞。
+    CloseExactProcessForSelfHealing("Client-Win64-Shipping.exe", "鳴潮遊戲")
     RawSleep(600)
-
-    ; 2) LRMCAI
-    try ProcessClose("LRMCAI.exe")
-    catch
-        try Run("taskkill /F /IM LRMCAI.exe", , "Hide")
+    CloseExactProcessForSelfHealing("LRMCAI.exe", "LRMCAI")
     RawSleep(600)
-
-    ; 3) OKWW（主程式 + 更新檢測）
-    try ProcessClose("ok-ww.exe")
-    catch
-        try ProcessClose("OK-WW.exe")
-    try Run("taskkill /F /IM ok-ww.exe", , "Hide")
-    try Run("taskkill /F /IM OK-WW.exe", , "Hide")
+    CloseExactProcessForSelfHealing("ok-ww.exe", "OKWW")
     CloseOkwwPythonProcesses()
 
     ; 停止監看計時器，避免後續流程再觸發
     try SetTimer(CrashWatcherTick, 0)
 
-    ; 關閉相關 AutoHotkey 管理腳本（保留自己，最後再 ExitApp）
-    currentPID := DllCall("GetCurrentProcessId")
-    try {
-        for proc in ComObjGet("winmgmts:").ExecQuery("Select * from Win32_Process where Name like '%AutoHotkey%'") {
-            if (proc.ProcessId = currentPID)
-                continue
-            try {
-                cmdLine := proc.CommandLine
-                if (InStr(cmdLine, "開啟LRMC.ahk") || InStr(cmdLine, "自動開啟OKWW.ahk") || InStr(cmdLine, "聲骸合成.ahk") || InStr(cmdLine, "全自動.ahk"))
-                    ProcessClose(proc.ProcessId)
-            }
-        }
-    }
+    CloseManagedAhkForSelfHealing("開啟LRMC\.ahk|自動開啟OKWW\.ahk|聲骸合成\.ahk")
 
     if MAIL_NOTIFY_ENABLED {
         mailResult := SendShutdownNotifyMail(stopType)

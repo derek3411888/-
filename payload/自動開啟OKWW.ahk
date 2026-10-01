@@ -10,6 +10,7 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include OkwwOcrTextMatchers.ahk
+#Include ManagedProcessGuard.ahk
 
 global OKWW_HANDOFF_NONCE := ""
 global OKWW_HANDOFF_PATH := ""
@@ -616,7 +617,12 @@ LaunchNewOkwwAndWait(exePath, &curPid, &curHwnd) {
                 "Select * from Win32_Process where Name = '" exeName "'") {
                 if ShouldAbortOkwwHandoff(&abortReason)
                     return false
-                processes.Push({pid: proc.ProcessId, name: proc.Name})
+                record := MPG_ReadRecord(proc.ProcessId,exePath)
+                if IsObject(record) {
+                    record.name := proc.Name
+                    processes.Push(record)
+                } else
+                    Log("保留同名但完整路徑／身分未符合設定的程序 PID=" proc.ProcessId, "WARN")
             }
         }
 
@@ -628,8 +634,11 @@ LaunchNewOkwwAndWait(exePath, &curPid, &curHwnd) {
                 try {
                     if ShouldAbortOkwwHandoff(&abortReason)
                         return false
-                    ProcessClose(proc.pid)
-                    Log("關閉進程: " proc.name " (PID: " proc.pid ")")
+                    if !MPG_CloseRecord(proc) {
+                        Log("OKWW 舊程序身分改變或權限不足；停止重新啟動，保留程序 PID=" proc.pid, "WARN")
+                        return false
+                    }
+                    Log("關閉已核對完整路徑與建立時間的進程: " proc.name " (PID: " proc.pid ")")
                     if SleepOkwwWithAbort(200, &abortReason)
                         return false
                 } catch as e {

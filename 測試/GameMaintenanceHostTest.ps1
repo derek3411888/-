@@ -39,6 +39,31 @@ TestActualHostWorker() {
         snapshot := GM_ReadWorkerSnapshot(worker.outputPath,worker.requestId,0,RC_UnixMs(),worker.session)
         GMTest_Assert(snapshot["notice"]["outcome"] = "pending","test mode skips HTTP entirely")
         GMTest_Assert(snapshot["install"]["provider"] = "unknown","fake install did not become real game")
+        ; A slow foreground OCR consumer is not a stopped producer. Exercise the
+        ; real child process and its actual validated protocol file, without a wait.
+        worker.lastSeenTick := MonotonicTickMs() - 70000
+        GMTest_Assert(GMHost_WorkerAlive(worker),"fresh producer survives a delayed parent OCR read")
+        wrongProcess := worker.Clone(), wrongProcess.started += 1
+        GMTest_Assert(!GMHost_WorkerAlive(wrongProcess),"fresh snapshot cannot authorize a recycled PID")
+        wrongRequest := worker.Clone(), wrongRequest.requestId := "wrong-session"
+        wrongRequest.lastSeenTick := MonotonicTickMs() - 70000
+        GMTest_Assert(!GMHost_WorkerAlive(wrongRequest),"foreign request snapshot cannot refresh worker health")
+        futureGeneration := worker.Clone(), futureGeneration.outputPath := worker.session "\future-generation.ini"
+        futureGeneration.lastSeenTick := MonotonicTickMs() - 70000
+        generationText := RegExReplace(FileRead(worker.outputPath,"UTF-8"),"m)^generation=\d+", "generation=" (worker.generation+1))
+        FileAppend(generationText,futureGeneration.outputPath,"UTF-8")
+        GMTest_Assert(!GMHost_WorkerAlive(futureGeneration),"unrequested future generation cannot refresh worker health")
+        pendingGeneration := worker.Clone(), pendingGeneration.generation += 1
+        pendingGeneration.lastSeenTick := MonotonicTickMs() - 70000
+        GMTest_Assert(GMHost_WorkerAlive(pendingGeneration),"fresh prior generation proves worker health while the next request is pending")
+        missing := worker.Clone(), missing.outputPath := worker.session "\missing.ini"
+        missing.lastSeenTick := MonotonicTickMs() - 70000
+        GMTest_Assert(!GMHost_WorkerAlive(missing),"missing snapshot with stale consumer remains unhealthy")
+        stale := worker.Clone(), stale.outputPath := worker.session "\stale.ini"
+        stale.lastSeenTick := MonotonicTickMs() - 70000
+        staleText := RegExReplace(FileRead(worker.outputPath,"UTF-8"),"m)^observedAtUtcMs=\d+", "observedAtUtcMs=" (RC_UnixMs()-70000))
+        FileAppend(staleText,stale.outputPath,"UTF-8")
+        GMTest_Assert(!GMHost_WorkerAlive(stale),"expired producer snapshot remains unhealthy")
         GMHost_StopWorker(worker)
         ProcessWaitClose(worker.pid,2)
         GMTest_Assert(!GMHost_WorkerAlive(worker),"owned helper stopped within two seconds")
