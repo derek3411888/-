@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.18',
-    [string]$LauncherVersion = '5.30',
-    [string]$ServerVersion = '1.0.77'
+    [string]$PayloadVersion = '5.20',
+    [string]$LauncherVersion = '5.32',
+    [string]$ServerVersion = '1.0.79'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,8 +123,10 @@ function Find-AhkCompiler {
 
 function Get-GameMaintenancePayloadFiles {
     return @('GameMaintenance.ahk', 'GameMaintenancePolicy.ahk', 'GameMaintenanceHost.ahk',
-        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameMaintenanceWorker.ps1',
-        'GameMaintenanceNotice.ps1', 'GameInstallDiscovery.ps1')
+        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameMaintenanceWorker.exe', 'LauncherMaintenance.exe', 'GameMaintenanceWorker.ps1',
+        'GameMaintenanceNotice.ps1', 'GameInstallDiscovery.ps1',
+        'PerformanceTelemetryWorker.exe', 'RuntimeUtilities.exe', 'BootstrapAssets.exe',
+        'NativeRuntimeUtilities.ahk', 'NativeBootstrapAssets.ahk')
 }
 
 function Get-PayloadZipExcludes {
@@ -299,6 +301,7 @@ $package = Get-Content -LiteralPath 'self-hosted-server\package.json' -Raw -Enco
 if ([string]$package.version -ne $ServerVersion) { throw "server package 版本不是 $ServerVersion" }
 
 Write-Host '執行語法與單元測試…'
+& (Join-Path $projectRoot 'native-helper\Build-NativeHelpers.ps1') -OutputDirectory (Join-Path $projectRoot 'payload')
 Test-GameMaintenanceReleaseSources
 & (Join-Path $projectRoot '測試\PowerShellDevelopmentPathPolicyTest.ps1')
 Invoke-AhkValidate $payloadRuntime '測試\AhkGeneratedPathPolicyTest.ahk' 'AHK 產生檔案路徑政策測試語法 validate'

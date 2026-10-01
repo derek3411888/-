@@ -1,5 +1,5 @@
 ﻿#Requires AutoHotkey v2.0+
-#SingleInstance Force
+#SingleInstance Off
 #WinActivateForce
 SetWorkingDir A_ScriptDir
 global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
@@ -20,6 +20,15 @@ if (!A_IsAdmin && !CLEANUP_RECORDINGS_ONLY) {
     ExitApp
 }
 
+; BEGIN MAIN INSTANCE OWNERSHIP
+#Include InstallStartupLock.ahk
+; Retain until process termination, including ALL OnExit cleanup. Never release
+; this reservation from OnExit or wait on the launcher's startup mutex here.
+global MAIN_INSTANCE_HANDLE := InstallStartupLock_EnterMain(A_ScriptFullPath)
+if MAIN_INSTANCE_HANDLE <= 0
+    ExitApp(MAIN_INSTANCE_HANDLE = -1 ? 0 : 1)
+; END MAIN INSTANCE OWNERSHIP
+
 ; ⚡ 設定普通優先級以減少系統負擔
 ProcessSetPriority("Normal")
 
@@ -30,6 +39,12 @@ catch
 
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
+; Keep one GDI+ reference for the entire process lifetime. ImagePut otherwise
+; unloads GDI+ whenever its transient instance count reaches zero; a timer can
+; re-enter between unload and the later counter update and permanently leave
+; the count nonzero while GDI+ is unavailable. Do not pair this with OnExit
+; shutdown: timers and BitmapBuffer destructors can still run during teardown.
+global IMAGEPUT_GDIPLUS_PROCESS_PIN := ImagePut.gdiplusStartup()
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include ScriptRestartHandoff.ahk
@@ -46,6 +61,8 @@ catch
 #Include SelfHealingPolicy.ahk
 #Include GameMaintenanceHost.ahk
 #Include ManagedProcessGuard.ahk
+#Include NativeBootstrapAssets.ahk
+#Include NativeRuntimeUtilities.ahk
 
 ; 初始化新的日誌系統
 global logger := InitLogger("全自動")
@@ -129,8 +146,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.18"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.30"
+global PAYLOAD_BUILD_VERSION := "5.20"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.32"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -262,39 +279,7 @@ WriteBootstrapTextFile(path, text) {
 }
 
 GetBootstrapFileSha256(filePath) {
-    if !FileExist(filePath)
-        return ""
-
-    token := A_TickCount "_" DllCall("GetCurrentProcessId")
-    scriptPath := RuntimeFiles_NewTempPath("launcher_bootstrap_hash", ".ps1", "更新")
-    outputPath := RuntimeFiles_NewTempPath("launcher_bootstrap_hash", ".txt", "更新")
-    try {
-        scriptLines := [
-            "param([string]$InputPath,[string]$OutputPath)",
-            "$ErrorActionPreference = 'Stop'",
-            "$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InputPath).Hash.ToLowerInvariant()",
-            "[System.IO.File]::WriteAllText($OutputPath, $hash, [System.Text.Encoding]::ASCII)"
-        ]
-        scriptText := ""
-        for _, line in scriptLines
-            scriptText .= line "`r`n"
-        FileAppend(scriptText, scriptPath, "UTF-8-RAW")
-
-        cmd := 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' scriptPath '"'
-        cmd .= ' -InputPath "' filePath '" -OutputPath "' outputPath '"'
-        if (RunWait(cmd, , "Hide") != 0 || !FileExist(outputPath))
-            return ""
-
-        hash := StrLower(Trim(FileRead(outputPath, "UTF-8"), " `t`r`n"))
-        return (hash ~= "^[0-9a-f]{64}$") ? hash : ""
-    } catch as e {
-        WriteLog("payload 修復 launcher：計算 SHA256 失敗 | path=" filePath
-            " | " e.Message, "WARN")
-        return ""
-    } finally {
-        try FileDelete(scriptPath)
-        try FileDelete(outputPath)
-    }
+    return NativeBootstrap_FileSha256(filePath)
 }
 
 IsPlausibleLauncherExe(path, &fileSize) {
@@ -353,6 +338,86 @@ IsSafePendingLauncherSource(path, dataDir) {
     dataRoot := StrLower(RTrim(CanonicalLocalPath(dataDir), "\") "\")
     tempRoot := StrLower(RTrim(CanonicalLocalPath(A_Temp), "\") "\")
     return (InStr(pathLower, dataRoot) = 1 || InStr(pathLower, tempRoot) = 1)
+}
+
+GetPendingLauncherSourceSha256(path, dataDir) {
+    ; Only the legacy marker's approved filename/Temp/config source may be
+    ; outside the installation. Stage read-only bytes under the app root;
+    ; the ordinary native hash policy stays installation-contained.
+    if !IsSafePendingLauncherSource(path, dataDir)
+        return ""
+    sourceHandle := -1
+    stageFile := 0
+    stagePath := ""
+    try {
+        path := CanonicalLocalPath(path)
+        sourceHandle := DllCall("Kernel32\CreateFileW", "str", path,
+            "uint", 0x80000000, "uint", 1, "ptr", 0, "uint", 3,
+            "uint", 0x08000000, "ptr", 0, "ptr") ; read; deny writes/deletes
+        if (sourceHandle = -1 || sourceHandle = 0)
+            return ""
+        finalBuffer := Buffer(32768 * 2, 0)
+        finalLength := DllCall("Kernel32\GetFinalPathNameByHandleW", "ptr", sourceHandle,
+            "ptr", finalBuffer, "uint", 32768, "uint", 0, "uint")
+        if (finalLength = 0 || finalLength >= 32768)
+            return ""
+        finalPath := StrGet(finalBuffer, finalLength, "UTF-16")
+        if (SubStr(finalPath, 1, 4) = "\\?\")
+            finalPath := SubStr(finalPath, 5)
+        if (StrLower(finalPath) != StrLower(path))
+            return "" ; no reparse/alias source redirects
+        sourceLength := 0
+        if !DllCall("Kernel32\GetFileSizeEx", "ptr", sourceHandle, "int64*", &sourceLength)
+            return ""
+        if (sourceLength < 1048576 || sourceLength > 536870912)
+            return ""
+        stagePath := NativeBootstrap_StatePath("legacy_source", ".bin")
+        SplitPath(stagePath, , &stageDirectory)
+        checkPath := stageDirectory
+        while (StrLen(checkPath) > 3) {
+            attrs := DllCall("Kernel32\GetFileAttributesW", "str", checkPath, "uint")
+            if (attrs != 0xFFFFFFFF && (attrs & 0x400))
+                return ""
+            SplitPath(checkPath, , &parentPath)
+            if (parentPath = "" || parentPath = checkPath)
+                break
+            checkPath := parentPath
+        }
+        DirCreate(stageDirectory)
+        stageFile := FileOpen(stagePath, "w")
+        if !stageFile
+            return ""
+        dataBuffer := Buffer(1048576)
+        copied := 0
+        deadline := DllCall("Kernel32\GetTickCount64", "uint64") + 120000
+        while (copied < sourceLength) {
+            if (DllCall("Kernel32\GetTickCount64", "uint64") >= deadline)
+                return ""
+            received := 0
+            if !DllCall("Kernel32\ReadFile", "ptr", sourceHandle, "ptr", dataBuffer,
+                "uint", Min(dataBuffer.Size, sourceLength - copied), "uint*", &received, "ptr", 0)
+                return ""
+            if (received = 0 || (copied = 0 && NumGet(dataBuffer, 0, "UShort") != 0x5A4D))
+                return ""
+            if (stageFile.RawWrite(dataBuffer, received) != received)
+                return ""
+            copied += received
+        }
+        if !DllCall("Kernel32\FlushFileBuffers", "ptr", stageFile.Handle)
+            return ""
+        stageFile.Close()
+        stageFile := 0
+        return GetBootstrapFileSha256(stagePath)
+    } catch {
+        return ""
+    } finally {
+        if IsObject(stageFile)
+            stageFile.Close()
+        if (sourceHandle != -1 && sourceHandle != 0)
+            DllCall("Kernel32\CloseHandle", "ptr", sourceHandle)
+        if (stagePath != "")
+            try FileDelete(stagePath)
+    }
 }
 
 ResolvePendingLauncherSource(markerPath, dataDir) {
@@ -430,7 +495,7 @@ RepairPendingLauncherUpdateFromPayload(dataDir) {
         return false
     }
 
-    sourceSha := GetBootstrapFileSha256(sourcePath)
+    sourceSha := GetPendingLauncherSourceSha256(sourcePath, dataDir)
     if (sourceSha = "") {
         WriteLog("payload 修復 launcher：無法取得更新 EXE 的 SHA256", "ERROR")
         return false
@@ -614,8 +679,39 @@ FindBundledFfmpegExe() {
 
     for _, candidate in candidates {
         p := NormalizePath(candidate)
-        if (p != "" && FileExist(p))
+        if (p != "" && FileExist(p)
+            && NativeBootstrap_IsValidPortableExecutableCached(p))
             return p
+    }
+    return ""
+}
+
+ResolveManagedBundledFfmpegCandidate(value, persistentRoot := "") {
+    raw := NormalizePath(value)
+    if (raw = "")
+        return ""
+
+    rootDir := NormalizePath(persistentRoot)
+    if (rootDir = "")
+        rootDir := ResolvePersistentToolsRoot()
+    rootDir := NativeBootstrap_CanonicalPath(rootDir)
+    if (rootDir = "")
+        return ""
+
+    isAbsolute := RegExMatch(raw, "i)^[a-z]:\\")
+        || SubStr(raw, 1, 2) = Chr(92) Chr(92)
+    candidate := NativeBootstrap_CanonicalPath(isAbsolute ? raw : rootDir "\\" raw)
+    if (candidate = "")
+        return ""
+
+    for _, managedRelativePath in [
+        "tools\\ffmpeg\\bin\\ffmpeg.exe",
+        "ffmpeg\\bin\\ffmpeg.exe",
+        "ffmpeg.exe"
+    ] {
+        managed := NativeBootstrap_CanonicalPath(rootDir "\\" managedRelativePath)
+        if (managed != "" && StrLower(candidate) = StrLower(managed))
+            return candidate
     }
     return ""
 }
@@ -627,36 +723,8 @@ ResolveDefaultScreenRecordingFfmpegExe() {
     return ""
 }
 
-ExtractZipByShell(zipPath, destDir) {
-    try {
-        shell := ComObject("Shell.Application")
-        src := shell.NameSpace(zipPath)
-        if !IsObject(src)
-            return false
-
-        try DirCreate(destDir)
-        dst := shell.NameSpace(destDir)
-        if !IsObject(dst)
-            return false
-
-        ; 16 = no UI, 4 = no progress box
-        dst.CopyHere(src.Items, 16 + 4)
-        return true
-    } catch {
-        return false
-    }
-}
-
-ExtractZipByPowerShell(zipPath, destDir) {
-    psZip := StrReplace(zipPath, "'", "''")
-    psDest := StrReplace(destDir, "'", "''")
-    psCmd := "$ErrorActionPreference='Stop'; $zip='" psZip "'; $dest='" psDest "'; if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }; New-Item -ItemType Directory -Path $dest -Force | Out-Null; Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force"
-    cmd := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psCmd Chr(34)
-    try {
-        return (RunWait(cmd, , "Hide") = 0)
-    } catch {
-        return false
-    }
+ExtractZipByNative(zipPath, destDir) {
+    return NativeBootstrap_Extract(zipPath, destDir)
 }
 
 CleanupBootstrapTempDir(tmpRoot) {
@@ -694,96 +762,7 @@ FormatSpeedMBps(bytesPerSec) {
 }
 
 DownloadFileWithProgress(url, outPath, title := "下載中") {
-    SplitPath outPath, , &outDir
-    if (outDir != "")
-        try DirCreate(outDir)
-
-    if FileExist(outPath)
-        try FileDelete(outPath)
-
-    total := GetUrlContentLength(url)
-
-    psUrl := StrReplace(url, "'", "''")
-    psOut := StrReplace(outPath, "'", "''")
-    psIwr := "$ProgressPreference=`"SilentlyContinue`"; $u='" psUrl "'; $o='" psOut "'; Invoke-WebRequest -Uri $u -OutFile $o"
-    cmdIwr := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psIwr Chr(34)
-
-    g := Gui("+ToolWindow -MinimizeBox -MaximizeBox", title)
-    g.SetFont("s10", "Microsoft JhengHei UI")
-    txt := g.AddText("xm w420", "正在下載，請稍候...")
-    bar := g.AddProgress("xm y+8 w420 h18", 0)
-    hint := g.AddText("xm y+6 w420", "0.0 MB")
-    g.Show("AutoSize Center")
-
-    pid := 0
-    try Run(cmdIwr, "", "Hide", &pid)
-    catch as e {
-        g.Destroy()
-        WriteLog("啟動下載進程失敗(IWR): " e.Message, "WARN")
-        return false
-    }
-
-    WriteLog("FFmpeg 下載模式: IWR")
-    spin := 0
-    startTick := MonotonicTickMs()
-    lastTick := startTick
-    lastSize := 0
-    speedBps := 0.0
-    while ProcessExist(pid) {
-        size := 0
-        try size := FileGetSize(outPath)
-
-        nowTick := MonotonicTickMs()
-        dt := nowTick - lastTick
-        if (dt >= 400) {
-            ds := size - lastSize
-            if (ds < 0)
-                ds := 0
-            speedBps := (ds * 1000.0) / dt
-            lastTick := nowTick
-            lastSize := size
-        }
-
-        if (total > 0) {
-            pct := Floor((size * 100) / total)
-            if (pct < 0)
-                pct := 0
-            if (pct > 99)
-                pct := 99
-            bar.Value := pct
-            txt.Value := "正在下載 FFmpeg... " pct "%"
-            hint.Value := FormatBytesMB(size) " / " FormatBytesMB(total) "  (" FormatSpeedMBps(speedBps) ")"
-        } else {
-            spin += 4
-            if (spin > 100)
-                spin := 0
-            bar.Value := spin
-            txt.Value := "正在下載 FFmpeg..."
-            hint.Value := FormatBytesMB(size) "  (" FormatSpeedMBps(speedBps) ")"
-        }
-        Sleep 200
-    }
-
-    ok := false
-    finalSize := 0
-    try {
-        finalSize := FileGetSize(outPath)
-        ok := (finalSize > 0)
-    }
-
-    if ok {
-        bar.Value := 100
-        txt.Value := "下載完成"
-        hint.Value := FormatBytesMB(finalSize)
-        Sleep 300
-    } else {
-        txt.Value := "下載失敗"
-        hint.Value := "請稍後重試或手動放置 ffmpeg.exe"
-        Sleep 700
-    }
-
-    g.Destroy()
-    return ok
+    return NativeBootstrap_Download(url, outPath, title)
 }
 
 TryBootstrapBundledFfmpeg() {
@@ -803,8 +782,12 @@ TryBootstrapBundledFfmpeg() {
 
     targetDir := persistentRoot "\\tools\\ffmpeg\\bin"
     targetExe := targetDir "\\ffmpeg.exe"
-    if FileExist(targetExe)
-        return targetExe
+    if FileExist(targetExe) {
+        if NativeBootstrap_IsValidPortableExecutableCached(targetExe)
+            return targetExe
+        WriteLog("FFmpeg 既有內部執行檔不是完整有效的 PE，將保留舊檔並嘗試原子修復: "
+            targetExe, "WARN")
+    }
 
     tmpRoot := RuntimeFiles_RuntimeDir("FFmpeg下載")
     zipPath := tmpRoot "\\ffmpeg-release-essentials.zip"
@@ -828,13 +811,10 @@ TryBootstrapBundledFfmpeg() {
         return ""
     }
 
-    if !ExtractZipByShell(zipPath, extractDir) {
-        WriteLog("FFmpeg 自動解壓失敗（Shell.Application），改用 Expand-Archive", "WARN")
-        if !ExtractZipByPowerShell(zipPath, extractDir) {
-            WriteLog("FFmpeg 自動解壓失敗（Expand-Archive）", "WARN")
-            CleanupBootstrapTempDir(tmpRoot)
-            return ""
-        }
+    if !ExtractZipByNative(zipPath, extractDir) {
+        WriteLog("FFmpeg 原生解壓失敗；不採用未完成或未驗證的檔案", "WARN")
+        CleanupBootstrapTempDir(tmpRoot)
+        return ""
     }
 
     found := ""
@@ -855,17 +835,12 @@ TryBootstrapBundledFfmpeg() {
         return ""
     }
 
-    try DirCreate(targetDir)
-    try {
-        FileCopy(found, targetExe, true)
-        if FileExist(targetExe) {
-            WriteLog("FFmpeg 已自動安裝到: " targetExe)
-            CleanupBootstrapTempDir(tmpRoot)
-            return targetExe
-        }
-    } catch as e {
-        WriteLog("FFmpeg 安裝到目標資料夾失敗: " e.Message, "WARN")
+    if NativeBootstrap_InstallPortableExecutable(found, targetExe) {
+        WriteLog("FFmpeg 已由原生 helper 驗證並原子安裝到: " targetExe)
+        CleanupBootstrapTempDir(tmpRoot)
+        return targetExe
     }
+    WriteLog("FFmpeg 原生驗證或原子安裝失敗；既有目標未被部分覆寫", "WARN")
 
     CleanupBootstrapTempDir(tmpRoot)
 
@@ -890,9 +865,25 @@ ResolveScreenRecordingFfmpegExePath(configuredValue := "") {
         return ""
     }
 
+    managedCandidate := ResolveManagedBundledFfmpegCandidate(raw, rootDir)
+    if (managedCandidate != "") {
+        if (FileExist(managedCandidate)
+            && NativeBootstrap_IsValidPortableExecutableCached(managedCandidate))
+            return managedCandidate
+
+        bundled := FindBundledFfmpegExe()
+        if (bundled != "")
+            return bundled
+
+        bootstrapped := TryBootstrapBundledFfmpeg()
+        if (bootstrapped != "")
+            return bootstrapped
+        return ""
+    }
+
     if RegExMatch(raw, "i)^[a-z]:\\")
         return raw
-    if (SubStr(raw, 1, 2) = "\\\\")
+    if (SubStr(raw, 1, 2) = Chr(92) Chr(92))
         return raw
 
     candidate := (rootDir != "") ? (rootDir "\\" raw) : (A_ScriptDir "\\" raw)
@@ -1885,216 +1876,18 @@ GetWutheringAudioTargets() {
 }
 
 TrySetWutheringProcessMute(mute := true) {
-    global WUTHERING_PROCESS_EXE, __WUTHERING_AUDIO_MUTED
-
-    psFile := RuntimeFiles_NewTempPath("mute_wuthering", ".ps1", "音訊控制")
+    global __WUTHERING_AUDIO_MUTED
     targets := GetWutheringAudioTargets()
-    pidCsv := StrReplace(targets.pids, "'", "''")
-    nameCsv := StrReplace(targets.names, "'", "''")
-
-        csharp := "
-    (
-using System;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-namespace AudioUtil {
-    enum EDataFlow { eRender, eCapture, eAll }
-    enum ERole { eConsole, eMultimedia, eCommunications }
-    [Flags] enum CLSCTX : uint { INPROC_SERVER = 0x1, INPROC_HANDLER = 0x2, LOCAL_SERVER = 0x4, REMOTE_SERVER = 0x10, ALL = INPROC_SERVER | INPROC_HANDLER | LOCAL_SERVER | REMOTE_SERVER }
-    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject {}
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")] interface IMMDeviceEnumerator { int NotImpl1(); int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppDevice); }
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("D666063F-1587-4E43-81F1-B948E807363F")] interface IMMDevice { int Activate(ref Guid iid, CLSCTX dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")] interface IAudioSessionManager2 {
-        int GetAudioSessionControl(ref Guid AudioSessionGuid, uint StreamFlags, out IAudioSessionControl SessionControl);
-        int GetSimpleAudioVolume(ref Guid AudioSessionGuid, uint StreamFlags, out ISimpleAudioVolume AudioVolume);
-        int GetSessionEnumerator(out IAudioSessionEnumerator SessionEnum);
-        int RegisterSessionNotification(IntPtr SessionNotification);
-        int UnregisterSessionNotification(IntPtr SessionNotification);
-    }
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")] interface IAudioSessionEnumerator { int GetCount(out int SessionCount); int GetSession(int SessionCount, out IAudioSessionControl Session); }
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD")] interface IAudioSessionControl {
-        int GetState(out int pRetVal);
-        int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
-        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string Value, ref Guid EventContext);
-        int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
-        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string Value, ref Guid EventContext);
-        int GetGroupingParam(out Guid pRetVal);
-        int SetGroupingParam(ref Guid Override, ref Guid EventContext);
-        int RegisterAudioSessionNotification(IntPtr NewNotifications);
-        int UnregisterAudioSessionNotification(IntPtr NewNotifications);
-    }
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")] interface IAudioSessionControl2 {
-        int GetState(out int pRetVal);
-        int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
-        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string Value, ref Guid EventContext);
-        int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
-        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string Value, ref Guid EventContext);
-        int GetGroupingParam(out Guid pRetVal);
-        int SetGroupingParam(ref Guid Override, ref Guid EventContext);
-        int RegisterAudioSessionNotification(IntPtr NewNotifications);
-        int UnregisterAudioSessionNotification(IntPtr NewNotifications);
-        int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
-        int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
-        int GetProcessId(out uint pRetVal);
-        int IsSystemSoundsSession();
-        int SetDuckingPreference(bool optOut);
-    }
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8")] interface ISimpleAudioVolume { int SetMasterVolume(float fLevel, ref Guid EventContext); int GetMasterVolume(out float pfLevel); int SetMute(bool bMute, ref Guid EventContext); int GetMute(out bool pbMute); }
-    public static class SessionMute {
-        static bool TryGetSessionManager(IMMDeviceEnumerator deviceEnumerator, ERole role, out IAudioSessionManager2 mgr) {
-            mgr = null;
-            IMMDevice device;
-            int hr = deviceEnumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, role, out device);
-            if (hr != 0 || device == null) return false;
-
-            Guid iid = typeof(IAudioSessionManager2).GUID;
-            object o;
-            hr = device.Activate(ref iid, CLSCTX.ALL, IntPtr.Zero, out o);
-            if (hr != 0 || o == null) return false;
-
-            mgr = (IAudioSessionManager2)o;
-            return mgr != null;
-        }
-
-        static bool IsTargetSession(IAudioSessionControl ctrl, System.Collections.Generic.HashSet<int> pidSet, System.Collections.Generic.HashSet<string> nameSet, out uint pidOut) {
-            pidOut = 0;
-            if (ctrl == null) return false;
-
-            IntPtr unk = IntPtr.Zero;
-            try {
-                unk = Marshal.GetIUnknownForObject(ctrl);
-                var c2 = (IAudioSessionControl2)Marshal.GetTypedObjectForIUnknown(unk, typeof(IAudioSessionControl2));
-                if (c2 == null) return false;
-
-                uint pid;
-                if (c2.GetProcessId(out pid) != 0 || pid == 0) return false;
-                pidOut = pid;
-
-                if (pidSet.Contains((int)pid)) return true;
-
-                try {
-                    var p = Process.GetProcessById((int)pid);
-                    var procName = p.ProcessName;
-                    if (!string.IsNullOrWhiteSpace(procName) && nameSet.Contains(procName))
-                        return true;
-                } catch { }
-
-                return false;
-            } catch {
-                return false;
-            } finally {
-                if (unk != IntPtr.Zero)
-                    Marshal.Release(unk);
-            }
-        }
-
-        static bool TrySetMuteOnControl(IAudioSessionControl ctrl, bool mute) {
-            if (ctrl == null) return false;
-            IntPtr unk = IntPtr.Zero;
-            try {
-                unk = Marshal.GetIUnknownForObject(ctrl);
-                var vol = (ISimpleAudioVolume)Marshal.GetTypedObjectForIUnknown(unk, typeof(ISimpleAudioVolume));
-                if (vol == null) return false;
-                Guid g = Guid.Empty;
-                vol.SetMute(mute, ref g);
-                return true;
-            } catch {
-                return false;
-            } finally {
-                if (unk != IntPtr.Zero)
-                    Marshal.Release(unk);
-            }
-        }
-
-        static bool TryMuteOnRole(IMMDeviceEnumerator deviceEnumerator, ERole role, System.Collections.Generic.HashSet<int> pidSet, System.Collections.Generic.HashSet<string> nameSet, bool mute) {
-            IAudioSessionManager2 mgr;
-            if (!TryGetSessionManager(deviceEnumerator, role, out mgr))
-                return false;
-
-            IAudioSessionEnumerator en;
-            if (mgr.GetSessionEnumerator(out en) != 0 || en == null)
-                return false;
-
-            int count;
-            en.GetCount(out count);
-            bool mutedAny = false;
-
-            for (int i = 0; i < count; i++) {
-                IAudioSessionControl ctrl;
-                if (en.GetSession(i, out ctrl) != 0 || ctrl == null)
-                    continue;
-
-                uint pid;
-                if (!IsTargetSession(ctrl, pidSet, nameSet, out pid))
-                    continue;
-
-                if (TrySetMuteOnControl(ctrl, mute))
-                    mutedAny = true;
-            }
-
-            return mutedAny;
-        }
-
-        public static int SetMuteByTargets(string pidCsv, string nameCsv, bool mute) {
-            var pidSet = new System.Collections.Generic.HashSet<int>();
-            if (!string.IsNullOrWhiteSpace(pidCsv)) {
-                foreach (var s in pidCsv.Split(',')) {
-                    int p;
-                    if (int.TryParse(s.Trim(), out p) && p > 0)
-                        pidSet.Add(p);
-                }
-            }
-
-            var nameSet = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(nameCsv)) {
-                foreach (var s in nameCsv.Split(',')) {
-                    var n = s.Trim();
-                    if (!string.IsNullOrWhiteSpace(n))
-                        nameSet.Add(n);
-                }
-            }
-
-            var deviceEnumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
-            bool ok = false;
-
-            ok = TryMuteOnRole(deviceEnumerator, ERole.eMultimedia, pidSet, nameSet, mute) || ok;
-            ok = TryMuteOnRole(deviceEnumerator, ERole.eConsole, pidSet, nameSet, mute) || ok;
-            ok = TryMuteOnRole(deviceEnumerator, ERole.eCommunications, pidSet, nameSet, mute) || ok;
-
-            return ok ? 0 : 2;
-        }
-    }
-}
-)"
-
-        script := "$ErrorActionPreference='Stop'`n"
-        script .= "$pids='" pidCsv "'`n"
-        script .= "$names='" nameCsv "'`n"
-        script .= "$mute=" (mute ? "$true" : "$false") "`n"
-        script .= "$code=@'`n" csharp "`n'@`n"
-        script .= "Add-Type -TypeDefinition $code -Language CSharp | Out-Null`n"
-        script .= "$ret = [AudioUtil.SessionMute]::SetMuteByTargets($pids, $names, $mute)`n"
-        script .= "exit $ret`n"
-
-    try FileDelete psFile
-    FileAppend script, psFile, "UTF-8"
-
-    cmd := 'powershell -NoProfile -ExecutionPolicy Bypass -File "' psFile '"'
-    try {
-        code := RunWait(cmd, , "Hide") + 0
-    } catch {
-        try FileDelete psFile
-        WriteLog("鳴潮音訊控制執行失敗（PowerShell 呼叫錯誤）", "WARN")
+    try code := NativeRuntime_SetGameMute(targets.pids, targets.names, mute)
+    catch {
+        WriteLog("鳴潮音訊控制執行失敗（原生輔助程式）", "WARN")
         return false
     }
-
-    try FileDelete psFile
     if (code = 0) {
         __WUTHERING_AUDIO_MUTED := mute ? true : false
         return true
     }
-
-    WriteLog("鳴潮音訊控制未命中任何 Session，退出碼=" code " pids=" targets.pids " names=" targets.names, "WARN")
+    WriteLog("鳴潮音訊控制未完成，退出碼=" code, "WARN")
     return false
 }
 
@@ -8374,7 +8167,7 @@ TryLaunchRestartThroughUpdater(resumeCurrentTask := false, &detail := "") {
     }
 
     ; The updater is deferred too: starting it during OnExit can replace files
-    ; and reach #SingleInstance Force before the old payload finishes cleanup.
+    ; and contend for ownership before the old payload finishes cleanup.
     mode := resumeCurrentTask ? "restart resume" : "restart"
     QueueSafeRestartHandoff(mode, launcherPath)
     detail := "launcher=" launcherPath " mode=" mode "（等待舊 PID 退出）"
@@ -13824,82 +13617,16 @@ OnCombinedSetupClose(*) {
     __MAIL_SETUP.done := true
 }
 
+; Keep the existing caller contract; no PowerShell or generated credential file.
 SendMailByPowerShell(smtpHost, smtpPort, smtpUser, smtpPass, mailFrom, mailTo, subject, body, useSsl := "1") {
-    psFile := RuntimeFiles_NewTempPath("send_mail_main", ".ps1", "郵件")
-    errFile := RuntimeFiles_NewTempPath("send_mail_main_err", ".txt", "郵件")
     recipients := ParseMailRecipients(mailTo)
     if (recipients.Length = 0)
-        return { ok: false, message: "收件者為空，請在 to 填入至少一位收件者" }
-
+        return {ok: false, message: "收件者為空，請在 to 填入至少一位收件者"}
     mailToCsv := ""
-    for idx, addr in recipients {
-        if (idx > 1)
-            mailToCsv .= ","
-        mailToCsv .= addr
-    }
-
-    escHost := PsEsc(smtpHost)
-    escUser := PsEsc(smtpUser)
-    escPass := PsEsc(smtpPass)
-    escFrom := PsEsc(mailFrom)
-    escToCsv := PsEsc(mailToCsv)
-    escSubject := PsEsc(subject)
-    escBody := PsEsc(body)
-
-    script := "$ErrorActionPreference = 'Stop'`n"
-    script .= "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12`n"
-    script .= "$smtpHost = '" escHost "'`n"
-    script .= "$smtpPort = " smtpPort "`n"
-    script .= "$smtpUser = '" escUser "'`n"
-    script .= "$smtpPass = '" escPass "'`n"
-    script .= "$mailFrom = '" escFrom "'`n"
-    script .= "$mailToCsv = '" escToCsv "'`n"
-    script .= "$subject = '" escSubject "'`n"
-    script .= "$body = '" escBody "'`n"
-    script .= "$useSsl = " ((useSsl = "1" || StrLower(useSsl) = "true") ? "$true" : "$false") "`n"
-    script .= "try {`n"
-    script .= "  $msg = New-Object System.Net.Mail.MailMessage`n"
-    script .= "  $msg.From = $mailFrom`n"
-    script .= "  $mailToList = $mailToCsv.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }`n"
-    script .= "  foreach ($to in $mailToList) { $msg.To.Add($to) }`n"
-    script .= "  $msg.Subject = $subject`n"
-    script .= "  $msg.Body = $body`n"
-    script .= "  $msg.BodyEncoding = [System.Text.Encoding]::UTF8`n"
-    script .= "  $msg.SubjectEncoding = [System.Text.Encoding]::UTF8`n"
-    script .= "  $smtp = New-Object System.Net.Mail.SmtpClient($smtpHost, $smtpPort)`n"
-    script .= "  $smtp.UseDefaultCredentials = $false`n"
-    script .= "  $smtp.EnableSsl = $useSsl`n"
-    script .= "  $smtp.Credentials = New-Object System.Net.NetworkCredential($smtpUser, $smtpPass)`n"
-    script .= "  $smtp.Send($msg)`n"
-    script .= "  exit 0`n"
-    script .= "} catch {`n"
-    script .= "  $m = $_.Exception.Message`n"
-    script .= "  if ($_.Exception.InnerException) { $m += ' | Inner: ' + $_.Exception.InnerException.Message }`n"
-    script .= "  Write-Output $m`n"
-    script .= "  exit 1`n"
-    script .= "}`n"
-
-    try FileDelete(psFile)
-    try FileDelete(errFile)
-    FileAppend(script, psFile, "UTF-8")
-
-    cmd := A_ComSpec ' /D /C ""powershell" -NoProfile -ExecutionPolicy Bypass -File "' psFile '" > "' errFile '" 2>&1"'
-    exitCode := RunWait(cmd, , "Hide")
-
-    errMsg := ""
-    try errMsg := Trim(FileRead(errFile, "UTF-8"), "`r`n`t ")
-    if (errMsg = "")
-        try errMsg := Trim(FileRead(errFile), "`r`n`t ")
-
-    try FileDelete(psFile)
-    try FileDelete(errFile)
-
-    if (exitCode = 0)
-        return { ok: true, message: "" }
-
-    if (errMsg = "")
-        errMsg := "PowerShell SMTP 呼叫失敗，ExitCode=" exitCode
-    return { ok: false, message: errMsg }
+    for idx, addr in recipients
+        mailToCsv .= (idx > 1 ? "," : "") addr
+    return NativeRuntime_SendMail(smtpHost, smtpPort, smtpUser, smtpPass,
+        mailFrom, mailToCsv, subject, body, useSsl)
 }
 
 ParseMailRecipients(mailToText) {

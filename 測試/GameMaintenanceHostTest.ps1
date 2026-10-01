@@ -14,10 +14,12 @@ try {
         $functions+=$match.Value
     }
     $testPath=Join-Path $context.RunRoot 'host-worker.ahk'
-    $workerSource=Join-Path $root 'payload\GameMaintenanceWorker.ps1'
+    $nativeOutput=Join-Path $context.RunRoot 'native'
+    & (Join-Path $root 'native-helper\Build-NativeHelpers.ps1') -OutputDirectory $nativeOutput
+    $workerSource=Join-Path $nativeOutput 'GameMaintenanceWorker.exe'
     # The actual host uses A_ScriptDir. The generated test changes only that data
     # path to the same shipped worker, not its launch/lifecycle implementation.
-    $extracted=($functions -join "`n").Replace('A_ScriptDir "\GameMaintenanceWorker.ps1"',('"'+$workerSource+'"'))
+    $extracted=($functions -join "`n").Replace('A_ScriptDir "\GameMaintenanceWorker.exe"',('"'+$workerSource+'"'))
     $harness=@"
 #Requires AutoHotkey v2.0
 #Include $root\測試\GameMaintenanceFixtures.ahk
@@ -35,7 +37,7 @@ TestActualHostWorker() {
         deadline := A_TickCount + 10000
         while !FileExist(worker.outputPath) && A_TickCount < deadline
             Sleep(100)
-        GMTest_Assert(FileExist(worker.outputPath),"actual AHK to PS request and snapshot")
+        GMTest_Assert(FileExist(worker.outputPath),"actual AHK to native request and snapshot")
         snapshot := GM_ReadWorkerSnapshot(worker.outputPath,worker.requestId,0,RC_UnixMs(),worker.session)
         GMTest_Assert(snapshot["notice"]["outcome"] = "pending","test mode skips HTTP entirely")
         GMTest_Assert(snapshot["install"]["provider"] = "unknown","fake install did not become real game")

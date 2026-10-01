@@ -1,16 +1,19 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('Foundation','Notice','Install','Worker','Policy','Adapters','Ocr','Startup','Transport','Ui','Release','All')][string]$Suite = 'All')
+param([ValidateSet('Foundation','Native','Notice','Install','Worker','Policy','Adapters','Ocr','Startup','Transport','Ui','Release','All')][string]$Suite = 'All')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $suiteTests = [ordered]@{
-    Foundation=@('GameMaintenanceRunnerTest.ps1')
+    Foundation=@('TestScriptEncodingTest.ps1','GameMaintenanceRunnerTest.ps1')
+    Native=@('NativeMaintenanceTest.ps1','LauncherNativeIntegrationTest.ps1',
+        'NativePerformanceTelemetryTest.ps1','NativeRuntimeUtilitiesTest.ps1',
+        'NativeBootstrapAssetsTest.ps1','NativeRuntimeWiringTest.ps1','NativeMaintenanceIntegrationTest.ps1','LegacyBootstrapSourceTest.ps1','ImagePutLifetimeTest.ps1')
     Notice=@('GameMaintenanceNoticeTest.ps1')
     Install=@('GameInstallDiscoveryTest.ps1')
     Worker=@('GameMaintenanceWorkerTest.ps1','GameMaintenanceWorkerTest.ahk')
     Policy=@('GameMaintenancePolicyTest.ahk','GameMaintenancePersistenceTest.ahk')
     Adapters=@('GameUpdateAdaptersTest.ahk','ManagedProcessGuardTest.ps1')
     Ocr=@('GameUpdateOcrPolicyTest.ahk')
-    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1','LauncherStartupGuardTest.ps1','LauncherStartupNativeTest.ps1','InstallStartupLockTest.ps1')
+    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1','LauncherStartupGuardTest.ps1','LauncherStartupNativeTest.ps1','InstallStartupLockTest.ps1','MainInstanceOwnershipTest.ps1','LauncherInstallationRootTest.ps1','LauncherCleanupIdentityTest.ps1','RestartWorkerOwnershipTest.ps1','LauncherNativeHelperDrainTest.ps1')
     Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1','RemoteControlStartupHookTest.ps1','RuntimeSnapshotThrottleTest.ps1')
     Ui=@('GameMaintenanceLocalUiTest.ps1')
     Release=@('GameMaintenancePackageTest.ps1')

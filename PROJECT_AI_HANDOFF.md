@@ -19,6 +19,15 @@
 
 ### 啟動器重複啟動與搬移交接（2026-10-01）
 
+- 19:02 pre-release gate：最新完整 All 回歸 39 個測試檔全部通過；19 項 restart handoff 與 108 項網站／服務端測試通過，獨立 final-source review Critical 0／Important 0／Minor 0。SMTP／audio／telemetry／bootstrap 正式可達路徑已無 PowerShell runtime fallback；沒有改 ExecutionPolicy。取消中 I/O buffer 生命週期與受管 FFmpeg 絕對路徑驗證均已完成 RED/GREEN，測後本機 AHK／正式流程為 0。接下來僅透過完整發布腳本建立 5.20／5.32／1.0.79，跳過 Docker 部署；雜湊驗證後單次正式啟動，仍須 fresh heartbeat/online/RUN 與遊戲／LRMCAI 進度，不能把 code gate 視為已恢復。
+- 18:46 checkpoint（取代下方 17:45 的「輔助功能仍依賴 PS5.1」現況）：正式可達路徑的效能採集、SMTP、精確遊戲音量、SHA-256、FFmpeg 下載／驗證／解壓／原子安裝均已接到原生 .NET Framework helper，不改 ExecutionPolicy、不以 Bypass 或另一個 PowerShell host 規避。舊分段錄影 worker 沒有正式呼叫入口，仍留作舊資料相容；開發回歸可用 PS7，不等於產品依賴 PS7。候選版本已升為 Payload 5.20／Launcher 5.32／Server bundle 1.0.79，**尚未發布或正式啟動**。最新審查仍在收尾取消 I/O buffer 生命週期與 FFmpeg 設定路徑驗證；須新一輪完整回歸與 Critical 0／Important 0 才可發布。
+- 本機已隔離重現 ImagePut 在 GDI+ unload/counter 更新間被 timer 重入造成 `pBitmap cannot be zero`，主腳本在 ImagePut 載入後、logger/timers 前保留 process-lifetime pin，無 OnExit 提早卸載。合成 PNG 測試不是遠端畫面已修復的證明。MYTUF 的原生 Remote worker 於 18:25～18:27 讀到真實 LRMCAI 傳送／拾取／下一任務進度，但執行中的 5.15 仍持續影像擷取錯誤，不能宣稱完整驗收。
+- root 同一 turn 的本機 MYDESKPC → MYTUF Remote worker 的 MyTUFPC／實際 cwd／Git origin → 本機 MYDESKPC 已再次驗證；沒有 Handoff、DeskIn 或以鋤地 API 控制遠端。正式桌機仍缺新 heartbeat/online/RUN/實際任務驗收，不能用舊 09:52 心跳代替。
+
+- 17:45 checkpoint：本機候選包 Payload 5.19／Launcher 5.31／Server bundle 1.0.78 已建立，**尚未推送、部署或啟動正式程式**。P0 scope review Critical 0／Important 0；31 檔維護回歸、19 項重啟交接、108 項網站測試與完整 release stage 通過。实际候選 ZIP 也經原生 helper 隔離解壓並比對雜湊；AHK 回到 0。
+- 正式開服公告 worker 與 launcher 替換／解壓已改為不宿主 PowerShell 的原生 helper。既有安裝改名時 WORK_DIR 與鎖定根目錄現已一致；更新前工具清理以保留 handle＋重新核對身分取代裸 PID 終止。
+- **正式啟動 gate 尚未關閉**：本機 PS5.1 仍為 Restricted；效能採集、mail/audio 等舊輔助功能仍含 Bypass，與本輪不使用 Bypass 的要求不相容。不能因 P0 測試或本機打包成功就啟動、放寬 policy 或宣稱網站已恢復。完整證據與剩餘範圍見 `.dev-runtime/diagnostics/game-maintenance/p0-candidate-20261001-1745.md`。舊 PID／人工對話框不是目前 blocker。
+
 - 5.18／5.30 修正桌機第二次啟動以舊 AHK PID 誤認新 child 成功的問題。啟動器在釋出內嵌檔案與更新前核對已安裝主腳本；同一路徑即使由另一份 AHK runtime 執行，也拒絕重複啟動。無法取得完整身分時安全停止，不以程式名稱廣殺。
 - `LauncherStartupGuard.ahk` 透過 `CreateProcessW` 保留新 child 的真正 process handle，再比對 PID、路徑、腳本與建立時間；程序存在或 handoff ACK 不等於网站在線或遊戲已開始工作。
 - `payload/InstallStartupLock.ahk` 讓不同名稱的 launcher 與 direct restart worker 共用安裝根目錄 reservation。首次自我搬移前，父程序必須先釋放鎖並將 handle 清零，才能啟動新位置的 child；搬移啟動失敗須退出，不得在已失去 reservation 後繼續更新。

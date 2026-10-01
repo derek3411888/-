@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$Scenario = '')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -20,12 +20,19 @@ try {
         Copy-Item -LiteralPath (Join-Path $projectRoot ('payload\'+$file)) -Destination (Join-Path $harnessPayload $file)
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ScriptRestartHandoffTest.ahk') -Destination $harnessTests
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures\RestartHandoffFixture.ahk') -Destination $harnessFixtures
+    $mainSource=Get-Content -LiteralPath (Join-Path $projectRoot 'payload\全自動.ahk') -Raw -Encoding UTF8
+    $mainDirective=[regex]::Match($mainSource,'(?m)^#SingleInstance[^\r\n]*').Value
+    $mainGate=[regex]::Match($mainSource,'(?s); BEGIN MAIN INSTANCE OWNERSHIP.*?; END MAIN INSTANCE OWNERSHIP').Value
+    if($mainDirective -ne '#SingleInstance Off' -or !$mainGate){throw 'Production main ownership prologue is missing'}
+    $mainGate=$mainGate.Replace('#Include InstallStartupLock.ahk','#Include ..\..\payload\InstallStartupLock.ahk')
+    $successorSource=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures\RestartHandoffFixture.ahk') -Raw -Encoding UTF8
+    $successorSource=$successorSource.Replace('#SingleInstance Off',$mainDirective+"`n"+$mainGate)
+    [IO.File]::WriteAllText((Join-Path $harnessFixtures 'RestartHandoffFixture.ahk'),$successorSource,[Text.UTF8Encoding]::new($false))
     $inventorySource = Get-Content -LiteralPath (Join-Path $projectRoot 'payload\InstallStartupLock.ahk') -Raw -Encoding UTF8
     $fixtureInventory = @'
 InstallStartupLock_QueryProcesses() {
     ownedRecords := []
-    for record in ComObjGet("winmgmts:").ExecQuery("Select CommandLine from Win32_Process where Name like 'AutoHotkey%'") {
+    for record in ComObjGet("winmgmts:").ExecQuery("Select ProcessId, CommandLine from Win32_Process where Name like '%AutoHotkey%'") {
         if record.CommandLine && InStr(record.CommandLine, "__HARNESS_ROOT__")
             ownedRecords.Push(record)
     }

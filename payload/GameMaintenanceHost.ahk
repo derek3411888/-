@@ -192,10 +192,10 @@ GMHost_StartWorker(c) {
         stopPath:session "\stop",pid:0,started:0,generation:0,lastSeenTick:MonotonicTickMs()}
     c.worker := worker, c.sequence := 0, c.snapshot := 0, c.lastRequestKey := ""
     GMHost_WriteRequest(c,true)
-    scriptPath := A_ScriptDir "\GameMaintenanceWorker.ps1"
-    if !FileExist(scriptPath)
+    workerPath := A_ScriptDir "\GameMaintenanceWorker.exe"
+    if !FileExist(workerPath)
         throw Error("Missing maintenance worker package")
-    command := '"' A_WinDir '\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "' scriptPath
+    command := '"' workerPath
         . '" -RequestPath "' worker.requestPath '" -OutputPath "' worker.outputPath '" -StopPath "' worker.stopPath
         . '" -StateDirectory "' RuntimeFiles_GameMaintenanceDir() '" -ParentPid ' ownerPid ' -ParentStartUtc "' ownerStarted '"'
     Run(command,session,"Hide",&workerPid)

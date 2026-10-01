@@ -41,16 +41,17 @@ RestartHandoff_Prepare(ahkPath, scriptPath, mode, root, launcherPath := "", pare
     try {
         ; Never hold payload as the helper's working directory: the updater
         ; needs to replace that directory after the parent exits.
-        Run('"' ahkPath '" /ErrorStdOut=UTF-8 "' worker '" "' request '"', dir, "Hide", &workerPid)
-        RestartHandoff_WorkerHandle := DllCall("OpenProcess", "uint", 0x101001, "int", 0, "uint", workerPid, "ptr")
-        if !RestartHandoff_WorkerHandle
-            throw OSError(A_LastError, "OpenProcess(owned restart worker)")
+        workerChild := RestartHandoff_DispatchWorker(ahkPath,
+            '"' ahkPath '" /ErrorStdOut=UTF-8 "' worker '" "' request '"', dir)
+        workerPid := workerChild.pid
+        RestartHandoff_WorkerHandle := workerChild.handle
         deadline := A_TickCount + 5000
         loop {
             state := IniRead(dir "\result.ini", "result", "state", "")
             if (state = "armed")
                 return {request: request, workerPid: workerPid}
-            if (state = "failed" || state = "cancelled" || !ProcessExist(workerPid))
+            if (state = "failed" || state = "cancelled"
+                || DllCall("WaitForSingleObject", "ptr", RestartHandoff_WorkerHandle, "uint", 0, "uint") != 258)
                 throw Error("Restart worker could not arm: " IniRead(dir "\result.ini", "result", "detail", state))
             if (A_TickCount >= deadline)
                 throw Error("Restart worker did not arm within 5 seconds")
@@ -60,6 +61,25 @@ RestartHandoff_Prepare(ahkPath, scriptPath, mode, root, launcherPath := "", pare
         RestartHandoff_Cancel("prepare failed")
         throw prepareError
     }
+}
+
+; CreateProcess binds ownership atomically. Run followed by OpenProcess(PID)
+; can adopt an unrelated process if a short-lived helper exits and PID is reused.
+RestartHandoff_DispatchWorker(ahkPath, command, workingDir) {
+    startupInfo := Buffer(A_PtrSize = 8 ? 104 : 68, 0)
+    processInfo := Buffer(A_PtrSize = 8 ? 24 : 16, 0)
+    commandBuffer := Buffer((StrLen(command) + 1) * 2, 0)
+    StrPut(command, commandBuffer, "UTF-16")
+    NumPut("UInt", startupInfo.Size, startupInfo)
+    NumPut("UInt", 1, startupInfo, A_PtrSize = 8 ? 60 : 44) ; STARTF_USESHOWWINDOW
+    NumPut("UShort", 0, startupInfo, A_PtrSize = 8 ? 64 : 48) ; SW_HIDE
+    if !DllCall("CreateProcessW", "str", ahkPath, "ptr", commandBuffer,
+        "ptr", 0, "ptr", 0, "int", false, "uint", 0, "ptr", 0, "str", workingDir,
+        "ptr", startupInfo, "ptr", processInfo, "int")
+        throw OSError(A_LastError, "CreateProcessW(restart worker)")
+    workerChild := {handle:NumGet(processInfo, 0, "ptr"), pid:NumGet(processInfo, 2*A_PtrSize, "uint")}
+    DllCall("CloseHandle", "ptr", NumGet(processInfo, A_PtrSize, "ptr"))
+    return workerChild
 }
 
 RestartHandoff_ValidMode(mode) {

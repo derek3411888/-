@@ -24,37 +24,53 @@ stale := '{"collector":{"state":"running","version":1,"updatedAt":1899999900000,
 starting := '{"collector":{"state":"starting","version":1,"updatedAt":1899999900000,"error":""}}'
 
 try {
-    expectedWorker := "E:\project with spaces\payload\PerformanceTelemetryWorker.ps1"
+    expectedWorker := "E:\project with spaces\payload\PerformanceTelemetryWorker.exe"
     expectedRoot := "E:\project with spaces\.dev-runtime\runtime\效能分析"
-    validCommand := '"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"'
-        . ' -NoProfile -File "' expectedWorker '" -OutputRoot "' expectedRoot '"'
-        . ' -ParentPid 123 -SampleIntervalSeconds 2'
+    expectedParentExe := "E:\project with spaces\payload\全自動鋤地.exe"
+    expectedParentCreation := 134116000001234567
+    validCommand := '"' expectedWorker '" -OutputRoot "' expectedRoot '"'
+        . ' -ParentPid 123 -ParentCreationFileTime ' expectedParentCreation
+        . ' -ParentExe "' expectedParentExe '" -SampleIntervalSeconds 2'
     AssertTelemetryWatchdog(PerformanceTelemetry_CommandLineMatchesWorker(
-        validCommand, expectedWorker, expectedRoot, 123),
+        validCommand, expectedWorker, expectedRoot, 123,
+        expectedParentCreation, expectedParentExe),
         "完整 worker 命令列應通過所有權檢查")
     AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
         StrReplace(validCommand, "-ParentPid 123", "-ParentPid 1234"),
-        expectedWorker, expectedRoot, 123),
+        expectedWorker, expectedRoot, 123, expectedParentCreation, expectedParentExe),
         "ParentPid 數字前綴不得誤判為相同 PID")
     AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
         StrReplace(validCommand, expectedWorker, expectedWorker "-other"),
-        expectedWorker, expectedRoot, 123),
+        expectedWorker, expectedRoot, 123, expectedParentCreation, expectedParentExe),
         "worker 路徑後綴不得通過所有權檢查")
     AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
         StrReplace(validCommand, expectedRoot, expectedRoot "-other"),
-        expectedWorker, expectedRoot, 123),
+        expectedWorker, expectedRoot, 123, expectedParentCreation, expectedParentExe),
         "OutputRoot 路徑後綴不得通過所有權檢查")
     AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
-        validCommand ' -ParentPid 123', expectedWorker, expectedRoot, 123),
+        validCommand ' -ParentPid 123', expectedWorker, expectedRoot, 123,
+        expectedParentCreation, expectedParentExe),
         "重複 ParentPid 參數不得通過所有權檢查")
-    commandMode := StrReplace(validCommand, " -File ", ' -Command "noop" -File ')
     AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
-        commandMode, expectedWorker, expectedRoot, 123),
-        "-Command 模式下的 -File token 不得被當成 worker invocation")
-    encodedMode := StrReplace(validCommand, " -File ", " -Enc ZQBjAGgAbwAgAHQAZQBzAHQA -File ")
+        StrReplace(validCommand, String(expectedParentCreation), String(expectedParentCreation + 1)),
+        expectedWorker, expectedRoot, 123, expectedParentCreation, expectedParentExe),
+        "PID 重用時不同 creation time 不得通過所有權檢查")
     AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
-        encodedMode, expectedWorker, expectedRoot, 123),
-        "-EncodedCommand 縮寫模式不得被當成 worker invocation")
+        StrReplace(validCommand, expectedParentExe, expectedParentExe "-other"),
+        expectedWorker, expectedRoot, 123, expectedParentCreation, expectedParentExe),
+        "不同 parent executable 不得通過所有權檢查")
+    AssertTelemetryWatchdog(!PerformanceTelemetry_CommandLineMatchesWorker(
+        validCommand ' -TestFixturePath "E:\tampered.json"',
+        expectedWorker, expectedRoot, 123, expectedParentCreation, expectedParentExe),
+        "同路徑命令列不得夾帶測試或其他額外參數")
+    AssertTelemetryWatchdog(PerformanceTelemetry_ProcessIdentityMatches(
+        {pid: 456, creationFileTime: 134116000009999999, exePath: expectedWorker},
+        456, 134116000009999999, expectedWorker),
+        "精確 PID、creation time 與執行檔應通過身分檢查")
+    AssertTelemetryWatchdog(!PerformanceTelemetry_ProcessIdentityMatches(
+        {pid: 456, creationFileTime: 134116000009999998, exePath: expectedWorker},
+        456, 134116000009999999, expectedWorker),
+        "重用 PID 的舊 creation time 不得通過身分檢查")
 
     result := PerformanceTelemetry_EvaluateHealth(healthy, true, 10000, nowMs)
     AssertTelemetryWatchdog(!result.restart, "正常 collector 不應重啟")
@@ -118,7 +134,8 @@ try {
     try DirDelete(fixtureRoot)
     FileAppend("performance-telemetry-watchdog=ok`n", "*")
 } catch as e {
-    FileAppend("performance-telemetry-watchdog=failed: " e.Message "`n", "**")
+    FileAppend("performance-telemetry-watchdog=failed: " e.Message
+        . " what=" e.What " line=" e.Line " stack=" e.Stack "`n", "**")
     ExitApp(1)
 }
 

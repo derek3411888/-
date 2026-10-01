@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
@@ -48,6 +48,12 @@ class FixtureWmi {
             throw Error("fixture query denied")
         if scenario="existing"
             return [oldProc]
+        if scenario="include-switch"
+            return [{ProcessId:111,ExecutablePath:ahkPath,CommandLine:'"' ahkPath '" /include "E:\bootstrap.ahk" "' MAIN_PATH '"',CreationDate:oldProc.CreationDate}]
+        if InStr(scenario,"relative-") = 1 {
+            token := scenario="relative-drive" ? 'E:全自動.ahk' : scenario="relative-bare" ? '全自動.ahk' : 'payload\全自動.ahk'
+            return [{ProcessId:111,ExecutablePath:ahkPath,CommandLine:'"' ahkPath '" "' token '"',CreationDate:oldProc.CreationDate}]
+        }
         if scenario="same-script-other-runtime" {
             return [{Name:"AutoHotkey64.exe",ProcessId:111,ExecutablePath:"D:\other\AutoHotkey64.exe",
                 CommandLine:'"D:\other\AutoHotkey64.exe" "' MAIN_PATH '"',CreationDate:oldProc.CreationDate}]
@@ -107,7 +113,7 @@ WriteLog(message,level:="INFO") {
 }
 __START_BLOCK__
 try {
-    if scenario="existing" || scenario="unreadable" || scenario="inaccessible" || scenario="same-script-other-runtime" {
+    if scenario="existing" || scenario="unreadable" || scenario="inaccessible" || scenario="same-script-other-runtime" || InStr(scenario,"relative-")=1 || scenario="include-switch" {
         if runCount != 0
             throw Error("Existing or uninspectable runtime must not be replaced by a second Run")
         if mainLaunchSucceeded
@@ -127,7 +133,7 @@ try {
 ExitApp(0)
 '@
     $fixture=$fixture.Replace('__INCLUDES__',$includes).Replace('__START_BLOCK__',$block)
-    foreach($scenario in @('existing','fresh','wrong-child','unreadable','inaccessible','wrong-script','old-pid-same-script','child-query-failed','pid-reused','same-script-other-runtime','exited-before-first-poll','exited-during-query')){
+    foreach($scenario in @('existing','fresh','wrong-child','unreadable','inaccessible','wrong-script','old-pid-same-script','child-query-failed','pid-reused','same-script-other-runtime','exited-before-first-poll','exited-during-query','relative-drive','relative-bare','relative-nested','include-switch')){
         $testPath=Join-Path $context.RunRoot ('startup-'+$scenario+'.ahk')
         # Set scenario directly so the normal contained test runner needs no extra interface.
         $case=$fixture.Replace('global scenario := A_Args.Length ? A_Args[1] : "existing"', ('global scenario := "'+$scenario+'"'))

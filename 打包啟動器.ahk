@@ -8,11 +8,12 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.30"
+global PACK_LAUNCHER_BUILD_VERSION := "5.32"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
 global PACK_MAIN_MUTEX_HANDLE := 0
+global PACK_RUNTIME_MUTEX_HANDLE := 0
 
 LauncherIsDevelopmentCheckout() {
     root := RTrim(StrReplace(A_ScriptDir, "/", "\"), "\")
@@ -738,7 +739,7 @@ ApplyPendingLauncherUpdateLegacyUnused(workDir, dataDir) {
             return false
         }
         
-        ; 使用 PowerShell 進行受限的文件替換（需管理員權限）
+        ; 使用原生 helper 進行受限的檔案替換（沿用啟動器的權限）
         if !A_IsAdmin {
             WriteLog("警告：無法應用待更新的 launcher，因無管理員權限", "WARN")
             return false
@@ -788,6 +789,8 @@ QuoteForBat(path) {
 ; v4.43 起使用的安全替換器。主流程確認已啟動後才呼叫；helper 會等目前
 ; launcher PID 真正退出，再做可回復且有雜湊驗證的替換。
 ApplyPendingLauncherUpdateV2(workDir, dataDir) {
+    if !A_IsCompiled
+        return false ; source checkout is never an executable replacement target
     WriteLog("檢查是否有待應用的 launcher 更新...")
 
     launcherBackupFile := dataDir "\\launcher_pending_update.tmp"
@@ -850,83 +853,76 @@ ApplyPendingLauncherUpdateV2(workDir, dataDir) {
             return false
         }
 
-        replacePs1 := LauncherNewTempPath("launcher_replace", ".ps1", "更新")
-        outcomeFile := dataDir "\\launcher_update_outcome.log"
-        currentVerFile := dataDir "\\launcher_current_version.txt"
-        helperLines := [
-            "param([int]$LauncherPid,[string]$SourcePath,[string]$TargetPath,[string]$PendingPath,[string]$PendingVersionPath,[string]$PendingShaPath,[string]$CurrentVersionPath,[string]$Version,[string]$ExpectedSha,[string]$OutcomePath)",
-            "$ErrorActionPreference = 'Stop'",
-            "$candidate = $TargetPath + '.update'",
-            "$backup = $TargetPath + '.pre_update.bak'",
-            "try {",
-            "  $deadline = (Get-Date).AddSeconds(60)",
-            "  while ((Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }",
-            "  if (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { throw 'launcher PID did not exit within 60 seconds' }",
-            "  if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) { throw 'pending launcher source is missing' }",
-            "  $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourcePath).Hash.ToLowerInvariant()",
-            "  if ($ExpectedSha -and $sourceHash -ne $ExpectedSha.ToLowerInvariant()) { throw 'pending launcher SHA256 mismatch' }",
-            "  Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue",
-            "  if ((-not (Test-Path -LiteralPath $TargetPath)) -and (Test-Path -LiteralPath $backup -PathType Leaf)) { Move-Item -LiteralPath $backup -Destination $TargetPath -Force }",
-            "  if ((Test-Path -LiteralPath $TargetPath -PathType Leaf) -and (Test-Path -LiteralPath $backup -PathType Leaf)) { Remove-Item -LiteralPath $backup -Force }",
-            "  Copy-Item -LiteralPath $SourcePath -Destination $candidate -Force",
-            "  if ((Get-Item -LiteralPath $candidate).Length -ne (Get-Item -LiteralPath $SourcePath).Length) { throw 'candidate size mismatch' }",
-            "  if (Test-Path -LiteralPath $TargetPath) { Move-Item -LiteralPath $TargetPath -Destination $backup -Force }",
-            "  Move-Item -LiteralPath $candidate -Destination $TargetPath -Force",
-            "  $targetHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $TargetPath).Hash.ToLowerInvariant()",
-            "  if ($targetHash -ne $sourceHash) { throw 'installed launcher SHA256 mismatch' }",
-            "  Set-Content -LiteralPath $CurrentVersionPath -Value $Version -Encoding Ascii -NoNewline",
-            "  Remove-Item -LiteralPath $PendingPath,$PendingVersionPath,$PendingShaPath,$SourcePath,$backup -Force -ErrorAction SilentlyContinue",
-            "  Add-Content -LiteralPath $OutcomePath -Encoding UTF8 -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' SUCCESS launcher=' + $Version + ' sha256=' + $targetHash)",
-            "} catch {",
-            "  $failureReason = $_.Exception.Message",
-            "  $rollback = 'not-needed'",
-            "  if (Test-Path -LiteralPath $backup -PathType Leaf) {",
-            "    try {",
-            "      if (Test-Path -LiteralPath $TargetPath) { Remove-Item -LiteralPath $TargetPath -Force }",
-            "      Move-Item -LiteralPath $backup -Destination $TargetPath -Force",
-            "      $rollback = 'restored'",
-            "    } catch {",
-            "      $rollback = 'FAILED: ' + $_.Exception.Message",
-            "    }",
-            "  }",
-            "  Add-Content -LiteralPath $OutcomePath -Encoding UTF8 -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' FAILED launcher=' + $Version + ' reason=' + $failureReason + ' rollback=' + $rollback)",
-            "} finally {",
-            "  Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue",
-            "  Start-Sleep -Milliseconds 300",
-            "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
-            "}"
-        ]
-        helperContent := ""
-        for _, line in helperLines
-            helperContent .= line "`r`n"
-        FileAppend(helperContent, replacePs1, "UTF-8-RAW")
-
-        launcherPid := DllCall("GetCurrentProcessId")
-        cmd := 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' replacePs1 '"'
-        cmd .= ' -LauncherPid ' launcherPid
-        cmd .= ' -SourcePath "' newExePath '" -TargetPath "' currentExePath '"'
-        cmd .= ' -PendingPath "' launcherBackupFile '" -PendingVersionPath "' versionBackupFile '"'
-        cmd .= ' -PendingShaPath "' shaBackupFile '" -CurrentVersionPath "' currentVerFile '"'
-        cmd .= ' -Version "' pendingVersion '" -ExpectedSha "' pendingSha '" -OutcomePath "' outcomeFile '"'
-        Run(cmd, , "Hide")
-
-        WriteLog("launcher 更新替換 helper 已排程；成功與否將寫入 " outcomeFile)
-        return true
+        helper := LauncherNativeHelperPath()
+        launcherPid := DllCall("GetCurrentProcessId", "uint")
+        created := LauncherNativeParentStamp()
+        ready := dataDir "\launcher_replace_" launcherPid "_" created ".ready"
+        cmd := '"' helper '" replace "' workDir '" "' currentExePath '" ' launcherPid ' ' created
+        Run(cmd, workDir, "Hide", &helperPid)
+        deadline := A_TickCount + 8000
+        while A_TickCount < deadline {
+            if FileExist(ready) {
+                if Trim(FileRead(ready, "UTF-8")) = "READY" {
+                    WriteLog("原生 launcher 替換工具已綁定目前程序身分；等待本啟動器退出後才替換，結果寫入 config\\launcher_update_outcome.log")
+                    return true
+                }
+            }
+            if !ProcessExist(helperPid)
+                break
+            Sleep 100
+        }
+        WriteLog("原生 launcher 替換工具未確認接管；保留 pending，下次再試", "WARN")
+        return false
     } catch as e {
         WriteLog("應用待更新 launcher 時發生異常: " e.Message, "WARN")
         return false
     }
 }
 
-ExtractZipByPowerShell(zipPath, destDir) {
+LauncherNativeParentStamp() {
+    created := Buffer(8), exited := Buffer(8), kernel := Buffer(8), user := Buffer(8)
+    if !DllCall("GetProcessTimes", "ptr", DllCall("GetCurrentProcess", "ptr"),
+        "ptr", created, "ptr", exited, "ptr", kernel, "ptr", user)
+        throw OSError(A_LastError, "GetProcessTimes(launcher)")
+    return NumGet(created, 0, "Int64")
+}
+
+LauncherNativeHelperPath() {
+    global PACK_NATIVE_HELPER_PATH
+    if !IsSet(PACK_NATIVE_HELPER_PATH) || !FileExist(PACK_NATIVE_HELPER_PATH)
+        throw Error("Native launcher helper is unavailable")
+    return PACK_NATIVE_HELPER_PATH
+}
+
+LauncherNeedsPayloadRecovery(workDir) {
+    updateDir := workDir "\執行暫存\更新"
+    return FileExist(updateDir "\payload_transaction.txt")
+        || DirExist(updateDir "\payload_previous")
+}
+
+ExtractZipNative(workDir) {
+    global PACK_RUNTIME_MUTEX_HANDLE
     try {
-        psZip := StrReplace(zipPath, "'", "''")
-        psDest := StrReplace(destDir, "'", "''")
-        psCmd := "$ErrorActionPreference='Stop'; $zip='" psZip "'; $dest='" psDest "'; if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }; New-Item -ItemType Directory -Path $dest -Force | Out-Null; Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force"
-        cmd := "powershell -NoProfile -ExecutionPolicy Bypass -Command " Chr(34) psCmd Chr(34)
-        return (RunWait(cmd, , "Hide") = 0)
-    } catch {
+        helper := LauncherNativeHelperPath()
+        ; Startup reservation remains with this launcher; runtime is explicitly
+        ; lent to the extractor so parent death cannot leave installation writes
+        ; unguarded. Another main cannot enter while native extraction owns it.
+        InstallStartupLock_Release(PACK_RUNTIME_MUTEX_HANDLE)
+        PACK_RUNTIME_MUTEX_HANDLE := 0
+        parentImage := A_IsCompiled ? A_ScriptFullPath : A_AhkPath
+        command := '"' helper '" extract "' workDir '" "' parentImage '" '
+            . DllCall("GetCurrentProcessId", "uint") ' ' LauncherNativeParentStamp()
+        exitCode := RunWait(command, workDir, "Hide")
+        return exitCode = 0
+    } catch as e {
+        WriteLog("原生解壓失敗，保留舊版本: " e.Message, "ERROR")
         return false
+    } finally {
+        PACK_RUNTIME_MUTEX_HANDLE := InstallStartupLock_AcquireRuntime(workDir)
+        if PACK_RUNTIME_MUTEX_HANDLE <= 0 {
+            WriteLog("解壓後無法取回安裝 runtime 鎖；停止本啟動器，不啟動主流程", "ERROR")
+            ExitApp 1
+        }
     }
 }
 
@@ -972,6 +968,15 @@ if (PACK_MAIN_MUTEX_HANDLE = 0) {
     ExitApp 1
 }
 
+; BEGIN LAUNCHER RUNTIME RESERVATION
+; Close the direct-main race throughout payload/runtime installation writes.
+PACK_RUNTIME_MUTEX_HANDLE := InstallStartupLock_AcquireRuntime(LauncherProjectRoot())
+if PACK_RUNTIME_MUTEX_HANDLE <= 0 {
+    WriteLog("安裝目錄仍有主流程／更新擁有者；保留檔案，不重複啟動", "WARN")
+    ExitApp(PACK_RUNTIME_MUTEX_HANDLE = -1 ? 0 : 1)
+}
+; END LAUNCHER RUNTIME RESERVATION
+
 ; Must run before releasing/replacing any embedded file or updating payload.
 ; Repeated clicks must leave the active task and recorder untouched.
 existingMainGate := LauncherStartup_Inspect(LauncherProjectRoot() "\AutoHotkey64.exe",
@@ -988,12 +993,12 @@ if !existingMainGate.allow {
 ; =========================
 autoFolderName := "自動鋤地"
 currentDir := A_ScriptDir
-autoFolderPath := currentDir "\" autoFolderName
+autoFolderPath := LauncherProjectRoot()
 currentExePath := A_ScriptFullPath
 SplitPath(currentExePath, &exeFileName)
 
 ; 檢查是否已經在「自動鋤地」資料夾內
-if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
+if !LauncherIsDevelopmentCheckout() && InstallStartupLock_Normalize(LauncherProjectRoot()) != InstallStartupLock_Normalize(currentDir) {
     WriteLog("開始自我組織：建立專用資料夾並複製所有程式檔案...")
     
     ; 建立「自動鋤地」資料夾
@@ -1040,6 +1045,8 @@ if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
         ; 啟動新位置的exe
         ; 搬移前後共用安裝目錄鎖：先交出保留權，子程序才能接手。
         ; 此界線之後父程序只能退出；Run 失敗也不可繼續解壓／啟動。
+        InstallStartupLock_Release(PACK_RUNTIME_MUTEX_HANDLE)
+        PACK_RUNTIME_MUTEX_HANDLE := 0
         InstallStartupLock_Release(PACK_MAIN_MUTEX_HANDLE)
         PACK_MAIN_MUTEX_HANDLE := 0
         Run('"' newExePath '"' LauncherAdminForwardArgs(), autoFolderPath)
@@ -1103,16 +1110,9 @@ if !LauncherIsDevelopmentCheckout() && !InStr(currentDir, autoFolderName) {
 ; =========================
 MAIN_FILE := "全自動.ahk"            ; 主程式（全自動負責啟動前檢查並協調所有輔助腳本）
 
-; 確保在「自動鋤地」資料夾內工作
-if LauncherIsDevelopmentCheckout() {
-    WORK_DIR := LauncherProjectRoot()
-} else if InStr(A_ScriptDir, "自動鋤地") {
-    ; 已經在專用資料夾內
-    WORK_DIR := A_ScriptDir
-} else {
-    ; 還在原位置（理論上不會執行到這裡，因為前面已經處理了自我組織）
-    WORK_DIR := A_ScriptDir "\自動鋤地"
-}
+; 確保在同一個已保留 ownership 的安裝根目錄工作。
+; 既有安裝可改名；不能靠「自動鋤地」子字串再次推導另一個目錄。
+WORK_DIR := LauncherProjectRoot()
 
 APP_DIR   := WORK_DIR "\payload"       ; 解壓到專用資料夾的payload
 DATA_DIR  := WORK_DIR "\config"        ; 設定檔放專用資料夾的config
@@ -1149,6 +1149,15 @@ if !DirExist(APP_DIR)
 ; 釋出內嵌檔案到專用資料夾
 WriteLog("正在處理內嵌檔案...")
 WriteStep("準備更新", "釋出內嵌 Payload 與 AutoHotkey")
+
+; Kept outside payload because extraction replaces that directory. A unique
+; copy also avoids overwriting a replacement helper from an earlier launch.
+PACK_NATIVE_HELPER_PATH := LauncherNewTempPath("LauncherMaintenance", ".exe")
+try FileInstall("payload\LauncherMaintenance.exe", PACK_NATIVE_HELPER_PATH, 1)
+catch as e {
+    WriteLog("無法釋出原生更新工具: " e.Message, "ERROR")
+    ExitApp 1
+}
 
 ; 確保 payload.zip 存在並解壓
 payloadPath := WORK_DIR "\payload.zip"
@@ -1240,6 +1249,12 @@ for param in A_Args {
     }
 }
 
+; A matching version stamp cannot authorize an interrupted publication. Native
+; recovery runs under runtime ownership before any main dispatch.
+if LauncherNeedsPayloadRecovery(WORK_DIR) {
+    needUnpack := true
+    WriteLog("發現未完成的 payload 更新交易，先恢復／重新驗證，再允許主流程啟動", "WARN")
+}
 WriteLog("是否需要解壓: " (needUnpack ? "是" : "否"))
 
 if needUnpack {
@@ -1265,7 +1280,10 @@ if needUnpack {
                 }
                 if decision.stop {
                     pid := process.ProcessId
-                    ProcessClose(pid)
+                    if !LauncherCleanup_StopVerified(process, APP_DIR) {
+                        WriteLog("舊工具身分已變動、無法驗證或未完全退出；保留程序並停止本次更新 | PID=" pid, "ERROR")
+                        ExitApp 1
+                    }
                     WriteLog("已終止精確命中的舊進程 PID: " pid " | role=" decision.role)
                 } else if InStr(decision.role, "recording-worker-") = 1 {
                     WriteLog("保留正式錄影背景工具 PID=" process.ProcessId
@@ -1280,11 +1298,25 @@ if needUnpack {
         ; 一起終止，後者可能命中其他位置的同名程式。上方完整路徑白名單
         ; 是唯一允許的清理入口。
 
-        ; 等待進程完全釋放資源
-        Sleep(1000)
     } catch as e {
         WriteLog("終止進程時發生錯誤 (非致命): " e.Message, "WARN")
     }
+
+    ; Native helpers may still hold mapped payload images after their parent
+    ; exits.  Keep both startup/runtime reservations while waiting on exact,
+    ; revalidated images from this APP_DIR.  This policy never terminates a
+    ; native helper; timeout or unverifiable identity preserves the old payload.
+    WriteLog("等待同一安裝的原生背景工具安全退出...")
+    nativeDrain := LauncherCleanup_WaitNativeHelpers(APP_DIR, 45000)
+    if !nativeDrain.ok {
+        WriteLog("原生背景工具無法安全排空；保留舊 payload 並停止本次更新"
+            " | reason=" nativeDrain.reason " | PID=" nativeDrain.pid " | image=" nativeDrain.path, "ERROR")
+        MsgBox("背景工具仍在使用程式檔，或無法驗證其身分。`n舊版本已保留，請稍後再試並查看啟動器記錄。",
+            "更新前置檢查失敗", 16)
+        ExitApp 1
+    }
+    WriteLog("同一安裝的原生背景工具已排空"
+        " | waited=" (nativeDrain.waited ? "yes" : "no") " | elapsed_ms=" nativeDrain.elapsed)
 
     ; --- 1) 備份現有 config（保留的副檔名可擴充） ---
     cfgTmp := LauncherRuntimeDir("設定備份") "\cfg_backup"
@@ -1297,91 +1329,13 @@ if needUnpack {
         }
     }
 
-    ; --- 2) 解壓 payload 到 APP_DIR ---
-    ; 如果APP_DIR已存在，完全刪除重建（確保覆蓋）
-    if DirExist(APP_DIR) {
-        WriteLog("完全清理舊的 payload 目錄...")
-        try {
-            DirDelete(APP_DIR, 1)
-            WriteLog("舊 payload 目錄已刪除")
-        } catch as e {
-            WriteLog("刪除舊 payload 目錄失敗: " e.Message, "WARN")
-            ; 如果無法刪除，嘗試覆蓋重要檔案
-            Loop Files, APP_DIR "\*.ahk", "R" {
-                try {
-                    FileDelete(A_LoopFileFullPath)
-                    WriteLog("已刪除舊 .ahk 檔案: " A_LoopFileName)
-                } catch as e2 {
-                    WriteLog("刪除舊 .ahk 檔案失敗 " A_LoopFileName ": " e2.Message, "WARN")
-                }
-            }
-        }
-        Sleep(500)  ; 等待檔案系統同步
-    }
-    
-    ; 重新建立目錄
-    if !DirExist(APP_DIR) {
-        DirCreate(APP_DIR)
-        WriteLog("已重建 payload 目錄")
-    }
-    
-    ; 檢查 payload.zip 是否存在且可讀
-    if !FileExist(payloadPath) {
-        WriteLog("錯誤：找不到 payload.zip 檔案", "ERROR")
-        MsgBox("錯誤：找不到 payload.zip 檔案，無法繼續。", "檔案錯誤", 16)
-        ExitApp
-    }
-    
-    ; 檢查檔案大小
+    ; Native staged extraction validates the entire archive before replacing
+    ; payload. No asynchronous Shell.CopyHere or PowerShell fallback.
     try {
-        fileSize := FileGetSize(payloadPath)
-        if (fileSize < 1000) {  ; 檔案太小，可能損壞
-            WriteLog("警告：payload.zip 檔案大小異常: " fileSize " bytes", "WARN")
-        } else {
-            WriteLog("payload.zip 檔案大小正常: " fileSize " bytes")
-        }
-    } catch as e {
-        WriteLog("無法讀取 payload.zip 檔案大小: " e.Message, "WARN")
-    }
-
-    ; 直接解壓到 APP_DIR
-    sh  := ComObject("Shell.Application")
-    src := sh.NameSpace(payloadPath)
-    dst := sh.NameSpace(APP_DIR)
-    if !src || !dst {
-        WriteLog("解壓初始化失敗：無法建立 Shell 物件", "ERROR")
-        MsgBox("解壓初始化失敗。可能是檔案損壞或權限問題。", "解壓錯誤", 16)
-        ExitApp
-    }
-    
-    try {
-        dst.CopyHere(src.Items, 16)  ; 16=靜默
-        
-        ; 增加等待循環，確保解壓完成
-        Loop 20 {
-            if FileExist(APP_DIR "\" MAIN_FILE) || DirExist(APP_DIR "\payload")
-                break
-            Sleep 200
-        }
-        Sleep(1000)  ; 額外緩衝
-        
-        ; Shell 解壓在某些 zip（含中文檔名/路徑）可能靜默失敗，補一層 PowerShell 備援。
-        extractedCount := 0
-        try {
-            Loop Files, APP_DIR "\*", "R" {
-                extractedCount += 1
-                break
-            }
-        }
-
-        if (extractedCount = 0) {
-            WriteLog("Shell 解壓後 payload 仍為空，改用 PowerShell Expand-Archive 備援", "WARN")
-            if !ExtractZipByPowerShell(payloadPath, APP_DIR) {
-                WriteLog("PowerShell 備援解壓也失敗", "ERROR")
-                MsgBox("解壓失敗：Shell 與 PowerShell 皆無法解壓 payload.zip", "解壓錯誤", 16)
-                ExitApp
-            }
-            Sleep(400)
+        if !ExtractZipNative(WORK_DIR) {
+            WriteLog("原生解壓未完成；舊 payload 保留，不繼續啟動", "ERROR")
+            MsgBox("更新解壓失敗，原有版本已保留。請查看啟動器記錄。", "解壓錯誤", 16)
+            ExitApp 1
         }
 
         WriteLog("payload.zip 解壓完成到 " APP_DIR)
@@ -1590,6 +1544,14 @@ WriteLog("工作目錄: " APP_DIR)
 
 ; 全自動腳本會自動協調其他腳本，無需在此處強制關閉現有實例
 
+; BEGIN MAIN DISPATCH RESERVATION RELEASE
+; Payload/runtime writes are finished. Keep startup serialization until launcher
+; exit, but hand runtime ownership to the child BEFORE waiting for its startup.
+; The separate pending-EXE helper only replaces the launcher after its exit;
+; it never updates a running payload or launches another main.
+InstallStartupLock_Release(PACK_RUNTIME_MUTEX_HANDLE)
+PACK_RUNTIME_MUTEX_HANDLE := 0
+; END MAIN DISPATCH RESERVATION RELEASE
 mainLaunchSucceeded := false
 try {
     cleanupRecordingsOnly := LauncherHasArg("--cleanup-recordings")

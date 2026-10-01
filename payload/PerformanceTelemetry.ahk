@@ -1,11 +1,14 @@
 #Requires AutoHotkey v2.0+
 
-; Low-overhead performance collection runs in a separate, low-priority
-; PowerShell process.  The farming thread only reads one atomically replaced
-; JSON file during the existing self-hosted heartbeat.
+; Low-overhead performance collection runs in a separate, low-priority native
+; worker.  The farming thread only reads one atomically replaced JSON file
+; during the existing self-hosted heartbeat.
 global PERF_TELEMETRY_PID := 0
 global PERF_TELEMETRY_PROCESS_HANDLE := 0
+global PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
 global PERF_TELEMETRY_PARENT_PID := 0
+global PERF_TELEMETRY_PARENT_CREATION_FILETIME := 0
+global PERF_TELEMETRY_PARENT_EXE_PATH := ""
 global PERF_TELEMETRY_ROOT := ""
 global PERF_TELEMETRY_HEARTBEAT_PATH := ""
 global PERF_TELEMETRY_FIRESTORE_PATH := ""
@@ -51,8 +54,93 @@ PerformanceTelemetry_WorkerHandleAlive() {
     return DllCall("Kernel32\WaitForSingleObject", "ptr", handle, "uint", 0, "uint") = 0x102
 }
 
+PerformanceTelemetry_CanonicalPath(path) {
+    path := Trim(String(path), ' "`t`r`n')
+    if (path = "")
+        return ""
+    fullPathBuffer := Buffer(32768 * 2, 0)
+    length := DllCall("Kernel32\GetFullPathNameW", "str", path, "uint", 32768,
+        "ptr", fullPathBuffer, "ptr", 0, "uint")
+    if (length <= 0 || length >= 32768)
+        return ""
+    return StrLower(RTrim(StrGet(fullPathBuffer, length, "UTF-16"), "\"))
+}
+
+PerformanceTelemetry_ReadProcessIdentity(processHandle, pid) {
+    safePid := 0
+    try safePid := Integer(pid)
+    if (!processHandle || safePid <= 0)
+        return 0
+    if (DllCall("Kernel32\WaitForSingleObject", "ptr", processHandle,
+        "uint", 0, "uint") != 0x102)
+        return 0
+    times := Buffer(32, 0)
+    if !DllCall("Kernel32\GetProcessTimes", "ptr", processHandle,
+        "ptr", times, "ptr", times.Ptr + 8, "ptr", times.Ptr + 16,
+        "ptr", times.Ptr + 24)
+        return 0
+    pathBuffer := Buffer(32768 * 2, 0)
+    chars := 32768
+    if !DllCall("Kernel32\QueryFullProcessImageNameW", "ptr", processHandle,
+        "uint", 0, "ptr", pathBuffer, "uint*", &chars)
+        return 0
+    creationFileTime := NumGet(times, 0, "Int64")
+    exePath := PerformanceTelemetry_CanonicalPath(
+        StrGet(pathBuffer, chars, "UTF-16"))
+    if (creationFileTime <= 0 || exePath = "")
+        return 0
+    return {pid: safePid, creationFileTime: creationFileTime, exePath: exePath}
+}
+
+PerformanceTelemetry_ProcessIdentityMatches(record, expectedPid,
+    expectedCreationFileTime, expectedExePath) {
+    safePid := 0
+    safeCreation := 0
+    try safePid := Integer(expectedPid)
+    try safeCreation := Integer(expectedCreationFileTime)
+    expectedExe := PerformanceTelemetry_CanonicalPath(expectedExePath)
+    if (!IsObject(record) || safePid <= 0 || safeCreation <= 0 || expectedExe = "")
+        return false
+    if (!record.HasOwnProp("pid") || !record.HasOwnProp("creationFileTime")
+        || !record.HasOwnProp("exePath"))
+        return false
+    actualPid := 0
+    actualCreation := 0
+    try actualPid := Integer(record.pid)
+    try actualCreation := Integer(record.creationFileTime)
+    return actualPid = safePid && actualCreation = safeCreation
+        && PerformanceTelemetry_CanonicalPath(record.exePath) = expectedExe
+}
+
+PerformanceTelemetry_QuoteArgument(value) {
+    value := String(value)
+    if InStr(value, '"') || InStr(value, "`r") || InStr(value, "`n")
+        throw ValueError("Telemetry argument contains a forbidden character")
+    return '"' value '"'
+}
+
+PerformanceTelemetry_CreateWorker(workerPath, commandLine, workingDirectory) {
+    startupInfo := Buffer(A_PtrSize = 8 ? 104 : 68, 0)
+    processInfo := Buffer(A_PtrSize = 8 ? 24 : 16, 0)
+    commandBuffer := Buffer((StrLen(commandLine) + 1) * 2, 0)
+    StrPut(commandLine, commandBuffer, "UTF-16")
+    NumPut("UInt", startupInfo.Size, startupInfo)
+    NumPut("UInt", 1, startupInfo, A_PtrSize = 8 ? 60 : 44)
+    NumPut("UShort", 0, startupInfo, A_PtrSize = 8 ? 64 : 48)
+    if !DllCall("Kernel32\CreateProcessW", "str", workerPath,
+        "ptr", commandBuffer, "ptr", 0, "ptr", 0, "int", false,
+        "uint", 0x08000000, "ptr", 0, "str", workingDirectory,
+        "ptr", startupInfo, "ptr", processInfo, "int")
+        throw OSError(A_LastError, "CreateProcessW(PerformanceTelemetryWorker)")
+    return {handle: NumGet(processInfo, 0, "ptr"),
+        thread: NumGet(processInfo, A_PtrSize, "ptr"),
+        pid: NumGet(processInfo, 2 * A_PtrSize, "uint")}
+}
+
 PerformanceTelemetry_LaunchWorker() {
     global PERF_TELEMETRY_PID, PERF_TELEMETRY_PARENT_PID, PERF_TELEMETRY_PROCESS_HANDLE
+    global PERF_TELEMETRY_WORKER_CREATION_FILETIME
+    global PERF_TELEMETRY_PARENT_CREATION_FILETIME, PERF_TELEMETRY_PARENT_EXE_PATH
     global PERF_TELEMETRY_ROOT, PERF_TELEMETRY_HEARTBEAT_PATH, PERF_TELEMETRY_FIRESTORE_PATH
     global PERF_TELEMETRY_WORKER_PATH, PERF_TELEMETRY_CONFIG_PATH
     global PERF_TELEMETRY_WANTED, PERF_TELEMETRY_STOPPED
@@ -66,16 +154,20 @@ PerformanceTelemetry_LaunchWorker() {
             return true
         PerformanceTelemetry_CloseWorkerHandle()
         PERF_TELEMETRY_PID := 0
+        PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
     }
     if (PERF_TELEMETRY_PID > 0 && ProcessExist(PERF_TELEMETRY_PID)) {
-        if PerformanceTelemetry_IsOwnedWorker(PERF_TELEMETRY_PID)
+        adoptedHandle := PerformanceTelemetry_OpenOwnedWorkerHandle(PERF_TELEMETRY_PID)
+        if adoptedHandle {
+            PERF_TELEMETRY_PROCESS_HANDLE := adoptedHandle
             return true
+        }
         ; WMI 無法驗證，或 PID 已被 Windows 重用時安全失敗：
         ; 不關閉、不另開一個可能重複的 worker。
         return false
     }
 
-    workerPath := A_ScriptDir "\PerformanceTelemetryWorker.ps1"
+    workerPath := A_ScriptDir "\PerformanceTelemetryWorker.exe"
     if !FileExist(workerPath)
         return false
     PERF_TELEMETRY_WORKER_PATH := workerPath
@@ -87,41 +179,45 @@ PerformanceTelemetry_LaunchWorker() {
     catch
         return false
 
-    psExe := A_WinDir "\System32\WindowsPowerShell\v1.0\powershell.exe"
-    if !FileExist(psExe)
-        psExe := "powershell.exe"
-
-    PERF_TELEMETRY_PARENT_PID := DllCall("GetCurrentProcessId")
-    cmd := '"' psExe '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass'
-        . ' -File "' workerPath '"'
-        . ' -OutputRoot "' PERF_TELEMETRY_ROOT '"'
+    PERF_TELEMETRY_PARENT_PID := DllCall("Kernel32\GetCurrentProcessId", "uint")
+    parentHandle := DllCall("Kernel32\GetCurrentProcess", "ptr")
+    parentIdentity := PerformanceTelemetry_ReadProcessIdentity(
+        parentHandle, PERF_TELEMETRY_PARENT_PID)
+    if !IsObject(parentIdentity)
+        return false
+    PERF_TELEMETRY_PARENT_CREATION_FILETIME := parentIdentity.creationFileTime
+    PERF_TELEMETRY_PARENT_EXE_PATH := parentIdentity.exePath
+    cmd := PerformanceTelemetry_QuoteArgument(workerPath)
+        . ' -OutputRoot ' PerformanceTelemetry_QuoteArgument(PERF_TELEMETRY_ROOT)
         . ' -ParentPid ' PERF_TELEMETRY_PARENT_PID
+        . ' -ParentCreationFileTime ' PERF_TELEMETRY_PARENT_CREATION_FILETIME
+        . ' -ParentExe ' PerformanceTelemetry_QuoteArgument(PERF_TELEMETRY_PARENT_EXE_PATH)
         . ' -SampleIntervalSeconds 2'
     if (PERF_TELEMETRY_CONFIG_PATH != "")
-        cmd .= ' -ConfigPath "' PERF_TELEMETRY_CONFIG_PATH '"'
+        cmd .= ' -ConfigPath ' PerformanceTelemetry_QuoteArgument(PERF_TELEMETRY_CONFIG_PATH)
 
     workerPid := 0
     workerHandle := 0
+    child := 0
     PERF_TELEMETRY_LAST_RESTART_TICK := PerformanceTelemetry_MonotonicMs()
     if (PERF_TELEMETRY_STOPPED || !PERF_TELEMETRY_WANTED)
         return false
     try {
-        Run(cmd, A_ScriptDir, "Hide", &workerPid)
-        if (workerPid <= 0)
-            return false
+        child := PerformanceTelemetry_CreateWorker(workerPath, cmd, A_ScriptDir)
+        workerPid := child.pid
+        workerHandle := child.handle
+        DllCall("Kernel32\CloseHandle", "ptr", child.thread)
+        child.thread := 0
+        workerIdentity := PerformanceTelemetry_ReadProcessIdentity(workerHandle, workerPid)
+        if !PerformanceTelemetry_ProcessIdentityMatches(workerIdentity,
+            workerPid, workerIdentity.creationFileTime, workerPath)
+            throw Error("Native telemetry worker image identity mismatch")
         PERF_TELEMETRY_PID := workerPid
-        ; 對 Run() 剛回傳的子程式立即開啟可等待／終止的 handle。
-        ; handle 綁定 process object，PID 後續被重用也不會誤殺新程式。
-        workerHandle := DllCall("Kernel32\OpenProcess", "uint", 0x00100001,
-            "int", false, "uint", workerPid, "ptr")
         PERF_TELEMETRY_PROCESS_HANDLE := workerHandle
-        if (!workerHandle) {
-            ; 無法取得精確 handle 時不把此次啟動回報為成功。
-            ; 後續只可經由完整命令列驗證管理這個 PID。
-            return false
-        }
+        PERF_TELEMETRY_WORKER_CREATION_FILETIME := workerIdentity.creationFileTime
+        child.handle := 0
         PERF_TELEMETRY_STARTED_TICK := PerformanceTelemetry_MonotonicMs()
-        ; Run() 期間 STOP 可能中斷這個 AHK thread。新 PID 取得後
+        ; CreateProcessW 期間 STOP 可能中斷這個 AHK thread。新 PID 取得後
         ; 再檢查一次，STOP 已發生時只關閉剛建立的精確 worker。
         if (PERF_TELEMETRY_STOPPED || !PERF_TELEMETRY_WANTED) {
             PerformanceTelemetry_StopOwnedWorker(2000)
@@ -130,8 +226,18 @@ PerformanceTelemetry_LaunchWorker() {
         try ProcessSetPriority("Low", workerPid)
         return true
     } catch {
+        if IsObject(child) {
+            if child.HasOwnProp("thread") && child.thread
+                try DllCall("Kernel32\CloseHandle", "ptr", child.thread)
+            if child.HasOwnProp("handle") && child.handle {
+                try DllCall("Kernel32\TerminateProcess", "ptr", child.handle, "uint", 1)
+                try DllCall("Kernel32\WaitForSingleObject", "ptr", child.handle, "uint", 1000)
+                try DllCall("Kernel32\CloseHandle", "ptr", child.handle)
+            }
+        }
         PerformanceTelemetry_CloseWorkerHandle()
         PERF_TELEMETRY_PID := 0
+        PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
         PERF_TELEMETRY_STARTED_TICK := 0
         return false
     }
@@ -140,7 +246,7 @@ PerformanceTelemetry_LaunchWorker() {
 PerformanceTelemetry_Stop(waitMs := 3500) {
     global PERF_TELEMETRY_PID, PERF_TELEMETRY_PARENT_PID, PERF_TELEMETRY_ROOT
     global PERF_TELEMETRY_WANTED, PERF_TELEMETRY_STOPPED
-    global PERF_TELEMETRY_STARTED_TICK
+    global PERF_TELEMETRY_STARTED_TICK, PERF_TELEMETRY_WORKER_CREATION_FILETIME
 
     ; 先關閉 watchdog 意圖，再等 worker；即使 PID 早已消失，後續心跳
     ; 讀取也不能把 STOP 當成異常而重啟。
@@ -150,6 +256,7 @@ PerformanceTelemetry_Stop(waitMs := 3500) {
     if stopped {
         PERF_TELEMETRY_PID := 0
         PERF_TELEMETRY_STARTED_TICK := 0
+        PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
     }
 }
 
@@ -305,115 +412,114 @@ PerformanceTelemetry_ParseCommandLine(commandLine) {
     return args
 }
 
-PerformanceTelemetry_NormalizeCommandPath(path) {
-    return StrLower(RTrim(StrReplace(Trim(String(path), ' "`t`r`n'), "/", "\"), "\"))
-}
-
-PerformanceTelemetry_IsAlternatePowerShellMode(flag) {
-    value := StrLower(Trim(String(flag), " `t`r`n"))
-    if (value = "--%")
-        return true
-    if (StrLen(value) < 2)
-        return false
-    for fullName in ["-command", "-commandwithargs", "-encodedcommand", "-encodedarguments"] {
-        ; PowerShell 接受參數名縮寫，-c／-co／-e／-enc 都必須拒絕。
-        if (InStr(fullName, value) = 1)
-            return true
-    }
-    return false
-}
-
-PerformanceTelemetry_CommandLineMatchesWorker(commandLine, workerPath, outputRoot, parentPid) {
-    expectedWorker := PerformanceTelemetry_NormalizeCommandPath(workerPath)
-    expectedRoot := PerformanceTelemetry_NormalizeCommandPath(outputRoot)
+PerformanceTelemetry_CommandLineMatchesWorker(commandLine, workerPath,
+    outputRoot, parentPid, parentCreationFileTime, parentExePath,
+    configPath := "") {
+    expectedWorker := PerformanceTelemetry_CanonicalPath(workerPath)
+    expectedRoot := PerformanceTelemetry_CanonicalPath(outputRoot)
+    expectedParentExe := PerformanceTelemetry_CanonicalPath(parentExePath)
     expectedParent := 0
+    expectedCreation := 0
     try expectedParent := Integer(parentPid)
-    if (expectedWorker = "" || expectedRoot = "" || expectedParent <= 0)
+    try expectedCreation := Integer(parentCreationFileTime)
+    if (expectedWorker = "" || expectedRoot = "" || expectedParentExe = ""
+        || expectedParent <= 0 || expectedCreation <= 0)
         return false
 
     args := PerformanceTelemetry_ParseCommandLine(commandLine)
-    if (args.Length = 0)
+    expectedCount := configPath = "" ? 11 : 13
+    if (args.Length != expectedCount)
         return false
-    fileModeIndex := 0
-    for argIndex, argValue in args {
-        modeFlag := StrLower(Trim(String(argValue), " `t`r`n"))
-        if (modeFlag = "-file") {
-            fileModeIndex := argIndex
-            break
-        }
-        if PerformanceTelemetry_IsAlternatePowerShellMode(modeFlag)
-            return false
-    }
-    if (fileModeIndex = 0)
+    if (PerformanceTelemetry_CanonicalPath(args[1]) != expectedWorker
+        || StrLower(String(args[2])) != "-outputroot"
+        || PerformanceTelemetry_CanonicalPath(args[3]) != expectedRoot
+        || StrLower(String(args[4])) != "-parentpid"
+        || !(Trim(String(args[5])) ~= "^\d+$")
+        || Integer(Trim(String(args[5]))) != expectedParent
+        || StrLower(String(args[6])) != "-parentcreationfiletime"
+        || !(Trim(String(args[7])) ~= "^\d+$")
+        || Integer(Trim(String(args[7]))) != expectedCreation
+        || StrLower(String(args[8])) != "-parentexe"
+        || PerformanceTelemetry_CanonicalPath(args[9]) != expectedParentExe
+        || StrLower(String(args[10])) != "-sampleintervalseconds"
+        || Trim(String(args[11])) != "2")
         return false
-    fileMatches := 0
-    rootMatches := 0
-    parentMatches := 0
-    idx := 1
-    while (idx <= args.Length) {
-        flag := StrLower(Trim(String(args[idx]), " `t`r`n"))
-        if (flag = "-file" || flag = "-outputroot" || flag = "-parentpid") {
-            if (idx >= args.Length)
-                return false
-            value := String(args[idx + 1])
-            if (flag = "-file") {
-                if (PerformanceTelemetry_NormalizeCommandPath(value) != expectedWorker)
-                    return false
-                fileMatches += 1
-            } else if (flag = "-outputroot") {
-                if (PerformanceTelemetry_NormalizeCommandPath(value) != expectedRoot)
-                    return false
-                rootMatches += 1
-            } else {
-                actualParent := 0
-                if !(Trim(value) ~= "^\d+$")
-                    return false
-                try actualParent := Integer(Trim(value))
-                if (actualParent != expectedParent)
-                    return false
-                parentMatches += 1
-            }
-            idx += 2
-            continue
+    if (configPath != "")
+        return StrLower(String(args[12])) = "-configpath"
+            && PerformanceTelemetry_CanonicalPath(args[13])
+                = PerformanceTelemetry_CanonicalPath(configPath)
+    return true
+}
+
+PerformanceTelemetry_OpenOwnedWorkerHandle(pid) {
+    global PERF_TELEMETRY_WORKER_PATH, PERF_TELEMETRY_PARENT_PID, PERF_TELEMETRY_ROOT
+    global PERF_TELEMETRY_WORKER_CREATION_FILETIME
+    global PERF_TELEMETRY_PARENT_CREATION_FILETIME, PERF_TELEMETRY_PARENT_EXE_PATH
+    global PERF_TELEMETRY_CONFIG_PATH
+    safePid := 0
+    try safePid := Integer(pid)
+    if (safePid <= 0 || PERF_TELEMETRY_WORKER_CREATION_FILETIME <= 0
+        || !ProcessExist(safePid))
+        return 0
+
+    handle := DllCall("Kernel32\OpenProcess", "uint", 0x00101001,
+        "int", false, "uint", safePid, "ptr")
+    if !handle
+        return 0
+    try {
+        identity := PerformanceTelemetry_ReadProcessIdentity(handle, safePid)
+        if !PerformanceTelemetry_ProcessIdentityMatches(identity, safePid,
+            PERF_TELEMETRY_WORKER_CREATION_FILETIME, PERF_TELEMETRY_WORKER_PATH)
+            return 0
+        query := "Select CommandLine from Win32_Process where ProcessId=" safePid
+        for proc in ComObjGet("winmgmts:").ExecQuery(query) {
+            commandLine := ""
+            try commandLine := String(proc.CommandLine)
+            if !PerformanceTelemetry_CommandLineMatchesWorker(commandLine,
+                    PERF_TELEMETRY_WORKER_PATH, PERF_TELEMETRY_ROOT,
+                    PERF_TELEMETRY_PARENT_PID,
+                    PERF_TELEMETRY_PARENT_CREATION_FILETIME,
+                    PERF_TELEMETRY_PARENT_EXE_PATH,
+                    PERF_TELEMETRY_CONFIG_PATH)
+                return 0
+            if (DllCall("Kernel32\WaitForSingleObject", "ptr", handle,
+                "uint", 0, "uint") != 0x102)
+                return 0
+            ownedHandle := handle
+            handle := 0
+            return ownedHandle
         }
-        idx += 1
+    } catch {
+        return 0
+    } finally {
+        if handle
+            DllCall("Kernel32\CloseHandle", "ptr", handle)
     }
-    ; 每個識別參數只能出現一次，避免 PowerShell 對重複參數
-    ; 的解釋與我們的所有權判定不一致。
-    return fileMatches = 1 && rootMatches = 1 && parentMatches = 1
+    return 0
 }
 
 PerformanceTelemetry_IsOwnedWorker(pid) {
-    global PERF_TELEMETRY_WORKER_PATH, PERF_TELEMETRY_PARENT_PID, PERF_TELEMETRY_ROOT
-    safePid := 0
-    try safePid := Integer(pid)
-    if (safePid <= 0 || !ProcessExist(safePid))
+    handle := PerformanceTelemetry_OpenOwnedWorkerHandle(pid)
+    if !handle
         return false
-
-    try {
-        query := "Select Name,CommandLine from Win32_Process where ProcessId=" safePid
-        for proc in ComObjGet("winmgmts:").ExecQuery(query) {
-            processName := ""
-            commandLine := ""
-            try processName := StrLower(String(proc.Name))
-            try commandLine := StrLower(String(proc.CommandLine))
-            return RegExMatch(processName, "i)^(powershell|pwsh)\.exe$")
-                && PerformanceTelemetry_CommandLineMatchesWorker(commandLine,
-                    PERF_TELEMETRY_WORKER_PATH, PERF_TELEMETRY_ROOT,
-                    PERF_TELEMETRY_PARENT_PID)
-        }
-    }
-    return false
+    DllCall("Kernel32\CloseHandle", "ptr", handle)
+    return true
 }
 
 PerformanceTelemetry_StopOwnedWorker(waitMs := 2000) {
     global PERF_TELEMETRY_PID, PERF_TELEMETRY_PARENT_PID, PERF_TELEMETRY_ROOT
-    global PERF_TELEMETRY_PROCESS_HANDLE
+    global PERF_TELEMETRY_PROCESS_HANDLE, PERF_TELEMETRY_WORKER_CREATION_FILETIME
     pid := PERF_TELEMETRY_PID
     stopPath := PERF_TELEMETRY_ROOT "\stop_" PERF_TELEMETRY_PARENT_PID ".flag"
     try FileAppend("stop", stopPath, "UTF-8")
 
     handle := PERF_TELEMETRY_PROCESS_HANDLE
+    if (!handle && pid > 0 && ProcessExist(pid)) {
+        handle := PerformanceTelemetry_OpenOwnedWorkerHandle(pid)
+        if !handle
+            return false
+        PERF_TELEMETRY_PROCESS_HANDLE := handle
+    }
     if (handle) {
         safeWait := 0
         try safeWait := Max(0, Integer(waitMs))
@@ -427,6 +533,7 @@ PerformanceTelemetry_StopOwnedWorker(waitMs := 2000) {
         if (waitResult = 0) {
             PerformanceTelemetry_CloseWorkerHandle()
             PERF_TELEMETRY_PID := 0
+            PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
             return true
         }
         return false
@@ -434,30 +541,15 @@ PerformanceTelemetry_StopOwnedWorker(waitMs := 2000) {
 
     if (pid <= 0 || !ProcessExist(pid)) {
         PERF_TELEMETRY_PID := 0
+        PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
         return true
     }
-    if !PerformanceTelemetry_IsOwnedWorker(pid) {
-        ; PID 已重用或無法驗證時安全失敗，絕不關閉別的 PowerShell。
-        return false
-    }
-
-    deadline := PerformanceTelemetry_MonotonicMs() + Max(0, Integer(waitMs))
-    while ProcessExist(pid) && PerformanceTelemetry_MonotonicMs() < deadline
-        Sleep 100
-    if ProcessExist(pid) && PerformanceTelemetry_IsOwnedWorker(pid)
-        try ProcessClose(pid)
-    closeDeadline := PerformanceTelemetry_MonotonicMs() + 1000
-    while ProcessExist(pid) && PerformanceTelemetry_MonotonicMs() < closeDeadline
-        Sleep 50
-    if ProcessExist(pid)
-        return false
-    PERF_TELEMETRY_PID := 0
-    return true
+    return false
 }
 
 PerformanceTelemetry_Watchdog(probePath := "") {
     global PERF_TELEMETRY_PID, PERF_TELEMETRY_HEARTBEAT_PATH
-    global PERF_TELEMETRY_PROCESS_HANDLE
+    global PERF_TELEMETRY_PROCESS_HANDLE, PERF_TELEMETRY_WORKER_CREATION_FILETIME
     global PERF_TELEMETRY_STARTED_TICK, PERF_TELEMETRY_LAST_RESTART_TICK
     global PERF_TELEMETRY_WATCHDOG_ACTIVE, PERF_TELEMETRY_RESTART_COOLDOWN_MS
     global PERF_TELEMETRY_STARTUP_GRACE_MS
@@ -472,18 +564,24 @@ PerformanceTelemetry_Watchdog(probePath := "") {
     PERF_TELEMETRY_WATCHDOG_ACTIVE := true
     try {
         pid := PERF_TELEMETRY_PID
-        ; PID 存在不代表仍是本主程式建立的 worker；驗證命令列與
-        ; ParentPid。若 WMI 無法驗證，安全失敗而不誤關或製造重複 worker。
+        ; PID 存在不代表仍是本主程式建立的 worker；無 retained handle
+        ; 時同時驗證 creation time、image、命令列與 parent identity。
+        ; 查詢無法完成時安全失敗，不誤關或製造重複 worker。
         if (PERF_TELEMETRY_PROCESS_HANDLE) {
             pidAlive := PerformanceTelemetry_WorkerHandleAlive()
             if !pidAlive {
                 PerformanceTelemetry_CloseWorkerHandle()
                 PERF_TELEMETRY_PID := 0
+                PERF_TELEMETRY_WORKER_CREATION_FILETIME := 0
             }
         } else {
             pidExists := pid > 0 && ProcessExist(pid)
-            if (pidExists && !PerformanceTelemetry_IsOwnedWorker(pid))
-                return false
+            if pidExists {
+                adoptedHandle := PerformanceTelemetry_OpenOwnedWorkerHandle(pid)
+                if !adoptedHandle
+                    return false
+                PERF_TELEMETRY_PROCESS_HANDLE := adoptedHandle
+            }
             pidAlive := pidExists
         }
         healthPath := probePath

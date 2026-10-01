@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
@@ -53,10 +53,10 @@ guard := LauncherAcquireMainMutex()
 try {
     if guard <= 0
         throw Error("fixture parent failed to reserve install")
-    for otherInstall in [false,true] {
+    for otherInstall in [0,1,2] {
         resultPath := "__RUN_ROOT__\child-" otherInstall ".txt"
         stopPath := "__RUN_ROOT__\stop-" otherInstall ".txt"
-        fixtureTarget := installation (otherInstall ? "-other" : "")
+        fixtureTarget := otherInstall = 2 ? "\\?\" installation : installation (otherInstall = 1 ? "-other" : "")
         runtime := "__RUNTIME__"
         fixtureCommand := '"' runtime '" /ErrorStdOut=UTF-8 "__CHILD__" "' fixtureTarget '" "' resultPath '" "' stopPath '"'
         fixtureChild := LauncherStartup_Dispatch(runtime,fixtureCommand,"__RUN_ROOT__")
@@ -69,7 +69,7 @@ try {
             if !LauncherStartup_ChildAlive(fixtureChild)
                 throw Error("retained exact child handle should be alive")
             outcome := Trim(FileRead(resultPath,"UTF-8"))
-            fixtureExpected := otherInstall ? "acquired" : "-1"
+            fixtureExpected := otherInstall = 1 ? "acquired" : "-1"
             if outcome != fixtureExpected
                 throw Error("same-install/different-launcher reservation: expected " fixtureExpected " got " outcome)
         } finally {
@@ -83,6 +83,9 @@ try {
     ; Execute the real relocation dispatch while this parent remains alive.
     ; The child must acquire the same installation, not reject its own parent.
     global PACK_MAIN_MUTEX_HANDLE := guard
+    global PACK_RUNTIME_MUTEX_HANDLE := InstallStartupLock_AcquireRuntime(installation)
+    if PACK_RUNTIME_MUTEX_HANDLE <= 0
+        throw Error("fixture parent failed to reserve runtime")
     guard := 0
     resultPath := "__RUN_ROOT__\relocated.txt"
     stopPath := "__RUN_ROOT__\stop-relocated.txt"
@@ -98,6 +101,8 @@ try {
             throw Error("relocation child must acquire same-install lock before parent exit")
         if PACK_MAIN_MUTEX_HANDLE != 0
             throw Error("relocation parent must invalidate released reservation")
+        if PACK_RUNTIME_MUTEX_HANDLE != 0
+            throw Error("relocation parent must hand off runtime reservation")
     } finally {
         FileAppend("exit",stopPath)
         if PACK_MAIN_MUTEX_HANDLE > 0

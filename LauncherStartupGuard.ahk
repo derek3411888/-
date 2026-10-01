@@ -14,7 +14,18 @@ LauncherStartup_Classify(proc, ahkPath, mainPath) {
         if (executable = "" || command = "" || created = "" || pid <= 0)
             return {kind:"unknown", pid:pid, created:created}
         args := LauncherCleanup_ParseCommandLine(command)
-        scriptPath := LauncherCleanup_NormalizePath(LauncherCleanup_GetScriptPath(args))
+        for index, arg in args {
+            if index = 1
+                continue
+            if StrLower(arg) = "/include"
+                return {kind:"unknown", pid:pid, created:created}
+            if arg ~= "i)\.ahk$"
+                break
+        }
+        scriptToken := LauncherCleanup_GetScriptPath(args)
+        if !(scriptToken ~= "i)^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)")
+            return {kind:"unknown", pid:pid, created:created}
+        scriptPath := LauncherCleanup_NormalizePath(scriptToken)
         if (scriptPath = "")
             return {kind:"unknown", pid:pid, created:created}
         if scriptPath != expectedMain

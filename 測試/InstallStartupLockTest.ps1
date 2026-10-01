@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
@@ -24,6 +24,10 @@ Check(expected,label) {
         throw Error(label)
 }
 try {
+    if InstallStartupLock_Normalize('\\?\E:\fixture') != InstallStartupLock_Normalize('E:\fixture')
+        throw Error("extended DOS root must share the mutex identity")
+    if InstallStartupLock_Normalize('\\?\UNC\host\share\fixture') != InstallStartupLock_Normalize('\\host\share\fixture')
+        throw Error("extended UNC root must share the mutex identity")
     Check(true,"empty inventory")
     fixtureRecords := [{CommandLine:'"E:\fixture\AutoHotkey64.exe" "E:\fixture\payload\全自動.ahk"'}]
     Check(false,"matching main blocks")
@@ -33,6 +37,19 @@ try {
     Check(true,"known worker is unrelated")
     fixtureRecords := [{CommandLine:'"E:\fixture\AutoHotkey64.exe" "E:\other\payload\全自動.ahk"'}]
     Check(true,"different installation is unrelated")
+    for relative in ['payload\全自動.ahk', '全自動.ahk', 'E:全自動.ahk'] {
+        fixtureRecords := [{CommandLine:'"E:\fixture\AutoHotkey64.exe" "' relative '"'}]
+        Check(false,"relative target CWD is unknown")
+    }
+    fixtureRecords := [{CommandLine:'"E:\fixture\AutoHotkey64.exe" /include "E:\bootstrap.ahk" "E:\fixture\payload\全自動.ahk"'}]
+    Check(false,"include argument must not hide the legacy main")
+    fixtureRecords := [{CommandLine:'"E:\fixture\AutoHotkey64.exe" "\\?\E:\fixture\payload\全自動.ahk"'}]
+    Check(false,"extended path cannot hide legacy main")
+    fixtureRecords := [{ProcessId:123, CommandLine:'"E:\fixture\AutoHotkey64.exe" "E:\fixture\payload\全自動.ahk"'}]
+    if !InstallStartupLock_MainAbsent(fixtureMain,123)
+        throw Error("main excludes only its own current PID")
+    if InstallStartupLock_MainAbsent(fixtureMain,124)
+        throw Error("different PID must not be ignored")
     fixtureRecords := [{CommandLine:""}]
     Check(false,"unreadable processes fail closed in production")
     fixtureRecords := [{CommandLine:'"E:\fixture\AutoHotkey64.exe"'}]
@@ -40,7 +57,7 @@ try {
     fixtureRecords := []
     inventoryFails := true
     Check(false,"inventory errors fail closed")
-    FileAppend("PASS install startup guard: 8 inventory cases`n","*")
+    FileAppend("PASS install startup guard: 15 inventory cases and 2 extended-path identities`n","*")
 } catch as e {
     FileAppend(e.Message "`n","**")
     ExitApp(1)

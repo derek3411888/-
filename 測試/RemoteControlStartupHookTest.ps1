@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $root=Split-Path $PSScriptRoot -Parent
 $context=Initialize-ProjectDevelopmentPaths -ProjectRoot $root -RunName 'remote-startup-hooks'
