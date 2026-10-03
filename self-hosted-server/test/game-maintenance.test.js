@@ -1,10 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeGameMaintenance } from "../src/game-maintenance.js";
+import { maintenanceViewModel, buildMaintenancePatch } from "../public/game-maintenance-view.js";
 
 const now = 1770000001000;
 const sample = { schemaVersion: 1, capabilityVersion: 1, phase: "UPDATING", provider: "steam",
   progressPercent: null, observedAt: 1770000000000, observedUtcNow: 1770000000000 };
+test("whole-day skip reaches API and browser without claiming running or permitting legacy time bypass", () => {
+  const result = normalizeGameMaintenance({ ...sample, phase: "SKIPPED_UPDATE_DAY", maintenancePolicy: "skip_update_day", eventId: "v3.7" }, now);
+  assert.equal(result?.phase, "SKIPPED_UPDATE_DAY");
+  assert.equal(result.maintenancePolicy, "skip_update_day");
+  const model = maintenanceViewModel(result, now, true);
+  assert.equal(model.supported, true);
+  assert.equal(model.skipUpdateDay, true);
+  assert.equal(model.canClaimReady, false);
+  assert.throws(() => buildMaintenancePatch("skip", model, {}, now), /整天略過/);
+  assert.deepEqual(buildMaintenancePatch("refresh", model, { requestId: "refresh1" }, now), { maintenanceRefreshRequestId: "refresh1" });
+});
 test("maintenance status keeps unknown progress distinct from zero and rejects unsafe contracts", () => {
   const result = normalizeGameMaintenance(sample, now);
   assert.equal(result.progressPercent, null);

@@ -113,6 +113,15 @@ public static class MaintenanceNoticeTests
             Equal(MaintenanceNotice.Select(new object[] { original }, Now.AddDays(-1), null)["notice"], null, "tomorrow does not block");
             Equal(MaintenanceNotice.Select(new object[] { original }, Now.AddDays(1), null)["notice"], null, "history does not cold-start block");
         });
+        Test("cleared old-version pin allows next update day selection", delegate {
+            var directory = Cache("next-version");
+            MaintenanceNotice.Fetch(directory, Now, true, null, Feed(Article()));
+            var nextArticle = Article("2026年9月17日04:00 ~ 2026年9月17日11:00（UTC+8）", 2, "9.10");
+            var later = Now.AddDays(28);
+            var result = MaintenanceNotice.Fetch(directory, later, true, null, Feed(Article(), nextArticle));
+            Equal(result["outcome"], "ok", "new day refetch accepted");
+            Equal(Child(result)["gameVersion"], "9.10", "un-pinned production selector chooses new version rather than cached old event");
+        });
         Test("deduplicated detail requests cache TTL force and FindCached", delegate {
             int requests = 0; var feed = Feed(Article(), Article());
             Func<string,string> getter = uri => { requests++; return feed(uri); };

@@ -87,6 +87,8 @@ GM_Decision(state, phase, effect := "none", errorCode := "", detail := "", overl
 }
 
 GM_Evaluate(previous, input) {
+    if GM_Value(input,"maintenancePolicy","") = "skip_update_day"
+        return GM_EvaluateDaySkip(previous,input)
     state := GM_CopyState(previous), now := GM_Value(input,"nowUtcMs",0), elapsed := GM_Value(input,"elapsedMs",0)
     state.desiredState := GM_Value(input,"desiredState","PAUSE"), state.remoteGeneration := GM_Value(input,"remoteGeneration",0)
     state.elapsedMs := elapsed, state.updatedAtUtcMs := now
@@ -189,6 +191,62 @@ GM_Evaluate(previous, input) {
         return GM_Decision(state,"WAIT_NOTICE",effect,"NOTICE_RECHECK_REQUIRED","到達時間，仍需最新官方公告確認")
     }
     return GM_EvaluateLauncher(state,input,observedPhase)
+}
+
+; Calendar days are Asia/Taipei (UTC+8), not the farming 04:00 cycle.
+; This policy deliberately has NO updater/launcher effect. Legacy policy above
+; remains readable for old journals/tests but the production host selects this.
+GM_EvaluateDaySkip(previous,input) {
+    state := GM_CopyState(previous), now := GM_Value(input,"nowUtcMs",0)
+    state.desiredState := GM_Value(input,"desiredState","PAUSE")
+    state.remoteGeneration := GM_Value(input,"remoteGeneration",state.remoteGeneration)
+    state.updatedAtUtcMs := now
+    if state.desiredState = "STOP" || state.cancelled
+        return GM_Decision(state,"STOPPED","stop","","停止要求優先；不啟動或更新遊戲")
+    if state.desiredState != "RUN"
+        return GM_Decision(state,state.phase,"none","","遠端暫停","PAUSE")
+    if state.recoveryUncertain
+        return GM_Decision(state,"NEEDS_ATTENTION","none","JOURNAL_RECOVERY_UNCERTAIN","無法確認停止意圖；保留狀態，不啟動遊戲")
+    if !GM_Value(input,"clockStable",false) || now <= 0
+        return GM_Decision(state,"WAIT_NOTICE","none","CLOCK_CHANGED","時間尚未確認；不啟動遊戲")
+    today := Floor((now+28800000)/86400000)
+    if GM_Value(input,"enabled",true) {
+        ; The preview is important: at 00:00 the 04:00 notice is not active yet.
+        for event in [GM_Value(input,"notice",0),GM_Value(input,"upcomingNotice",0),state] {
+            starts := GM_Value(event,"startsAt",0), finish := GM_Value(event,"expectedOpenAt",0)
+            if GM_Value(event,"eventId","") = "" || starts <= 0 || finish <= starts
+                continue
+            firstDay := Floor((starts+28800000)/86400000)
+            lastDay := Floor((finish+28800000-1)/86400000)
+            if today < firstDay || today > lastDay
+                continue
+            state.eventId := event.eventId, state.startsAt := starts, state.expectedOpenAt := finish
+            state.revision := GM_Value(event,"revision",state.revision)
+            state.gameVersion := GM_Value(event,"gameVersion",state.gameVersion)
+            state.sourceUrl := GM_Value(event,"sourceUrl",state.sourceUrl)
+            return GM_Decision(state,"SKIPPED_UPDATE_DAY","none","",
+                "官方版本更新日（台灣時間）整天不執行鋤地、不啟動或更新遊戲；保留任務與完成清單，次日排程再檢查。")
+        }
+        source := GM_Value(input,"noticeState","pending")
+        if GM_Value(input,"noticeErrorCode","") = "NOTICE_CONFLICT"
+            return GM_Decision(state,"WAIT_NOTICE","none","NOTICE_CONFLICT","公告日期衝突；不啟動遊戲")
+        if source = "pending" || (source != "valid" && GM_Value(input,"elapsedMs",0) < 20000)
+            return GM_Decision(state,"CHECKING_NOTICE")
+    }
+    if !GM_Value(input,"desktopAvailable",false)
+        return GM_Decision(state,state.phase,"none","","桌面鎖定；等待解鎖","WAIT_DESKTOP")
+    if GM_Value(input,"runCycle",state.runCycle) != state.runCycle
+        return GM_Decision(state,state.phase,"reconcile_schedule")
+    if !GM_Value(GM_Value(input,"install",0),"identityVerified",false) {
+        if GM_Value(input,"elapsedMs",0) >= 60000
+            return GM_Decision(state,"NEEDS_ATTENTION","none","INSTALL_IDENTITY_UNVERIFIED","一分鐘內無法確認安裝身分；不清場、不啟動遊戲")
+        return GM_Decision(state,"CHECKING_INSTALL","none","","確認原設定的安裝目錄；尚不清場或啟動遊戲")
+    }
+    ; Old update intents cannot force the retired updater on an ordinary day.
+    state.actionId := "", state.actionStage := "", state.f11InputAttempted := false
+    state.provider := GM_Value(GM_Value(input,"install",0),"provider","unknown")
+    state.fingerprint := GM_Value(GM_Value(input,"install",0),"fingerprint",state.fingerprint)
+    return GM_Decision(state,"NORMAL","resume_flow","","非版本更新日，使用原設定安裝的遊戲入口與既有登入流程；不自動操作更新器。")
 }
 
 GM_EvaluateLauncher(state,input,observedPhase) {

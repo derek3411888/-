@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0
 #Include GameMaintenance.ahk
 #Include GameUpdateAdapters.ahk
+#Include GameStableLaunch.ahk
 
 ; Host glue only. This file is included by 全自動.ahk; no auto-run game action.
 global GM_CONTROLLER := 0
@@ -17,6 +18,7 @@ GM_Init(cfgPath,launchEntry,flowContext) {
     GM_CONTROLLER := GM_CreateController(RuntimeFiles_GameMaintenanceDir() "\state.ini",flowContext,hooks)
     c := GM_CONTROLLER
     c.cfgPath := cfgPath, c.launchEntry := launchEntry, c.snapshot := 0, c.sequence := 0
+    c.maintenancePolicy := GM_Value(flowContext,"maintenancePolicy","legacy_wait_open")
     c.tick := MonotonicTickMs(), c.lastUtcMs := RC_UnixMs(), c.activeElapsed := c.state.elapsedMs
     c.noProgressMs := 0, c.actionElapsedMs := 0, c.lastProgressToken := "", c.lastObserveTick := 0
     c.observation := 0, c.maintenanceEvidence := 0, c.lastGameCaptureTick := 0, c.forceRevision := 0
@@ -38,7 +40,10 @@ GM_IsGateActive() {
 
 GM_IsManagedUpdateDay() {
     global GM_CONTROLLER
-    return IsObject(GM_CONTROLLER) && GM_CONTROLLER.managed
+    ; Identity binding survives removal of automatic updater orchestration.
+    return IsObject(GM_CONTROLLER) && (GM_CONTROLLER.managed
+        || (GM_Value(GM_CONTROLLER,"maintenancePolicy","") = "skip_update_day"
+            && GM_Value(GM_CONTROLLER.install,"identityVerified",false)))
 }
 
 GM_IsMaintenanceStopped() {
@@ -53,8 +58,17 @@ GM_WaitForStartupGate() {
         decision := GM_ControllerTick(c)
         if decision.phase = "STOPPED"
             return {mode:"stop",detail:decision.detail}
-        if (decision.phase = "NORMAL" && decision.overlay = "") {
+        if decision.phase = "SKIPPED_UPDATE_DAY" {
             c.active := false
+            GM_Shutdown("skipped-update-day")
+            return {mode:"skip",detail:decision.detail}
+        }
+        if decision.phase = "NEEDS_ATTENTION" && decision.overlay = "" && c.maintenancePolicy = "skip_update_day" {
+            GM_StopForManualUpdate(decision.detail)
+            return {mode:"stop",detail:decision.detail}
+        }
+        if (decision.phase = "NORMAL" && decision.overlay = "") {
+            c.active := false, c.managed := false
             GM_Shutdown("normal-gate-released")
             return {mode:"normal",detail:decision.detail}
         }
@@ -78,16 +92,58 @@ GM_RunManagedUpdate() {
 }
 
 GM_StartLauncherFlow() {
-    global GM_CONTROLLER
+    global GM_CONTROLLER, WUTHERING_STARTUP_WAIT_SEC
     c := GM_CONTROLLER
     if !IsObject(c)
         return {ok:false,errorCode:"LAUNCHER_CONTROLLER_MISSING",detail:"啟動器控制器未初始化"}
+    if GM_Value(c,"maintenancePolicy","") = "skip_update_day" {
+        c.active := false, c.managed := false, c.gameIdentity := 0
+        c.stableGateDay := Floor((GM_Value(c.lastInput,"nowUtcMs",0)+28800000)/86400000)
+        hooks := {Exists:FileExist,Intent:(*) => GMHost_StableIntent(c),
+            Ready:GMHost_GetManagedGameHwnd,Now:MonotonicTickMs,Wait:(ms) => DllCall("Sleep","UInt",ms),
+            BeforeLaunch:(*) => GMHost_RecheckStableDay(c),
+            Launch:(path) => GMHost_RunStableEntry(c,path)}
+        result := GM_StableLaunch(c.install,hooks,WUTHERING_STARTUP_WAIT_SEC*1000)
+        if !result.ok && result.errorCode != "STOPPED" && result.errorCode != "SKIPPED_UPDATE_DAY"
+            GM_StopForManualUpdate(result.detail)
+        if !result.ok && result.errorCode = "SKIPPED_UPDATE_DAY"
+            try RC_ReportRuntimeState()
+        return result
+    }
     ; The normal-day gate decides only whether cleanup is allowed. The actual
     ; launch always returns to the same verified Steam/Kuro adapter as update day.
     c.requireLauncher := true, c.active := true, c.managed := true
     c.observation := 0, c.snapshot := 0, c.gameIdentity := 0
     WriteStep("啟動器啟動", "依原設定路徑辨識 Steam／官方啟動器；禁止直開遊戲本體")
     return GM_RunManagedUpdate()
+}
+
+GMHost_RecheckStableDay(c) {
+    today := Floor((RC_UnixMs()+28800000)/86400000)
+    if today = c.stableGateDay
+        return {ok:true}
+    ; A pause may span midnight. Re-enter the real notice gate, not yesterday's permit.
+    c.active := true, c.activeElapsed := 0, c.tick := MonotonicTickMs(), c.lastUtcMs := RC_UnixMs()
+    gate := GM_WaitForStartupGate()
+    c.stableGateDay := Floor((RC_UnixMs()+28800000)/86400000)
+    return {ok:gate.mode = "normal",errorCode:gate.mode = "skip" ? "SKIPPED_UPDATE_DAY" : "STOPPED",detail:gate.detail}
+}
+
+GMHost_StableIntent(c) {
+    global REMOTE_STOP_IN_PROGRESS, __CLEAN_FINAL_EXIT_REQUESTED
+    if c.state.cancelled || c.state.desiredState = "STOP" || REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED
+        return "STOP"
+    return RC_IsPaused() || c.state.desiredState = "PAUSE" ? "PAUSE" : "RUN"
+}
+
+GMHost_RunStableEntry(c,path) {
+    previousCritical := Critical("On")
+    try {
+        if GMHost_StableIntent(c) != "RUN"
+            return false
+        GMHost_RunLauncher(path,'"' path '"')
+        return true
+    } finally Critical(previousCritical)
 }
 
 GM_PrepareCleanLauncherRestart(&detail := "") {
@@ -176,7 +232,10 @@ GMHost_JsonQuote(value) {
 GMHost_WriteRequest(c,force := false) {
     if !IsObject(c.worker)
         return
-    key := c.state.remoteGeneration "|" c.launchEntry "|" c.forceRevision "|" c.state.eventId
+    pinnedEvent := c.state.eventId
+    if GM_Value(c,"maintenancePolicy","") = "skip_update_day" && Floor((c.state.expectedOpenAt+28800000-1)/86400000) < Floor((RC_UnixMs()+28800000)/86400000)
+        pinnedEvent := ""
+    key := c.state.remoteGeneration "|" c.launchEntry "|" c.forceRevision "|" pinnedEvent
     if !force && key = c.lastRequestKey
         return
     c.worker.generation += 1
@@ -185,7 +244,7 @@ GMHost_WriteRequest(c,force := false) {
     json := '{"schemaVersion":1,"requestId":' GMHost_JsonQuote(c.worker.requestId)
         . ',"generation":' c.worker.generation ',"launchEntry":' GMHost_JsonQuote(c.launchEntry)
         . ',"mode":' GMHost_JsonQuote(mode) ',"createdAtUtc":' GMHost_JsonQuote(FormatTime(A_NowUTC,"yyyy-MM-dd") "T" FormatTime(A_NowUTC,"HH:mm:ss") "Z")
-        . ',"pinnedEventId":' GMHost_JsonQuote(c.state.eventId) ',"refreshRequestId":' GMHost_JsonQuote(String(c.forceRevision)) '}'
+        . ',"pinnedEventId":' GMHost_JsonQuote(pinnedEvent) ',"refreshRequestId":' GMHost_JsonQuote(String(c.forceRevision)) '}'
     GM_AtomicText(c.worker.requestPath,json)
     c.lastRequestKey := key
 }
@@ -303,7 +362,7 @@ GMHost_ReadInput(c) {
         desktopAvailable:desktopAvailable,noticeState:sourceState,noticeErrorCode:noticeError,notice:notice,upcomingNotice:upcomingNotice,install:c.install,observation:observation,
         noProgressMs:c.noProgressMs,actionElapsedMs:c.actionElapsedMs,runCycle:GetCurrentServerCycleKey(),
         noticeCheckedAt:IsObject(c.snapshot) && c.snapshot["notice"]["checkedAtUtcMs"] != "" ? Number(c.snapshot["notice"]["checkedAtUtcMs"]) : 0,
-        enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",requireLauncher:GM_Value(c,"requireLauncher",false),
+        enabled:IniReadSafe(c.cfgPath,"game_maintenance","enabled","1") = "1",maintenancePolicy:GM_Value(c,"maintenancePolicy","legacy_wait_open"),requireLauncher:GM_Value(c,"requireLauncher",false),
         skipEventId:IniReadSafe(c.cfgPath,"game_maintenance","skip_event_id",""),delayEventId:IniReadSafe(c.cfgPath,"game_maintenance","override_event_id",""),
         delayUntilUtc:0}
     rawDelay := IniReadSafe(c.cfgPath,"game_maintenance","delay_until_utc","0")
@@ -391,7 +450,7 @@ GMHost_ApplyEffect(action) {
 
 GMHost_RunLauncher(path,command) {
     SplitPath(path,,&workingDirectory)
-    WriteLog("透過已驗證啟動器啟動鳴潮 | launcher=" path)
+    WriteLog("啟動已驗證的原廠入口（尚未驗證遊戲就緒） | entry=" path)
     Run(command,workingDirectory)
 }
 
@@ -1066,6 +1125,10 @@ GMHost_ObserveWaitingGame() {
 GM_WaitForMaintenanceRecovery() {
     global GM_CONTROLLER, GM_GAME_MAINTENANCE_HIT
     c := GM_CONTROLLER
+    if GM_Value(c,"maintenancePolicy","") = "skip_update_day" {
+        GM_StopForManualUpdate("遊戲明確顯示維護；本次停止，不自動等待開服或更新")
+        return {ok:false,phase:"stopped",centerClicked:false}
+    }
     c.active := true, c.managed := true
     loop {
         decision := GM_ControllerTick(c,true)
@@ -1077,6 +1140,19 @@ GM_WaitForMaintenanceRecovery() {
         }
         DllCall("Sleep","UInt",100)
     }
+}
+
+GM_StopForManualUpdate(detail) {
+    global GM_CONTROLLER
+    c := GM_CONTROLLER
+    c.state.phase := "NEEDS_ATTENTION", c.active := false
+    c.lastDecision := GM_Decision(c.state,"NEEDS_ATTENTION","none","MANUAL_GAME_UPDATE_REQUIRED",detail)
+    GM_ControllerSave(c,true)
+    WriteStep("遊戲需人工更新／登入",detail "；保留任務，不自動重啟","WARN")
+    try SendGameMaintenanceNotifyMail("manual_update",detail)
+    try ForceStopManagedScreenRecording("遊戲需要更新／登入；本次停止")
+    try RC_ReportRuntimeState()
+    GM_Shutdown("manual-update-required")
 }
 
 GM_MarkReady() {

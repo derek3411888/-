@@ -197,7 +197,7 @@ GM_ParseJournal(text) {
     }
     if state.schemaVersion != 1
         throw Error("Unsupported maintenance journal")
-    GM_RequireEnum(state.phase,"CHECKING_NOTICE,NORMAL,WAIT_OPEN,WAIT_NOTICE,CHECKING_UPDATE,UPDATING,CHECKING_LOGIN,WAIT_SERVER,READY,NEEDS_ATTENTION,STOPPED")
+    GM_RequireEnum(state.phase,"CHECKING_NOTICE,CHECKING_INSTALL,NORMAL,SKIPPED_UPDATE_DAY,WAIT_OPEN,WAIT_NOTICE,CHECKING_UPDATE,UPDATING,CHECKING_LOGIN,WAIT_SERVER,READY,NEEDS_ATTENTION,STOPPED")
     GM_RequireEnum(state.desiredState,"RUN,PAUSE,STOP")
     GM_RequireEnum(state.actionStage,",intent,observed,cancelled")
     GM_RequireEnum(state.updaterUiActionStage,",intent,observed,cancelled")
@@ -290,7 +290,7 @@ GM_HasActiveContinuation(stateOrCfg,nowMs := 0) {
     }
     if GM_Value(state,"recoveryUncertain",false)
         return true
-    if (GM_Value(state,"cancelled",false) || InStr(",NORMAL,READY,STOPPED,","," state.phase ",",true))
+    if (GM_Value(state,"cancelled",false) || InStr(",NORMAL,READY,STOPPED,SKIPPED_UPDATE_DAY,","," state.phase ",",true))
         return false
     if (state.eventId = "" && state.phase != "WAIT_SERVER"
         && !(InStr(",steam,kuro,","," state.provider ",",true)
@@ -375,8 +375,18 @@ GM_CreateController(journalPath,context,hooks) {
     catch as err {
         state := GM_DefaultState(), state.phase := "NEEDS_ATTENTION", loadError := err.Message
     }
-    if (!GM_HasActiveContinuation(state,GM_Value(context,"nowUtcMs",0)) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY"))
+    if (!GM_HasActiveContinuation(state,GM_Value(context,"nowUtcMs",0)) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY")) {
+        prior := state
         state := GM_DefaultState()
+        ; Retain today's/future notice during outages, never pin an old version.
+        if GM_Value(context,"maintenancePolicy","") = "skip_update_day" {
+            state.notificationKeys := prior.notificationKeys
+            if prior.expectedOpenAt > 0 && Floor((prior.expectedOpenAt+28800000-1)/86400000) >= Floor((GM_Value(context,"nowUtcMs",0)+28800000)/86400000) {
+                for field in ["eventId","revision","gameVersion","sourceUrl","startsAt","expectedOpenAt","notifiedOpenAt"]
+                    state.%field% := prior.%field%
+            }
+        }
+    }
     if state.runCycle = ""
         state.runCycle := GM_Value(context,"runCycle","")
     if state.targetServer = ""
@@ -414,7 +424,7 @@ GM_BuildPublicJson(state,decision,input,nowMs) {
     result := '{"schemaVersion":1,"capabilityVersion":1'
     noticeError := GM_Value(input,"noticeErrorCode","")
     statusError := GM_Value(decision,"phase",state.phase) = "NORMAL" ? noticeError : GM_Value(decision,"errorCode",noticeError)
-    fields := {phase:GM_Value(decision,"phase",state.phase),overlay:GM_Value(decision,"overlay",state.overlay),
+    fields := {maintenancePolicy:GM_Value(input,"maintenancePolicy","legacy_wait_open"),phase:GM_Value(decision,"phase",state.phase),overlay:GM_Value(decision,"overlay",state.overlay),
         provider:state.provider,gameVersion:state.gameVersion,eventId:state.eventId,sourceUrl:source,
         sourceState:GM_Value(input,"noticeState","pending"),progressStage:GM_Value(observation,"phase","unknown"),
         errorCode:statusError,detail:detail,targetServer:state.targetServer}
@@ -539,14 +549,14 @@ GM_ReadMaintenanceDesired(json) {
 GM_NotifyStage(state,journalPath,decision,sendMail) {
     if state.eventId = ""
         return false
-    stage := decision.phase = "WAIT_OPEN" || decision.phase = "WAIT_SERVER" ? "waiting"
+    stage := decision.phase = "SKIPPED_UPDATE_DAY" ? "skipped_day" : decision.phase = "WAIT_OPEN" || decision.phase = "WAIT_SERVER" ? "waiting"
         : decision.phase = "UPDATING" ? "updating" : decision.phase = "READY" ? "ready"
         : decision.phase = "NEEDS_ATTENTION" ? "attention" : ""
-    if state.notifiedOpenAt > 0 && state.expectedOpenAt > state.notifiedOpenAt
+    if stage != "skipped_day" && state.notifiedOpenAt > 0 && state.expectedOpenAt > state.notifiedOpenAt
         stage := "extended"
     if stage = ""
         return false
-    key := GM_TextChecksum(state.eventId "|" stage "|" state.revision)
+    key := GM_TextChecksum(state.eventId "|" stage "|" (stage = "skipped_day" ? Floor((state.updatedAtUtcMs+28800000)/86400000) : state.revision))
     if InStr("|" state.notificationKeys "|","|" key "|")
         return false
     previousKeys := state.notificationKeys, previousOpen := state.notifiedOpenAt
@@ -557,7 +567,17 @@ GM_NotifyStage(state,journalPath,decision,sendMail) {
         state.notificationKeys := previousKeys, state.notifiedOpenAt := previousOpen
         throw err
     }
-    return sendMail.Call(stage,decision.detail)
+    try result := sendMail.Call(stage,decision.detail)
+    catch as err {
+        state.notificationKeys := previousKeys, state.notifiedOpenAt := previousOpen
+        GM_SaveJournal(journalPath,state)
+        throw err
+    }
+    if IsObject(result) && !GM_Value(result,"ok",false) {
+        state.notificationKeys := previousKeys, state.notifiedOpenAt := previousOpen
+        GM_SaveJournal(journalPath,state)
+    }
+    return result
 }
 
 GM_ControllerSave(c,force := false) {

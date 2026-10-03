@@ -15,7 +15,7 @@ try {
         . ([ScriptBlock]::Create($function.Extent.Text))
     }
     $required = @(Get-GameMaintenancePayloadFiles)
-    foreach ($name in @('GameMaintenance.ahk','GameMaintenancePolicy.ahk','GameMaintenanceHost.ahk','GameUpdateAdapters.ahk','GameUpdateOcrPolicy.ahk','GameMaintenanceWorker.exe','GameMaintenanceWorker.ps1','GameMaintenanceNotice.ps1','GameInstallDiscovery.ps1')) {
+    foreach ($name in @('GameMaintenance.ahk','GameMaintenancePolicy.ahk','GameMaintenanceHost.ahk','GameStableLaunch.ahk','GameUpdateAdapters.ahk','GameUpdateOcrPolicy.ahk','GameMaintenanceWorker.exe','GameMaintenanceWorker.ps1','GameMaintenanceNotice.ps1','GameInstallDiscovery.ps1')) {
         Assert-GMTrue ($required -contains $name) "required new payload file: $name"
         Assert-GMTrue (Test-Path -LiteralPath (Join-Path $context.ProjectRoot "payload\$name")) "source exists: $name"
     }

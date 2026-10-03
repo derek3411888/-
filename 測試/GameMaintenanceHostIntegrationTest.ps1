@@ -6,6 +6,7 @@ try {
     . (Join-Path $root 'payload\GameMaintenanceWorker.ps1')
     $session=Join-Path $context.RunRoot 'fixture'
     [IO.Directory]::CreateDirectory($session) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $session 'Wuthering Waves.exe'),'not-executable fixture; launch is mocked')
     $snapshotPath=Join-Path $session 'snapshot.ini'
     $now=[DateTimeOffset]::FromUnixTimeMilliseconds(10000)
     $notice=[pscustomobject]@{outcome='ok';checkedAt=$now.ToString('o');errorCode='';errorDetail='';notice=[pscustomobject]@{
@@ -16,10 +17,10 @@ try {
     Write-GMSnapshot $snapshotPath $snapshot $session
     $source=[IO.File]::ReadAllText((Join-Path $root 'payload\GameMaintenanceHost.ahk'))
     $functions=@()
-    foreach($name in @('GM_Init','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry')) {
+    foreach($name in @('GM_Init','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
         $match=[regex]::Match($source,'(?ms)^'+$name+'\([^\r\n]*\) \{.*?(?=^\w+\([^\r\n]*\) \{|\z)')
         if(-not $match.Success){throw "Missing host function: $name"}
-        $functions+=$match.Value
+        $functions+= if($name -eq 'GMHost_WriteRequest'){$match.Value.Replace('GMHost_WriteRequest(c,force := false)', 'TestActualWriteRequest(c,force := false)')}else{$match.Value}
     }
     $extracted=$functions -join "`n"
     $testPath=Join-Path $context.RunRoot 'host-integration.ahk'
@@ -27,11 +28,13 @@ try {
 #Requires AutoHotkey v2.0
 #Include $root\測試\GameMaintenanceFixtures.ahk
 #Include $root\payload\GameMaintenance.ahk
+#Include $root\payload\GameStableLaunch.ahk
 global GM_CONTROLLER := 0, GM_ROOT := "$session", GM_NOW := 200000000, RC_LAST_NONCE := 1
+global REMOTE_STOP_IN_PROGRESS := false, __CLEAN_FINAL_EXIT_REQUESTED := false, WUTHERING_STARTUP_WAIT_SEC := 1, GM_LAUNCH_CALLS := 0, GM_GATE_CALLS := 0
 global GM_PAUSE := false, GM_CYCLE := "fixture", GM_OKWW_KEY := "44|100|12|fixture", GM_OBSERVES := 0, GM_GAME_HWND := 12
 GMTest_Run(TestActualHostInput)
 TestActualHostInput() {
-    global GM_CONTROLLER, GM_NOW, GM_ROOT, GM_PAUSE, GM_CYCLE, GM_OKWW_KEY, GM_OBSERVES, GM_GAME_HWND
+    global GM_CONTROLLER, GM_NOW, GM_ROOT, GM_PAUSE, GM_CYCLE, GM_OKWW_KEY, GM_OBSERVES, GM_GAME_HWND, GM_LAUNCH_CALLS, GM_GATE_CALLS
     cfg := GM_ROOT "\config.ini"
     old := GM_CopyState(GMTest_State()), old.expectedOpenAt := 10000
     GM_SaveJournal(GM_ROOT "\state.ini",old)
@@ -86,7 +89,38 @@ TestActualHostInput() {
     mainSource := FileRead("$root\payload\全自動.ahk","UTF-8")
     begin := InStr(mainSource,"StartOKWWFlowWithLocalRecovery(isRestart, entryStage :=")
     GMTest_Assert(InStr(mainSource,"maintenanceEntry := GM_PrepareOkwwEntry()",false,begin) < InStr(mainSource,"firstResult := StartOKWWFlow(isRestart)",false,begin),"production manager starts only after distinct resume gate")
+    c.state.cancelled := false, c.state.desiredState := "RUN", c.maintenancePolicy := "skip_update_day"
+    c.install := {identityVerified:true,gameRoot:GM_ROOT}, GM_GAME_HWND := 0
+    GMTest_Assert(GM_StartLauncherFlow().ok && GM_LAUNCH_CALLS = 1,"actual host uses stable wrapper once without managed updater")
+    GMTest_Assert(GM_StartLauncherFlow().ok && GM_LAUNCH_CALLS = 1,"actual host keeps existing matching game")
+    GM_PAUSE := true
+    GMTest_Assert(GMHost_StableIntent(c) = "PAUSE" && !GMHost_RunStableEntry(c,"unused"),"actual last-moment PAUSE denies side effect without pretending STOP")
+    GM_PAUSE := false, c.state.desiredState := "STOP"
+    GMTest_Assert(!GM_StartLauncherFlow().ok && GM_LAUNCH_CALLS = 1,"actual STOP never launches or falls through to updater")
+    c.state.desiredState := "RUN", GM_GAME_HWND := 0
+    c.lastInput.nowUtcMs := GM_NOW, GM_NOW += 86400000
+    result := GM_StartLauncherFlow()
+    GMTest_Assert(result.errorCode = "SKIPPED_UPDATE_DAY" && GM_GATE_CALLS = 1 && GM_LAUNCH_CALLS = 1,"actual host re-enters gate across midnight before any launch")
+    c.state.eventId := "old-version", c.state.expectedOpenAt := 10000
+    c.worker := {generation:1,requestId:"next-version",requestPath:GM_ROOT "\request.json"}
+    c.lastRequestKey := ""
+    TestActualWriteRequest(c,true)
+    GMTest_Assert(InStr(FileRead(c.worker.requestPath), '"pinnedEventId":""'),"actual worker request does not pin expired version even on restart")
 }
+GM_WaitForStartupGate() {
+    global GM_GATE_CALLS
+    GM_GATE_CALLS++
+    return {mode:"skip",detail:"new Taiwan day confirmed by gate"}
+}
+RC_ReportRuntimeState() => 0
+GMHost_RunLauncher(path,command) {
+    global GM_LAUNCH_CALLS, GM_GAME_HWND, GM_ROOT
+    GMTest_Assert(path = GM_ROOT "\Wuthering Waves.exe","actual host launch resolves verified original wrapper")
+    GM_LAUNCH_CALLS++, GM_GAME_HWND := 12
+}
+GM_RunManagedUpdate() => GMTest_Assert(false,"retired managed updater must not run")
+GM_StopForManualUpdate(args*) => GMTest_Assert(false,"unexpected manual update failure")
+WriteStep(args*) => 0
 RC_UnixMs() {
     global GM_NOW
     return GM_NOW

@@ -128,6 +128,7 @@ RestartHandoff_ResetCancelled() {
 }
 RestartHandoff_Prepare(args*) {
     global workers
+    GMTest_Assert(args[5] = "","internal recovery must not route through network package updater before ACK")
     workers += 1
     return {request:"fixture",workerPid:999}
 }

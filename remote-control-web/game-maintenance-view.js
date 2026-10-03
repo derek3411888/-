@@ -1,4 +1,4 @@
-const phaseLabels = Object.freeze({ NORMAL: "一般流程", CHECKING_NOTICE: "查詢官方公告", WAIT_NOTICE: "等待有效公告",
+const phaseLabels = Object.freeze({ NORMAL: "一般流程", SKIPPED_UPDATE_DAY: "版本更新日：今日已略過", CHECKING_NOTICE: "查詢官方公告", WAIT_NOTICE: "等待有效公告",
   WAIT_OPEN: "等待官方開服", CHECKING_INSTALL: "辨識安裝來源", CHECKING_UPDATE: "確認更新狀態", UPDATING: "遊戲更新中",
   CHECKING_LOGIN: "驗證遊戲登入", WAIT_SERVER: "遊戲仍顯示維護中", READY: "主畫面已就緒", NEEDS_ATTENTION: "需要人工確認", STOPPED: "已停止" });
 const plain = (value, limit = 400) => typeof value === "string" ? value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, limit) : "";
@@ -39,7 +39,7 @@ export function maintenanceViewModel(value, nowMs = Date.now(), deviceFresh = fa
   else if (upcomingNotice && taipeiDay(upcomingNotice.startsAt) <= taipeiDay(nowMs)) noticeSummary = "已到公告維護日；等待裝置重新確認";
   else if (!data.eventId) noticeSummary = upcomingNotice ? "已公告下次維護；今天照常執行"
     : noticePreviewSupported ? "今日無維護；尚無下一次維護公告" : "今日無維護；裝置版本尚未回報下一次公告";
-  return { supported, visible: supported, stale, upcomingNotice, noticeSummary, noticeStale,
+  return { supported, visible: supported, stale, upcomingNotice, noticeSummary, noticeStale, skipUpdateDay: data.maintenancePolicy === "skip_update_day",
     phase, title: phaseLabels[phase] || "裝置版本尚未支援維護排程", eventId: plain(data.eventId, 180),
     provider: { steam: "Steam（自動判定）", kuro: "官方啟動器（自動判定）", ambiguous: "安裝來源有衝突" }[data.provider] || "來源尚未確認",
     progressText: progress === null ? "進度未知" : `${progress.toFixed(1)}%（${plain(data.progressStage, 40) || "目前階段"}）`,
@@ -63,6 +63,7 @@ export function buildMaintenancePatch(action, model, values = {}, nowMs = Date.n
   if (!model.canOperate) throw new Error("裝置離線、資料過期或版本尚未支援，請等候新心跳。");
   if (action === "enabled") return { maintenanceEnabled: Boolean(values.enabled) };
   if (action === "refresh") return { maintenanceRefreshRequestId: values.requestId };
+  if (model.skipUpdateDay) throw new Error("目前採更新日整天略過；不再提供開服延後或略過等待。");
   if (!model.eventId) throw new Error("目前沒有可調整的維護事件。");
   if (action === "skip") return { maintenanceSkipEventId: model.eventId };
   if (action === "delay") {
@@ -91,6 +92,7 @@ export function renderMaintenanceCard(root, model) {
   const summary = element(doc, "p", `${model.provider}${model.gameVersion ? `｜版本 ${model.gameVersion}` : ""}${model.targetServer ? `｜目標 ${model.targetServer}` : ""}`);
   const timing = model.phase === "WAIT_OPEN"
     ? `官方預計開服 ${dateText(model.expectedOpenAt)}｜${model.stale ? "暫停倒數" : `剩餘 ${Math.floor(model.remainingSeconds / 3600)} 小時 ${Math.floor(model.remainingSeconds % 3600 / 60)} 分 ${model.remainingSeconds % 60} 秒`}`
+    : model.phase === "SKIPPED_UPDATE_DAY" ? "今日不啟動、不更新、不鋤地；次日排程再檢查。"
     : model.phase === "UPDATING" ? model.progressText : model.canClaimReady ? "遊戲主畫面已通過驗證" : "此狀態尚不代表鋤地已開始";
   const details = element(doc, "details"); details.open = expanded;
   details.append(element(doc, "summary", "公告與診斷詳情"), element(doc, "p", model.detail || "尚無補充說明"),
@@ -136,6 +138,16 @@ export function attachMaintenanceUI({ card, settingsRoot, onSave }) {
     if (key !== clockKey) { receivedAt = Date.now(); clockKey = key; }
     const now = Number(raw?.observedUtcNow) > 0 ? Number(raw.observedUtcNow) + Math.max(0, Date.now() - receivedAt) : Date.now();
     model = maintenanceViewModel(raw, now, Boolean(data.deviceFresh));
+    if (model.skipUpdateDay) {
+      heading.textContent = "版本更新日略過";
+      help.textContent = "依官方公告，以台灣時間計算更新日；當天整天不執行並寄信通知。其他日期使用原廠遊戲入口；如仍要求更新／登入，停止並通知。Steam 自行下載不受腳本控制。";
+      warning.textContent = "保留目前任務與伺服器完成清單，不消耗故障重啟次數。寄信失敗會記錄於裝置 Log。";
+    } else {
+      heading.textContent = "版本維護與自動更新";
+      help.textContent = "此裝置仍使用舊版開服後更新流程；更新裝置程式後才會採用更新日整天略過。重新查詢的設定 ACK 只代表要求已接收，請以公告查詢狀態判斷結果。";
+      warning.textContent = "略過仍會檢查公告、版本、桌面鎖定和遊戲維護畫面，不會強行登入。";
+    }
+    untilLabel.hidden = delay.hidden = skip.hidden = model.skipUpdateDay;
     renderMaintenanceCard(card, model);
     provider.textContent = `${model.provider}${!model.supported ? "｜請先更新裝置程式" : model.stale ? "｜等待新心跳" : ""}`;
     if (!dirty) enabled.checked = data.effectiveSettings?.maintenanceEnabled !== false;
@@ -143,7 +155,7 @@ export function attachMaintenanceUI({ card, settingsRoot, onSave }) {
     status.textContent = busy ? "送出中…" : failure || ack.text;
     const disabled = busy || !model.canOperate || ack.kind === "pending" || data.writable === false;
     for (const button of [enabledButton, refresh, delay, skip]) button.disabled = disabled;
-    delay.disabled ||= !model.eventId; skip.disabled ||= !model.eventId;
+    delay.disabled ||= !model.eventId || model.skipUpdateDay; skip.disabled ||= !model.eventId || model.skipUpdateDay;
     enabled.disabled = busy || !model.canOperate; until.disabled = busy || !model.canOperate || !model.eventId;
   };
   enabled.addEventListener("change", () => { dirty = true; });

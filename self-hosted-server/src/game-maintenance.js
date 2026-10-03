@@ -1,7 +1,7 @@
 import { HttpError } from "./utils.js";
 import { normalizeUpcomingNotice } from "../public/game-maintenance-view.js";
 
-const phases = new Set(["NORMAL", "CHECKING_NOTICE", "WAIT_NOTICE", "WAIT_OPEN", "CHECKING_INSTALL", "CHECKING_UPDATE",
+const phases = new Set(["NORMAL", "SKIPPED_UPDATE_DAY", "CHECKING_NOTICE", "WAIT_NOTICE", "WAIT_OPEN", "CHECKING_INSTALL", "CHECKING_UPDATE",
   "UPDATING", "CHECKING_LOGIN", "WAIT_SERVER", "READY", "NEEDS_ATTENTION", "STOPPED"]);
 export const MAINTENANCE_SETTINGS = Object.freeze({ maintenanceEnabled: "boolean", maintenanceOverrideEventId: "string",
   maintenanceDelayUntilUtc: "integer", maintenanceSkipEventId: "string", maintenanceRefreshRequestId: "string" });
@@ -18,6 +18,7 @@ export function normalizeGameMaintenance(value, nowMs = Date.now()) {
   const sourceUrl = /^https:\/\/wutheringwaves\.kurogames\.com\/zh-tw\/main\/news\/detail\/\d+$/.test(value.sourceUrl ?? "")
     ? value.sourceUrl : "";
   return { schemaVersion: 1, capabilityVersion: 1, phase: value.phase,
+    maintenancePolicy: value.maintenancePolicy === "skip_update_day" ? "skip_update_day" : "legacy_wait_open",
     overlay: ["PAUSE", "WAIT_DESKTOP"].includes(value.overlay) ? value.overlay : "",
     provider: ["steam", "kuro", "ambiguous"].includes(value.provider) ? value.provider : "unknown",
     gameVersion: text(value.gameVersion, 32), eventId: text(value.eventId, 180), sourceUrl,

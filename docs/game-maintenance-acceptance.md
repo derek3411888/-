@@ -90,3 +90,13 @@ git diff --check
 ```
 
 完整測試尾端、review 結果與本次取捨另保存在專案內 `.dev-runtime/diagnostics/game-maintenance`；不得把它們一起包進客戶端。
+
+## 2026-10-03 更新日整天略過與早晨啟動失敗修正
+
+本次版本：Payload 5.23／Launcher 5.35／server bundle 1.0.82。依使用者新需求，取代「開服後自動更新」：官方更新日以台灣時間 00:00–23:59 整天略過並寄送一次通知；其他日期使用已驗證安裝的原廠 `Wuthering Waves.exe` 入口，仍需主畫面驗證。不改反作弊／Steam 驗證、不直接執行 Shipping 本體。遊戲若仍要求更新或登入，停止並通知，不以程序存在宣告成功。
+
+根因：桌機 04:08 的內部重啟經 launcher 下載逾時約 405 秒，超出 180 秒交接 ACK 期限。MYTUF 04:09 舊遊戲退出後，同一安裝又產生新遊戲程序，但完整退出 guard 拒絕重啟，留下遊戲。本次內部重啟改直接接續已安裝 payload，外部全新啟動仍可更新專案；保留 ownership／nonce／錄影／切服與新啟動預算重置修正，不做整個 repository rollback。
+
+隔離驗證包含更新日開服前後、午夜、公告故障、跨新任務通知去重、舊版本解除 pin、正式 native 公告 selector、PAUSE 保持在線和凍結逾時、PAUSE 跨日與既有視窗不能繞過日界 gate、真實 host function 接線。Background 43 測試檔、19 項 handoff、111 項網站／服務端，以及 native notice 20 項通過；最終唯讀 review Critical 0／Important 0。六項零基線 suite 仍標示 DEFERRED，不宣稱完整 All。
+
+本次不啟動正式鋤地：桌機 07:38 的遠端 STOP 保留，MYTUF 手動啟動後 07:53 已有實際戰鬥進度，不中斷。原廠入口的真實 Steam／Kuro 登入、SMTP 送達、新版客戶端採用及中央 Docker 部署仍需各自實機證據，不能用背景測試或發布取代。

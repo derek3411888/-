@@ -150,8 +150,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.22"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.34"
+global PAYLOAD_BUILD_VERSION := "5.23"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.35"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2479,7 +2479,7 @@ WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
 LoadServerScheduleContext(isNextServerCycle, isRemoteServerSwitchCycle)
 GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),
-    {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET})
+    {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET,maintenancePolicy:"skip_update_day"})
 REMOTE_SETTINGS_RUNTIME_READY := true
 if REMOTE_CONTROL_ACTIVE
     RC_EnableCommandProcessing()
@@ -2498,6 +2498,12 @@ if (SERVER_SCHEDULE_ENABLED && SERVER_SCHEDULE_LIST.Length > 0 && CURRENT_SERVER
 }
 
 gate := GM_WaitForStartupGate()
+if (gate.mode = "skip") {
+    __CLEAN_FINAL_EXIT_REQUESTED := true
+    WriteStep("版本更新日略過",gate.detail)
+    try RC_ReportRuntimeState()
+    ExitApp
+}
 if (gate.mode = "stop")
     ExitApp
 if (gate.mode = "normal") {
@@ -5843,35 +5849,8 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
 
         if (foundUpdate && IsObject(btnCenter)) {
-            ShowTip("✅ 偵測到更新完成 → 點擊按鈕", 800)
-            ; Hold the exact process object before input. PID reuse cannot signal this handle.
-            exitHandle := DllCall("OpenProcess", "UInt", 0x100000, "Int", false,
-                "UInt", WinGetPID("ahk_id " hwnd), "Ptr")
-            if !exitHandle {
-                WriteStep("遊戲更新等待", "無法取得退出確認權限；不送出點擊、不強制終止、不宣告完成", "ERROR")
-                Sleep 30000
-                continue
-            }
-            try {
-                if ClickWutheringClientPointForInput(hwnd, btnCenter[1], btnCenter[2],
-                    "更新／重新啟動確認 OCR") {
-                    WriteStep("遊戲更新等待", "已送出確認／退出，等待原遊戲程序確實結束")
-                    hooks := {Now:MonotonicTickMs, Wait:(ms) => Sleep(ms),
-                        Alive:(*) => WutheringUpdateProcessAlive(exitHandle)}
-                    loop {
-                        exitResult := GM_WaitForUpdateExit(hooks)
-                        if exitResult = "exited" {
-                            WriteStepResult("鳴潮檢測", true, "update：原遊戲程序已確認退出")
-                            return "update"
-                        }
-                        WriteStep("遊戲更新等待", "確認／退出尚未生效（" exitResult "）；保留任務等待，不重複點擊或強制終止", "ERROR")
-                        Sleep 1000
-                    }
-                }
-            } finally {
-                DllCall("CloseHandle", "Ptr", exitHandle)
-            }
-            WriteLog("更新確認文字已命中，但安全點擊未通過；保留在迴圈內重試", "WARN")
+            GM_StopForManualUpdate("遊戲要求更新／重新啟動；停止本次鋤地，請經官方啟動器或 Steam 完成更新後再啟動腳本")
+            ExitApp
         }
         
         
@@ -6956,7 +6935,7 @@ ResolveWutheringPrimaryInputWindow(preferredHwnd := 0) {
 
 ; E) 取得並啟動鳴潮路徑（可記憶）
 EnsureWutheringRunning() {
-    WriteStep("啟動鳴潮", "統一透過 Steam／官方啟動器")
+    WriteStep("啟動鳴潮", "使用原設定安裝的原廠遊戲入口；不自動操作更新器")
     result := GM_StartLauncherFlow()
     WriteStepResult("啟動鳴潮", result.ok, result.detail)
     return result.ok
@@ -8321,7 +8300,7 @@ TryQueueSafeRestartHandoff(mode, launcherPath := "") {
     if (__SCREEN_RECORDING_PID > 0 && ProcessExist(__SCREEN_RECORDING_PID))
         recording := RestartHandoff_RecorderIdentity(__SCREEN_RECORDING_PID)
     handoff := RestartHandoff_Prepare(AhkExe, A_ScriptFullPath, mode,
-        RuntimeFiles_RuntimeDir("腳本交接"), launcherPath, 120000, 180000, recording)
+        RuntimeFiles_RuntimeDir("腳本交接"), "", 120000, 180000, recording)
     ; Mark preservation only after the worker confirms it owns the exact parent
     ; process handle. This is ARMED, not a claim that the next run has started.
     __RESTART_HANDOFF_LAUNCHED := true
@@ -9732,7 +9711,7 @@ SendGameMaintenanceNotifyMail(stage,detail) {
     global CFG_FILE, MAIL_SECTION, MAIL_NOTIFY_ENABLED
     if !MAIL_NOTIFY_ENABLED
         return {ok:true,message:"郵件通知已關閉"}
-    labels := Map("waiting","等待遊戲開服","updating","遊戲版本更新開始","ready","遊戲主畫面就緒，可接續流程",
+    labels := Map("skipped_day","版本更新日：今日略過鋤地","manual_update","鋤地已停止：請完成遊戲更新／登入","waiting","等待遊戲開服","updating","遊戲版本更新開始","ready","遊戲主畫面就緒，可接續流程",
         "extended","官方維護時間延長","attention","版本更新需要人工確認")
     label := labels.Has(stage) ? labels[stage] : "版本維護狀態"
     smtpHost := IniReadSafe(CFG_FILE,MAIL_SECTION,"smtp_host","")
@@ -10397,12 +10376,12 @@ ShowCombinedConfigSetupGui(cfgPath, section, state, reason := "") {
 
     tabs.UseTab(5)
     g.AddText("Section w950", "【版本更新日排程】")
-    cbMaintenanceEnabled := g.AddCheckbox("xs y+12 w900", "自動查詢官方公告，等開服時間才發起遊戲更新")
+    cbMaintenanceEnabled := g.AddCheckbox("xs y+12 w900", "自動查詢官方公告，版本更新日整天略過鋤地並寄信通知")
     cbMaintenanceEnabled.Value := state.maintenanceEnabled ? 1 : 0
     g.AddText("xs y+12 w950 h50", "依基本路徑中的鳴潮入口自動辨識 Steam／官方版，不需手動選版本。支援 .exe、.lnk、Steam .url 和 steam://run/3513350。")
     txtMaintenanceProvider := g.AddText("xs y+12 w950 h90", "尚未執行來源偵測。重新偵測只讀取安裝資訊，不開遊戲、不發起下載。")
     btnMaintenanceProbe := g.AddButton("xs y+10 w180 h32", "重新偵測安裝來源")
-    g.AddText("xs y+14 w950 h95", "等待期間可從網站暫停、停止、指定伺服器。開服後仍需驗證更新完成及主畫面。Steam 自行排程的下載不受本程式控制。`n來源辨識成功不等於更新程序已通過實機驗收；未驗證的啟動器不會盲按。")
+    g.AddText("xs y+14 w950 h95", "版本更新日以台灣時間 00:00–23:59 計算；整天不啟動遊戲、不自動更新、不消耗重啟次數，寄送略過通知。`n其他日期使用原廠遊戲入口；若仍要求更新／登入，停止並通知。Steam 自行排程的下載不受本程式控制。")
 
     tabs.UseTab()
     ; === 底部按鈕區（永遠位於分頁外） ===
