@@ -93,6 +93,11 @@ TestActualHostInput() {
     c.install := {identityVerified:true,gameRoot:GM_ROOT}, GM_GAME_HWND := 0
     GMTest_Assert(GM_StartLauncherFlow().ok && GM_LAUNCH_CALLS = 1,"actual host uses stable wrapper once without managed updater")
     GMTest_Assert(GM_StartLauncherFlow().ok && GM_LAUNCH_CALLS = 1,"actual host keeps existing matching game")
+    rejected := false
+    try GMHost_RunStableEntry(c,GM_ROOT "\Wuthering Waves.exe","-krqlv=hd -extra")
+    catch
+        rejected := true
+    GMTest_Assert(rejected && GM_LAUNCH_CALLS = 1,"actual host rejects arguments outside the package allowlist before Run")
     GM_PAUSE := true
     GMTest_Assert(GMHost_StableIntent(c) = "PAUSE" && !GMHost_RunStableEntry(c,"unused"),"actual last-moment PAUSE denies side effect without pretending STOP")
     GM_PAUSE := false, c.state.desiredState := "STOP"
@@ -116,6 +121,7 @@ RC_ReportRuntimeState() => 0
 GMHost_RunLauncher(path,command) {
     global GM_LAUNCH_CALLS, GM_GAME_HWND, GM_ROOT
     GMTest_Assert(path = GM_ROOT "\Wuthering Waves.exe","actual host launch resolves verified original wrapper")
+    GMTest_Assert(command = '"' path '" -krqlv=hd',"actual host quotes original entry and appends HD argument")
     GM_LAUNCH_CALLS++, GM_GAME_HWND := 12
 }
 GM_RunManagedUpdate() => GMTest_Assert(false,"retired managed updater must not run")

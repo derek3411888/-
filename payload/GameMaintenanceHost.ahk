@@ -102,7 +102,9 @@ GM_StartLauncherFlow() {
         hooks := {Exists:FileExist,Intent:(*) => GMHost_StableIntent(c),
             Ready:GMHost_GetManagedGameHwnd,Now:MonotonicTickMs,Wait:(ms) => DllCall("Sleep","UInt",ms),
             BeforeLaunch:(*) => GMHost_RecheckStableDay(c),
-            Launch:(path) => GMHost_RunStableEntry(c,path)}
+            PackageState:(tier) => GM_StablePackageState(c.install,tier),
+            ReportPackage:(detail) => WriteLog("遊戲資源包選擇 | " detail),
+            Launch:(path,args) => GMHost_RunStableEntry(c,path,args)}
         result := GM_StableLaunch(c.install,hooks,WUTHERING_STARTUP_WAIT_SEC*1000)
         if !result.ok && result.errorCode != "STOPPED" && result.errorCode != "SKIPPED_UPDATE_DAY"
             GM_StopForManualUpdate(result.detail)
@@ -136,12 +138,14 @@ GMHost_StableIntent(c) {
     return RC_IsPaused() || c.state.desiredState = "PAUSE" ? "PAUSE" : "RUN"
 }
 
-GMHost_RunStableEntry(c,path) {
+GMHost_RunStableEntry(c,path,args := "-krqlv=hd") {
     previousCritical := Critical("On")
     try {
         if GMHost_StableIntent(c) != "RUN"
             return false
-        GMHost_RunLauncher(path,'"' path '"')
+        if !RegExMatch(args,"^-krqlv=(hd|sd|uhd)$")
+            throw Error("不支援的資源包啟動參數")
+        GMHost_RunLauncher(path,'"' path '" ' args)
         return true
     } finally Critical(previousCritical)
 }

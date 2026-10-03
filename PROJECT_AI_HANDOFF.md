@@ -1,5 +1,13 @@
 # 一鍵啟動鋤地腳本：AI 接手速覽
 
+## HD 參數與 MYTUF 驗收候選（2026-10-03）
+
+- 新候選 Launcher 5.37／Payload 5.25／server bundle 1.0.84；版本號不表示已發布或裝置已載入。使用者要求啟動 MYTUF 驗證新參數，不能拿 10:43 舊版退出紀錄當成這次結果。
+- 原安裝入口預設 `-krqlv=hd`。官方版確認 HD 專屬目錄缺失才在啟動前選擇已找到配對資源的 SD／UHD；共用 Paks 不算 SD，未知／讀取錯誤不算缺包，一般閃退不試其他參數。Steam 3.7 依使用者提供的官方公告只使用 HD；3.8 官方啟動器遷移須另驗收，不按日期猜測支援。
+- 保留更新日整天跳過寄信、現有 PAUSE／STOP／程序身分及重啟保護。磁碟查詢／記錄之後重驗更新日和既有視窗，避免檢查期間遊戲出現後仍重開。
+- 參數變更已通過背景 46 個維護测试檔及獨立 review（Critical 0／Important 0）；六項停機環境測試仍為 DEFERRED。發布前會再由正式打包流程跑相關 gate。不得因此宣稱實機已開始鋤地。
+- 本輪不重新部署中央 Docker，不重啟 MYDESKPC。MYTUF 經固定 Codex Remote worker 操作，root 留本機；先確認零衝突與最新進度，再單次正式啟動、以 fresh heartbeat／RUN／遊戲及 LRMCAI 新進度驗收。紀錄在 `.dev-runtime/diagnostics/game-maintenance/remote-worker`。
+
 ## 更新下載修復 checkpoint（2026-10-03；優先於下方歷史紀錄）
 
 - 本輪候選：Launcher 5.36／Payload 5.24／server bundle 1.0.83。修復下載，不啟停正式鋤地或中央 Docker。發布／安裝結果以本輪 release receipt 與實際 SHA 為準，候選版號不等於兩台已載入。
