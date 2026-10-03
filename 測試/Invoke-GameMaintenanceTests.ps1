@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $suiteTests = [ordered]@{
     Foundation=@('TestScriptEncodingTest.ps1','GameMaintenanceRunnerTest.ps1')
     Native=@('NativeMaintenanceTest.ps1','LauncherNativeIntegrationTest.ps1','LauncherNativeEmbeddingTest.ps1',
+        'LauncherDownloadRegressionTest.ps1','LauncherDownloadIntegrationTest.ps1','LauncherUpdateOutcomeTest.ps1',
         'NativePerformanceTelemetryTest.ps1','NativeRuntimeUtilitiesTest.ps1',
         'NativeBootstrapAssetsTest.ps1','NativeRuntimeWiringTest.ps1','NativeMaintenanceIntegrationTest.ps1','LegacyBootstrapSourceTest.ps1','ImagePutLifetimeTest.ps1')
     Notice=@('GameMaintenanceNoticeTest.ps1')

@@ -2,6 +2,14 @@
 
 初始驗收日期：2026-09-21；開發分支：`codex/game-maintenance-20260921`。以下保留歷史驗收，不能把當時未啟動／未發布的狀態當成現況。
 
+## 2026-10-03 更新下載修復
+
+- 本輪預計 5.24／5.36／1.0.83；發布與正式端 uptake 必須分開驗證。既有正式程式沒有由測試啟停；Docker 不部署。
+- 效能證據：MYDESKPC 新原生 helper 完整 Payload 34,873,180 bytes／3.709 秒，Launcher 37,516,800 bytes／4.946 秒，獨立 SHA 全部通過。MYTUF 原生 Remote worker 的同檔 curl 對照：raw 25 秒只收到約 1 MB，官方 API 完整 Payload 2.463 秒，SHA 通過。此為當次實測，不承諾所有網路／時間固定速度。
+- 隔離測試：13 個 native cases 包含持續進度、斷線續傳、忽略 Range、錯誤 Range、毀損、截斷、idle／total 截止、跨 invocation 續傳、verified destination 重用、parent-exit、輸入拒絕、API 403 備援及跨來源續傳。另有實際 AHK wrapper 和正式分支錯誤傳遞，及選用 `LauncherDownloadRegressionTest.ps1 -LongTransfer` 驗證超過原 100 秒仍可成功。
+- `Background` 含新增三個 test files，預期 46 檔；另跑既有 19 項 restart handoff、網站／server 和發布語法／PE 資源測試。NativeMaintenanceTest、NativePerformanceTelemetryTest、NativeRuntimeUtilitiesTest、ImagePutLifetimeTest、MainInstanceOwnershipTest、LauncherNativeHelperDrainTest 保持原零基線 guard，仍為 DEFERRED。
+- 審查兩輪均 Critical 0／Important 0；不將 code review 或 loopback PASS 視為公開網路／正式客戶端更新證據。驗證紀錄放本專案 `.dev-runtime/diagnostics/game-maintenance`。
+
 ## 2026-10-01 最新驗收與剩餘界線
 
 | 項目 | 本輪已取得的證據 | 不代表什麼 |

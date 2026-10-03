@@ -8,6 +8,8 @@ using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Net;
+using System.Globalization;
 
 namespace Wuthering.Native
 {
@@ -207,10 +209,157 @@ namespace Wuthering.Native
             }
             return h;
         }
+        // Artifact downloads use a separate, progress-aware budget from small
+        // manifest requests. The partial is addressed by the REQUIRED SHA256;
+        // resumed bytes are never trusted until the whole file hashes correctly.
+        const long DownloadMaxBytes=256L*1024*1024;
+        static Uri DownloadUri(string url) {
+            Uri uri;
+            if(!Uri.TryCreate(url,UriKind.Absolute,out uri)||uri.UserInfo!=""||
+                (uri.Scheme!="https"&&!(uri.Scheme=="http"&&uri.IsLoopback)))
+                throw new IOException("HTTPS artifact URL required");
+            return uri;
+        }
+        public static string[] DownloadSources(string url) {
+            Uri uri=DownloadUri(url);
+            // Only content pinned to a complete Git commit is interchangeable.
+            // GitHub API raw avoids the raw CDN path measured slow on both PCs;
+            // anonymous API failures/rate limits fall back to the original URL.
+            var match=Regex.Match(uri.AbsolutePath,@"\A/([^/]+)/([^/]+)/([0-9a-fA-F]{40})/(.+)\z");
+            if(uri.Scheme=="https"&&uri.IsDefaultPort&&Same(uri.Host,"raw.githubusercontent.com")&&match.Success)
+                return new[]{"https://api.github.com/repos/"+match.Groups[1].Value+"/"+match.Groups[2].Value+"/contents/"+match.Groups[4].Value+"?ref="+match.Groups[3].Value,url};
+            return new[]{url};
+        }
+        static void Download(string root,string url,string destination,string sha,int totalMs,int idleMs,int attempts,IntPtr parent)
+        {
+            if(!Regex.IsMatch(sha,@"\A[0-9a-f]{64}\z")||totalMs<1||totalMs>1800000||idleMs<1||idleMs>120000||attempts<1||attempts>3)
+                throw new IOException("Invalid download hash or budgets");
+            string[] sources=DownloadSources(url);
+            destination=Safe(destination,root);
+            string status=Safe(destination+".download.status",root);
+            string cache=Safe(Path.Combine(root,"執行暫存","更新","downloads"),root);
+            Directory.CreateDirectory(cache);Directory.CreateDirectory(Path.GetDirectoryName(destination));
+            string part=Safe(Path.Combine(cache,sha+".part"),root);
+            using(var mutex=new Mutex(false,MutexName(root,"Download_"+sha))) {
+                bool owned=false;
+                try {
+                    try {owned=mutex.WaitOne(0);}catch(AbandonedMutexException){owned=true;}
+                    if(!owned)throw new IOException("Same artifact download is already active");
+                    DownloadOwned(sources,destination,part,status,sha,totalMs,idleMs,attempts,parent);
+                }catch(Exception e){AtomicText(status,"FAILED "+e.Message.Replace('\r',' ').Replace('\n',' '));throw;}
+                finally {if(owned)mutex.ReleaseMutex();}
+            }
+        }
+        static void DownloadOwned(string[] sources,string destination,string part,string status,string sha,int totalMs,int idleMs,int attempts,IntPtr parent)
+        {
+            var clock=Stopwatch.StartNew();long lastActivity=0;int stopped=0;
+            HttpWebRequest active=null;object gate=new object();
+            // The helper must stop if its exact bound launcher exits. It never
+            // acquires the startup/runtime mutex held by that launcher. Idle is
+            // an operation-level stop, not another 3x60s retry cycle. Disconnected
+            // or corrupt transfers may retry within the same total budget.
+            using(var watchdog=new Timer(delegate(object unused) {
+                int reason=WaitForSingleObject(parent,0)!=258?3:clock.ElapsedMilliseconds>=totalMs?2:
+                    clock.ElapsedMilliseconds-Interlocked.Read(ref lastActivity)>=idleMs?1:0;
+                if(reason==0)return;
+                Interlocked.CompareExchange(ref stopped,reason,0);
+                lock(gate)if(active!=null)active.Abort();
+            },null,0,50)) {
+                Action check=delegate {
+                    if(stopped==3)throw new IOException("Launcher parent exited; partial preserved");
+                    if(stopped==2||clock.ElapsedMilliseconds>=totalMs)throw new IOException("Download total deadline exceeded");
+                    if(stopped==1)throw new IOException("Download idle timeout");
+                };
+                if(File.Exists(destination)&&new FileInfo(destination).Length<=DownloadMaxBytes&&Hash(destination)==sha) {
+                    check();
+                    AtomicText(status,"SUCCESS already verified");return;
+                }
+                ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls12;
+                for(int attempt=1;attempt<=attempts;attempt++) {
+                    check();
+                    try {
+                        if(File.Exists(part)&&new FileInfo(part).Length>DownloadMaxBytes)throw new IOException("Artifact exceeds size limit");
+                        bool complete=File.Exists(part)&&Hash(part)==sha;
+                        if(!complete) {
+                            long offset=File.Exists(part)?new FileInfo(part).Length:0;
+                            Uri uri=DownloadUri(sources[Math.Min(attempt-1,sources.Length-1)]);HttpWebResponse response=null;
+                            AtomicText(status,"CONNECTING source="+uri.Host+" attempt="+attempt+" resumeBytes="+offset);
+                            try {
+                                for(int redirect=0;;redirect++) {
+                                    check();var request=(HttpWebRequest)WebRequest.Create(uri);
+                                    request.AllowAutoRedirect=false;request.UserAgent="Wuthering-Launcher/3.0";
+                                    request.Accept=Same(uri.Host,"api.github.com")?"application/vnd.github.raw+json":"*/*";
+                                    request.Timeout=Math.Max(1,Math.Min(idleMs,(int)(totalMs-clock.ElapsedMilliseconds)));
+                                    request.ReadWriteTimeout=request.Timeout;request.KeepAlive=false;
+                                    request.AutomaticDecompression=DecompressionMethods.None;
+                                    if(offset>0)request.AddRange(offset);
+                                    lock(gate)active=request;
+                                    try {response=(HttpWebResponse)request.GetResponse();}
+                                    catch(WebException e) {
+                                        if(e.Response!=null)e.Response.Close();
+                                        // A complete but invalid stale partial can receive 416.
+                                        if(e.Response is HttpWebResponse&&((HttpWebResponse)e.Response).StatusCode==HttpStatusCode.RequestedRangeNotSatisfiable)
+                                            File.Delete(part);
+                                        throw;
+                                    }
+                                    int code=(int)response.StatusCode;
+                                    if(code!=301&&code!=302&&code!=303&&code!=307&&code!=308)break;
+                                    string location=response.Headers["Location"];response.Close();response=null;
+                                    if(redirect>=5||String.IsNullOrEmpty(location))throw new IOException("Invalid download redirect");
+                                    uri=DownloadUri(new Uri(uri,location).AbsoluteUri);
+                                }
+                                long expected=response.ContentLength;
+                                if(response.StatusCode==HttpStatusCode.PartialContent) {
+                                    var range=Regex.Match(response.Headers["Content-Range"]??"",@"\Abytes (\d+)-(\d+)/(\d+)\z");
+                                    long start,end,total;
+                                    if(!range.Success||!Int64.TryParse(range.Groups[1].Value,out start)||!Int64.TryParse(range.Groups[2].Value,out end)||!Int64.TryParse(range.Groups[3].Value,out total)||
+                                        start!=offset||end<start||end!=total-1||total>DownloadMaxBytes||expected!=end-start+1)
+                                        throw new IOException("Invalid resumed Content-Range");
+                                }else if(response.StatusCode==HttpStatusCode.OK)offset=0;
+                                else throw new IOException("Unexpected HTTP status "+(int)response.StatusCode);
+                                if(expected>DownloadMaxBytes-offset)throw new IOException("Artifact exceeds size limit");
+                                Interlocked.Exchange(ref lastActivity,clock.ElapsedMilliseconds);
+                                AtomicText(status,"DOWNLOADING attempt="+attempt+" bytes="+offset+" total="+(expected<0?-1:offset+expected));
+                                long written=0,nextReport=clock.ElapsedMilliseconds+1000;
+                                using(var output=new FileStream(part,offset>0?FileMode.Append:FileMode.Create,FileAccess.Write,FileShare.Read))
+                                using(var input=response.GetResponseStream()) {
+                                    byte[] buffer=new byte[65536];int n;
+                                    while((n=input.Read(buffer,0,buffer.Length))>0) {
+                                        check();if(offset+written+n>DownloadMaxBytes)throw new IOException("Artifact exceeds size limit");
+                                        output.Write(buffer,0,n);written+=n;
+                                        Interlocked.Exchange(ref lastActivity,clock.ElapsedMilliseconds);
+                                        if(clock.ElapsedMilliseconds>=nextReport) {
+                                            AtomicText(status,"DOWNLOADING attempt="+attempt+" bytes="+(offset+written)+" total="+(expected<0?-1:offset+expected));nextReport=clock.ElapsedMilliseconds+1000;
+                                        }
+                                    }
+                                    output.Flush(true);
+                                }
+                                if(expected>=0&&written!=expected)throw new IOException("Interrupted download; partial preserved");
+                            }finally {if(response!=null)response.Close();lock(gate)active=null;}
+                        }
+                        check();AtomicText(status,"VERIFYING SHA256");
+                        if(Hash(part)!=sha){File.Delete(part);throw new IOException("Artifact SHA256 mismatch; invalid partial discarded");}
+                        check();
+                        if(File.Exists(destination))File.Replace(part,destination,null);else File.Move(part,destination);
+                        AtomicText(status,"SUCCESS verified SHA256="+sha);return;
+                    }catch(Exception) {
+                        check();if(attempt==attempts)throw;
+                        AtomicText(status,"RETRY partial preserved; attempt="+(attempt+1));
+                        Thread.Sleep(Math.Min(250,Math.Max(1,totalMs-(int)clock.ElapsedMilliseconds)));
+                        Interlocked.Exchange(ref lastActivity,clock.ElapsedMilliseconds);
+                    }
+                }
+            }
+        }
         public static int Main(string[] args)
         {
             string root=null;IntPtr parent=IntPtr.Zero;
             try {
+                if(args.Length==11&&args[0]=="download") {
+                    root=Root(args[1]);parent=Parent(Int32.Parse(args[3]),Int64.Parse(args[4]),args[2]);
+                    Download(root,args[5],args[6],args[7],Int32.Parse(args[8],CultureInfo.InvariantCulture),Int32.Parse(args[9],CultureInfo.InvariantCulture),Int32.Parse(args[10],CultureInfo.InvariantCulture),parent);
+                    Console.WriteLine("SUCCESS download");return 0;
+                }
                 if(args.Length!=5||(args[0]!="extract"&&args[0]!="replace"))throw new IOException("Invalid updater arguments");
                 root=Root(args[1]);string target=args[0]=="replace"?Safe(args[2],root):Path.GetFullPath(args[2]);int pid=Int32.Parse(args[3]);long created=Int64.Parse(args[4]);
                 parent=Parent(pid,created,target);

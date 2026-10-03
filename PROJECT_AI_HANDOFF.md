@@ -1,5 +1,15 @@
 # 一鍵啟動鋤地腳本：AI 接手速覽
 
+## 更新下載修復 checkpoint（2026-10-03；優先於下方歷史紀錄）
+
+- 本輪候選：Launcher 5.36／Payload 5.24／server bundle 1.0.83。修復下載，不啟停正式鋤地或中央 Docker。發布／安裝結果以本輪 release receipt 與實際 SHA 為準，候選版號不等於兩台已載入。
+- 已重現兩層問題：GitHub raw 來源本次明顯慢；舊下載器又對大檔套用 100 秒總期限，Payload 三次重試從頭下載，最後把沿用舊版寫成最新版。包體相較 9/11 只增約 0.6%，不是檔案突然膨脹。
+- 同檔對照：MYDESKPC 舊 XMLHTTP 下載 1 MiB 為 24.234／3.015 秒，ServerXMLHTTP 為 30.297／12.672 秒，不能只歸咎 HTTP 元件。MYTUF raw 25.012 秒僅收到 1,015,744 bytes；GitHub 官方 API 完整 34,873,180 bytes 為 2.463 秒且 SHA 通過。
+- 大檔現在由內嵌 LauncherMaintenance 原生 helper 串流下載，完整 commit 的 GitHub raw URL 優先改走官方 API raw media，403／斷線／截斷等可恢復錯誤退回原 URL；不使用第三方鏡像或憑證。MYDESKPC 實際新 helper 完整 Payload 3.709 秒、Launcher 4.946 秒，SHA 均符合既有發布版。
+- SHA 定址暫存保留在安裝內 `執行暫存/更新/downloads`。Range 不支援會重抓；錯誤 Content-Range 拒絕；完整 SHA 通過才原子發布下載檔。最多三次共用 20 分鐘單檔預算；60 秒完全無進度／父程序退出會停止整次下載，不再重啟三個等待窗。失敗明示沿用本機，不假報最新。
+- manifest 查詢仍走原本有界小檔 HTTP；下載 helper 不取得 Startup／Runtime 鎖，不改已有 relocation、交接、PAUSE／STOP、程序身分保護。父程序以 PID＋建立時間＋image 綁定；AHK 以 CreateProcess 的原始 process handle 等待子程序。
+- 背景驗收增加 13 個原生網路情境、實際 AHK → helper、正式更新分支錯誤回報、官方 API 限流／跨來源續傳，以及 >100 秒真實 loopback 傳輸；六個原有零基線 suite 仍明列 DEFERRED，不能說 All 通過。
+
 ## 最新發布 checkpoint（2026-10-02；優先於下方歷史紀錄）
 
 - 本輪目標為 Launcher 5.34／Payload 5.22／server bundle 1.0.81。使用者已明確要求「背景測試完成 OK 就打包更新」；不停止兩台正在跑的正式流程。發布結果以本輪完整發布腳本、固定 commit 下載及 SHA-256 證據為準，不能把本段候選版號當成已安裝。

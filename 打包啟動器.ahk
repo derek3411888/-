@@ -8,7 +8,7 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.35"
+global PACK_LAUNCHER_BUILD_VERSION := "5.36"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -441,7 +441,9 @@ FetchRemoteUpdateManifest(dataDir) {
     }
 }
 
-TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownload := false) {
+TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownload := false, manifestText := "") {
+    global PACK_PAYLOAD_UPDATE_STATUS
+    PACK_PAYLOAD_UPDATE_STATUS := "failed"
     WriteLog("開始檢查遠端更新設定...")
     cfgFile := dataDir "\\config.ini"
     defaultManifestUrl := "https://api.github.com/repos/derek3411888/-/contents/update_manifest.example.json?ref=main"
@@ -449,6 +451,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
     ; 零設定預設啟用；若使用者手動設為 0 才關閉
     enabled := IniReadSafe(cfgFile, "updater", "enabled", "1")
     if (enabled != "1") {
+        PACK_PAYLOAD_UPDATE_STATUS := "disabled"
         WriteLog("遠端更新未啟用（[updater] enabled!=1）")
         return false
     }
@@ -468,9 +471,9 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 
     ; 自動將 raw.githubusercontent.com 轉為 GitHub API 端點（繞過 CDN 快取）
     manifestApiUrl := ConvertToGitHubApiUrl(manifestUrl)
-    manifestText := ""
     try {
-        manifestText := HttpGetText(manifestApiUrl, Map("Accept", "application/vnd.github.raw+v3"))
+        if manifestText = ""
+            manifestText := HttpGetText(manifestApiUrl, Map("Accept", "application/vnd.github.raw+v3"))
     } catch as e {
         WriteLog("下載 manifest 失敗: " e.Message, "WARN")
         return false
@@ -487,6 +490,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
         }
 
         if (!forceDownload && remoteVer = currentVer) {
+            PACK_PAYLOAD_UPDATE_STATUS := "current"
             WriteLog("遠端版本一致，無需更新：" remoteVer)
             return false
         }
@@ -504,6 +508,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
         reuseDecision := LauncherPayloadReuse_Decide(currentVer, remoteVer,
             payloadSha, localPayloadSha, FileExist(localPayloadPath), forceDownload)
         if reuseDecision.reuseLocalZip {
+            PACK_PAYLOAD_UPDATE_STATUS := "prepared"
             forcedVersion := remoteVer
             WriteLog("本機內嵌 payload.zip SHA256 已是遠端版本；略過重複下載，直接解壓套用：" remoteVer)
             return true
@@ -511,57 +516,12 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 
         WriteLog("檢測到新版本：" currentVer " -> " remoteVer)
         zipTmp := LauncherNewTempPath("payload_update", ".zip", "更新")
-        verified := false
-        lastSha := ""
-
-        ; 下載重試：避免 CDN 回傳舊快取導致 SHA 驗證失敗。
-        Loop 3 {
-            attempt := A_Index
-            payloadReqUrl := payloadUrl
-            payloadReqUrl .= (InStr(payloadReqUrl, "?") ? "&" : "?") "ver=" remoteVer "&retry=" attempt "&ts=" A_NowUTC
-
-            try {
-                HttpDownloadFile(payloadReqUrl, zipTmp)
-            } catch as e {
-                WriteLog("下載 payload 更新包失敗(第 " attempt " 次): " e.Message, "WARN")
-                if (attempt >= 3)
-                    return false
-                Sleep 1200
-                continue
-            }
-
-            if (payloadSha = "") {
-                WriteLog("manifest 未提供 payload_sha256，略過雜湊驗證", "WARN")
-                verified := true
-                break
-            }
-
-            gotSha := GetFileSha256(zipTmp)
-            if (gotSha = "") {
-                WriteLog("無法計算更新包 SHA256(第 " attempt " 次)", "WARN")
-                if (attempt >= 3) {
-                    try FileDelete(zipTmp)
-                    return false
-                }
-                Sleep 1200
-                continue
-            }
-
-            lastSha := gotSha
-            if (gotSha = payloadSha) {
-                WriteLog("更新包 SHA256 驗證通過")
-                verified := true
-                break
-            }
-
-            WriteLog("更新包 SHA256 不符(第 " attempt " 次)，預期=" payloadSha " 實際=" gotSha, "WARN")
-            if (attempt < 3)
-                Sleep 1500
-        }
-
-        if !verified {
-            WriteLog("更新包 SHA256 連續驗證失敗，預期=" payloadSha " 最後實際=" lastSha, "WARN")
-            try FileDelete(zipTmp)
+        try {
+            LauncherDownloadFile(LauncherNativeHelperPath(), workDir, payloadUrl, zipTmp,
+                payloadSha, LauncherDownloadProgress.Bind("Payload " remoteVer))
+            WriteLog("更新包下載完成，SHA256 驗證通過")
+        } catch as e {
+            WriteLog("Payload 更新失敗；保留可續傳暫存並沿用本機版本，未更新成功：" e.Message, "WARN")
             return false
         }
 
@@ -586,6 +546,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 
         try FileDelete(zipTmp)
         forcedVersion := remoteVer
+        PACK_PAYLOAD_UPDATE_STATUS := "prepared"
         WriteLog("已準備遠端更新，待解壓套用版本：" forcedVersion)
         return true
     }
@@ -655,8 +616,9 @@ TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
         ; 下載新 launcher exe
         exeTmp := dataDir "\\launcher_update_" launcherVer "_" A_TickCount ".exe"
         try {
-            WriteLog("正在下載新 launcher 版本 " launcherVer "（硬性總上限 100 秒；失敗會沿用本機版本繼續）")
-            HttpDownloadFile(launcherUrl, exeTmp)
+            WriteLog("正在下載新 launcher 版本 " launcherVer "（可續傳；無進度 60 秒才中止；單檔總上限 20 分鐘）")
+            LauncherDownloadFile(LauncherNativeHelperPath(), workDir, launcherUrl, exeTmp,
+                launcherSha, LauncherDownloadProgress.Bind("Launcher " launcherVer))
         } catch as e {
             WriteLog("下載 launcher 更新失敗，已中止更新並沿用本機 launcher 繼續主流程: " e.Message, "WARN")
             return false
@@ -885,6 +847,23 @@ LauncherNativeParentStamp() {
         "ptr", created, "ptr", exited, "ptr", kernel, "ptr", user)
         throw OSError(A_LastError, "GetProcessTimes(launcher)")
     return NumGet(created, 0, "Int64")
+}
+
+LauncherDownloadProgress(label, status) {
+    static lastReport := 0, lastLabel := ""
+    if InStr(status, "DOWNLOADING") = 1 {
+        if label = lastLabel && A_TickCount - lastReport < 5000
+            return
+        if RegExMatch(status, "bytes=(\d+) total=(-?\d+)", &parts) {
+            doneMiB := Round(Integer(parts[1]) / 1048576, 1)
+            totalBytes := Integer(parts[2])
+            status := "已下載 " doneMiB " MiB"
+                . (totalBytes > 0 ? " / " Round(totalBytes / 1048576, 1) " MiB（" Round(Integer(parts[1])*100/totalBytes, 1) "%）" : "")
+        }
+    }
+    lastReport := A_TickCount, lastLabel := label
+    WriteLog(label " 更新下載｜" status)
+    ToolTip(label " 更新下載`n" status)
 }
 
 LauncherNativeHelperPath() {
@@ -1216,6 +1195,7 @@ if FileExist(STAMP) {
 
 needUnpack := !FileExist(STAMP) || (currentStamp != exeMTime)
 remotePreparedVersion := ""
+PACK_PAYLOAD_UPDATE_STATUS := "not_checked"
 payloadMainPath := APP_DIR "\" MAIN_FILE
 payloadHealthy := DirExist(APP_DIR) && FileExist(payloadMainPath)
 
@@ -1233,12 +1213,12 @@ if (manifestForLauncher != "") {
 if !payloadHealthy {
     needUnpack := true
     WriteLog("偵測到本地 payload 不完整，缺少主檔：" payloadMainPath, "WARN")
-    if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion, true) {
+    if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion, true, manifestForLauncher) {
         WriteLog("已從遠端重新取得 payload.zip，將進行修復解壓")
     } else {
         WriteLog("遠端重新取得 payload 失敗，將改用本地 payload.zip 重新解壓", "WARN")
     }
-} else if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion) {
+} else if TryPrepareRemotePayloadUpdate(WORK_DIR, DATA_DIR, &remotePreparedVersion, false, manifestForLauncher) {
     needUnpack := true
     WriteLog("遠端更新已準備完成，強制執行解壓更新")
 }
@@ -1490,7 +1470,12 @@ if needUnpack {
         }
     }
 } else {
-    WriteLog("payload已是最新版本，跳過解壓")
+    if PACK_PAYLOAD_UPDATE_STATUS = "current"
+        WriteLog("已向遠端確認 Payload 版本一致，跳過解壓")
+    else if PACK_PAYLOAD_UPDATE_STATUS = "disabled"
+        WriteLog("遠端更新已停用；沿用本機 Payload，未確認遠端版本")
+    else
+        WriteLog("Payload 更新未成功或未完成確認；沿用本機版本，不代表已是最新版", "WARN")
 }
 
 ; 確認 AutoHotkey 執行檔可用
