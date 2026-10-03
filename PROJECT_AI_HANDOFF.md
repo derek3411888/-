@@ -1,5 +1,14 @@
 # 一鍵啟動鋤地腳本：AI 接手速覽
 
+## 平日小更新恢復與 MYTUF 切服（2026-10-03 晚間）
+
+- 本輪候選 Launcher 5.39／Payload 5.27／server bundle 1.0.86。正式發布／裝置更新以固定 commit 與 SHA-256 receipt 為準；不部署中央 Docker，不干擾 MYDESKPC 正式流程。
+- MYTUF 20:37:38 完成 HMT，交接至 Asia 成功，20:38:22 啟動遊戲；45 秒無可接受視窗後被 5.25 判成需人工更新並退出。20:50 的真實 GUI 為小更新完成／即將重啟／確認／100%；首次出現時間未知，不能把截圖時間當載入耗時。
+- 使用者釐清：只有官方大版本更新日停跑寄信，平日小更新應恢復既有確認接續。完成文字與唯一按鈕、多次新 OCR、原 game process handle／安裝／HWND、RUN／桌面／當日條件都通過才前景實體點擊；不用 ControlClick／PostMessage。點擊本身不算成功，必須原程序退出後才接續。
+- 若同一次啟動 PID＋建立時間仍存在，初始視窗等待最多追加一次 120 秒，不重開第二個程序。內部 restart 保留排程索引；fresh 才從首個未完成服開始，不清除完成紀錄、nonce 或內部重啟次數。
+- RED/GREEN 已重現平日人工停止與 restart 切回前服；Ocr 7 檔通過，獨立 review Critical 0／Important 0。正式發布仍須 Background 與其餘打包 gate；六項零基線 suite 明列 DEFERRED。
+- MYTUF 固定 Native Remote worker 已做兩次桌面實體確認，焦點／座標重驗後仍未退出；不能宣稱恢复。新鮮證據及後續操作記於 `.dev-runtime/diagnostics/game-maintenance/20261003-mytuf-switch/`；只按本輪新 receipt 推進，不重複已送出的操作。
+
 ## 聲骸前退出副本修正（2026-10-03 午後；優先於下方歷史）
 
 - 本輪候選 Launcher 5.38／Payload 5.26／server bundle 1.0.85。使用者要求先修改打包更新；不啟動／重啟正式鋤地，不部署中央 Docker。發布以 release receipt 與固定 commit SHA-256 為準，候選版本不代表已安裝。

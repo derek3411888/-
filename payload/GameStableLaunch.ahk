@@ -7,7 +7,7 @@ GM_StableLaunch(install,hooks,timeoutMs := 30000) {
     path := RTrim(install.gameRoot,"\") "\Wuthering Waves.exe"
     if !hooks.Exists.Call(path)
         return {ok:false,errorCode:"GAME_ENTRY_MISSING",detail:"原廠遊戲入口不存在；請先完成遊戲安裝／更新"}
-    launched := false, selectedPackage := "", deadline := hooks.Now.Call()+timeoutMs
+    launched := false, selectedPackage := "", deadline := hooks.Now.Call()+timeoutMs, graceUsed := false
     loop {
         intent := GM_StableIntent(hooks)
         if intent = "STOP"
@@ -65,8 +65,14 @@ GM_StableLaunch(install,hooks,timeoutMs := 30000) {
                 return {ok:false,errorCode:"GAME_ENTRY_FAILED",detail:"原廠入口啟動失敗：" err.Message}
             launched := true, deadline := hooks.Now.Call()+timeoutMs
         }
-        if hooks.Now.Call() >= deadline
-            return {ok:false,errorCode:"GAME_ENTRY_NO_WINDOW",detail:"原廠入口尚未產生可驗證視窗；請確認登入／遊戲更新，不重複啟動更新器"}
+        if hooks.Now.Call() >= deadline {
+            if !graceUsed && hooks.HasOwnProp("StartupAlive") && hooks.StartupAlive.Call() {
+                graceUsed := true, deadline := hooks.Now.Call()+120000
+                if hooks.HasOwnProp("ReportWaiting")
+                    hooks.ReportWaiting.Call()
+            } else
+                return {ok:false,errorCode:"GAME_ENTRY_NO_WINDOW",detail:"原廠入口尚未產生可驗證視窗；啟動等待逾時，不重複啟動更新器"}
+        }
         hooks.Wait.Call(250)
     }
 }

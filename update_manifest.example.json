@@ -1,13 +1,13 @@
 {
-  "release_id": "p5.26-l5.38-s1.0.85-D2B3FDB9-8F270207-6D66F122-23C96460",
-  "version": "5.26",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/2c0827dc949f58ba55ecbf26d8e201c268db4caa/payload.zip?release=p5.26-l5.38-s1.0.85-D2B3FDB9-8F270207-6D66F122-23C96460",
-  "payload_sha256": "D2B3FDB90E2548A529F3E88B70F3D725448389461987097B3DF1B14ECEC58688",
-  "launcher_version": "5.38",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/2c0827dc949f58ba55ecbf26d8e201c268db4caa/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.26-l5.38-s1.0.85-D2B3FDB9-8F270207-6D66F122-23C96460",
-  "launcher_sha256": "8F2702076E805E7085FB366E18668977F3ABADE2D984D01C81EB5AF35A5E2990",
-  "server_version": "1.0.85",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/2c0827dc949f58ba55ecbf26d8e201c268db4caa/self-hosted-server.zip?release=p5.26-l5.38-s1.0.85-D2B3FDB9-8F270207-6D66F122-23C96460",
-  "server_sha256": "6D66F12256A68359C6C22C776FDAC31286F638DE080E1376F9D208FF8C871D3D",
+  "release_id": "p5.27-l5.39-s1.0.86-8F07C422-513786F5-6E8ACCE3-23C96460",
+  "version": "5.27",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/main/payload.zip?release=p5.27-l5.39-s1.0.86-8F07C422-513786F5-6E8ACCE3-23C96460",
+  "payload_sha256": "8F07C4223AEF9F06724821B092761C9C77275D54BD0D04DAC02F84D462F5CC5D",
+  "launcher_version": "5.39",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/main/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.27-l5.39-s1.0.86-8F07C422-513786F5-6E8ACCE3-23C96460",
+  "launcher_sha256": "513786F5197C29BD9B77FF99316BCD4A091C2971A50591731E9BA54CB26211CD",
+  "server_version": "1.0.86",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/main/self-hosted-server.zip?release=p5.27-l5.39-s1.0.86-8F07C422-513786F5-6E8ACCE3-23C96460",
+  "server_sha256": "6E8ACCE398428F886F3CB5507A0381DD4398E332B6CB55FE0F1096B180E78494",
   "web_sha256": "23C964601EB0E99C9A640A841A731FDCEA2F46B8B3BA4696FC2248E1D1F1C38E"
 }

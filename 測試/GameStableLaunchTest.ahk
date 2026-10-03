@@ -42,6 +42,27 @@ TestStableLaunch() {
     GMTest_Assert(!result.ok && result.errorCode = "SKIPPED_UPDATE_DAY" && calls.Length = 0,"an externally appeared window cannot bypass the day gate into farming")
     TestResourceSelection()
     TestResourceFiles()
+    TestSlowGameWindow()
+}
+
+TestSlowGameWindow() {
+    tick := 0, launches := 0, alive := true, intent := "RUN", notices := 0
+    hooks := {Exists:(*) => true, Intent:(*) => intent, Ready:(*) => tick >= 60000,
+        Now:(*) => tick, Wait:(ms) => tick += ms, Launch:(*) => (++launches,true),
+        StartupAlive:(*) => alive, ReportWaiting:(*) => ++notices}
+    install := {identityVerified:true,gameRoot:"D:\fixture"}
+    result := GM_StableLaunch(install,hooks,45000)
+    GMTest_Assert(result.ok && launches = 1 && notices > 0,"verified live startup gets bounded loading grace, not manual-update exit at 45 seconds")
+    tick := 0, launches := 0, hooks.Ready := (*) => false
+    result := GM_StableLaunch(install,hooks,45000)
+    GMTest_Assert(!result.ok && tick <= 180000 && launches = 1,"a live but windowless game cannot extend its grace forever")
+    tick := 0, alive := false
+    result := GM_StableLaunch(install,hooks,45000)
+    GMTest_Assert(!result.ok && tick = 45000,"unknown or exited startup cannot obtain live-process grace")
+    tick := 0, alive := true
+    hooks.Wait := (ms) => (tick += ms,intent := tick >= 50000 ? "STOP" : "RUN")
+    result := GM_StableLaunch(install,hooks,45000)
+    GMTest_Assert(result.errorCode = "STOPPED" && tick = 50000,"STOP interrupts extended startup without relaunch")
 }
 
 TestResourceSelection() {

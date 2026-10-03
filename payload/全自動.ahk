@@ -65,6 +65,7 @@ global __RESTART_RECOVERY_RECORDING_STOPPED := false
 #Include SelfHealingPolicy.ahk
 #Include GameMaintenanceHost.ahk
 #Include ManagedProcessGuard.ahk
+#Include GameHotfixRuntime.ahk
 #Include NativeBootstrapAssets.ahk
 #Include NativeRuntimeUtilities.ahk
 
@@ -150,8 +151,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.26"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.38"
+global PAYLOAD_BUILD_VERSION := "5.27"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.39"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2477,7 +2478,9 @@ WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
-LoadServerScheduleContext(isNextServerCycle, isRemoteServerSwitchCycle)
+; Internal restart (including a completed hotfix) continues the selected server.
+; Only an explicit fresh launch starts searching from the first pending server.
+LoadServerScheduleContext(isNextServerCycle || isRestart, isRemoteServerSwitchCycle)
 GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),
     {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET,maintenancePolicy:"skip_update_day"})
 REMOTE_SETTINGS_RUNTIME_READY := true
@@ -5665,10 +5668,6 @@ DetectWutheringAndExit(&loginDetected := false) {
     earlyExitDeadline := MonotonicTickMs() + 30000
     
     deadline := MonotonicTickMs() + 1800000   ; 1800 秒（30 分鐘）
-    kwUpdate1 := "更新完成"
-    kwUpdate2 := "请重新启动游戏"
-    kwUpdate3 := "遊戲即將重啟"
-    kwUpdate4 := "游戏即将重启"
     kwBtn     := "退出"
     
     ; 優化：登入畫面檢測需要多個指標同時出現（降低誤判）
@@ -5809,7 +5808,7 @@ DetectWutheringAndExit(&loginDetected := false) {
                 
                 
                 ; 檢測更新相關文字
-                if InStr(clean, kwUpdate1) || InStr(clean, kwUpdate2) || InStr(clean, kwUpdate3) || InStr(clean, kwUpdate4)
+                if GH_IsCompletionText(clean)
                     foundUpdate := true
                 
                 ; 檢測登入按鈕相關文字
@@ -5849,8 +5848,14 @@ DetectWutheringAndExit(&loginDetected := false) {
         }
 
         if (foundUpdate && IsObject(btnCenter)) {
-            GM_StopForManualUpdate("遊戲要求更新／重新啟動；停止本次鋤地，請經官方啟動器或 Steam 完成更新後再啟動腳本")
-            ExitApp
+            hotfixResult := HandleWutheringHotfix(hwnd)
+            if hotfixResult = "exited"
+                return "update"
+            if hotfixResult = "stopped"
+                ExitApp
+            WriteStep("小更新確認等待", "尚未確認原遊戲退出：" hotfixResult "；保留任務，不宣告更新完成", "WARN")
+            Sleep(1000)
+            continue
         }
         
         
@@ -6686,7 +6691,7 @@ ClickWutheringClientCenter(hwnd, context := "") {
 }
 
 ClickWutheringClientPointForInput(hwnd, clientPointX, clientPointY, context := "",
-    useClientCenter := false, inputAction := "left_click", inputCount := 1) {
+    useClientCenter := false, inputAction := "left_click", inputCount := 1, finalInputGuard := 0) {
     global WUTHERING_PROCESS_EXE
     global LAST_INPUT_ACTIVATION_FAILURE_CODE, LAST_INPUT_ACTIVATION_FAILURE_DETAIL
 
@@ -6876,6 +6881,8 @@ ClickWutheringClientPointForInput(hwnd, clientPointX, clientPointY, context := "
                     " screen=" clickX "," clickY " | context=" context, "WARN")
                 return false
             }
+            if IsObject(finalInputGuard) && !finalInputGuard.Call()
+                return false
             if (inputAction = "wheel_up")
                 MouseClick("WheelUp", clickX, clickY, inputCount, 0)
             else if (inputAction = "wheel_down")

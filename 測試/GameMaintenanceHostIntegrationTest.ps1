@@ -17,7 +17,7 @@ try {
     Write-GMSnapshot $snapshotPath $snapshot $session
     $source=[IO.File]::ReadAllText((Join-Path $root 'payload\GameMaintenanceHost.ahk'))
     $functions=@()
-    foreach($name in @('GM_Init','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
+    foreach($name in @('GM_Init','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_StableStartupAlive','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
         $match=[regex]::Match($source,'(?ms)^'+$name+'\([^\r\n]*\) \{.*?(?=^\w+\([^\r\n]*\) \{|\z)')
         if(-not $match.Success){throw "Missing host function: $name"}
         $functions+= if($name -eq 'GMHost_WriteRequest'){$match.Value.Replace('GMHost_WriteRequest(c,force := false)', 'TestActualWriteRequest(c,force := false)')}else{$match.Value}
@@ -125,6 +125,7 @@ GMHost_RunLauncher(path,command) {
     GM_LAUNCH_CALLS++, GM_GAME_HWND := 12
 }
 GM_RunManagedUpdate() => GMTest_Assert(false,"retired managed updater must not run")
+GMHost_ProcessStartMs(pid) => 100
 GM_StopForManualUpdate(args*) => GMTest_Assert(false,"unexpected manual update failure")
 WriteStep(args*) => 0
 RC_UnixMs() {

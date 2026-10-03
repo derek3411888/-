@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.26',
-    [string]$LauncherVersion = '5.38',
-    [string]$ServerVersion = '1.0.85',
+    [string]$PayloadVersion = '5.27',
+    [string]$LauncherVersion = '5.39',
+    [string]$ServerVersion = '1.0.86',
     [ValidateSet('All','Background')][string]$ValidationProfile = 'All'
 )
 
@@ -124,7 +124,7 @@ function Find-AhkCompiler {
 
 function Get-GameMaintenancePayloadFiles {
     return @('GameMaintenance.ahk', 'GameMaintenancePolicy.ahk', 'GameMaintenanceHost.ahk', 'GameStableLaunch.ahk',
-        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameMaintenanceWorker.exe', 'LauncherMaintenance.exe', 'GameMaintenanceWorker.ps1',
+        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameHotfixRecovery.ahk', 'GameHotfixRuntime.ahk', 'GameMaintenanceWorker.exe', 'LauncherMaintenance.exe', 'GameMaintenanceWorker.ps1',
         'GameMaintenanceNotice.ps1', 'GameInstallDiscovery.ps1',
         'PerformanceTelemetryWorker.exe', 'RuntimeUtilities.exe', 'BootstrapAssets.exe',
         'NativeRuntimeUtilities.ahk', 'NativeBootstrapAssets.ahk')

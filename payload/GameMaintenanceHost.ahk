@@ -104,6 +104,8 @@ GM_StartLauncherFlow() {
             BeforeLaunch:(*) => GMHost_RecheckStableDay(c),
             PackageState:(tier) => GM_StablePackageState(c.install,tier),
             ReportPackage:(detail) => WriteLog("遊戲資源包選擇 | " detail),
+            StartupAlive:(*) => GMHost_StableStartupAlive(c),
+            ReportWaiting:(*) => WriteStep("遊戲啟動等待","同一啟動程序仍存活；追加最多 120 秒等待遊戲／小更新畫面，不重開遊戲"),
             Launch:(path,args) => GMHost_RunStableEntry(c,path,args)}
         result := GM_StableLaunch(c.install,hooks,WUTHERING_STARTUP_WAIT_SEC*1000)
         if !result.ok && result.errorCode != "STOPPED" && result.errorCode != "SKIPPED_UPDATE_DAY"
@@ -145,9 +147,15 @@ GMHost_RunStableEntry(c,path,args := "-krqlv=hd") {
             return false
         if !RegExMatch(args,"^-krqlv=(hd|sd|uhd)$")
             throw Error("不支援的資源包啟動參數")
-        GMHost_RunLauncher(path,'"' path '" ' args)
+        pid := GMHost_RunLauncher(path,'"' path '" ' args)
+        c.stableEntryPid := pid, c.stableEntryStarted := pid ? GMHost_ProcessStartMs(pid) : 0
         return true
     } finally Critical(previousCritical)
+}
+
+GMHost_StableStartupAlive(c) {
+    pid := GM_Value(c,"stableEntryPid",0), started := GM_Value(c,"stableEntryStarted",0)
+    return pid > 0 && started > 0 && GMHost_ProcessStartMs(pid) = started
 }
 
 GM_PrepareCleanLauncherRestart(&detail := "") {
@@ -455,7 +463,8 @@ GMHost_ApplyEffect(action) {
 GMHost_RunLauncher(path,command) {
     SplitPath(path,,&workingDirectory)
     WriteLog("啟動已驗證的原廠入口（尚未驗證遊戲就緒） | entry=" path)
-    Run(command,workingDirectory)
+    Run(command,workingDirectory,,&pid)
+    return pid
 }
 
 GMHost_StopRecording() {
