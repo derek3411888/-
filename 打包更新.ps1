@@ -1,8 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.25',
-    [string]$LauncherVersion = '5.37',
-    [string]$ServerVersion = '1.0.84',
+    [string]$PayloadVersion = '5.26',
+    [string]$LauncherVersion = '5.38',
+    [string]$ServerVersion = '1.0.85',
     [ValidateSet('All','Background')][string]$ValidationProfile = 'All'
 )
 
@@ -465,6 +465,7 @@ Write-Host '建立 payload.zip…'
 New-FilteredZip 'payload' 'payload.zip' (Get-PayloadZipExcludes)
 Assert-ZipContains 'payload.zip' (Get-GameMaintenancePayloadFiles)
 Assert-ZipContains 'payload.zip' @('ScriptRestartHandoff.ahk', 'ScriptRestartWorker.ahk', 'InstallStartupLock.ahk', 'RestartRecovery.ahk')
+Assert-ZipContains 'payload.zip' @('SynthesisMenuRecovery.ahk', 'SynthesisMenuRuntime.ahk')
 Assert-ZipContains 'payload.zip' @(
     '全自動.ahk', '全自動鋤地.exe', 'RemoteControlFirestore.ahk',
     'RemoteControlSelfHost.ahk', 'InteractiveDesktopGuard.ahk', 'ForegroundBlockerPolicy.ahk',

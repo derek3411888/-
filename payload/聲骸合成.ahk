@@ -32,6 +32,7 @@ catch
 #Include RuntimeFilePaths.ahk
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include plugin\RapidOcr\RapidOcr.ahk
+#Include SynthesisMenuRuntime.ahk
 
 ResolveBundledAhkExe() {
     candidates := []
@@ -515,85 +516,10 @@ HandleMonthlyCardRewardIfPresent() {
 
 OpenMainMenu() {
     global logger, gameWindow
-    logger.log("按 Esc 打開主選單（含重試）")
-
-    ; 最多重試 4 次，避免剛進遊戲時 UI 尚未穩定
-    Loop 4 {
-        if !ActivateGame() {
-            logger.log("ActivateGame 失敗，第 " A_Index " 次重試", "WARN")
-            Sleep 800
-            continue
-        }
-
-        ; 若已在主選單，直接成功
-        if IsMainMenuVisible() {
-            logger.log("主選單已打開（進入前已在主選單）")
-            return true
-        }
-
-        ; 先用前景送鍵
-        Send "{Esc}"
-        Sleep 1800
-        if IsMainMenuVisible() {
-            logger.log("主選單已打開（Send Esc）")
-            return true
-        }
-
-        ; 再用 ControlSend 補一次
-        try ControlSend("{Esc}", , "ahk_id " gameWindow)
-        Sleep 1200
-        if IsMainMenuVisible() {
-            logger.log("主選單已打開（ControlSend Esc）")
-            return true
-        }
-
-        logger.log("第 " A_Index " 次嘗試未檢測到主選單，嘗試鼠標焦點恢復", "WARN")
-        
-        ; 若 Esc 失敗，用鼠標點擊獲得焦點
-        if A_Index < 4 {
-            ; 獲取遊戲窗口的位置和大小
-            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " gameWindow)
-            
-            ; 計算窗口內部的中心座標
-            clickX := Round(wx + ww / 2)
-            clickY := Round(wy + wh / 2)
-            
-            logger.log("點擊遊戲窗口內部以恢復焦點（第 1 下）座標: " clickX ", " clickY)
-            MouseClick("left", clickX, clickY)
-            Sleep 2000
-            logger.log("點擊遊戲窗口內部以恢復焦點（第 2 下）")
-            MouseClick("left", clickX, clickY)
-            Sleep 1500
-
-            ; 點擊後再次強制啟用視窗，避免 Esc 送到其他視窗
-            if !ActivateGame() {
-                logger.log("鼠標焦點恢復後 ActivateGame 失敗", "WARN")
-            }
-            
-            ; 點擊後要持續嘗試 Esc（前景 + ControlSend）
-            Loop 3 {
-                logger.log("鼠標焦點恢復後，第 " A_Index " 次 Send Esc")
-                Send "{Esc}"
-                Sleep 1200
-                if IsMainMenuVisible() {
-                    logger.log("主選單已打開（鼠標焦點恢復後 Send Esc，第 " A_Index " 次）")
-                    return true
-                }
-
-                logger.log("鼠標焦點恢復後，第 " A_Index " 次 ControlSend Esc")
-                try ControlSend("{Esc}", , "ahk_id " gameWindow)
-                Sleep 1200
-                if IsMainMenuVisible() {
-                    logger.log("主選單已打開（鼠標焦點恢復後 ControlSend Esc，第 " A_Index " 次）")
-                    return true
-                }
-            }
-        }
-        
-        Sleep 800
-    }
-
-    logger.log("未檢測到主選單（重試後仍失敗）", "WARN")
+    logger.log("按 Esc 打開主選單；若命中確認離開／重新挑戰提示，先安全退出副本")
+    try return SMR_OpenMenu(SynthesisMenuIo(gameWindow))
+    catch as err
+        logger.log("聲骸選單恢復失敗：" err.Message,"WARN")
     return false
 }
 
