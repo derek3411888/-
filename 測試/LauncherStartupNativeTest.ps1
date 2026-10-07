@@ -34,7 +34,11 @@ __FUNCTIONS__
     $child=@'
 guard := LauncherAcquireMainMutex()
 try {
-    FileAppend(String(guard > 0 ? "acquired" : guard), A_Args[2], "UTF-8")
+    ; Publish only after FileAppend has closed the file. Existence of the final
+    ; path must mean the parent can read a complete, no-longer-open result.
+    fixtureResultTemp := A_Args[2] ".writing"
+    FileAppend(String(guard > 0 ? "acquired" : guard), fixtureResultTemp, "UTF-8")
+    FileMove(fixtureResultTemp, A_Args[2])
     deadline := A_TickCount + 5000
     while !FileExist(A_Args[3]) && A_TickCount < deadline
         Sleep 20

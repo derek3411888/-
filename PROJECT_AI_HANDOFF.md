@@ -1,5 +1,13 @@
 # 一鍵啟動鋤地腳本：AI 接手速覽
 
+## 大量放棄任務改為接續（2026-10-07）
+
+- 本輪發布候選 Launcher 5.40／Payload 5.28／server bundle 1.0.87。使用者已要求打包推送；不重啟正式裝置、不部署中央 Docker。成功發布仍以固定 commit 與 SHA-256 receipt 為準，不把候選版本當作已安裝。
+- `LRMCAI_TASK_ABANDON_BURST` 改為要求接續；有效 `run_started=1` 保留，交接為 `restart resume`，LRMC 略過重選「副本」。沒有有效標記仍明確降級一般重跑。
+- 維持 90 秒／5 次、PAUSE、冷卻與重啟上限；不清除目標伺服器及完成紀錄。舊收尾領獎證據仍清除，不能將大量跳過後的領獎誤認任務完成。
+- 新隔離測試已完成 RED/GREEN；52 檔 Background、19 項重啟交接及 111 項網站測試通過，review Critical 0／Important 0。六項停機測試仍為 DEFERRED。正式打包會重新執行發布 gate。
+- 另修正既有 native 啟動器測試 fixture 的結果檔發布競態：先關檔再改名，保留原互斥／relocation 斷言，不改產品啟動器行為。證據在 `.dev-runtime/diagnostics/game-maintenance/20261007-task-abandon-resume/`。
+
 ## 平日小更新恢復與 MYTUF 切服（2026-10-03 晚間）
 
 - 本輪候選 Launcher 5.39／Payload 5.27／server bundle 1.0.86。正式發布／裝置更新以固定 commit 與 SHA-256 receipt 為準；不部署中央 Docker，不干擾 MYDESKPC 正式流程。

@@ -151,8 +151,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.27"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.39"
+global PAYLOAD_BUILD_VERSION := "5.28"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.40"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -8780,13 +8780,15 @@ MonitorRewardAndShutdown() {
                     WriteLog("收尾監測拒絕把領獎訊號當成完成：LRMCAI 短時間大量放棄任務"
                         " | " burstEvidence " | foreground=" foregroundProcess "/" foregroundTitle,
                         "ERROR")
-                    ShowTip("❌ LRMCAI 大量跳過任務，準備乾淨重啟", 2500)
+                    ShowTip("❌ LRMCAI 大量跳過任務，準備重啟並接續任務", 2500)
                     ClearRewardMonitorRuntimeState(state.key)
+                    ; 放棄任務不代表整份清單要重跑；沿用已開始標記走 LRMC 接續。
+                    ; 若沒有有效標記，RequestRestart 仍使用既有的明確降級流程。
                     RequestRestart(
                         "LRMCAI 在 " REWARD_TASK_ABANDON_WINDOW_SEC " 秒內連續放棄至少 "
                             REWARD_TASK_ABANDON_NEED_COUNT " 個任務；拒絕採信後續領獎完成訊號"
                             " | " burstEvidence " | foreground=" foregroundProcess "/" foregroundTitle,
-                        "ERROR", false, "LRMCAI_TASK_ABANDON_BURST", "收尾監測／LRMCAI 日誌")
+                        "ERROR", true, "LRMCAI_TASK_ABANDON_BURST", "收尾監測／LRMCAI 日誌")
                     return
                 }
                 if (activeAllowed && state.invalidHwndHits >= REWARD_INVALID_HWND_NEED_COUNT) {
