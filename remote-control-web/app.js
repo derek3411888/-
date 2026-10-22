@@ -37,7 +37,7 @@ const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
 const CODEX_SUPPORT_MAX_CONTEXT_LENGTH = 14000;
 const CODEX_SUPPORT_MAX_LOG_LENGTH = 12000;
 const CODEX_BRIDGE_ONLINE_MS = 3 * 60_000;
-const CODEX_SUPPORT_COOLDOWN_MS = 5 * 60_000;
+const CODEX_SUPPORT_COOLDOWN_MS = 30_000;
 const CODEX_SUPPORT_PRESETS = Object.freeze({
   FIX_SCRIPT: Object.freeze({
     label: "找出問題並修正",
@@ -691,7 +691,7 @@ function renderCodexSupportStatus() {
   } else if (state === "REJECTED") {
     setCodexStage(codexStages.validated, "error", errorDetail || detail || "訊息未通過驗證");
   } else if (state === "RATE_LIMITED") {
-    setCodexStage(codexStages.attempted, "error", detail || "仍在五分鐘間隔內");
+    setCodexStage(codexStages.attempted, "error", detail || "仍在 30 秒間隔內");
   } else if (state === "FAILED") {
     setCodexStage(codexStages.attempted, "error", errorDetail || detail || "無法送進 Codex");
   } else if (state === "CANCELLED") {
