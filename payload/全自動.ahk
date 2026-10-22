@@ -152,8 +152,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.29"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.41"
+global PAYLOAD_BUILD_VERSION := "5.30"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.42"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2481,9 +2481,25 @@ WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 ;    崩潰事件指紋需要寫入 CFG_FILE，避免同一個已消失/幽靈視窗跨腳本重複觸發。
 ; Internal restart (including a completed hotfix) continues the selected server.
 ; Only an explicit fresh launch starts searching from the first pending server.
+explicitCurrentTaskResume := false
+for startupArgument in A_Args {
+    if isRestart && startupArgument = "user-resume"
+        explicitCurrentTaskResume := true
+}
 LoadServerScheduleContext(isNextServerCycle || isRestart, isRemoteServerSwitchCycle)
-GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),
-    {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET,maintenancePolicy:"skip_update_day"})
+resumeCritical := Critical("On")
+try {
+    ; Read current intent after schedule I/O and do not let a timer STOP/PAUSE
+    ; interleave between authorization and controller creation.
+    resumeIntent := explicitCurrentTaskResume ? GMHost_ReadExplicitResumeIntent() : ""
+    GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),
+        {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET,
+            maintenancePolicy:"skip_update_day",explicitResume:explicitCurrentTaskResume,
+            resumeDesiredState:IsObject(resumeIntent) ? resumeIntent.state : "",
+            resumeRemoteGeneration:IsObject(resumeIntent) ? resumeIntent.nonce : -1})
+} finally Critical(resumeCritical)
+if GM_CONTROLLER.explicitStopResumed
+    WriteStep("接續已停止任務","已依明確啟動要求解除舊停止鎖；保留伺服器、完成紀錄與重啟計數，重新檢查維護公告")
 REMOTE_SETTINGS_RUNTIME_READY := true
 if REMOTE_CONTROL_ACTIVE
     RC_EnableCommandProcessing()

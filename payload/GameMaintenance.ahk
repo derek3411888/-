@@ -375,9 +375,16 @@ GM_CreateController(journalPath,context,hooks) {
     catch as err {
         state := GM_DefaultState(), state.phase := "NEEDS_ATTENTION", loadError := err.Message
     }
-    if (!GM_HasActiveContinuation(state,GM_Value(context,"nowUtcMs",0)) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY")) {
+    resumeStopped := GM_Value(context,"explicitResume",false) && state.phase = "STOPPED"
+        && state.cancelled && state.desiredState = "STOP" && !state.recoveryUncertain
+        && GM_Value(context,"resumeDesiredState","") = "RUN"
+        && GM_Value(context,"resumeRemoteGeneration",-1) >= state.remoteGeneration
+        && GM_Value(context,"targetServer","") = state.targetServer
+    if (!GM_HasActiveContinuation(state,GM_Value(context,"nowUtcMs",0)) && (GM_Value(context,"newTask",false) || state.phase = "NORMAL" || state.phase = "READY" || resumeStopped)) {
         prior := state
         state := GM_DefaultState()
+        if resumeStopped
+            state.remoteGeneration := Max(prior.remoteGeneration,GM_Value(context,"resumeRemoteGeneration",0))
         ; Retain today's/future notice during outages, never pin an old version.
         if GM_Value(context,"maintenancePolicy","") = "skip_update_day" {
             state.notificationKeys := prior.notificationKeys
@@ -393,7 +400,7 @@ GM_CreateController(journalPath,context,hooks) {
         state.targetServer := GM_Value(context,"targetServer","")
     return {state:state,hooks:hooks,journalPath:journalPath,worker:0,readCount:0,lastDecision:0,
         active:true,managed:state.eventId != "",stopRecordingDone:false,loadError:loadError,
-        lastSavedAt:0,lastSavedKey:"",lastPublishedKey:"",workerFailure:"",intentRevision:0}
+        lastSavedAt:0,lastSavedKey:"",lastPublishedKey:"",workerFailure:"",intentRevision:0,explicitStopResumed:resumeStopped}
 }
 
 GM_MergeObservations(worker,localObservation,nowMs) {

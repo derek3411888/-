@@ -58,7 +58,7 @@ class FixtureWmi {
             return [{Name:"AutoHotkey64.exe",ProcessId:111,ExecutablePath:"D:\other\AutoHotkey64.exe",
                 CommandLine:'"D:\other\AutoHotkey64.exe" "' MAIN_PATH '"',CreationDate:oldProc.CreationDate}]
         }
-        if scenario="fresh"
+        if InStr(scenario,"fresh") = 1
             return runCount ? [newProc] : []
         if scenario="exited-before-first-poll" || scenario="exited-during-query"
             return runCount ? [newProc] : []
@@ -94,10 +94,11 @@ class FixtureWmi {
 }
 ComObjGet(*) => FixtureWmi()
 LauncherProjectRoot(*) => "E:\fixture"
-LauncherHasArg(*) => false
+LauncherHasArg(name) => InStr(scenario,"fresh-explicit") = 1 && (name = "--continue-stopped-task" || (scenario = "fresh-explicit-resume" && name = "--resume-current-task"))
 LauncherStartup_Dispatch(runtime,command,workingDir) {
     global runCount,ahkPath,MAIN_PATH,APP_DIR
-    if runtime != ahkPath || command != '"' ahkPath '" "' MAIN_PATH '"' || workingDir != APP_DIR
+    args := scenario = "fresh-explicit" ? " restart user-resume" : scenario = "fresh-explicit-resume" ? " restart resume user-resume" : ""
+    if runtime != ahkPath || command != '"' ahkPath '" "' MAIN_PATH '"' args || workingDir != APP_DIR
         throw Error("wrong launcher dispatch arguments")
     runCount += 1
     return {pid:222,handle:42}
@@ -118,7 +119,7 @@ try {
             throw Error("Existing or uninspectable runtime must not be replaced by a second Run")
         if mainLaunchSucceeded
             throw Error("Skipped duplicate is not a newly verified startup")
-    } else if scenario="fresh" {
+    } else if InStr(scenario,"fresh") = 1 {
         if runCount != 1 || !mainLaunchSucceeded
             throw Error("Fresh exact child should be dispatched once and recognized")
     } else {
@@ -133,7 +134,7 @@ try {
 ExitApp(0)
 '@
     $fixture=$fixture.Replace('__INCLUDES__',$includes).Replace('__START_BLOCK__',$block)
-    foreach($scenario in @('existing','fresh','wrong-child','unreadable','inaccessible','wrong-script','old-pid-same-script','child-query-failed','pid-reused','same-script-other-runtime','exited-before-first-poll','exited-during-query','relative-drive','relative-bare','relative-nested','include-switch')){
+    foreach($scenario in @('existing','fresh','fresh-explicit','fresh-explicit-resume','wrong-child','unreadable','inaccessible','wrong-script','old-pid-same-script','child-query-failed','pid-reused','same-script-other-runtime','exited-before-first-poll','exited-during-query','relative-drive','relative-bare','relative-nested','include-switch')){
         $testPath=Join-Path $context.RunRoot ('startup-'+$scenario+'.ahk')
         # Set scenario directly so the normal contained test runner needs no extra interface.
         $case=$fixture.Replace('global scenario := A_Args.Length ? A_Args[1] : "existing"', ('global scenario := "'+$scenario+'"'))

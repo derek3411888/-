@@ -17,7 +17,7 @@ try {
     Write-GMSnapshot $snapshotPath $snapshot $session
     $source=[IO.File]::ReadAllText((Join-Path $root 'payload\GameMaintenanceHost.ahk'))
     $functions=@()
-    foreach($name in @('GM_Init','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_StableStartupAlive','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
+    foreach($name in @('GM_Init','GMHost_ReadExplicitResumeIntent','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_StableStartupAlive','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
         $match=[regex]::Match($source,'(?ms)^'+$name+'\([^\r\n]*\) \{.*?(?=^\w+\([^\r\n]*\) \{|\z)')
         if(-not $match.Success){throw "Missing host function: $name"}
         $functions+= if($name -eq 'GMHost_WriteRequest'){$match.Value.Replace('GMHost_WriteRequest(c,force := false)', 'TestActualWriteRequest(c,force := false)')}else{$match.Value}
@@ -32,6 +32,8 @@ try {
 global GM_CONTROLLER := 0, GM_ROOT := "$session", GM_NOW := 200000000, RC_LAST_NONCE := 1
 global REMOTE_STOP_IN_PROGRESS := false, __CLEAN_FINAL_EXIT_REQUESTED := false, WUTHERING_STARTUP_WAIT_SEC := 1, GM_LAUNCH_CALLS := 0, GM_GATE_CALLS := 0
 global GM_PAUSE := false, GM_CYCLE := "fixture", GM_OKWW_KEY := "44|100|12|fixture", GM_OBSERVES := 0, GM_GAME_HWND := 12
+global RC_REMOTE_DESIRED_STATE := "RUN", RC_CFG_PATH := "$session\resume-config.ini", GM_RESUME_DISK := 0
+global RC_STARTUP_PENDING_COMMAND := "", RC_PENDING_COMMAND_CLAIM := "", RC_ACTIVE_STOP_ACK := ""
 GMTest_Run(TestActualHostInput)
 TestActualHostInput() {
     global GM_CONTROLLER, GM_NOW, GM_ROOT, GM_PAUSE, GM_CYCLE, GM_OKWW_KEY, GM_OBSERVES, GM_GAME_HWND, GM_LAUNCH_CALLS, GM_GATE_CALLS
@@ -111,7 +113,41 @@ TestActualHostInput() {
     c.lastRequestKey := ""
     TestActualWriteRequest(c,true)
     GMTest_Assert(InStr(FileRead(c.worker.requestPath), '"pinnedEventId":""'),"actual worker request does not pin expired version even on restart")
+    TestExplicitResumeAuthorization()
 }
+TestExplicitResumeAuthorization() {
+    global RC_LAST_NONCE,RC_REMOTE_DESIRED_STATE,RC_CFG_PATH,GM_RESUME_DISK
+    global RC_STARTUP_PENDING_COMMAND,RC_PENDING_COMMAND_CLAIM,RC_ACTIVE_STOP_ACK
+    global REMOTE_STOP_IN_PROGRESS,__CLEAN_FINAL_EXIT_REQUESTED
+    GM_RESUME_DISK := {state:"RUN",nonce:134}, RC_LAST_NONCE := 134
+    IniWrite 134,RC_CFG_PATH,"remote_control","last_nonce"
+    GMTest_Assert(IsObject(GMHost_ReadExplicitResumeIntent()),"matching current RUN can authorize explicit resume")
+    RC_LAST_NONCE := 135
+    GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"completed STOP135 cursor defeats stale RUN134 despite maintenance generation134")
+    RC_LAST_NONCE := 134
+    IniWrite 135,RC_CFG_PATH,"remote_control","last_nonce"
+    GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"shared durable cursor defeats stale memory")
+    IniWrite 134,RC_CFG_PATH,"remote_control","last_nonce"
+    for intent in ["PAUSE","STOP"] {
+        RC_REMOTE_DESIRED_STATE := intent
+        GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"current memory " intent " defeats a prior disk RUN")
+        RC_REMOTE_DESIRED_STATE := "RUN"
+        RC_STARTUP_PENDING_COMMAND := {state:intent,nonce:135}
+        GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"queued " intent " cannot be ignored")
+        RC_STARTUP_PENDING_COMMAND := "", RC_PENDING_COMMAND_CLAIM := {state:intent,nonce:135}
+        GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"pending durable " intent " claim cannot be ignored")
+        RC_PENDING_COMMAND_CLAIM := "", GM_RESUME_DISK := {state:intent,nonce:135}
+        GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"new disk " intent " observed after earlier RUN cannot resume")
+        GM_RESUME_DISK := {state:"RUN",nonce:134}
+    }
+    RC_ACTIVE_STOP_ACK := {state:"STOP",nonce:135}
+    GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"in-flight STOP ACK cannot be ignored")
+    RC_ACTIVE_STOP_ACK := "", REMOTE_STOP_IN_PROGRESS := true
+    GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"shutdown in progress blocks resume")
+    REMOTE_STOP_IN_PROGRESS := false
+    GMTest_Assert(IsObject(GMHost_ReadExplicitResumeIntent()),"matching RUN remains eligible after safety checks")
+}
+RC_LoadPersistedDesiredState() => GM_RESUME_DISK
 GM_WaitForStartupGate() {
     global GM_GATE_CALLS
     GM_GATE_CALLS++

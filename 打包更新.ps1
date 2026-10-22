@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.29',
-    [string]$LauncherVersion = '5.41',
+    [string]$PayloadVersion = '5.30',
+    [string]$LauncherVersion = '5.42',
     [string]$ServerVersion = '1.0.87',
     [ValidateSet('All','Background')][string]$ValidationProfile = 'All'
 )

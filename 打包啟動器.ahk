@@ -8,8 +8,8 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.41"
-global PACK_PAYLOAD_BUILD_VERSION := "5.29"
+global PACK_LAUNCHER_BUILD_VERSION := "5.42"
+global PACK_PAYLOAD_BUILD_VERSION := "5.30"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -1603,6 +1603,11 @@ try {
         payloadArgs := LauncherHasArg("--resume-current-task")
             ? " restart resume"
             : (LauncherHasArg("--restart-current-task") ? " restart" : "")
+        if LauncherHasArg("--continue-stopped-task") {
+            if payloadArgs = ""
+                payloadArgs := " restart"
+            payloadArgs .= " user-resume"
+        }
     }
     if (payloadArgs = " restart resume")
         WriteLog("主腳本將以 restart resume 接續已開始的 LRMCAI 任務")

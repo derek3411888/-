@@ -56,6 +56,30 @@ TestMaintenancePersistence() {
     GMTest_Assert(!GM_HasActiveContinuation(GM_LoadJournal(path),10000), "STOP not mistaken as active continuation")
     input.desiredState := "RUN"
     GMTest_Assert(GM_Evaluate(GM_LoadJournal(path),input).phase = "STOPPED", "ordinary restart cannot revive cancelled actions")
+    stopped := GM_LoadJournal(path), stopped.runCycle := "20261022", stopped.targetServer := "Asia", stopped.remoteGeneration := 134
+    stopped.notificationKeys := "preserve-notice"
+    GM_SaveJournal(path,stopped)
+    resumeContext := {runCycle:"20261022",targetServer:"Asia",newTask:false,nowUtcMs:10000,
+        maintenancePolicy:"skip_update_day",explicitResume:true,resumeDesiredState:"RUN",resumeRemoteGeneration:134}
+    resumedStop := GM_CreateController(path,resumeContext,{})
+    GMTest_Assert(!resumedStop.state.cancelled && resumedStop.state.desiredState = "RUN"
+        && resumedStop.state.phase = "CHECKING_NOTICE","explicit current-task resume releases a prior manual stop through a fresh notice gate")
+    GMTest_Assert(resumedStop.state.targetServer = "Asia" && resumedStop.state.runCycle = "20261022"
+        && resumedStop.state.remoteGeneration = 134 && resumedStop.state.notificationKeys = "preserve-notice",
+        "explicit resume preserves task, command generation and notice deduplication")
+    for scenario in ["ordinary","pause","stale-command","wrong-target","uncertain"] {
+        context := resumeContext.Clone(), savedStop := stopped.Clone()
+        switch scenario {
+            case "ordinary": context.explicitResume := false
+            case "pause": context.resumeDesiredState := "PAUSE"
+            case "stale-command": context.resumeRemoteGeneration := 133
+            case "wrong-target": context.targetServer := "HMT"
+            case "uncertain": savedStop.recoveryUncertain := true
+        }
+        GM_SaveJournal(path,savedStop)
+        protectedStop := GM_CreateController(path,context,{})
+        GMTest_Assert(protectedStop.state.cancelled,"resume does not override " scenario)
+    }
     state := GMTest_State(), input := GMTest_Input(10000), decision := GM_Evaluate(state,input), calls := []
     result := GM_CommitEffect(state,decision,() => input,path,(effect) => calls.Push(effect.type),
         (file,next) => SaveThenChangeMaintenanceIntent(file,next,input))

@@ -7,6 +7,28 @@
 global GM_CONTROLLER := 0
 global GM_GAME_MAINTENANCE_HIT := false
 
+GMHost_ReadExplicitResumeIntent() {
+    global RC_LAST_NONCE,RC_REMOTE_DESIRED_STATE,RC_CFG_PATH
+    global RC_STARTUP_PENDING_COMMAND,RC_PENDING_COMMAND_CLAIM,RC_ACTIVE_STOP_ACK
+    global REMOTE_STOP_IN_PROGRESS,__CLEAN_FINAL_EXIT_REQUESTED
+    ; STOP completion advances the command cursor without rewriting the RUN/PAUSE
+    ; journal. A stale RUN sidecar alone must never reopen that newer STOP.
+    try {
+        desired := RC_LoadPersistedDesiredState()
+        diskCursor := Integer(IniReadSafe(RC_CFG_PATH,"remote_control","last_nonce","-1"))
+        if !IsObject(desired) || desired.state != "RUN" || RC_REMOTE_DESIRED_STATE != "RUN"
+            || diskCursor < 0 || desired.nonce < Max(RC_LAST_NONCE,diskCursor)
+            || REMOTE_STOP_IN_PROGRESS || __CLEAN_FINAL_EXIT_REQUESTED
+            return ""
+        for pending in [RC_STARTUP_PENDING_COMMAND,RC_PENDING_COMMAND_CLAIM,RC_ACTIVE_STOP_ACK] {
+            if IsObject(pending)
+                return ""
+        }
+        return desired
+    }
+    return ""
+}
+
 GM_Init(cfgPath,launchEntry,flowContext) {
     global GM_CONTROLLER
     flowContext.runCycle := GetCurrentServerCycleKey()
