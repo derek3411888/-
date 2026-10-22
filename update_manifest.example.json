@@ -1,13 +1,13 @@
 {
-  "release_id": "p5.29-l5.41-s1.0.87-28317C0A-DDCF59AE-533D5DDD-6F218122",
-  "version": "5.29",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/9bd5a7888022c74d7c2bf1cc8fbe185f05a07e4c/payload.zip?release=p5.29-l5.41-s1.0.87-28317C0A-DDCF59AE-533D5DDD-6F218122",
-  "payload_sha256": "28317C0A6BC60AA82620FE06CE6C1C8626261C042209FBA5AC1FD320F8686E4C",
-  "launcher_version": "5.41",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/9bd5a7888022c74d7c2bf1cc8fbe185f05a07e4c/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.29-l5.41-s1.0.87-28317C0A-DDCF59AE-533D5DDD-6F218122",
-  "launcher_sha256": "DDCF59AEE3AC9E892F4F2F0BD0374A2E37AEBEF1292A36406E48CCA65A71D33F",
+  "release_id": "p5.30-l5.42-s1.0.87-1D04A647-D8B6B0E0-533D5DDD-6F218122",
+  "version": "5.30",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/827340d1b4adc7ebb95be21367fe0462efd5a042/payload.zip?release=p5.30-l5.42-s1.0.87-1D04A647-D8B6B0E0-533D5DDD-6F218122",
+  "payload_sha256": "1D04A6472BECE94B53A515E39FFC27BEEBDB5AD09BF429E4C3DAEBCE2700D8CF",
+  "launcher_version": "5.42",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/827340d1b4adc7ebb95be21367fe0462efd5a042/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.30-l5.42-s1.0.87-1D04A647-D8B6B0E0-533D5DDD-6F218122",
+  "launcher_sha256": "D8B6B0E0E25BEC72AC5641B56951E09D2BF87EAD1C4350416582CD3D67EF8201",
   "server_version": "1.0.87",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/9bd5a7888022c74d7c2bf1cc8fbe185f05a07e4c/self-hosted-server.zip?release=p5.29-l5.41-s1.0.87-28317C0A-DDCF59AE-533D5DDD-6F218122",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/827340d1b4adc7ebb95be21367fe0462efd5a042/self-hosted-server.zip?release=p5.30-l5.42-s1.0.87-1D04A647-D8B6B0E0-533D5DDD-6F218122",
   "server_sha256": "533D5DDDAD54EC776FC2A0F94A9E81D60FEB13C3AF7A3B8C3B85887452D889B7",
   "web_sha256": "6F21812291B365C2F1766A7ACDBDAC4862DEEF0085E9CD1684380A48D691CBA7"
 }
