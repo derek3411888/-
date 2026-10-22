@@ -29,6 +29,24 @@ GMHost_ReadExplicitResumeIntent() {
     return ""
 }
 
+GM_ResumeStoppedTaskAtStartup(cfgPath,launchEntry,flowContext) {
+    global GM_CONTROLLER
+    c := GM_CONTROLLER
+    if !GM_Value(flowContext,"explicitResume",false) || !IsObject(c)
+        || !c.state.cancelled || c.state.phase != "STOPPED" || c.loadError != "" || IsObject(c.worker)
+        return false
+    previousCritical := Critical("On")
+    try {
+        intent := GMHost_ReadExplicitResumeIntent()
+        if !IsObject(intent)
+            return false
+        context := flowContext.Clone()
+        context.resumeDesiredState := intent.state, context.resumeRemoteGeneration := intent.nonce
+        resumed := GM_Init(cfgPath,launchEntry,context)
+        return resumed.explicitStopResumed
+    } finally Critical(previousCritical)
+}
+
 GM_Init(cfgPath,launchEntry,flowContext) {
     global GM_CONTROLLER
     flowContext.runCycle := GetCurrentServerCycleKey()

@@ -80,6 +80,13 @@ TestMaintenancePersistence() {
         protectedStop := GM_CreateController(path,context,{})
         GMTest_Assert(protectedStop.state.cancelled,"resume does not override " scenario)
     }
+    GM_SaveJournal(path,stopped)
+    startupStop := GM_CreateController(path,{newTask:false,nowUtcMs:10000},{})
+    GM_ControllerRemoteIntent(startupStop,"RUN",{remoteNonce:136})
+    freshRunContext := resumeContext.Clone(), freshRunContext.resumeRemoteGeneration := 136
+    afterQueuedRun := GM_CreateController(path,freshRunContext,{})
+    GMTest_Assert(!afterQueuedRun.state.cancelled && afterQueuedRun.state.phase = "CHECKING_NOTICE",
+        "explicit resume rechecks a fresh RUN applied during startup after prior STOP")
     state := GMTest_State(), input := GMTest_Input(10000), decision := GM_Evaluate(state,input), calls := []
     result := GM_CommitEffect(state,decision,() => input,path,(effect) => calls.Push(effect.type),
         (file,next) => SaveThenChangeMaintenanceIntent(file,next,input))

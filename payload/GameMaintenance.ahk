@@ -376,7 +376,7 @@ GM_CreateController(journalPath,context,hooks) {
         state := GM_DefaultState(), state.phase := "NEEDS_ATTENTION", loadError := err.Message
     }
     resumeStopped := GM_Value(context,"explicitResume",false) && state.phase = "STOPPED"
-        && state.cancelled && state.desiredState = "STOP" && !state.recoveryUncertain
+        && state.cancelled && (state.desiredState = "STOP" || state.desiredState = "RUN") && !state.recoveryUncertain
         && GM_Value(context,"resumeDesiredState","") = "RUN"
         && GM_Value(context,"resumeRemoteGeneration",-1) >= state.remoteGeneration
         && GM_Value(context,"targetServer","") = state.targetServer

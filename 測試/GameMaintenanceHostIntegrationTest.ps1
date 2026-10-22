@@ -17,7 +17,7 @@ try {
     Write-GMSnapshot $snapshotPath $snapshot $session
     $source=[IO.File]::ReadAllText((Join-Path $root 'payload\GameMaintenanceHost.ahk'))
     $functions=@()
-    foreach($name in @('GM_Init','GMHost_ReadExplicitResumeIntent','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_StableStartupAlive','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
+    foreach($name in @('GM_Init','GM_ResumeStoppedTaskAtStartup','GMHost_ReadExplicitResumeIntent','GMHost_ReadInput','GM_MarkF11Attempt','GMHost_ScheduleKey','GM_WaitForLoginGate','GM_PrepareOkwwEntry','GM_StartLauncherFlow','GMHost_StableIntent','GMHost_RunStableEntry','GMHost_StableStartupAlive','GMHost_RecheckStableDay','GMHost_JsonQuote','GMHost_WriteRequest')) {
         $match=[regex]::Match($source,'(?ms)^'+$name+'\([^\r\n]*\) \{.*?(?=^\w+\([^\r\n]*\) \{|\z)')
         if(-not $match.Success){throw "Missing host function: $name"}
         $functions+= if($name -eq 'GMHost_WriteRequest'){$match.Value.Replace('GMHost_WriteRequest(c,force := false)', 'TestActualWriteRequest(c,force := false)')}else{$match.Value}
@@ -146,6 +146,47 @@ TestExplicitResumeAuthorization() {
     GMTest_Assert(!IsObject(GMHost_ReadExplicitResumeIntent()),"shutdown in progress blocks resume")
     REMOTE_STOP_IN_PROGRESS := false
     GMTest_Assert(IsObject(GMHost_ReadExplicitResumeIntent()),"matching RUN remains eligible after safety checks")
+    TestQueuedRunContinuation()
+}
+TestQueuedRunContinuation() {
+    global GM_CONTROLLER,GM_ROOT,GM_RESUME_DISK,RC_LAST_NONCE,RC_CFG_PATH,RC_REMOTE_DESIRED_STATE
+    global RC_STARTUP_PENDING_COMMAND
+    cfg := GM_ROOT "\resume-progress.ini"
+    IniWrite 5,cfg,"restart_tracking","auto_restart_count"
+    IniWrite 2,cfg,"server_schedule","current_index"
+    progressBefore := FileRead(cfg)
+    stopped := GM_DefaultState(), stopped.phase := "STOPPED", stopped.cancelled := true
+    stopped.desiredState := "STOP", stopped.remoteGeneration := 134, stopped.targetServer := "Asia"
+    context := {isRestart:true,isNextServerCycle:false,targetServer:"Asia",explicitResume:true,maintenancePolicy:"skip_update_day"}
+    for mode in ["authorized","ordinary","pending","pause","worker","invalid"] {
+        GM_SaveJournal(GM_ROOT "\state.ini",stopped)
+        c := GM_Init(cfg,"fixture.exe",context.Clone())
+        ; Exact runtime shape: STOP135 completed while desired sidecar stayedRUN134;
+        ; a newly queuedRUN136 is applied only after controller initialization.
+        GM_RESUME_DISK := {state:"RUN",nonce:134}, RC_LAST_NONCE := 135
+        IniWrite 135,RC_CFG_PATH,"remote_control","last_nonce"
+        GMTest_Assert(!GM_ResumeStoppedTaskAtStartup(cfg,"fixture.exe",context),"old RUN134 cannot cross STOP135 before fresh poll")
+        GM_ControllerRemoteIntent(c,"RUN",{remoteNonce:136})
+        GM_RESUME_DISK := {state:"RUN",nonce:136}, RC_LAST_NONCE := 136
+        IniWrite 136,RC_CFG_PATH,"remote_control","last_nonce"
+        attempt := context.Clone()
+        switch mode {
+            case "ordinary": attempt.explicitResume := false
+            case "pending": RC_STARTUP_PENDING_COMMAND := {state:"STOP",nonce:137}
+            case "pause": RC_REMOTE_DESIRED_STATE := "PAUSE"
+            case "worker": c.worker := {pid:42}
+            case "invalid": c.loadError := "invalid journal"
+        }
+        resumed := GM_ResumeStoppedTaskAtStartup(cfg,"fixture.exe",attempt)
+        GMTest_Assert(resumed = (mode = "authorized"),"startup reconciliation accepts only explicit fully current RUN: " mode)
+        GMTest_Assert(FileRead(cfg) = progressBefore,"startup resume never rewrites retry/server progress config")
+        if resumed
+            GMTest_Assert(!GM_CONTROLLER.state.cancelled && GM_CONTROLLER.state.phase = "CHECKING_NOTICE"
+                && GM_CONTROLLER.state.targetServer = "Asia" && GM_CONTROLLER.state.remoteGeneration = 136,"fresh RUN resumes through notice gate with same target")
+        else
+            GMTest_Assert(GM_CONTROLLER.state.cancelled,"rejected reauthorization preserves cancellation")
+        RC_STARTUP_PENDING_COMMAND := "", RC_REMOTE_DESIRED_STATE := "RUN"
+    }
 }
 RC_LoadPersistedDesiredState() => GM_RESUME_DISK
 GM_WaitForStartupGate() {

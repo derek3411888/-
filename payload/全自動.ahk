@@ -152,8 +152,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.31"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.43"
+global PAYLOAD_BUILD_VERSION := "5.32"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.44"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -2487,23 +2487,27 @@ for startupArgument in A_Args {
         explicitCurrentTaskResume := true
 }
 LoadServerScheduleContext(isNextServerCycle || isRestart, isRemoteServerSwitchCycle)
+startupMaintenanceContext := {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,
+    targetServer:CURRENT_SERVER_TARGET,maintenancePolicy:"skip_update_day",explicitResume:explicitCurrentTaskResume}
 resumeCritical := Critical("On")
 try {
     ; Read current intent after schedule I/O and do not let a timer STOP/PAUSE
     ; interleave between authorization and controller creation.
     resumeIntent := explicitCurrentTaskResume ? GMHost_ReadExplicitResumeIntent() : ""
-    GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),
-        {isRestart:isRestart,isNextServerCycle:isNextServerCycle,resumeLrmc:CRASH_RESTART_MODE,targetServer:CURRENT_SERVER_TARGET,
-            maintenancePolicy:"skip_update_day",explicitResume:explicitCurrentTaskResume,
-            resumeDesiredState:IsObject(resumeIntent) ? resumeIntent.state : "",
-            resumeRemoteGeneration:IsObject(resumeIntent) ? resumeIntent.nonce : -1})
+    startupMaintenanceContext.resumeDesiredState := IsObject(resumeIntent) ? resumeIntent.state : ""
+    startupMaintenanceContext.resumeRemoteGeneration := IsObject(resumeIntent) ? resumeIntent.nonce : -1
+    GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),startupMaintenanceContext)
 } finally Critical(resumeCritical)
-if GM_CONTROLLER.explicitStopResumed
-    WriteStep("接續已停止任務","已依明確啟動要求解除舊停止鎖；保留伺服器、完成紀錄與重啟計數，重新檢查維護公告")
 REMOTE_SETTINGS_RUNTIME_READY := true
 if REMOTE_CONTROL_ACTIVE
     RC_EnableCommandProcessing()
 RefreshServerScheduleAfterStartupCommands()
+; A newer queued RUN becomes durable only during runtime-ready processing.
+; Reauthorize after that poll, before any worker/game action; never reuse stale RUN.
+startupMaintenanceContext.targetServer := CURRENT_SERVER_TARGET
+GM_ResumeStoppedTaskAtStartup(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),startupMaintenanceContext)
+if GM_CONTROLLER.explicitStopResumed
+    WriteStep("接續已停止任務","已依明確啟動要求解除舊停止鎖；保留伺服器、完成紀錄與重啟計數，重新檢查維護公告")
 if (isNextServerCycle && CURRENT_SERVER_TARGET != "")
     QueueServerSwitchCompletionNotification(isRemoteServerSwitchCycle ? "WEB_SERVER_SWITCH" : "AUTO_SCHEDULE")
 
