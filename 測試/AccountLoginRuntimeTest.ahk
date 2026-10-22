@@ -6,6 +6,9 @@ global GM_CONTROLLER := {state:{phase:"NORMAL"},stableGateDay:1}, testState := "
 global testPid := 42, testHwnd := 12, testWidth := 1280, testDay := 1, testClicks := 0
 global afterActivate := "", beforeClick := "", allowDayRefresh := false, diagnosticLogs := [], diagnosticLevels := []
 global testElapsed := 0, foregroundMode := "exact", requestReturn := true
+global testOverlay := false
+global testActivity := {held:false,capture:0,flags:0}, activityAfterMove := 0
+global testMoves := 0
 GMTest_Run(TestRuntime)
 class RuntimeFixture extends GameAccountLoginIo {
     __New() {
@@ -29,18 +32,41 @@ class RuntimeFixture extends GameAccountLoginIo {
     SurfaceAllowed(hwnd) => hwnd = 24
     HasVisibleOwnedDialog() => true
     RequestForeground(hwnd) => TestActivate(hwnd)
+    VisibleStack() {
+        global testOverlay
+        stack := [{hwnd:12,rect:this.Rect(12)}]
+        if testOverlay
+            stack.InsertAt(1,{hwnd:99,rect:{x:200,y:100,w:10,h:10}})
+        return stack
+    }
+    ReadInputActivity() => testActivity
+    MoveMouse(x,y) {
+        global activityAfterMove,testActivity,testMoves
+        GMTest_Assert(x = 740 && y = 480,"physical pointer goes to verified screen point")
+        testMoves++
+        if IsObject(activityAfterMove)
+            testActivity := activityAfterMove.value
+    }
+    ClickMouse(x,y) {
+        global testClicks
+        GMTest_Assert(x = 740 && y = 480,"physical click uses same verified screen point")
+        testClicks++
+    }
 }
 ResetFixture() {
     global testState,testPid,testHwnd,testWidth,testDay,testClicks,afterActivate,beforeClick,allowDayRefresh,GM_CONTROLLER,diagnosticLogs,diagnosticLevels
-    global testElapsed,foregroundMode,requestReturn
+    global testElapsed,foregroundMode,requestReturn,testOverlay,testActivity,activityAfterMove,testMoves
     testState := "RUN", testPid := 42, testHwnd := 12, testWidth := 1280, testDay := 1, testClicks := 0
     afterActivate := "", beforeClick := "", allowDayRefresh := false, GM_CONTROLLER.stableGateDay := 1
     diagnosticLogs := [], diagnosticLevels := []
     testElapsed := 0, foregroundMode := "exact", requestReturn := true
+    testOverlay := false
+    testActivity := {held:false,capture:0,flags:0}, activityAfterMove := 0
+    testMoves := 0
 }
 TestRuntime() {
     global testState,testPid,testHwnd,testWidth,testDay,testClicks,afterActivate,beforeClick,allowDayRefresh,diagnosticLogs,diagnosticLevels
-    global testElapsed,foregroundMode,requestReturn
+    global testElapsed,foregroundMode,requestReturn,testOverlay,testActivity,activityAfterMove,testMoves
     ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone()
     GMTest_Assert(io.Confirm(obs) && testClicks = 1,"actual Confirm reaches physical-click wrapper only after fresh verification")
     GMTest_Assert(io.HasOwnProp("lastFailure") && io.lastFailure = "","successful click leaves no failure diagnosis")
@@ -68,13 +94,21 @@ TestRuntime() {
     GMTest_Assert(io.lastFailure = "fresh_candidate","missing fresh candidate is diagnosed separately from activation")
     ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), io.fresh.candidate := {x:800,y:430,label:"登录"}
     GMTest_Assert(!io.Confirm(obs) && testClicks = 0,"changed button location after activation: no click")
-    ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), afterActivate := "PAUSE"
-    GMTest_Assert(!io.Confirm(obs) && testClicks = 0,"PAUSE during activation is honored")
-    GMTest_Assert(io.lastFailure = "activation_guard","activation guard rejection preserves its own diagnosis")
+    ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), beforeClick := "PAUSE"
+    GMTest_Assert(!io.Confirm(obs) && testClicks = 0,"PAUSE after physical movement is honored")
+    GMTest_Assert(io.lastFailure = "click_guard","final input rejection preserves its diagnosis")
     ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), foregroundMode := "", requestReturn := false
-    GMTest_Assert(!io.Confirm(obs) && testClicks = 0 && testElapsed = 2500,"activation failure is bounded without physical input")
-    GMTest_Assert(io.lastFailure = "activation_timeout" && diagnosticLogs.Length = 1,"timeout keeps activation diagnosis instead of generic click failure")
-    GMTest_Assert(InStr(diagnosticLogs[1],"request_return=0") && InStr(diagnosticLogs[1],"foreground=99 relation="),"timeout records actual activation return and foreground evidence")
+    GMTest_Assert(io.Confirm(obs) && testClicks = 1,"visible verified login physically activates itself even when programmatic foreground is denied")
+    GMTest_Assert(testElapsed = 80,"no foreground polling or repeated caption/Alt input is required")
+    ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), testOverlay := true
+    GMTest_Assert(!io.Confirm(obs) && testClicks = 0,"foreign overlay anywhere in login capture blocks dedicated physical input")
+    for activity in [0,{held:true,capture:0,flags:0},{held:false,capture:99,flags:0},
+        {held:false,capture:0,flags:2},{held:false,capture:0,flags:4},{held:false,capture:0,flags:16}] {
+        ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), testActivity := activity
+        GMTest_Assert(!io.Confirm(obs) && testClicks = 0 && testMoves = 0,"query failure, held button/modifier, capture/menu/move-size blocks movement")
+        ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), activityAfterMove := {value:activity}
+        GMTest_Assert(!io.Confirm(obs) && testClicks = 0 && testMoves = 1,"new capture or held input after movement blocks click")
+    }
     ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), requestReturn := false
     GMTest_Assert(io.Confirm(obs) && testClicks = 1,"native return alone does not reject an already verified foreground")
     ResetFixture(), io := RuntimeFixture(), obs := io.fresh.Clone(), beforeClick := "STOP"
@@ -152,8 +186,10 @@ GetForegroundRelationToTarget(hwnd,&foreground) {
 }
 IsSafeInputWindowRelation(relation,policy) => relation = "exact" && policy = "root"
 RawSleep(ms) {
-    global testElapsed
+    global testElapsed,beforeClick,testState
     testElapsed += ms
+    if beforeClick != ""
+        testState := beforeClick
 }
 class RapidOcr {
 }

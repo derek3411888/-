@@ -99,7 +99,24 @@ class GameAccountLoginIo {
         return false
     }
     Capture(rect) => ImagePutBuffer({Screenshot:[rect.x,rect.y,rect.w,rect.h]})
-    RequestForeground(hwnd) => DllCall("SetForegroundWindow","Ptr",hwnd,"Int")
+    MoveMouse(x,y) => MouseMove(x,y,0)
+    ClickMouse(x,y) => MouseClick("Left",x,y)
+    ReadInputActivity() {
+        ; Do not move an unrelated app's drag, modifier-click, menu or size loop.
+        ; Only boolean activity is retained, never key text or window contents.
+        held := false
+        for key in [1,2,4,5,6,16,17,18,91,92]
+            held := held || (DllCall("GetAsyncKeyState","Int",key,"Short") & 0x8000) != 0
+        info := Buffer(8+6*A_PtrSize+16,0)
+        NumPut("UInt",info.Size,info)
+        if !DllCall("GetGUIThreadInfo","UInt",0,"Ptr",info,"Int")
+            return 0
+        return {held:held,flags:NumGet(info,4,"UInt"),capture:NumGet(info,8+2*A_PtrSize,"Ptr")}
+    }
+    InputQuiescent() {
+        activity := this.ReadInputActivity()
+        return IsObject(activity) && !activity.held && !activity.capture && !(activity.flags & 0x1e)
+    }
     Intent() {
         global GM_CONTROLLER
         if !IsObject(GM_CONTROLLER) || GM_CONTROLLER.state.phase = "SKIPPED_UPDATE_DAY"
@@ -167,22 +184,32 @@ class GameAccountLoginIo {
         }
         return obs
     }
-    Activate(obs) {
-        if !this.FinalGuard(obs)
-            return this.Reject("activation_initial_guard")
-        ; Login activation never uses the generic helper's Alt/caption-click fallback.
-        requested := this.RequestForeground(obs.targetHwnd)
-        deadline := this.Now()+2500
-        loop {
-            if !this.FinalGuard(obs)
-                return this.Reject("activation_guard","request_return=" requested " age_ms=" (this.Now()-obs.capturedAt))
-            relation := GetForegroundRelationToTarget(obs.targetHwnd,&foreground)
-            if IsSafeInputWindowRelation(relation,"root")
-                return true
-            if this.Now() >= deadline
-                return this.Reject("activation_timeout","request_return=" requested " foreground=" foreground " relation=" relation)
-            RawSleep(50)
-        }
+    ClickVisibleCandidate(obs) {
+        ; A real click naturally activates the visible account dialog. Windows may
+        ; deny SetForegroundWindow while another app owns focus; do not make that
+        ; programmatic request a prerequisite or weaken the generic input helper.
+        oldMode := A_CoordModeMouse
+        try {
+            if obs.targetX < 0 || obs.targetY < 0 || obs.targetX >= obs.targetWidth || obs.targetY >= obs.targetHeight
+                || !this.FinalGuard(obs) || !this.InputQuiescent() || !this.Unoccluded(this.Rect(this.hwnd),this.VisibleStack())
+                return this.Reject("click_guard")
+            x := Round(obs.originX+obs.candidate.x), y := Round(obs.originY+obs.candidate.y)
+            CoordMode("Mouse","Screen")
+            this.MoveMouse(x,y)
+            RawSleep(80)
+            priorCritical := Critical("On")
+            try {
+                if !this.FinalGuard(obs) || !GetInteractiveDesktopState().ok || !this.InputQuiescent()
+                    || !this.Unoccluded(this.Rect(this.hwnd),this.VisibleStack())
+                    return this.Reject("click_guard")
+                this.ClickMouse(x,y)
+            } finally Critical(priorCritical)
+            WriteLog("已用實體滑鼠點擊已驗證的登入按鈕 | hwnd=" obs.targetHwnd " pid=" this.pid
+                " screen=" x "," y " | context=KURO 帳號登入","INFO")
+            return true
+        } catch {
+            return this.Reject("click_exception")
+        } finally CoordMode("Mouse",oldMode)
     }
     Reject(stage,detail := "") {
         this.lastFailure := stage
@@ -203,19 +230,13 @@ class GameAccountLoginIo {
         if !this.FinalGuard(obs)
             return this.Reject("initial_guard","age_ms=" (this.Now()-obs.capturedAt) " gate_day=" GM_CONTROLLER.stableGateDay
                 " current_day=" Floor((RC_UnixMs()+28800000)/86400000))
-        if !this.Activate(obs)
-            return false
-        ; Activation may reveal a different page. Re-OCR before physical input.
+        ; Re-OCR the verified visible dialog immediately before physical input.
         fresh := this.Observe()
         if fresh.width != obs.width || fresh.height != obs.height
             || !GH_Same(obs.candidate,fresh.candidate) || !this.FinalGuard(fresh)
             || fresh.targetHwnd != obs.targetHwnd
             return this.Reject("fresh_candidate")
-        clicked := ClickVerifiedWindowClientPoint(fresh.targetHwnd,fresh.targetX,fresh.targetY,
-            this.pid,"KURO 帳號登入",(*) => this.FinalGuard(fresh),(*) => this.Activate(fresh))
-        if !clicked && this.lastFailure = ""
-            return this.Reject("click_guard")
-        return clicked
+        return this.ClickVisibleCandidate(fresh)
     }
 }
 
