@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$PayloadVersion = '5.28',
-    [string]$LauncherVersion = '5.40',
+    [string]$PayloadVersion = '5.29',
+    [string]$LauncherVersion = '5.41',
     [string]$ServerVersion = '1.0.87',
     [ValidateSet('All','Background')][string]$ValidationProfile = 'All'
 )
@@ -124,7 +124,8 @@ function Find-AhkCompiler {
 
 function Get-GameMaintenancePayloadFiles {
     return @('GameMaintenance.ahk', 'GameMaintenancePolicy.ahk', 'GameMaintenanceHost.ahk', 'GameStableLaunch.ahk',
-        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameHotfixRecovery.ahk', 'GameHotfixRuntime.ahk', 'GameMaintenanceWorker.exe', 'LauncherMaintenance.exe', 'GameMaintenanceWorker.ps1',
+        'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameHotfixRecovery.ahk', 'GameHotfixRuntime.ahk',
+        'GameAccountLogin.ahk', 'GameAccountLoginRuntime.ahk', 'GameMaintenanceWorker.exe', 'LauncherMaintenance.exe', 'GameMaintenanceWorker.ps1',
         'GameMaintenanceNotice.ps1', 'GameInstallDiscovery.ps1',
         'PerformanceTelemetryWorker.exe', 'RuntimeUtilities.exe', 'BootstrapAssets.exe',
         'NativeRuntimeUtilities.ahk', 'NativeBootstrapAssets.ahk')
@@ -150,8 +151,8 @@ function Test-GameMaintenanceReleaseSources {
 function New-FilteredZip([string]$SourceRoot, [string]$TargetPath, [string[]]$ExcludedParts) {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $source = [IO.Path]::GetFullPath($SourceRoot)
-    $target = [IO.Path]::GetFullPath($TargetPath)
+    $source = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SourceRoot)
+    $target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TargetPath)
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
     $archive = [IO.Compression.ZipFile]::Open($target, [IO.Compression.ZipArchiveMode]::Create)
     try {
@@ -280,6 +281,9 @@ foreach ($runtimeSourcePath in $runtimeSources) {
 }
 if ($launcherSource -notmatch ('PACK_LAUNCHER_BUILD_VERSION\s*:=\s*"' + [regex]::Escape($LauncherVersion) + '"')) {
     throw "打包啟動器.ahk 版本不是 $LauncherVersion"
+}
+if ($launcherSource -notmatch ('PACK_PAYLOAD_BUILD_VERSION\s*:=\s*"' + [regex]::Escape($PayloadVersion) + '"')) {
+    throw "啟動器內嵌 Payload 版本不是 $PayloadVersion"
 }
 if ($payloadSource -notmatch ('PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION\s*:=\s*"' + [regex]::Escape($LauncherVersion) + '"')) {
     throw "payload 啟動器相容版本不是 $LauncherVersion"

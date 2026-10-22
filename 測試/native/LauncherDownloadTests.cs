@@ -16,6 +16,12 @@ class LauncherDownloadTests
     static int passed;
     static void Check(bool ok,string why) {if(!ok)throw new Exception(why);}
     static string Q(string x) {return "\""+x+"\"";}
+    static string ReadSharedStatus(string path) {
+        try {
+            using(var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete))
+            using(var reader=new StreamReader(stream,Encoding.UTF8,true))return reader.ReadToEnd();
+        } catch(IOException) {return "";}
+    }
     sealed class Server : IDisposable {
         TcpListener listener=new TcpListener(IPAddress.Loopback,0);
         Thread worker; volatile bool stopped;
@@ -139,8 +145,8 @@ class LauncherDownloadTests
                     Check(p.WaitForExit(5000)&&p.ExitCode==0,"parent fixture failed");
                 }
                 string status=Path.Combine(root,"orphan.bin.download.status");var deadline=Stopwatch.StartNew();
-                while(deadline.ElapsedMilliseconds<3000&&!File.ReadAllText(status).Contains("parent exited"))Thread.Sleep(50);
-                Check(File.ReadAllText(status).Contains("parent exited"),"helper did not stop on exact parent exit");
+                while(deadline.ElapsedMilliseconds<3000&&!ReadSharedStatus(status).Contains("parent exited"))Thread.Sleep(50);
+                Check(ReadSharedStatus(status).Contains("parent exited"),"helper did not stop on exact parent exit");
                 Check(!File.Exists(Path.Combine(root,"orphan.bin")),"orphan published an incomplete artifact");
             }
             Console.WriteLine("PASS exact parent exit cancels orphan without publishing");passed++;

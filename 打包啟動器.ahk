@@ -8,7 +8,8 @@
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.40"
+global PACK_LAUNCHER_BUILD_VERSION := "5.41"
+global PACK_PAYLOAD_BUILD_VERSION := "5.29"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -442,6 +443,7 @@ FetchRemoteUpdateManifest(dataDir) {
 }
 
 TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownload := false, manifestText := "") {
+    global PACK_PAYLOAD_BUILD_VERSION
     global PACK_PAYLOAD_UPDATE_STATUS
     PACK_PAYLOAD_UPDATE_STATUS := "failed"
     WriteLog("開始檢查遠端更新設定...")
@@ -486,6 +488,14 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 
         if (remoteVer = "" || payloadUrl = "") {
             WriteLog("manifest 缺少 version 或 payload_url", "WARN")
+            return false
+        }
+
+        if LauncherVersion_IsOlder(remoteVer,PACK_PAYLOAD_BUILD_VERSION)
+            || LauncherVersion_IsOlder(remoteVer,currentVer) {
+            PACK_PAYLOAD_UPDATE_STATUS := "newer_local"
+            WriteLog("遠端 Payload 版本較舊，保留本機新版與內嵌修正：remote=" remoteVer
+                " embedded=" PACK_PAYLOAD_BUILD_VERSION " installed=" currentVer)
             return false
         }
 
@@ -558,6 +568,7 @@ TryPrepareRemotePayloadUpdate(workDir, dataDir, &forcedVersion := "", forceDownl
 ; 檢查 launcher exe 是否需要更新，如需要則下載、驗證、替換
 ; 注意：exe 本身被占用，無法直接覆蓋，需透過外部 helper 等待退出後替換
 TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
+    global PACK_LAUNCHER_BUILD_VERSION
     global SKIP_PENDING_LAUNCHER_APPLY
     WriteLog("開始檢查 launcher 遠端更新...")
     
@@ -587,6 +598,14 @@ TryPrepareRemoteLauncherUpdate(workDir, dataDir, manifestText) {
         currentVer := ""
         if FileExist(currentVerFile) {
             try currentVer := Trim(FileRead(currentVerFile, "UTF-8"), " `t`r`n")
+        }
+
+        if LauncherVersion_IsOlder(launcherVer,PACK_LAUNCHER_BUILD_VERSION)
+            || LauncherVersion_IsOlder(launcherVer,currentVer) {
+            SKIP_PENDING_LAUNCHER_APPLY := true
+            WriteLog("遠端 Launcher 版本較舊，保留本機新版且略過舊 pending：remote=" launcherVer
+                " running=" PACK_LAUNCHER_BUILD_VERSION " installed=" currentVer)
+            return false
         }
 
         ; 新安裝可能還沒有版本狀態檔；若目前執行檔的 SHA 已等於 manifest，
@@ -751,6 +770,7 @@ QuoteForBat(path) {
 ; v4.43 起使用的安全替換器。主流程確認已啟動後才呼叫；helper 會等目前
 ; launcher PID 真正退出，再做可回復且有雜湊驗證的替換。
 ApplyPendingLauncherUpdateV2(workDir, dataDir) {
+    global PACK_LAUNCHER_BUILD_VERSION
     if !A_IsCompiled
         return false ; source checkout is never an executable replacement target
     WriteLog("檢查是否有待應用的 launcher 更新...")
@@ -785,6 +805,14 @@ ApplyPendingLauncherUpdateV2(workDir, dataDir) {
         }
         if !(pendingSha ~= "^[0-9a-f]{64}$") {
             WriteLog("待套用 launcher SHA256 格式無效，拒絕排程替換", "ERROR")
+            return false
+        }
+        installedLauncherVersion := ""
+        try installedLauncherVersion := Trim(FileRead(dataDir "\\launcher_current_version.txt","UTF-8")," `t`r`n")
+        if LauncherVersion_IsOlder(pendingVersion,PACK_LAUNCHER_BUILD_VERSION)
+            || LauncherVersion_IsOlder(pendingVersion,installedLauncherVersion) {
+            WriteLog("待套用 Launcher 版本較舊，拒絕降級替換：pending=" pendingVersion
+                " running=" PACK_LAUNCHER_BUILD_VERSION " installed=" installedLauncherVersion)
             return false
         }
         pendingFileSha := GetFileSha256(newExePath)
@@ -1142,9 +1170,11 @@ try {
 }
 
 ; 確保 payload.zip 存在並解壓
+embeddedPayloadReady := false
 payloadPath := WORK_DIR "\payload.zip"
 try {
     FileInstall("payload.zip", payloadPath, 1)
+    embeddedPayloadReady := true
     WriteLog("成功釋出 payload.zip 到 " payloadPath)
 } catch as e {
     ; 如果FileInstall失敗，檢查是否已存在
@@ -1234,10 +1264,31 @@ for param in A_Args {
 
 ; A matching version stamp cannot authorize an interrupted publication. Native
 ; recovery runs under runtime ownership before any main dispatch.
+payloadRecoveryRequired := false
 if LauncherNeedsPayloadRecovery(WORK_DIR) {
+    payloadRecoveryRequired := true
     needUnpack := true
     WriteLog("發現未完成的 payload 更新交易，先恢復／重新驗證，再允許主流程啟動", "WARN")
 }
+candidatePayloadVersion := remotePreparedVersion != "" ? remotePreparedVersion : PACK_PAYLOAD_BUILD_VERSION
+installedPayloadVersion := ""
+try installedPayloadVersion := Trim(FileRead(REMOTE_VER_FILE,"UTF-8")," `t`r`n")
+unpackDecision := LauncherPayloadUnpack_Decide(needUnpack,candidatePayloadVersion,
+    installedPayloadVersion,payloadHealthy,payloadRecoveryRequired,
+    embeddedPayloadReady || remotePreparedVersion != "")
+if unpackDecision.blocked {
+    WriteLog(unpackDecision.untrusted
+        ? "無法確認既有 ZIP 是本次內嵌包或已驗證遠端包；停止解壓，保留現有安裝"
+        : "本機安裝版本較候選包新，且缺檔或交易未完成；保留檔案並停止降級修復：candidate="
+            candidatePayloadVersion " installed=" installedPayloadVersion,"ERROR")
+    ExitApp 1
+}
+if unpackDecision.keptNewer {
+    PACK_PAYLOAD_UPDATE_STATUS := "newer_local"
+    WriteLog("保留較新的已安裝 Payload，略過舊內嵌包重解壓：candidate=" candidatePayloadVersion
+        " installed=" installedPayloadVersion)
+}
+needUnpack := unpackDecision.unpack
 WriteLog("是否需要解壓: " (needUnpack ? "是" : "否"))
 
 if needUnpack {
@@ -1458,13 +1509,13 @@ if needUnpack {
         WriteLog("警告: 無法寫入版本戳: " e.Message, "WARN")
     }
 
-    ; --- 5) 若本次套用了遠端更新，記錄遠端 payload 版本 ---
-    if (remotePreparedVersion != "") {
+    ; Record the actual package, including an embedded/offline upgrade.
+    if (candidatePayloadVersion != "") {
         try {
             if FileExist(REMOTE_VER_FILE)
                 FileDelete(REMOTE_VER_FILE)
-            FileAppend(remotePreparedVersion, REMOTE_VER_FILE, "UTF-8-RAW")
-            WriteLog("寫入遠端 payload 版本: " remotePreparedVersion)
+            FileAppend(candidatePayloadVersion, REMOTE_VER_FILE, "UTF-8-RAW")
+            WriteLog("寫入已套用 Payload 版本: " candidatePayloadVersion)
         } catch as e {
             WriteLog("警告: 無法寫入遠端 payload 版本: " e.Message, "WARN")
         }
@@ -1472,6 +1523,8 @@ if needUnpack {
 } else {
     if PACK_PAYLOAD_UPDATE_STATUS = "current"
         WriteLog("已向遠端確認 Payload 版本一致，跳過解壓")
+    else if PACK_PAYLOAD_UPDATE_STATUS = "newer_local"
+        WriteLog("本機 Payload 較遠端新，保留已安裝修正，跳過降級解壓")
     else if PACK_PAYLOAD_UPDATE_STATUS = "disabled"
         WriteLog("遠端更新已停用；沿用本機 Payload，未確認遠端版本")
     else

@@ -2,7 +2,7 @@
 param([switch]$LongTransfer)
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
-$run = Join-Path $project ('.dev-runtime\diagnostics\game-maintenance\download-regression-' + [Guid]::NewGuid().ToString('N'))
+$run = Join-Path $project ('.dev-runtime\diagnostics\game-maintenance\d-' + [Guid]::NewGuid().ToString('N').Substring(0,16))
 [void][IO.Directory]::CreateDirectory($run)
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $helper = Join-Path $run 'LauncherMaintenance.exe'

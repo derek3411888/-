@@ -66,6 +66,7 @@ global __RESTART_RECOVERY_RECORDING_STOPPED := false
 #Include GameMaintenanceHost.ahk
 #Include ManagedProcessGuard.ahk
 #Include GameHotfixRuntime.ahk
+#Include GameAccountLoginRuntime.ahk
 #Include NativeBootstrapAssets.ahk
 #Include NativeRuntimeUtilities.ahk
 
@@ -151,8 +152,8 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.28"
-global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.40"
+global PAYLOAD_BUILD_VERSION := "5.29"
+global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.41"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
 global LAST_OKWW_F11_FAILURE_CODE := ""
@@ -4927,9 +4928,11 @@ PrepareVerifiedWindowForInput(hwnd, expectedPid := 0, context := "", &reason := 
     return true
 }
 
-ClickVerifiedWindowClientPoint(hwnd, clientX, clientY, expectedPid := 0, context := "") {
+ClickVerifiedWindowClientPoint(hwnd, clientX, clientY, expectedPid := 0, context := "", finalInputGuard := 0, prepareInput := 0) {
     reason := ""
-    if !PrepareVerifiedWindowForInput(hwnd, expectedPid, context, &reason) {
+    prepared := IsObject(prepareInput) ? prepareInput.Call()
+        : PrepareVerifiedWindowForInput(hwnd, expectedPid, context, &reason)
+    if !prepared {
         WriteLog("目標視窗安全點擊已取消：" reason " | hwnd=" hwnd
             " client=" clientX "," clientY " | context=" context, "WARN")
         return false
@@ -4959,6 +4962,10 @@ ClickVerifiedWindowClientPoint(hwnd, clientX, clientY, expectedPid := 0, context
             if !IsSafeInputWindowRelation(relation, "root")
                 return false
             if !IsTargetWindowAtScreenPoint(hwnd, screenX, screenY, &hitHwnd, &hitRelation)
+                return false
+            if !GetInteractiveDesktopState().ok
+                return false
+            if IsObject(finalInputGuard) && !finalInputGuard.Call()
                 return false
             MouseClick("Left", screenX, screenY)
         } finally {
@@ -5663,6 +5670,7 @@ DetectWutheringAndExit(&loginDetected := false) {
     positionDeadlineTick := 0
     nextPositionAttemptTick := 0
     positionCompleted := false
+    accountLoginIo := 0
 
     ; ⏱️ 至少等待 30 秒讓遊戲完全啟動（登入畫面一般需要 25-35 秒）
     earlyExitDeadline := MonotonicTickMs() + 30000
@@ -5756,12 +5764,18 @@ DetectWutheringAndExit(&loginDetected := false) {
                 "右上角位置已驗證；未改尺寸、未啟用、未改 Z-order")
         }
 
-        ; 在任何備援登入／確認／退出輸入前先辨識明確維護提示。
+        ; Owned KURO dialog is absent from main PrintWindow (which can also stall).
+        ; Its visible OCR rejects maintenance/credentials and rechecks the day gate.
+        if HandleWutheringAccountLogin(hwnd,[],0,0,MonotonicTickMs(),&accountLoginIo) {
+            Sleep 900
+            continue
+        }
+
+        ; 在其餘備援登入／確認／退出輸入前先辨識明確維護提示。
         if GM_GameMaintenanceProbe(hwnd,true)
             return "maintenance"
 
-        ; 只有右上角定位通過後，才允許登入模板輔助或後續 OCR。
-        TryAssistLoginTemplateBeforeOcr()
+        ; 帳號登入由下方 OCR 確認後實體點擊；不再只依賴舊登入圖片。
 
         ; 首先用模板檢測叉叉按鈕（不涉及 OCR，更快速）
         closeIconPath := A_ScriptDir "\0510.png"
@@ -5781,7 +5795,9 @@ DetectWutheringAndExit(&loginDetected := false) {
         ; 使用唯一臨時檔案名，執行後清理（減少磁碟 I/O 衝突）
         tempFile := RuntimeFiles_NewImagePath("update_ocr")
         try {
-            ImagePutFile("ahk_id " hwnd, tempFile)
+            capturedAt := MonotonicTickMs()
+            loginFrame := ImagePutBuffer("ahk_id " hwnd)
+            ImagePutFile({Buffer:loginFrame}, tempFile)
             ocr := RapidOcr()
             res := ocr.ocr_from_file(tempFile, , true)
             
@@ -5793,6 +5809,11 @@ DetectWutheringAndExit(&loginDetected := false) {
             if FileExist(tempFile)
                 FileDelete(tempFile)
             Sleep 1000
+            continue
+        }
+
+        if HandleWutheringAccountLogin(hwnd,res,loginFrame.width,loginFrame.height,capturedAt,&accountLoginIo) {
+            Sleep 900
             continue
         }
 

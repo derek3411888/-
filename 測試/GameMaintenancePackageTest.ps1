@@ -15,7 +15,7 @@ try {
         . ([ScriptBlock]::Create($function.Extent.Text))
     }
     $required = @(Get-GameMaintenancePayloadFiles)
-    foreach ($name in @('GameMaintenance.ahk','GameMaintenancePolicy.ahk','GameMaintenanceHost.ahk','GameStableLaunch.ahk','GameUpdateAdapters.ahk','GameUpdateOcrPolicy.ahk','GameMaintenanceWorker.exe','GameMaintenanceWorker.ps1','GameMaintenanceNotice.ps1','GameInstallDiscovery.ps1')) {
+    foreach ($name in @('GameMaintenance.ahk','GameMaintenancePolicy.ahk','GameMaintenanceHost.ahk','GameStableLaunch.ahk','GameUpdateAdapters.ahk','GameUpdateOcrPolicy.ahk','GameAccountLogin.ahk','GameAccountLoginRuntime.ahk','GameMaintenanceWorker.exe','GameMaintenanceWorker.ps1','GameMaintenanceNotice.ps1','GameInstallDiscovery.ps1')) {
         Assert-GMTrue ($required -contains $name) "required new payload file: $name"
         Assert-GMTrue (Test-Path -LiteralPath (Join-Path $context.ProjectRoot "payload\$name")) "source exists: $name"
     }
@@ -33,6 +33,19 @@ try {
     New-FilteredZip $source $archive $excludes
     Assert-ZipContains $archive ($required + @('RuntimeFilePaths.ahk','icon_main.png','plugin/license.txt'))
     Assert-ZipExcludes $archive $forbidden
+    # Invoking the packager from another directory must still use its PowerShell
+    # project location, not the process-global .NET current directory.
+    $otherCwd=Join-Path $context.RunRoot 'other-process-cwd'
+    [IO.Directory]::CreateDirectory((Join-Path $otherCwd 'payload'))|Out-Null
+    [IO.File]::WriteAllText((Join-Path $otherCwd 'payload/wrong.txt'),'unrelated directory')
+    $oldProcessCwd=[Environment]::CurrentDirectory
+    Push-Location -LiteralPath $context.RunRoot
+    try {
+        [Environment]::CurrentDirectory=$otherCwd
+        New-FilteredZip 'payload' 'relative-payload.zip' $excludes
+        Assert-GMTrue (Test-Path -LiteralPath (Join-Path $context.RunRoot 'relative-payload.zip')) 'package output must stay in the selected project location'
+        Assert-ZipContains (Join-Path $context.RunRoot 'relative-payload.zip') $required
+    } finally { [Environment]::CurrentDirectory=$oldProcessCwd; Pop-Location }
     # A nonzero native process result must never become an empty/success exit code on PS 5.1.
     $process = Start-Process -FilePath (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') `
         -ArgumentList '-NoProfile -Command "Start-Sleep -Milliseconds 200; exit 7"' -PassThru -WindowStyle Hidden

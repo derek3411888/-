@@ -107,7 +107,7 @@ try {
         '批次入口未將 npm cache 指向專案。'
 
     $gitignoreText = Get-Content -LiteralPath (Join-Path $projectRoot '.gitignore') -Raw -Encoding UTF8
-    Assert-True ($gitignoreText -match '(?m)^\.dev-runtime/$') '.gitignore 未排除 .dev-runtime。'
+    Assert-True ($gitignoreText -match '(?m)^\.dev-runtime/\r?$') '.gitignore 未排除 .dev-runtime。'
 
     Write-Host 'PowerShell 開發路徑政策測試通過：所有暫存、測試、build 與工具快取均限制在 .dev-runtime。'
     $succeeded = $true
