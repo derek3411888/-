@@ -184,7 +184,8 @@ WriteLog(message,level := "INFO") {
 }
 WriteStep(args*) => 0
 ShowTip(args*) => 0
-MarkServerCompletedInCurrentCycle(args*) => 0
+MarkServerCompletedInCurrentCycle(args*) => true
+CommitRewardMonitorCompleted(state) => true
 AdvanceServerScheduleForNextCycle() => false
 TryStopScreenRecording(args*) => 0
 ShutdownGameLrmcOkww(args*) {

@@ -33,11 +33,13 @@ global RC_COMMAND_APPLY_IN_PROGRESS := false, RC_ACTIVE_STOP_ACK := "", RC_ACTIV
 global REMOTE_SERVER_SWITCH_PENDING := false, REMOTE_SERVER_SWITCH_TARGET_INDEX := 2, REMOTE_SERVER_SWITCH_TARGET_NAME := "Asia"
 global REMOTE_PAUSE_WAITING := false, response := 0, gets := 0, callbacks := [], acks := [], uiHooks := 0
 global stopCalls := 0, switchCalls := 0, durableState := "", savedOk := true, closeDuringGet := false
+global updateCalls := 0
 GMTest_Run(TestRemoteRecovery)
 TestRemoteRecovery() {
     global response, __RESTART_RECOVERY_RETRY_ID, __RESTART_RECOVERY_WAITING, acks, gets, uiHooks
     global REMOTE_STOP_IN_PROGRESS, __NEXTSERVER_RESTART, RC_LAST_NONCE, RC_REMOTE_PAUSED, stopCalls
     global REMOTE_SERVER_SWITCH_PENDING, switchCalls, closeDuringGet, RC_COMMAND_APPLY_IN_PROGRESS
+    global __RESTART_IN_PROGRESS, updateCalls
     response := {desiredState:"RUN",nonce:1}
     RC_PollCommandTickCore()
     GMTest_Assert(gets = 1 && __RESTART_RECOVERY_RETRY_ID = 1 && RC_LAST_NONCE = 1,"held owner receives RUN through actual poll and apply")
@@ -69,6 +71,12 @@ TestRemoteRecovery() {
     RemoteServerSwitchCommitTick()
     GMTest_Assert(switchCalls = 1 && __NEXTSERVER_RESTART && ReadRestartRecoveryIntent().state = "RUN","remote nextserver close is not misclassified as STOP")
     GMTest_Assert(!RC_COMMAND_APPLY_IN_PROGRESS,"command apply lock is released")
+    __RESTART_IN_PROGRESS := false, __NEXTSERVER_RESTART := false
+    response := {desiredState:"RESTART_UPDATE",nonce:7}
+    RC_PollCommandTickCore()
+    GMTest_Assert(updateCalls = 1 && acks[acks.Length] = "ACCEPTED","RESTART_UPDATE reaches one-shot handler with its nonce, not RUN")
+    RC_PollCommandTickCore()
+    GMTest_Assert(updateCalls = 1,"duplicate update command is not applied twice")
 }
 RC_TryFlushPendingCommandAck(args*) => 0
 RCSH_ShouldReadFirestore(args*) => true
@@ -114,6 +122,12 @@ GM_HandleRemoteIntent(state,args*) {
 }
 SetSoftPauseClockState(args*) => 0
 PrepareRemoteServerSwitch(args*) => 0
+PrepareRemoteUpdateRestart(command) {
+    global updateCalls
+    GMTest_Assert(command.remoteNonce = 7 && command.remoteState = "RESTART_UPDATE","action carries exact claimed command identity")
+    updateCalls += 1
+    return {code:"ACCEPTED",detail:"scheduled only"}
+}
 CompleteServerForTodayFromRemote(args*) => 0
 WriteLog(args*) => 0
 ShowTip(args*) => 0

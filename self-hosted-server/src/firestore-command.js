@@ -15,9 +15,15 @@ export const FIRESTORE_COMMAND_READ_FIELDS = Object.freeze([
   "commandUpdatedAt",
   "commandRequestId",
   "commandHistory",
+  "remoteRestartSupported",
+  "remoteRestartVersion",
+  "payloadVersion",
+  "runtime",
+  "status",
+  "lastHeartbeat",
 ]);
 
-const COMMANDS = new Set(["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER"]);
+const COMMANDS = new Set(["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER", "RESTART_UPDATE"]);
 const HISTORY_LIMIT = 30;
 
 function firestoreValue(value) {
@@ -154,6 +160,23 @@ export async function forwardCommandWithFirestoreCas({
     const current = firestoreCommandState(document);
     if (requestId && current.requestId === requestId && current.command === normalizedCommand) {
       return { uid, ...current, status: current.pending ? "PENDING" : "ACKED", transport: "firestore", reused: true };
+    }
+    if (normalizedCommand === "RESTART_UPDATE") {
+      const runtime = firestoreField(document, "runtime", {});
+      const reported = {
+        remoteRestartSupported: firestoreField(document, "remoteRestartSupported", false),
+        remoteRestartVersion: firestoreField(document, "remoteRestartVersion", ""),
+        payloadVersion: firestoreField(document, "payloadVersion", runtime?.payloadVersion ?? ""),
+      };
+      if (![reported, runtime].some((source) => source?.remoteRestartSupported === true &&
+          typeof reported.payloadVersion === "string" && reported.payloadVersion.length > 0 && source.remoteRestartVersion === reported.payloadVersion)) {
+        throw new HttpError(409, "執行端尚未回報安全重新啟動能力，請先更新 Payload", "UNSUPPORTED_CLIENT");
+      }
+      const heartbeat = Number(firestoreField(document, "lastHeartbeat", 0));
+      const state = String(firestoreField(document, "status", "OFFLINE")).toUpperCase();
+      if (!heartbeat || now() - heartbeat > 300_000 || ["STOP", "OFFLINE"].includes(state)) {
+        throw new HttpError(409, "裝置目前離線，沒有接收重新啟動命令的執行端", "DEVICE_OFFLINE");
+      }
     }
     if (current.pending && normalizedCommand !== "STOP") {
       throw new HttpError(409, "上一筆命令尚未 ACK，不能覆蓋", "COMMAND_PENDING", current);

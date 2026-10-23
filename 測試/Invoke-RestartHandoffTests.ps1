@@ -74,6 +74,8 @@ InstallStartupLock_QueryProcesses() {
         @{ Mode='restart resume'; Scenario='wrong-mode'; Expected='failed' },
         @{ Mode='restart'; Scenario='launcher'; Expected='accepted' },
         @{ Mode='restart resume'; Scenario='launcher'; Expected='accepted' },
+        @{ Mode='restart resume'; Scenario='required-launcher'; Expected='accepted' },
+        @{ Mode='restart resume'; Scenario='required-disappeared'; Expected='failed' },
         @{ Mode='restart resume'; Scenario='missing-launcher'; Expected='accepted' },
         @{ Mode='nextserver'; Scenario='late-duplicate'; Expected='accepted' },
         @{ Mode='nextserver'; Scenario='invalid'; Expected='invalid' }
@@ -85,6 +87,10 @@ InstallStartupLock_QueryProcesses() {
         $stderr = Join-Path $caseRoot 'stderr.log'
         $arguments = '/ErrorStdOut=UTF-8 "{0}" "{1}" "{2}" "{3}"' -f $testFile,$caseRoot,$case.Mode,$case.Scenario
         $caseLauncher = if ($case.Scenario -in @('launcher','wrong-mode')) { $launcherFixture } elseif ($case.Scenario -eq 'missing-launcher') { Join-Path $caseRoot 'missing.exe' } else { '' }
+        if ($case.Scenario -like 'required-*') {
+            $caseLauncher = Join-Path $caseRoot 'required-launcher.exe'
+            Copy-Item -LiteralPath $launcherFixture -Destination $caseLauncher
+        }
         $arguments += ' "' + $caseLauncher + '" "' + $recorderFixture + '"'
         $process = Start-Process -FilePath $runtime -ArgumentList $arguments -WorkingDirectory $projectRoot `
             -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -157,7 +163,7 @@ InstallStartupLock_QueryProcesses() {
                     }
                 } elseif (Test-Path -LiteralPath $childErrorPath) { throw 'Synthetic successor reported an unexpected error' }
             } elseif (Test-Path -LiteralPath $childPath) { throw 'Cancelled/timed-out handoff launched a successor' }
-            if ($case.Scenario -eq 'launcher') {
+            if ($case.Scenario -in @('launcher','required-launcher')) {
                 $launcherStarts = @(Get-Content -LiteralPath (Join-Path $caseRoot 'launcher-starts.txt'))
                 $expectedFlag = if ($case.Mode -eq 'restart resume') { '--resume-current-task' } else { '--restart-current-task' }
                 if ($launcherStarts.Count -ne 1 -or $launcherStarts[0] -cne $expectedFlag) { throw 'Updater mode changed or started more than once' }

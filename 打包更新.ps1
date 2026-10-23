@@ -126,6 +126,8 @@ function Get-GameMaintenancePayloadFiles {
     return @('GameMaintenance.ahk', 'GameMaintenancePolicy.ahk', 'GameMaintenanceHost.ahk', 'GameStableLaunch.ahk',
         'GameUpdateAdapters.ahk', 'GameUpdateOcrPolicy.ahk', 'GameHotfixRecovery.ahk', 'GameHotfixRuntime.ahk',
         'GameAccountLogin.ahk', 'GameAccountLoginRuntime.ahk', 'GameMaintenanceWorker.exe', 'LauncherMaintenance.exe', 'GameMaintenanceWorker.ps1',
+        'RemoteUpdateRestart.ahk', 'RemoteRestartDrain.ahk', 'CompletionSynthesis.ahk',
+        'CompletionSynthesisRuntime.ahk', 'SynthesisCompletionChild.ahk', 'SynthesisCountPolicy.ahk',
         'GameMaintenanceNotice.ps1', 'GameInstallDiscovery.ps1',
         'PerformanceTelemetryWorker.exe', 'RuntimeUtilities.exe', 'BootstrapAssets.exe',
         'NativeRuntimeUtilities.ahk', 'NativeBootstrapAssets.ahk')

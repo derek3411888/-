@@ -34,8 +34,10 @@ try {
     waitMs := scenario = "boundary-recording" ? 1000 : (InStr(scenario, "timeout") = 1 ? 400 : 15000)
     IniWrite(scenario, root "\fixture.ini", "test", "scenario")
     result := RestartHandoff_Prepare(A_AhkPath, fixture, mode, root, launcher, waitMs,
-        InStr(scenario, "noack") = 1 || scenario = "wrong-mode" ? 400 : 10000, recording)
+        InStr(scenario, "noack") = 1 || scenario = "wrong-mode" ? 400 : 10000, recording, InStr(scenario,"required") > 0)
     FileAppend(result.request, root "\request-path.txt", "UTF-8")
+    if scenario = "required-disappeared"
+        FileMove(launcher,launcher ".removed")
     if (scenario = "cancel")
         RestartHandoff_Cancel("test stop")
     if (scenario = "cancel-write-blocked") {

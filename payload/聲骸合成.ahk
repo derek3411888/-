@@ -6,9 +6,15 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
+global COMPLETION_CONTEXT := CS_ChildContext(A_Args)
+global SYNTHESIS_INPUT_IDENTITY := 0
 
 ; 自動提權
 if !A_IsAdmin {
+    ; Parent must already hold the elevated ownership. Never lose the receipt /
+    ; cancellation arguments through a second UAC-launched child.
+    if COMPLETION_CONTEXT.enabled
+        ExitApp(2)
     if FileExist(BUNDLED_AHK_EXE) {
         try {
             Run('*RunAs "' BUNDLED_AHK_EXE '" "' A_ScriptFullPath '"')
@@ -33,6 +39,8 @@ catch
 #Include plugin\ImagePut-1.11\ImagePut.ahk
 #Include plugin\RapidOcr\RapidOcr.ahk
 #Include SynthesisMenuRuntime.ahk
+#Include SynthesisCompletionChild.ahk
+#Include SynthesisCountPolicy.ahk
 
 ResolveBundledAhkExe() {
     candidates := []
@@ -130,20 +138,28 @@ global firstTime := true  ; 標記是否首次執行（用於圖9）
 Main()
 
 Main() {
+    global COMPLETION_CONTEXT, SYNTHESIS_INPUT_IDENTITY, gameWindow
+    success := false
     try {
+        COMPLETION_CONTEXT.EnsureRun()
         ; 初始化 OCR
         global ocrEngine := RapidOcr()
         WriteStep("OCR初始化", "成功")
         
         ; 尋找遊戲視窗
-        if !FindGameWindow() {
+        if COMPLETION_CONTEXT.enabled {
+            SYNTHESIS_INPUT_IDENTITY := COMPLETION_CONTEXT.BindGame()
+            gameWindow := SYNTHESIS_INPUT_IDENTITY.hwnd
+        } else if !FindGameWindow() {
             WriteStep("尋找遊戲視窗", "失敗", "ERROR")
             ShowTip("找不到遊戲視窗（鳴潮/鸣潮），請先啟動遊戲。", 3000)
             Sleep 3000
-            return
+            ExitApp(COMPLETION_CONTEXT.Finish(false))
         }
         
         WriteStep("尋找遊戲視窗", "成功 hwnd=" gameWindow)
+        if !IsObject(SYNTHESIS_INPUT_IDENTITY)
+            SYNTHESIS_INPUT_IDENTITY := SynthesisMenuIo(gameWindow,SynthesisEnsureInputAllowed,SynthesisActiveTick,SynthesisPauseEpoch)
         
         ; 由全自動主流程先完成可操作驗證，這裡不再重複驗證
         WriteStep("可操作驗證", "略過（由全自動前置驗證）")
@@ -164,6 +180,7 @@ Main() {
         }
         
     } catch as e {
+        success := false
         logger.log("執行錯誤: " e.Message, "ERROR")
         SignalSynthesisFailure("例外: " e.Message)
         ShowTip("⚠️ 執行過程中發生錯誤：" e.Message, 3000)
@@ -171,7 +188,7 @@ Main() {
     }
     
     ; 完成後正確結束腳本
-    ExitApp
+    ExitApp(COMPLETION_CONTEXT.Finish(success))
 }
 
 ; ==================== 主流程 ====================
@@ -282,7 +299,11 @@ RunSynthesisLoop() {
         WriteStep("融合次數", "mergeCount=" mergeCount)
         logger.log("批量融合次數: " mergeCount)
         
-        if (mergeCount <= 0) {
+        if (mergeCount < 0) {
+            WriteStep("融合次數", "OCR 無法確認，停止而非宣告完成", "ERROR")
+            return false
+        }
+        if (mergeCount = 0) {
             WriteStep("融合結束", "次數為 0，回到 ESC 畫面")
             logger.log("融合次數為 0，先點擊返回再點擊回到主畫面後結束流程")
 
@@ -299,12 +320,12 @@ RunSynthesisLoop() {
             WriteStep("返回ESC", "切回遊戲並送 Esc")
             ActivateGame()
             Sleep 500
-            Send "{Esc}"
+            SynthesisSendEsc()
             Sleep 1500
             logger.log("已停留在 ESC 背包畫面")
             WriteStep("返回ESC", "已停留在 ESC 背包畫面")
             
-            break
+            return SynthesisVerifyFinishedMenu()
         }
         
         ; 點擊批量融合按鈕（圖8 → 圖9或圖10）
@@ -348,7 +369,7 @@ RunSynthesisLoop() {
     
     logger.log("批量融合迴圈結束")
     WriteStep("融合迴圈", "迴圈結束")
-    return true
+    return false
 }
 
 ; ==================== 各步驟函數 ====================
@@ -517,7 +538,7 @@ HandleMonthlyCardRewardIfPresent() {
 OpenMainMenu() {
     global logger, gameWindow
     logger.log("按 Esc 打開主選單；若命中確認離開／重新挑戰提示，先安全退出副本")
-    try return SMR_OpenMenu(SynthesisMenuIo(gameWindow))
+    try return SMR_OpenMenu(SynthesisMenuIo(gameWindow,SynthesisEnsureInputAllowed,SynthesisActiveTick,SynthesisPauseEpoch))
     catch as err
         logger.log("聲骸選單恢復失敗：" err.Message,"WARN")
     return false
@@ -750,39 +771,27 @@ ClickSelectAll() {
 
 CheckMergeCount() {
     global logger
-    logger.log("檢查融合次數")
-    
-    ; 綠框座標：936,603,1075,633
-    x1 := 936, y1 := 603, x2 := 1075, y2 := 633
-    
-    ; 截圖並 OCR 該區域
-    result := OCRWindow()
-    if !result
-        return -1
-    
-    ; 搜尋包含「次數」或數字的文字
-    for block in result {
-        text := CleanText(block.text)
-        
-        ; 檢查是否在綠框範圍內
-        if !block.HasOwnProp("boxPoint") || block.boxPoint.Length < 3
-            continue
-        
-        bx := (block.boxPoint[1].x + block.boxPoint[3].x) / 2
-        by := (block.boxPoint[1].y + block.boxPoint[3].y) / 2
-        
-        if (bx >= x1 && bx <= x2 && by >= y1 && by <= y2) {
-            ; 提取數字
-            if RegExMatch(text, "\d+", &match) {
-                count := Integer(match[0])
-                logger.log("找到融合次數: " count " (原文: " text ")")
-                return count
-            }
-        }
+    count := SC_ReadStableCount(SynthesisCountIo())
+    logger.log("融合次數嚴格穩定驗證: " count "（-1=未知／矛盾，不宣告完成）")
+    return count
+}
+
+class SynthesisCountIo {
+    __New() => this.frame := 0
+    Now() => DllCall("GetTickCount64","UInt64")
+    Wait(ms) => Sleep(ms)
+    Sample() {
+        global gameWindow, SYNTHESIS_INPUT_IDENTITY
+        SynthesisEnsureInputAllowed()
+        epoch := SynthesisPauseEpoch(), this.frame += 1
+        WinGetClientPos(,,&width,&height,"ahk_id " gameWindow)
+        capturedAt := this.Now(), blocks := OCRWindow()
+        SynthesisEnsureInputAllowed()
+        if epoch != SynthesisPauseEpoch()
+            return {interrupted:true}
+        return {blocks:blocks,width:width,height:height,key:SYNTHESIS_INPUT_IDENTITY.key,
+            frame:this.frame,capturedAt:capturedAt,pausedMs:epoch}
     }
-    
-    logger.log("未找到融合次數，返回 0", "WARN")
-    return 0
 }
 
 ClickMergeBatchButton() {
@@ -856,7 +865,7 @@ ReturnToStep4() {
     logger.log("按 Esc 返回圖4")
     ActivateGame()
     
-    Send "{Esc}"
+    SynthesisSendEsc()
     Sleep 1000
     
     return true
@@ -864,7 +873,7 @@ ReturnToStep4() {
 
 ; 去抖動主畫面模板比對（驗證遊戲是否正常運行）
 WaitEscMenuOCR(hwnd, timeoutSec := 120) {
-    global logger
+    global logger, SYNTHESIS_INPUT_IDENTITY
     oldPixelMode := A_CoordModePixel
     CoordMode "Pixel", "Screen"
 
@@ -893,13 +902,19 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
 
     logger.log("開始模板驗證: template=" templateFile " roi=" roiWidth "x" roiHeight " timeout=" timeoutSec "s")
 
-    deadline := A_TickCount + timeoutSec*1000
+    SynthesisEnsureInputAllowed()
+    if !IsObject(SYNTHESIS_INPUT_IDENTITY) || SYNTHESIS_INPUT_IDENTITY.hwnd != hwnd
+        throw Error("主畫面等待拒絕非已綁定遊戲視窗")
+    deadline := SynthesisActiveTick() + timeoutSec*1000
     lastProgressLog := A_TickCount
     sampleCount := 0
     bestVar := 0
-    while (A_TickCount < deadline) {
-        try WinActivate "ahk_id " hwnd
+    while (SynthesisActiveTick() < deadline) {
+        SynthesisEnsureInputAllowed()
+        if !ActivateGame()
+            throw Error("主畫面等待無法驗證遊戲前景")
         Sleep 120
+        SynthesisEnsureInputAllowed()
         sampleCount += 1
 
         try {
@@ -947,7 +962,7 @@ WaitEscMenuOCR(hwnd, timeoutSec := 120) {
         }
 
         if (A_TickCount - lastProgressLog >= 5000) {
-            remainSec := Round((deadline - A_TickCount) / 1000.0, 1)
+            remainSec := Round((deadline - SynthesisActiveTick()) / 1000.0, 1)
             logger.log("模板驗證進行中: 樣本=" sampleCount " 連續命中=" stable "/" stableNeeded " 最後Var=" (bestVar ? bestVar : "-") " 剩餘=" remainSec "s")
             lastProgressLog := A_TickCount
         }
@@ -1001,16 +1016,64 @@ VerifyBackpackPanel() {
 ; ==================== 輔助函數 ====================
 
 ActivateGame() {
-    global gameWindow
-    if !IsValidHwnd(gameWindow) {
-        if !FindGameWindow() || !IsValidHwnd(gameWindow)
-            return false
-    }
+    global gameWindow, SYNTHESIS_INPUT_IDENTITY
+    SynthesisEnsureInputAllowed()
+    if !IsObject(SYNTHESIS_INPUT_IDENTITY) || !SYNTHESIS_INPUT_IDENTITY.Alive()
+        throw Error("合成原遊戲身分已失效，禁止重新綁定或輸入")
 
     try WinActivate "ahk_id " gameWindow
     try WinWaitActive "ahk_id " gameWindow, , 0.8
     Sleep 250
+    SynthesisEnsureInputAllowed()
+    return !!WinActive("ahk_id " gameWindow)
+}
+
+SynthesisEnsureInputAllowed() {
+    global COMPLETION_CONTEXT, SYNTHESIS_INPUT_IDENTITY
+    COMPLETION_CONTEXT.EnsureRun()
+    if IsObject(SYNTHESIS_INPUT_IDENTITY) && !SYNTHESIS_INPUT_IDENTITY.Alive()
+        throw Error("合成原遊戲程序身分已改變")
+    if !SynthesisDesktopAllowsInput()
+        throw Error("合成桌面未通過互動／鎖定安全檢查")
     return true
+}
+
+SynthesisActiveTick() {
+    global COMPLETION_CONTEXT
+    return COMPLETION_CONTEXT.BudgetNow()
+}
+
+SynthesisPauseEpoch() {
+    global COMPLETION_CONTEXT
+    COMPLETION_CONTEXT.EnsureRun()
+    return COMPLETION_CONTEXT.pausedMs
+}
+
+SynthesisSendEsc() {
+    global gameWindow, SYNTHESIS_INPUT_IDENTITY
+    if !ActivateGame()
+        throw Error("合成無法確認遊戲前景")
+    SynthesisEnsureInputAllowed()
+    if !SYNTHESIS_INPUT_IDENTITY.Alive() || !WinActive("ahk_id " gameWindow)
+        throw Error("合成輸入前遊戲身分／前景改變")
+    Send("{Esc}")
+    return true
+}
+
+SynthesisVerifyFinishedMenu() {
+    global gameWindow
+    ; Uses the same strict OCR classifier: settings alone is not success.
+    stable := 0
+    Loop 8 {
+        SynthesisEnsureInputAllowed()
+        WinGetClientPos(,,&width,&height,"ahk_id " gameWindow)
+        candidate := SMR_Classify(OCRWindow(),width,height)
+        stable := candidate.kind = "menu" ? stable+1 : 0
+        if stable >= 2
+            return true
+        Sleep(400)
+    }
+    return false
 }
 
 GetDataDir() {
@@ -1020,7 +1083,11 @@ GetDataDir() {
 }
 
 SignalSynthesisFailure(reason := "") {
-    global logger, DATA_DIR
+    global logger, DATA_DIR, COMPLETION_CONTEXT
+    if COMPLETION_CONTEXT.enabled {
+        logger.log("收尾合成失敗只回報專屬收據，不寫共用自動重啟旗標：" reason,"ERROR")
+        return
+    }
     flagFile := DATA_DIR "\synthesis_restart.flag"
     try {
         FileDelete(flagFile)
@@ -1036,15 +1103,23 @@ SignalSynthesisFailure(reason := "") {
 ClickRelative(x, y) {
     global gameWindow, logger
     
-    ActivateGame()
+    if !ActivateGame()
+        throw Error("合成點擊前無法確認遊戲前景")
 
     ; 使用前景實體滑鼠點擊客戶區座標
     CoordMode "Mouse", "Client"
     WinActivate "ahk_id " gameWindow
     Sleep 100
 
+    SynthesisEnsureInputAllowed()
+    global SYNTHESIS_INPUT_IDENTITY
+    if !SYNTHESIS_INPUT_IDENTITY.Alive() || !WinActive("ahk_id " gameWindow)
+        throw Error("合成移動滑鼠前遊戲身分／前景改變")
     MouseMove x, y
     Sleep 50
+    SynthesisEnsureInputAllowed()
+    if !SYNTHESIS_INPUT_IDENTITY.Alive() || !WinActive("ahk_id " gameWindow)
+        throw Error("合成點擊前遊戲身分／前景改變")
     Click
     Sleep 100
 
@@ -1055,7 +1130,10 @@ ClickRelative(x, y) {
 }
 
 OCRWindow() {
-    global gameWindow, ocrEngine, logger
+    global gameWindow, ocrEngine, logger, SYNTHESIS_INPUT_IDENTITY
+
+    if IsObject(SYNTHESIS_INPUT_IDENTITY) && !SYNTHESIS_INPUT_IDENTITY.Alive()
+        throw Error("合成擷取前原遊戲身分失效，禁止重新綁定")
     
     ; 避免把無效 hwnd 傳給 ImagePut 導致崩潰
     if !IsValidHwnd(gameWindow) {

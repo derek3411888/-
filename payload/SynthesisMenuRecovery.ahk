@@ -71,13 +71,21 @@ SMR_InputFresh(obs, key, now) {
 ; The production controller is exercised with a fake clock/capture/input boundary.
 ; No fixture path or test mode is used by the formal script.
 SMR_OpenMenu(io, timeoutMs := 90000) {
-    deadline := io.Now()+timeoutMs, key := "", previous := 0, previousAt := 0
+    deadline := SMR_BudgetNow(io)+timeoutMs, key := "", previous := 0, previousAt := 0
     previousFrame := -1, menuHits := 0, worldHits := 0, exitSent := false
     awaitingWorld := false, clickAt := 0, escCount := 0, lastEsc := -10000
-    while io.Now() < deadline {
-        obs := io.Observe(), now := io.Now()
-        if now >= deadline || !obs.valid || obs.key = "" {
+    while SMR_BudgetNow(io) < deadline {
+        obs := io.Observe(), budgetNow := SMR_BudgetNow(io), now := io.Now()
+        if budgetNow >= deadline || !obs.valid || obs.key = "" {
             io.Log("選單恢復：畫面或身分無法驗證，停止輸入")
+            return false
+        }
+        if obs.HasOwnProp("capturedAt") && !SMR_InputFresh(obs,obs.key,now) {
+            if SMR_RetryAfterPause(io,obs) {
+                previous := 0, menuHits := 0, worldHits := 0
+                continue
+            }
+            io.Log("選單觀測畫面已過期，不採信穩定／完成證據")
             return false
         }
         if key = ""
@@ -105,8 +113,13 @@ SMR_OpenMenu(io, timeoutMs := 90000) {
         }
         if candidate.kind = "exit" {
             if !exitSent && SMR_SameExit(previous,candidate) && now-previousAt >= 300 && now-previousAt <= 5000 {
-                if !io.ConfirmExit(obs)
+                if !io.ConfirmExit(obs) {
+                    if SMR_RetryAfterPause(io,obs) {
+                        previous := 0, menuHits := 0, worldHits := 0
+                        continue
+                    }
                     return false
+                }
                 exitSent := true, awaitingWorld := true, clickAt := io.Now()
                 io.Log("退出副本：已點擊右側確認，等待提示消失及遊戲主畫面；尚未宣告退出成功")
             }
@@ -123,8 +136,15 @@ SMR_OpenMenu(io, timeoutMs := 90000) {
                 }
             }
             if candidate.kind = "unknown" && !awaitingWorld && now-lastEsc >= 3000 {
-                if escCount >= 6 || !io.SendEsc(obs)
+                if escCount >= 6
                     return false
+                if !io.SendEsc(obs) {
+                    if SMR_RetryAfterPause(io,obs) {
+                        previous := 0, menuHits := 0, worldHits := 0
+                        continue
+                    }
+                    return false
+                }
                 escCount += 1, lastEsc := io.Now()
                 io.Log("主選單：已在驗證前景送出 Esc，第 " escCount " 次")
             }
@@ -134,3 +154,8 @@ SMR_OpenMenu(io, timeoutMs := 90000) {
     io.Log("主選單恢復逾時；未確認成功，不再連續按 Esc 或確認")
     return false
 }
+
+; Physical screenshot age always uses Now (wall clock). Only the bounded menu
+; work budget excludes time explicitly paused by the parent controller.
+SMR_BudgetNow(io) => HasMethod(io,"BudgetNow") ? io.BudgetNow() : io.Now()
+SMR_RetryAfterPause(io,obs) => HasMethod(io,"RetryAfterPause") && io.RetryAfterPause(obs)

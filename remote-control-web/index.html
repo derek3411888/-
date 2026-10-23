@@ -6,18 +6,44 @@
   <meta name="theme-color" content="#f5f5f7" />
   <meta name="color-scheme" content="light" />
   <title>AHK 遠端控制台</title>
-  <link rel="stylesheet" href="styles.css?v=20260911-codex-progress-v1" />
+  <link rel="stylesheet" href="styles.css?v=20261023-apple-console-v1" />
 </head>
 <body class="apple-ui">
   <a class="skip-link" href="#mainContent">跳到主要內容</a>
-  <main id="mainContent" class="wrap">
+  <main id="mainContent" class="wrap app-shell" tabindex="-1">
+    <aside class="app-sidebar" aria-label="裝置與頁面導覽">
+      <div class="sidebar-brand">
+        <span class="app-brand-mark" aria-hidden="true">WW</span>
+        <div><strong>鳴潮自動鋤地</strong><small>公司控制台</small></div>
+      </div>
+    <section class="device-bar" aria-label="目前控制裝置">
+      <div class="device-picker">
+        <label for="pcDropdown">控制電腦</label>
+        <select id="pcDropdown"></select>
+      </div>
+      <div class="device-summary">
+        <strong id="selectedDeviceSummary">尚未選擇裝置</strong>
+        <span id="statusMsg" class="msg">正在讀取裝置…</span>
+      </div>
+    </section>
+      <p class="sidebar-section-label">控制中心</p>
+    <nav class="view-tabs" aria-label="控制台頁面" role="tablist">
+      <button id="tabOverview" class="view-tab active" type="button" role="tab" aria-selected="true" aria-controls="viewOverview" data-view="overview" tabindex="0"><span class="nav-icon" aria-hidden="true">◫</span><span>總覽</span></button>
+      <button id="tabDiagnostics" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="viewDiagnostics" data-view="diagnostics" tabindex="-1"><span class="nav-icon" aria-hidden="true">≋</span><span>診斷記錄</span></button>
+      <button id="tabSettings" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="viewSettings" data-view="settings" tabindex="-1"><span class="nav-icon" aria-hidden="true">⚙</span><span>設定</span></button>
+    </nav>
+      <p class="sidebar-footnote">只操作目前選取的裝置。<br>命令需收到執行端 ACK；<br>重新啟動排程不等於流程已恢復。</p>
+    </aside>
+
+    <div class="workspace">
+
     <header class="app-header">
       <div class="brand-lockup">
         <span class="app-brand-mark" aria-hidden="true">WW</span>
         <div class="brand-copy">
-          <span class="brand-kicker">Remote operations</span>
-          <h1>AHK 遠端控制台</h1>
-          <p class="sub">公司模式・GitHub Pages + Firestore</p>
+          <span class="brand-kicker">公司控制台 · 遠端作業</span>
+          <h1>裝置控制中心</h1>
+          <p class="sub">目前流程、裝置狀態與每一筆命令，都在這裡。</p>
         </div>
       </div>
       <div class="header-actions">
@@ -31,25 +57,6 @@
         <span class="quota-badge">免費額度保護</span>
       </div>
     </header>
-
-    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite">
-      <div class="codex-progress-overview">
-        <div class="codex-progress-title-row">
-          <span id="codexProgressDeliveryBadge" class="badge muted">尚無回報</span>
-          <strong id="codexProgressHeadline">網站回報進度</strong>
-        </div>
-        <p id="codexProgressSummary">正在讀取家中主機與 Codex 橋接狀態…</p>
-        <progress id="codexProgressBar" max="6" value="0" aria-label="網站回報進度：第 0 步，共 6 步"></progress>
-        <div class="codex-progress-meta">
-          <span id="codexProgressStep">第 0 / 6 步</span>
-          <span id="codexProgressNonce">尚無請求</span>
-          <span id="codexProgressElapsed">尚未計時</span>
-          <span id="codexProgressActivity">最後活動：—</span>
-          <span id="codexProgressBridge">Bridge：讀取中</span>
-        </div>
-      </div>
-      <button id="btnOpenCodexProgress" class="codex-progress-open" type="button">查看完整進度與回覆</button>
-    </section>
 
     <dialog id="codexSupportDialog" class="codex-support-dialog" aria-labelledby="codexSupportTitle">
       <div class="codex-dialog-heading">
@@ -146,23 +153,6 @@
       </details>
     </dialog>
 
-    <section class="device-bar" aria-label="目前控制裝置">
-      <div class="device-picker">
-        <label for="pcDropdown">控制電腦</label>
-        <select id="pcDropdown"></select>
-      </div>
-      <div class="device-summary">
-        <strong id="selectedDeviceSummary">尚未選擇裝置</strong>
-        <span id="statusMsg" class="msg">正在讀取裝置…</span>
-      </div>
-    </section>
-
-    <nav class="view-tabs" aria-label="控制台頁面" role="tablist">
-      <button id="tabOverview" class="view-tab active" type="button" role="tab" aria-selected="true" aria-controls="viewOverview" data-view="overview">總覽</button>
-      <button id="tabDiagnostics" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="viewDiagnostics" data-view="diagnostics">診斷記錄</button>
-      <button id="tabSettings" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="viewSettings" data-view="settings">設定</button>
-    </nav>
-
     <section id="viewOverview" class="app-view" role="tabpanel" aria-labelledby="tabOverview">
       <section id="gameMaintenanceCard" class="card game-maintenance" aria-label="版本維護狀態" hidden></section>
       <div class="overview-grid">
@@ -185,7 +175,13 @@
           <div class="row buttons">
             <button id="btnPause" class="warn" type="button">暫停</button>
             <button id="btnRun" class="ok" type="button">啟動</button>
+            <button id="btnRestart" type="button" disabled>重新啟動</button>
             <button id="btnStop" class="danger" type="button">關閉腳本</button>
+          </div>
+
+          <div id="commandStatus" class="command-status" data-status="idle" role="status" aria-live="polite">
+            <strong id="commandStatusTitle">尚未送出命令</strong>
+            <span id="commandStatusDetail">只有收到精確 ACK 才會顯示成功。</span>
           </div>
 
           <div class="server-switch-panel">
@@ -206,11 +202,6 @@
             </div>
             <div id="serverProgressList" class="server-progress-list"></div>
             <p id="serverProgressNote" class="sub">更新執行端後，可將指定伺服器標記為今天已完成。</p>
-          </div>
-
-          <div id="commandStatus" class="command-status" data-status="idle" role="status" aria-live="polite">
-            <strong id="commandStatusTitle">尚未送出命令</strong>
-            <span id="commandStatusDetail">只有收到精確 ACK 才會顯示成功。</span>
           </div>
 
           <details class="device-details">
@@ -400,8 +391,27 @@
         </div>
       </form>
     </section>
+    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite">
+      <div class="codex-progress-overview">
+        <div class="codex-progress-title-row">
+          <span id="codexProgressDeliveryBadge" class="badge muted">尚無回報</span>
+          <strong id="codexProgressHeadline">網站回報進度</strong>
+        </div>
+        <p id="codexProgressSummary">正在讀取家中主機與 Codex 橋接狀態…</p>
+        <progress id="codexProgressBar" max="6" value="0" aria-label="網站回報進度：第 0 步，共 6 步"></progress>
+        <div class="codex-progress-meta">
+          <span id="codexProgressStep">第 0 / 6 步</span>
+          <span id="codexProgressNonce">尚無請求</span>
+          <span id="codexProgressElapsed">尚未計時</span>
+          <span id="codexProgressActivity">最後活動：—</span>
+          <span id="codexProgressBridge">Bridge：讀取中</span>
+        </div>
+      </div>
+      <button id="btnOpenCodexProgress" class="codex-progress-open" type="button">查看完整進度與回覆</button>
+    </section>
+    </div>
   </main>
 
-  <script type="module" src="app.js?v=p5.32-l5.44-s1.0.87"></script>
+  <script type="module" src="app.js?v=p5.33-l5.45-s1.0.88-codex30s-restart-v1-apple-console-v1"></script>
 </body>
 </html>

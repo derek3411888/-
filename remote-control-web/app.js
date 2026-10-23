@@ -30,7 +30,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.32-l5.44-s1.0.87";
+const WEB_BUILD = "p5.33-l5.45-s1.0.88-codex30s-restart-v1-apple-console-v1";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
@@ -104,6 +104,7 @@ const codexDetails = {
 };
 const btnPause = document.getElementById("btnPause");
 const btnRun = document.getElementById("btnRun");
+const btnRestart = document.getElementById("btnRestart");
 const btnStop = document.getElementById("btnStop");
 const serverTargetSelect = document.getElementById("serverTargetSelect");
 const btnSwitchServer = document.getElementById("btnSwitchServer");
@@ -1054,7 +1055,8 @@ function normalizeCommandState(value) {
     state === "PAUSE" ||
     state === "STOP" ||
     state === "SWITCH_SERVER" ||
-    state === "COMPLETE_SERVER"
+    state === "COMPLETE_SERVER" ||
+    state === "RESTART_UPDATE"
   ) return state;
   return "UNKNOWN";
 }
@@ -1194,6 +1196,12 @@ function isClientOnline(data, nowMs = Date.now()) {
   const status = normalizeStatus(readField(data, "status", "UNKNOWN"));
   const heartbeat = toMillis(readField(data, "lastHeartbeat", 0));
   return status !== "OFFLINE" && status !== "STOP" && heartbeat > 0 && nowMs - heartbeat <= OFFLINE_THRESHOLD_MS;
+}
+
+function supportsRemoteRestart(data) {
+  const payloadVersion = data?.payloadVersion ?? data?.runtime?.payloadVersion;
+  return [data, data?.runtime].some((source) => source?.remoteRestartSupported === true &&
+    typeof payloadVersion === "string" && payloadVersion.length > 0 && source.remoteRestartVersion === payloadVersion);
 }
 
 function readRemoteSettings(data, preferDesired = true) {
@@ -1620,7 +1628,10 @@ function deriveHistoryEntry(entry, clientData, nowMs = Date.now()) {
     current.requestedState === "SWITCH_SERVER";
 
   // 一旦看過這筆精確回覆，就永久保留；後續 ACK 前進不應改寫既有結果。
-  if (previousStatus === "ACKED" || previousStatus === "REJECTED") {
+  if (previousStatus === "SUPERSEDED" && current.statusReason === "STOP_PRIORITY") {
+    nextStatus = "SUPERSEDED";
+    nextReason = "STOP_PRIORITY";
+  } else if (previousStatus === "ACKED" || previousStatus === "REJECTED") {
     nextStatus = previousStatus;
     nextReason = current.statusReason || "EXACT_ACK";
   } else if (ackStateMatches && ackTargetMatches) {
@@ -1990,7 +2001,9 @@ function renderServerSwitch() {
 
 function setButtonsDisabled(disabled) {
   const noClient = !pcDropdown.value || !cache.has(pcDropdown.value);
-  const value = Boolean(disabled || noClient);
+  const data = selectedClientData() || {};
+  const pending = toInteger(readField(data, "nonce", 0), 0) > toInteger(readField(data, "lastAckNonce", 0), 0);
+  const value = Boolean(disabled || noClient || pending);
   const schedule = readServerSchedule(selectedClientData() || {});
   const targets = Array.from(serverTargetSelect.options)
     .filter((option) => option.value && !option.disabled);
@@ -2002,7 +2015,12 @@ function setButtonsDisabled(disabled) {
   pcDropdown.disabled = Boolean(disabled || cache.size === 0);
   btnPause.disabled = value;
   btnRun.disabled = value;
-  btnStop.disabled = value;
+  btnStop.disabled = noClient;
+  const restartSupported = supportsRemoteRestart(data);
+  btnRestart.disabled = value || !restartSupported || !isClientOnline(data);
+  btnRestart.title = !restartSupported ? "執行端尚未回報安全重新啟動能力，請先更新 Payload"
+    : !isClientOnline(data) ? "裝置離線，沒有命令接收端" : "完整關閉此裝置的鋤地流程，經正式啟動器更新後恢復；不重開 Windows";
+  btnRun.disabled = value || !isClientOnline(data);
   serverTargetSelect.disabled = Boolean(value || noSwitchTarget);
   btnSwitchServer.disabled = Boolean(value || noSwitchTarget || !serverTargetSelect.value);
 }
@@ -2373,6 +2391,8 @@ function renderRuntimeEvents() {
 }
 
 function historyStatusLabel(entry) {
+  if (entry.status === "SUPERSEDED" && entry.statusReason === "STOP_PRIORITY") return "由關閉腳本優先取代";
+  if (entry.status === "ACKED" && entry.requestedState === "RESTART_UPDATE" && entry.ackResult === "ACCEPTED") return "已受理／排程中";
   if (entry.status === "ACKED") return "已 ACK";
   if (entry.status === "REJECTED") return "未執行";
   if (entry.status === "SUPERSEDED") return "被後續命令跨過";
@@ -2381,6 +2401,7 @@ function historyStatusLabel(entry) {
 }
 
 function historyStatusClass(entry) {
+  if (entry.status === "ACKED" && entry.requestedState === "RESTART_UPDATE" && entry.ackResult === "ACCEPTED") return "waiting";
   if (entry.status === "ACKED") return "acked";
   if (entry.status === "REJECTED") return "rejected";
   if (entry.status === "SUPERSEDED") return "superseded";
@@ -2389,6 +2410,9 @@ function historyStatusClass(entry) {
 }
 
 function historyStatusDetail(entry, clientData) {
+  if (entry.status === "ACKED" && entry.requestedState === "RESTART_UPDATE" && entry.ackResult === "ACCEPTED") {
+    return `${entry.ackDetail ? `${entry.ackDetail}；` : ""}僅表示已排程，尚未完成；需等待新心跳與版本／流程進度回報確認。`;
+  }
   if (entry.status === "ACKED") {
     if (entry.ackDetail) return entry.ackDetail;
     return entry.ackAt ? `ACK：${fmtTs(entry.ackAt)}` : "已收到 nonce 與狀態完全相符的 ACK";
@@ -2398,6 +2422,7 @@ function historyStatusDetail(entry, clientData) {
     return entry.ackDetail ? `${result}：${entry.ackDetail}` : result;
   }
   if (entry.status === "SUPERSEDED") {
+    if (entry.statusReason === "STOP_PRIORITY") return "此命令已由關閉腳本（STOP）優先取代，不會重新排程。";
     return `ACK 已前進至 nonce=${toInteger(readField(clientData, "lastAckNonce", 0), 0)}，本筆沒有逐筆 ACK`;
   }
   if (entry.status === "UNRESPONSIVE") {
@@ -2413,6 +2438,7 @@ function historyStatusDetail(entry, clientData) {
 }
 
 function commandHistoryLabel(entry) {
+  if (entry.requestedState === "RESTART_UPDATE") return "重新啟動並更新鋤地流程";
   const target = entry.targetServerName || "未知伺服器";
   const prefix = entry.targetServerIndex > 0 ? `${entry.targetServerIndex}. ` : "";
   if (entry.requestedState === "SWITCH_SERVER") return `切換伺服器 → ${prefix}${target}`;
@@ -2509,10 +2535,11 @@ function renderCommandStatus() {
   }
 
   if (latest.status === "ACKED") {
+    const restartScheduled = latest.requestedState === "RESTART_UPDATE" && latest.ackResult === "ACCEPTED";
     setCommandStatus(
-      "acked",
-      `已 ACK：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
-      latest.ackDetail || (latest.ackAt ? `裝置回覆時間：${fmtTs(latest.ackAt)}` : "nonce 與狀態均已確認相符。"),
+      restartScheduled ? "waiting" : "acked",
+      `${restartScheduled ? "已受理／排程中" : "已 ACK"}：${commandHistoryLabel(latest)}（nonce=${latest.commandNonce}）`,
+      restartScheduled ? historyStatusDetail(latest, data) : latest.ackDetail || (latest.ackAt ? `裝置回覆時間：${fmtTs(latest.ackAt)}` : "nonce 與狀態均已確認相符。"),
     );
     return;
   }
@@ -3057,6 +3084,7 @@ function commandValidationError(result, message) {
 }
 
 async function sendCommand(state, payload = {}) {
+  if (sending && state !== "STOP") return;
   const id = pcDropdown.value;
   if (!id) {
     statusMsg.textContent = "請先選擇一台在線電腦";
@@ -3066,6 +3094,16 @@ async function sendCommand(state, payload = {}) {
   const commandState = normalizeCommandState(state);
   if (commandState === "UNKNOWN") {
     setCommandStatus("error", "命令無效", `不支援的狀態：${state}`);
+    return;
+  }
+  const selected = selectedClientData() || {};
+  if (commandState === "RESTART_UPDATE" &&
+      (!supportsRemoteRestart(selected) || !isClientOnline(selected))) {
+    setCommandStatus("rejected", "無法重新啟動", "需要在線執行端明確回報安全重新啟動能力；舊版本或離線裝置不能接收此命令。");
+    return;
+  }
+  if (commandState === "RUN" && !isClientOnline(selected)) {
+    setCommandStatus("rejected", "裝置離線", "沒有命令接收端；請先在裝置本機啟動。");
     return;
   }
 
@@ -3136,12 +3174,20 @@ async function sendCommand(state, payload = {}) {
   try {
     const ref = doc(db, COLLECTION, id);
     const sentAt = Date.now();
+    const requestId = crypto.randomUUID();
     const result = await runTransaction(db, async (transaction) => {
       const current = await transaction.get(ref);
       if (!current.exists()) throw new Error("選取的電腦文件不存在");
 
       const data = current.data();
       assertFirestoreControlWritable(data);
+      if (commandState === "RESTART_UPDATE") {
+        if (!supportsRemoteRestart(data)) {
+          throw commandValidationError("UNSUPPORTED_CLIENT", "執行端尚未回報安全重新啟動能力，請先更新 Payload。");
+        }
+        if (!isClientOnline(data)) throw commandValidationError("DEVICE_OFFLINE", "裝置離線，沒有命令接收端。");
+      }
+      if (commandState === "RUN" && !isClientOnline(data)) throw commandValidationError("DEVICE_OFFLINE", "裝置離線，請先在本機啟動。");
       if (isServerTargetCommand(commandState)) {
         const currentSchedule = readServerSchedule(data);
         const currentProgress = readServerProgress(data, currentSchedule);
@@ -3189,8 +3235,16 @@ async function sendCommand(state, payload = {}) {
       }
 
       const currentNonce = Math.max(0, toInteger(readField(data, "nonce", 0), 0));
-      const nextNonce = currentNonce + 1;
-      const reconciled = deriveCommandHistory(data, sentAt);
+      const ackNonce = Math.max(0, toInteger(readField(data, "lastAckNonce", 0), 0));
+      const pending = currentNonce > ackNonce;
+      if (readField(data, "commandRequestId", "") === requestId && normalizeCommandState(readField(data, "desiredState", "")) === commandState ||
+          pending && commandState === "STOP" && normalizeCommandState(readField(data, "desiredState", "")) === "STOP") {
+        return { nextNonce: currentNonce, data };
+      }
+      if (pending && commandState !== "STOP") throw commandValidationError("COMMAND_PENDING", "上一筆命令尚未 ACK，不能覆蓋；仍可使用關閉腳本。");
+      const nextNonce = Math.max(currentNonce, ackNonce) + 1;
+      const reconciled = deriveCommandHistory(data, sentAt).map((entry) => pending && entry.commandNonce === currentNonce
+        ? { ...entry, status: "SUPERSEDED", statusUpdatedAt: sentAt, statusReason: "STOP_PRIORITY" } : entry);
       const newEntry = {
         commandId: String(nextNonce),
         commandNonce: nextNonce,
@@ -3220,6 +3274,7 @@ async function sendCommand(state, payload = {}) {
         requestedServerIndex,
         requestedServerName,
         commandUpdatedAt: sentAt,
+        commandRequestId: requestId,
         commandHistory,
       });
 
@@ -3232,6 +3287,7 @@ async function sendCommand(state, payload = {}) {
           requestedServerIndex,
           requestedServerName,
           commandUpdatedAt: sentAt,
+          commandRequestId: requestId,
           commandHistory,
         },
       };
@@ -3262,6 +3318,10 @@ async function sendCommand(state, payload = {}) {
 
 btnPause.addEventListener("click", () => void sendCommand("PAUSE"));
 btnRun.addEventListener("click", () => void sendCommand("RUN"));
+btnRestart.addEventListener("click", () => {
+  if (!confirm("確定要完整關閉選取裝置的鋤地腳本／遊戲／OKWW／LRMCAI，再由正式啟動器檢查更新並恢復流程？不會重新啟動 Windows。")) return;
+  void sendCommand("RESTART_UPDATE");
+});
 btnStop.addEventListener("click", () => {
   if (!confirm("確定要遠端關閉腳本並完整關閉遊戲/OKWW/LRMCAI？")) return;
   void sendCommand("STOP");
@@ -3306,8 +3366,8 @@ for (const tab of viewTabs) {
   tab.addEventListener("keydown", (event) => {
     const index = viewTabs.indexOf(tab);
     let nextIndex = index;
-    if (event.key === "ArrowRight") nextIndex = (index + 1) % viewTabs.length;
-    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + viewTabs.length) % viewTabs.length;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % viewTabs.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + viewTabs.length) % viewTabs.length;
     else if (event.key === "Home") nextIndex = 0;
     else if (event.key === "End") nextIndex = viewTabs.length - 1;
     else return;

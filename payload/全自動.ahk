@@ -48,6 +48,8 @@ global IMAGEPUT_GDIPLUS_PROCESS_PIN := ImagePut.gdiplusStartup()
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include ScriptRestartHandoff.ahk
+#Include RemoteUpdateRestart.ahk
+#Include CompletionSynthesisRuntime.ahk
 #Include RestartRecovery.ahk
 global __RESTART_RECOVERY_WAITING := false, __RESTART_RECOVERY_RETRY_ID := 0
 global __RESTART_RECOVERY_REPORT_KEY := "", __RESTART_RECOVERY_REPORT_TICK := 0
@@ -152,7 +154,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.32"
+global PAYLOAD_BUILD_VERSION := "5.33"
 global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.44"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
@@ -1101,6 +1103,8 @@ OnRemoteControlStateChanged(state, command := "") {
     global __RESTART_RECOVERY_WAITING, __RESTART_RECOVERY_RETRY_ID
     generationNonce := (IsObject(command) && command.HasOwnProp("remoteNonce"))
         ? command.remoteNonce : 0
+    if state = "RESTART_UPDATE"
+        return PrepareRemoteUpdateRestart(command)
     if (state = "PAUSE")
         SetSoftPauseClockState(true)
     else if (state = "RUN" || state = "STOP")
@@ -2475,6 +2479,7 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
 
 if (!isRestart && !isNextServerCycle)
     ResetRestartTrackingOnFreshStart()
+ClearCompletedRewardPendingOnFreshStart(isRestart,isNextServerCycle)
 WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
@@ -7494,9 +7499,12 @@ MarkServerCompletedInCurrentCycle(server, completedTime := "") {
     if (completedTime = "")
         completedTime := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     
-    SERVER_COMPLETED_CYCLE_MAP[server] := completedTime
     try {
-        IniWrite completedTime, CFG_FILE, "server_completed", server
+        if Trim(IniReadSafe(CFG_FILE,"server_completed",server,"")," `t`r`n") != completedTime
+            IniWrite completedTime, CFG_FILE, "server_completed", server
+        if Trim(IniReadSafe(CFG_FILE,"server_completed",server,"")," `t`r`n") != completedTime
+            throw Error("完成時間寫入後回讀不一致")
+        SERVER_COMPLETED_CYCLE_MAP[server] := completedTime
         WriteLog("已標記伺服器『" server "』為當日循環完成（時間: " completedTime "）", "INFO")
         return true
     } catch as e {
@@ -8254,13 +8262,13 @@ TryLaunchRestartThroughUpdater(resumeCurrentTask := false, &detail := "") {
     return true
 }
 
-QueueSafeRestartHandoff(mode, launcherPath := "") {
+QueueSafeRestartHandoff(mode, launcherPath := "", updateRequested := false) {
     global __RESTART_RECOVERY_WAITING, __RESTART_RECOVERY_REPORT_KEY
     global __RESTART_RECOVERY_RECORDING_STOPPED
     __RESTART_RECOVERY_WAITING := true
     __RESTART_RECOVERY_REPORT_KEY := "", __RESTART_RECOVERY_RECORDING_STOPPED := false
     try SetTimer(CrashWatcherTick, 0)
-    hooks := {Read:ReadRestartRecoveryIntent, Prepare:PrepareRestartRecoveryAttempt.Bind(mode, launcherPath),
+    hooks := {Read:ReadRestartRecoveryIntent, Prepare:PrepareRestartRecoveryAttempt.Bind(mode, launcherPath, updateRequested),
         Wait:RawSleep, Publish:PublishRestartRecoveryState,
         Commit:CommitRestartRecoveryHandoff, Cancel:CancelRestartRecoveryHandoff}
     try {
@@ -8302,7 +8310,7 @@ ReadRestartRecoveryIntent() {
     return {state:state, retry:__RESTART_RECOVERY_RETRY_ID}
 }
 
-PrepareRestartRecoveryAttempt(mode, launcherPath) {
+PrepareRestartRecoveryAttempt(mode, launcherPath, updateRequested := false) {
     if ReadRestartRecoveryIntent().state != "RUN"
         throw Error("停止或暫停意圖已變更，保留原任務")
     ; A previous failed prepare may have dispatched a helper. Never create a
@@ -8316,7 +8324,18 @@ PrepareRestartRecoveryAttempt(mode, launcherPath) {
     if ReadRestartRecoveryIntent().state != "RUN"
         throw Error("清理期間停止或暫停意圖已變更")
     CloseExactProcessForSelfHealing("Wuthering Waves.exe", "鳴潮外層程序", mayTerminate)
-    return TryQueueSafeRestartHandoff(mode, launcherPath)
+    if updateRequested {
+        ; An updater must not replace files while an old input/recording helper
+        ; is still alive. Failed close/read keeps this parent and retry gate.
+        CloseManagedAhkForSelfHealing("開啟LRMC\.ahk|自動開啟OKWW\.ahk|聲骸合成\.ahk")
+        CloseExactProcessForSelfHealing("LRMCAI.exe", "LRMCAI", mayTerminate)
+        CloseExactProcessForSelfHealing("ok-ww.exe", "OKWW", mayTerminate)
+        CloseOkwwPythonProcesses()
+        detail := ""
+        if !RRD_AssertDrained(&detail)
+            throw Error("完整關閉尚未確認；未啟動更新器 | " detail)
+    }
+    return TryQueueSafeRestartHandoff(mode, launcherPath, updateRequested)
 }
 
 PublishRestartRecoveryState(state, detail, attempts) {
@@ -8337,18 +8356,21 @@ PublishRestartRecoveryState(state, detail, attempts) {
     try SyncRemoteControlRuntimeState()
 }
 
-TryQueueSafeRestartHandoff(mode, launcherPath := "") {
+TryQueueSafeRestartHandoff(mode, launcherPath := "", updateRequested := false) {
     global AhkExe, __RESTART_HANDOFF_LAUNCHED, __SCREEN_RECORDING_PID
     detail := ""
     if !GM_PrepareCleanLauncherRestart(&detail)
         throw Error("啟動器交接未就緒：" detail)
     if ReadRestartRecoveryIntent().state != "RUN"
         throw Error("建立 worker 前停止或暫停意圖已變更")
+    if updateRequested && !RRD_AssertDrained(&detail)
+        throw Error("更新器交接前仍有受管程序或身分不明 | " detail)
     recording := ""
     if (__SCREEN_RECORDING_PID > 0 && ProcessExist(__SCREEN_RECORDING_PID))
         recording := RestartHandoff_RecorderIdentity(__SCREEN_RECORDING_PID)
     handoff := RestartHandoff_Prepare(AhkExe, A_ScriptFullPath, mode,
-        RuntimeFiles_RuntimeDir("腳本交接"), "", 120000, 180000, recording)
+        RuntimeFiles_RuntimeDir("腳本交接"), updateRequested ? launcherPath : "",
+        120000, updateRequested ? 600000 : 180000, recording, updateRequested)
     ; Mark preservation only after the worker confirms it owns the exact parent
     ; process handle. This is ARMED, not a claim that the next run has started.
     __RESTART_HANDOFF_LAUNCHED := true
@@ -8580,6 +8602,7 @@ MonitorRewardAndShutdown() {
     pausedLogged := false
     pendingPauseLogged := false
     pendingWarmupLogged := false
+    synthesisHeld := false
 
     __REWARD_MONITOR_ACTIVE := true
     __REWARD_MONITOR_COMPLETION_PENDING := (state.pendingReason != "")
@@ -8690,7 +8713,8 @@ MonitorRewardAndShutdown() {
             ; 事故優先於完成訊號。即使 GetRewardMonitorCompletionReason() 因為
             ; 已達放棄任務門檻而主動回傳空字串，仍必須撤銷既有 pending，
             ; 否則同一批 Log 先前保存的完成狀態可能搶在重啟判斷前關機。
-            holdCompletion := RewardMonitor_ShouldHoldCompletion(
+            holdCompletion := !(state.completionRecorded && CS_RewardAlreadySucceeded(state.key,state.pendingAt))
+                && RewardMonitor_ShouldHoldCompletion(
                 state, REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC)
             if holdCompletion {
                 if (state.pendingReason != "") {
@@ -8759,17 +8783,8 @@ MonitorRewardAndShutdown() {
 
             ; 解析期間可能收到新的遠端命令，主動操作前重新取得即時狀態。
             paused := REMOTE_CONTROL_ACTIVE && RC_IsPaused()
-            if (state.pendingReason != "" && !state.completionRecorded
-                && !RewardMonitor_ShouldHoldCompletion(state,
-                    REWARD_TASK_ABANDON_NEED_COUNT, REWARD_TASK_ABANDON_WINDOW_SEC)
-                && SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
-                if MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET, state.pendingAt) {
-                    state.completionRecorded := true
-                    SaveRewardMonitorRuntimeState(state)
-                    WriteLog("收尾條件已通過 LRMCAI 放棄任務觀察窗：已持久標記伺服器『"
-                        CURRENT_SERVER_TARGET "』完成；實際關閉仍遵守 PAUSE", "INFO")
-                }
-            }
+            ; The reward signal is pending, not server completion. Only the
+            ; post-synthesis commit may mark complete or advance the server.
             if (state.pendingReason != "") {
                 if paused {
                     if !pendingPauseLogged {
@@ -8781,29 +8796,27 @@ MonitorRewardAndShutdown() {
                         pendingWarmupLogged := true
                         WriteLog("收尾監測：暖機期間已命中完成條件，狀態已保存；暖機結束後安全收尾")
                     }
-                } else {
+                } else if !synthesisHeld {
                     delaySec := Round(REWARD_SHUTDOWN_DELAY_MS / 1000)
-                    WriteLog("收尾監測：準備依已保存條件『" state.pendingReason "』於 " delaySec " 秒後關閉")
-                    ShowTip("✅ 收尾條件成立，" delaySec "秒後關閉", 2000)
+                    WriteLog("收尾監測：條件『" state.pendingReason "』已保存；" delaySec " 秒後執行最後一次聲骸合成，成功後才收尾")
+                    WriteStep("收尾聲骸合成", "領獎條件已保存；等待合成成功後才結束或切服")
+                    ShowTip("✅ 領獎完成，準備最後一次聲骸合成", 2000)
                     if !WaitRewardMonitorForShutdown(REWARD_SHUTDOWN_DELAY_MS, "收尾監測命中後關閉延遲") {
                         WriteLog("收尾關閉延遲期間收到停止指令，已提前結束監測", "WARN")
                         return
                     }
 
-                    ; 從最後一次 PAUSE 判斷到正式進入收尾必須是不可被計時器插入的單一提交點。
-                    ; 若 PAUSE 已先被遠端輪詢處理，這裡會延後；若命令在提交後才抵達，
-                    ; 主程序會直接完成既有收尾並退出，因此該筆命令不會被錯誤 ACK 成已套用。
-                    Critical "On"
-                    if (REMOTE_CONTROL_ACTIVE && RC_IsPaused()) {
-                        Critical "Off"
-                        pendingPauseLogged := false
-                        WriteLog("收尾監測：關閉前再次收到 PAUSE，保留完成狀態並延後關閉", "WARN")
-                    } else {
-                        ClearRewardMonitorRuntimeState(state.key)
-                        __REWARD_MONITOR_COMPLETION_PENDING := false
-                        try HandleCycleFinishAndShutdown(state.pendingAt)
-                        finally Critical "Off"
+                    ; Keep child waiting/heartbeat interruptible. The helper
+                    ; owns only the final short PAUSE/STOP completion commit.
+                    synthesisResult := RewardMonitorFinishWithSynthesis(state)
+                    if synthesisResult = "completed" || synthesisResult = "stopped"
                         return
+                    if synthesisResult = "paused" {
+                        pendingPauseLogged := false
+                        WriteLog("收尾合成／提交前收到 PAUSE；保留狀態等待 RUN", "WARN")
+                    } else {
+                        synthesisHeld := true
+                        WriteStep("收尾合成未完成", "成功證據不足；保留本服與進度，不重複合成、不關閉、不跳服", "ERROR")
                     }
                 }
             } else if (!paused && warmupFinished) {
@@ -8899,6 +8912,75 @@ MonitorRewardAndShutdown() {
     }
 }
 
+RewardMonitorFinishWithSynthesis(state) {
+    global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY, __RESTART_IN_PROGRESS
+    global REMOTE_CONTROL_ACTIVE, __REWARD_MONITOR_COMPLETION_PENDING
+    ; The exact pending key/time must already survive a crash before input.
+    if state.pendingReason = "" || state.pendingAt = "" || !SaveRewardMonitorRuntimeState(state)
+        || !RewardMonitorPendingMatchesDisk(state)
+        return "failed"
+    result := CS_CompleteReward(state)
+    if result != "success"
+        return result
+    previousCritical := Critical("On")
+    try {
+        if REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY || __RESTART_IN_PROGRESS
+            return "stopped"
+        if REMOTE_CONTROL_ACTIVE && RC_IsPaused()
+            return "paused"
+        ; Retain durable pending through shutdown. A crash replays this commit
+        ; against CS's successful journal instead of generating another child.
+        return HandleCycleFinishAndShutdown(state.pendingAt,state) ? "completed" : "failed"
+    } finally Critical(previousCritical)
+}
+
+RewardMonitorPendingMatchesDisk(state, requireRecorded := false) {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+    return state.key != "" && state.pendingAt != "" && state.pendingReason != ""
+        && IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"state_key","") = state.key
+        && IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_at","") = state.pendingAt
+        && IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_reason","") = state.pendingReason
+        && (!requireRecorded || IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"completion_recorded","") = "1")
+}
+
+CommitRewardMonitorCompleted(state) {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+    if !RewardMonitorPendingMatchesDisk(state) || !CS_RewardAlreadySucceeded(state.key,state.pendingAt)
+        return false
+    try {
+        ; Never rewrite original key/time after child input. Only the monotonic
+        ; completed bit is committed, then reread before any schedule advance.
+        if IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"completion_recorded","") != "1"
+            IniWrite "1", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "completion_recorded"
+        if !RewardMonitorPendingMatchesDisk(state,true)
+            throw Error("合成完成提交回讀不一致")
+        state.completionRecorded := true
+        return true
+    } catch as err {
+        WriteLog("收尾完成紀錄未確認持久保存；保留 pending，不關閉或跳服：" err.Message,"ERROR")
+        return false
+    }
+}
+
+CanReplaceCompletedRewardMonitorState() {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+    key := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"state_key","")
+    at := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_at","")
+    return IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"completion_recorded","") = "1"
+        && CS_RewardAlreadySucceeded(key,at)
+}
+
+ClearCompletedRewardPendingOnFreshStart(isRestart, isNextServerCycle) {
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION, __REWARD_MONITOR_COMPLETION_PENDING
+    if isRestart || isNextServerCycle || !CanReplaceCompletedRewardMonitorState()
+        return false
+    key := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"state_key","")
+    if !ClearRewardMonitorRuntimeState(key,true)
+        return false
+    __REWARD_MONITOR_COMPLETION_PENDING := false
+    return true
+}
+
 WaitRewardMonitorForShutdown(totalMs, phase := "") {
     global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY
 
@@ -8937,7 +9019,7 @@ GetRewardMonitorStateKey(logPath) {
 }
 
 LoadRewardMonitorRuntimeState(logPath, defaultPos) {
-    global CFG_FILE, REWARD_MONITOR_STATE_SECTION
+    global CFG_FILE, REWARD_MONITOR_STATE_SECTION, isRestart
 
     stateKey := GetRewardMonitorStateKey(logPath)
     state := {
@@ -8963,8 +9045,18 @@ LoadRewardMonitorRuntimeState(logPath, defaultPos) {
 
     savedKey := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key", ""), " `t`r`n")
     if (savedKey != stateKey) {
-        SaveRewardMonitorRuntimeState(state)
-        return state
+        oldPending := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_reason","")
+        if oldPending = "" || (!isRestart && CanReplaceCompletedRewardMonitorState()) {
+            SaveRewardMonitorRuntimeState(state)
+            return state
+        }
+        previousParts := StrSplit(savedKey,"|"), currentParts := StrSplit(stateKey,"|")
+        if previousParts.Length < 2 || currentParts.Length < 2 || previousParts[2] != currentParts[2] {
+            WriteLog("不同伺服器仍有未確認 pending，保留原持久紀錄並阻擋覆寫／合成", "ERROR")
+            return state
+        }
+        ; Day rollover or log rotation during restart is not a new synthesis.
+        state.key := savedKey
     }
 
     state.lastPos := ReadRewardMonitorStateInteger("last_pos", defaultPos)
@@ -8993,7 +9085,25 @@ SaveRewardMonitorRuntimeState(state) {
     global CFG_FILE, REWARD_MONITOR_STATE_SECTION
 
     try {
-        IniWrite state.key, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key"
+        savedKey := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"state_key","")
+        savedAt := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_at","")
+        savedReason := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_reason","")
+        hasPending := savedReason != "" && savedAt != ""
+        samePending := hasPending && savedKey = state.key && savedAt = state.pendingAt && savedReason = state.pendingReason
+        if hasPending && !samePending {
+            replaceCompleted := savedKey != state.key && CanReplaceCompletedRewardMonitorState()
+            revokeUntrusted := savedKey = state.key && state.pendingReason = "" && state.taskAbandonCompletionHeld
+                && CS_RewardSynthesisStatus(savedKey,savedAt) = "none"
+            if !replaceCompleted && !revokeUntrusted
+                throw Error("已有不同 pending key/time；禁止覆寫可能已執行的合成身分")
+        }
+        if !samePending {
+            ; Pending reason is the admission marker and is written LAST below.
+            IniWrite "", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason"
+            IniWrite state.key, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key"
+            IniWrite state.pendingAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at"
+            IniWrite "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "completion_recorded"
+        }
         IniWrite state.hit, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "click_reward_hits"
         IniWrite state.seenClickReward ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_click_reward"
         IniWrite state.seenNoReward ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "seen_no_reward"
@@ -9006,12 +9116,13 @@ SaveRewardMonitorRuntimeState(state) {
         IniWrite state.taskAbandonLastAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_last_at"
         IniWrite state.lastTaskAbandonLine, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_task_abandon_line"
         IniWrite state.taskAbandonCompletionHeld ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "task_abandon_completion_held"
-        IniWrite state.pendingReason, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason"
-        IniWrite state.pendingAt, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_at"
-        IniWrite state.completionRecorded ? "1" : "0", CFG_FILE, REWARD_MONITOR_STATE_SECTION, "completion_recorded"
+        if !samePending
+            IniWrite state.pendingReason, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "pending_reason"
         IniWrite FormatTime(, "yyyy-MM-dd HH:mm:ss"), CFG_FILE, REWARD_MONITOR_STATE_SECTION, "updated_at"
         ; 游標最後寫入：若前面的狀態落盤中途失敗，重啟後最多重讀，不會先推進游標而漏掉命中。
         IniWrite state.lastPos, CFG_FILE, REWARD_MONITOR_STATE_SECTION, "last_pos"
+        if state.pendingReason != "" && !RewardMonitorPendingMatchesDisk(state)
+            throw Error("pending key/time 寫入後回讀不一致")
         return true
     } catch as e {
         WriteLog("收尾監測持久狀態寫入失敗：" e.Message, "ERROR")
@@ -9019,11 +9130,17 @@ SaveRewardMonitorRuntimeState(state) {
     }
 }
 
-ClearRewardMonitorRuntimeState(expectedKey := "") {
+ClearRewardMonitorRuntimeState(expectedKey := "", allowCompletedReset := false) {
     global CFG_FILE, REWARD_MONITOR_STATE_SECTION
 
     try {
         savedKey := Trim(IniReadSafe(CFG_FILE, REWARD_MONITOR_STATE_SECTION, "state_key", ""), " `t`r`n")
+        savedAt := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_at","")
+        if !allowCompletedReset && IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"completion_recorded","") = "1"
+            && CS_RewardAlreadySucceeded(savedKey,savedAt) {
+            WriteLog("拒絕一般清理撤銷已確認合成完成；僅明確 fresh 啟動可重設", "WARN")
+            return false
+        }
         if (expectedKey != "" && savedKey != "" && savedKey != expectedKey) {
             WriteLog("收尾監測狀態鍵已變更，略過清除：expected=" expectedKey " actual=" savedKey, "WARN")
             return false
@@ -9037,7 +9154,10 @@ ClearRewardMonitorRuntimeState(expectedKey := "") {
             "completion_recorded", "updated_at"
         ]
             IniWrite "", CFG_FILE, REWARD_MONITOR_STATE_SECTION, key
-        WriteLog("收尾監測持久狀態已在正式收尾前清除")
+        for key in ["state_key","pending_reason","pending_at","completion_recorded"]
+            if IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,key,"!read_error!") != ""
+                throw Error("清除 pending 回讀不一致：" key)
+        WriteLog("收尾監測持久狀態已於明確重設／不可信訊號撤銷邊界清除")
         return true
     } catch as e {
         WriteLog("清除收尾監測持久狀態失敗：" e.Message, "WARN")
@@ -9299,9 +9419,15 @@ ResetRestartTrackingAfterCompletedCycle() {
     WriteLog("已驗證本輪完成：下一輪重啟額度已更新，既有日誌仍保留故障證據")
 }
 
-HandleCycleFinishAndShutdown(completedTime := "") {
+HandleCycleFinishAndShutdown(completedTime := "", rewardState := 0) {
     ; 標記當前伺服器為已完成（收尾監測完成時才記錄）
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED
+    if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
+        if !MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET, completedTime)
+            return false
+    }
+    if IsObject(rewardState) && !CommitRewardMonitorCompleted(rewardState)
+        return false
     ; 此入口僅由收尾監測通過領獎條件、90 秒放棄任務觀察窗、暖機及
     ; PAUSE 檢查後呼叫。手動 STOP / RUN / 跳服均不能清除重試保護。
     if RenewLrmcRestartBudgetAfterCompletedCycle(completedTime) {
@@ -9309,12 +9435,6 @@ HandleCycleFinishAndShutdown(completedTime := "") {
         catch as e
             WriteLog("本輪完成後主重試額度僅部分更新，仍繼續安全收尾；請檢查設定寫入：" e.Message, "ERROR")
     }
-    if (SERVER_SCHEDULE_ENABLED && CURRENT_SERVER_TARGET != "") {
-        ; 使用實際命中時間，不用恢復 RUN 後的當下時間覆寫。
-        ; 如 PAUSE 跨過凌晨 4 點，仍會歸到命中當時的正確日循環。
-        MarkServerCompletedInCurrentCycle(CURRENT_SERVER_TARGET, completedTime)
-    }
-
     if AdvanceServerScheduleForNextCycle() {
         global __NEXTSERVER_RESTART, __RESTART_IN_PROGRESS
         __RESTART_IN_PROGRESS := true
@@ -9322,11 +9442,12 @@ HandleCycleFinishAndShutdown(completedTime := "") {
         WriteLog("伺服器排程：重啟模式保留錄影，不停止目前錄影", "WARN")
         WriteLog("伺服器排程：本輪完成，關閉程式後自動啟動下一個伺服器流程", "WARN")
         ShutdownGameLrmcOkww(true, "LOG_DETECTED")
-        return
+        return true
     }
 
     TryStopScreenRecording("收尾監測達標（保底停止）")
     ShutdownGameLrmcOkww(false, "LOG_DETECTED")
+    return true
 }
 
 RenewLrmcRestartBudgetAfterCompletedCycle(completedTime) {
@@ -9355,6 +9476,7 @@ RenewLrmcRestartBudgetAfterCompletedCycle(completedTime) {
 ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", nextServerMode := "") {
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART, __RESTART_HANDOFF_LAUNCHED
     global __CLEAN_FINAL_EXIT_REQUESTED
+    restartForUpdate := relaunchForNextServer && stopTypeCode = "WEB_RESTART_UPDATE"
     if !relaunchForNextServer {
         GM_CancelForStop(stopTypeCode)
         if !RestartHandoff_Cancel("stop=" stopTypeCode)
@@ -9367,8 +9489,11 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
     if (!relaunchForNextServer && !__RESTART_IN_PROGRESS)
         __CLEAN_FINAL_EXIT_REQUESTED := true
     WriteLog("停止類型：" stopType "（code=" stopTypeCode "）")
-    SetLrmcRunResumeReady(false, relaunchForNextServer ? "切換下一伺服器" : "正常／手動收尾")
-    if (__RESTART_IN_PROGRESS || relaunchForNextServer)
+    if !restartForUpdate
+        SetLrmcRunResumeReady(false, relaunchForNextServer ? "切換下一伺服器" : "正常／手動收尾")
+    if restartForUpdate
+        ForceStopManagedScreenRecording("網頁重新啟動更新：正常封口後完整關閉")
+    else if (__RESTART_IN_PROGRESS || relaunchForNextServer)
         WriteLog("重啟模式：保留錄影不中斷，略過收尾保底停止", "WARN")
     else
         ForceStopManagedScreenRecording("手動/收尾關閉流程保底")
@@ -9397,12 +9522,15 @@ ShutdownGameLrmcOkww(relaunchForNextServer := false, stopTypeCode := "UNKNOWN", 
     }
 
     if relaunchForNextServer {
-        WriteLog("伺服器排程：準備啟動下一輪流程", "WARN")
-        ShowTip("🔁 切換下一個伺服器，準備重啟流程", 2000)
+        WriteLog(restartForUpdate ? "網頁重啟：保留原任務，準備啟動更新器" : "伺服器排程：準備啟動下一輪流程", "WARN")
+        ShowTip(restartForUpdate ? "🔁 正在完整重啟並檢查更新" : "🔁 切換下一個伺服器，準備重啟流程", 2000)
         RawSleep(1200)
         nextServerArg := (nextServerMode = "remote") ? "nextserver remote" : "nextserver"
         try {
-            QueueSafeRestartHandoff(nextServerArg)
+            if restartForUpdate
+                QueueSafeRestartHandoff(nextServerMode, ResolvePersistentToolsRoot() "\全自動鋤地.exe", true)
+            else
+                QueueSafeRestartHandoff(nextServerArg)
         }
         catch as e {
             WriteLog("啟動下一輪伺服器流程失敗: " e.Message, "ERROR")
@@ -9435,6 +9563,8 @@ ResolveShutdownStopType(stopTypeCode) {
             return "網頁手動停止"
         case "WEB_SERVER_SWITCH":
             return "網頁手動切換伺服器"
+        case "WEB_RESTART_UPDATE":
+            return "網頁重新啟動並檢查更新"
         case "PROGRAM_MANUAL":
             return "程式手動停止"
         case "LOG_DETECTED":

@@ -5,7 +5,7 @@
 global RestartHandoff_ActiveRequest := ""
 global RestartHandoff_WorkerHandle := 0
 
-RestartHandoff_Prepare(ahkPath, scriptPath, mode, root, launcherPath := "", parentWaitMs := 120000, ackWaitMs := 180000, recording := "") {
+RestartHandoff_Prepare(ahkPath, scriptPath, mode, root, launcherPath := "", parentWaitMs := 120000, ackWaitMs := 180000, recording := "", requireLauncher := false) {
     global RestartHandoff_ActiveRequest, RestartHandoff_WorkerHandle
     if !RestartHandoff_ValidMode(mode)
         throw ValueError("Invalid restart mode")
@@ -18,6 +18,8 @@ RestartHandoff_Prepare(ahkPath, scriptPath, mode, root, launcherPath := "", pare
     worker := moduleDir "\ScriptRestartWorker.ahk"
     if !FileExist(ahkPath) || !FileExist(scriptPath) || !FileExist(worker)
         throw Error("Restart runtime, payload or worker is missing")
+    if requireLauncher && (launcherPath = "" || !FileExist(launcherPath) || InStr(mode,"restart") != 1)
+        throw Error("Required update launcher is missing or restart mode is invalid")
     if (RestartHandoff_ActiveRequest != "")
         throw Error("A restart handoff is already pending")
     parentWaitMs := Min(600000, Max(100, Integer(parentWaitMs)))
@@ -30,7 +32,7 @@ RestartHandoff_Prepare(ahkPath, scriptPath, mode, root, launcherPath := "", pare
     fields := Map("root", root, "nonce", nonce, "parent_pid", pid,
         "parent_created", RestartHandoff_ProcessCreated(DllCall("GetCurrentProcess", "ptr")),
         "ahk", ahkPath, "script", scriptPath, "mode", mode, "launcher", launcherPath,
-        "parent_wait_ms", parentWaitMs, "ack_wait_ms", ackWaitMs)
+        "parent_wait_ms", parentWaitMs, "ack_wait_ms", ackWaitMs, "require_launcher", requireLauncher ? 1 : 0)
     if IsObject(recording) {
         fields["recording_pid"] := recording["pid"]
         fields["recording_created"] := recording["created"]

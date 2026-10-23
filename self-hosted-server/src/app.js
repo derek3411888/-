@@ -150,7 +150,7 @@ function scheduleFirestoreCommandSync(uid, expectedNonce, attempt = 0) {
 
 async function sendCommand(uid, body, allowShadow = false) {
   const command = String(body.command ?? "").trim().toUpperCase();
-  if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER"].includes(command)) {
+  if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER", "RESTART_UPDATE"].includes(command)) {
     throw new HttpError(400, "命令不在允許清單", "INVALID_COMMAND");
   }
   const idempotencyKey = boundedText(body.idempotencyKey, 100) || null;
@@ -172,6 +172,18 @@ async function sendCommand(uid, body, allowShadow = false) {
     if (idempotencyKey) {
       const duplicate = await client.query("SELECT * FROM commands WHERE uid=$1 AND idempotency_key=$2", [uid, idempotencyKey]);
       if (duplicate.rowCount) return duplicate.rows[0];
+    }
+    if (command === "RESTART_UPDATE") {
+      const current = device.rows[0];
+      const payloadVersion = current.status?.payloadVersion ?? current.runtime?.payloadVersion;
+      if (![current.runtime, current.status?.runtime, current.status].some((source) => source?.remoteRestartSupported === true &&
+          typeof payloadVersion === "string" && payloadVersion.length > 0 && source.remoteRestartVersion === payloadVersion)) {
+        throw new HttpError(409, "執行端尚未回報安全重新啟動能力，請先更新 Payload", "UNSUPPORTED_CLIENT");
+      }
+      const heartbeat = new Date(current.last_seen || 0).valueOf();
+      if (!heartbeat || Date.now() - heartbeat > 300_000 || ["STOP", "OFFLINE"].includes(current.state)) {
+        throw new HttpError(409, "裝置目前離線，沒有接收重新啟動命令的執行端", "DEVICE_OFFLINE");
+      }
     }
     const pending = await client.query("SELECT * FROM commands WHERE uid=$1 AND status='PENDING' FOR UPDATE", [uid]);
     if (pending.rowCount && command !== "STOP") {

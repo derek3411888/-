@@ -149,6 +149,7 @@ RC_ReportRuntimeState() {
     reportCalls += 1
 }
 GetRewardMonitorCompletionReason(args*) => ""
+CS_RewardAlreadySucceeded(args*) => false
 UnmarkServerCompletedInCurrentCycle(args*) => false
 $extracted
 "@

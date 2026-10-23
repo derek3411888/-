@@ -6,18 +6,45 @@
   <meta name="theme-color" content="#f5f5f7">
   <meta name="color-scheme" content="light">
   <title>鳴潮自動鋤地控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=__SERVER_VERSION__-codex-progress-v1">
+  <link rel="stylesheet" href="/styles.css?v=__SERVER_VERSION__-apple-console-v1">
 </head>
 <body class="apple-ui">
   <a class="skip-link" href="#appView">跳到主要內容</a>
-  <main id="appView" class="shell">
+  <main id="appView" class="shell app-shell" tabindex="-1">
+    <aside class="app-sidebar" aria-label="裝置與頁面導覽">
+      <div class="sidebar-brand">
+        <span class="app-brand-mark" aria-hidden="true">WW</span>
+        <div><strong>鳴潮自動鋤地</strong><small>一般控制台</small></div>
+      </div>
+    <section class="device-bar">
+      <label>控制電腦
+        <select id="deviceSelect"></select>
+      </label>
+      <div>
+        <strong id="deviceTitle">尚未選擇裝置</strong>
+        <span id="deviceSummary">正在讀取狀態…</span>
+      </div>
+      <button id="refreshButton" type="button">立即重讀</button>
+    </section>
+      <p class="sidebar-section-label">控制中心</p>
+    <nav class="tabs" aria-label="控制台頁面" role="tablist">
+      <button id="tabOverview" class="active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panelOverview" tabindex="0"><span class="nav-icon" aria-hidden="true">◫</span><span>總覽</span></button>
+      <button id="tabDiagnostics" data-tab="diagnostics" type="button" role="tab" aria-selected="false" aria-controls="panelDiagnostics" tabindex="-1"><span class="nav-icon" aria-hidden="true">≋</span><span>診斷記錄</span></button>
+      <button id="tabVideos" data-tab="videos" type="button" role="tab" aria-selected="false" aria-controls="panelVideos" tabindex="-1"><span class="nav-icon" aria-hidden="true">▷</span><span>直播</span></button>
+      <button id="tabSettings" data-tab="settings" type="button" role="tab" aria-selected="false" aria-controls="panelSettings" tabindex="-1"><span class="nav-icon" aria-hidden="true">⚙</span><span>設定</span></button>
+    </nav>
+      <p class="sidebar-footnote">只操作目前選取的裝置。<br>命令需收到執行端 ACK；<br>重新啟動排程不等於流程已恢復。</p>
+    </aside>
+
+    <div class="workspace">
+
     <header class="app-header">
       <div class="brand-lockup">
         <span class="app-brand-mark" aria-hidden="true">WW</span>
         <div class="brand-copy">
-          <span class="brand-kicker">Home operations</span>
-          <h1>鳴潮自動鋤地控制台</h1>
-          <p>自架 Docker・PostgreSQL 多機控制</p>
+          <span class="brand-kicker">一般控制台 · 遠端作業</span>
+          <h1>裝置控制中心</h1>
+          <p>目前流程、裝置狀態與每一筆命令，都在這裡。</p>
         </div>
       </div>
       <div class="header-actions">
@@ -33,25 +60,6 @@
         </div>
       </div>
     </header>
-
-    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite">
-      <div class="codex-progress-overview">
-        <div class="codex-progress-title-row">
-          <span id="codexProgressDeliveryBadge" class="badge muted">尚無回報</span>
-          <strong id="codexProgressHeadline">網站回報進度</strong>
-        </div>
-        <p id="codexProgressSummary">正在讀取家中主機與 Codex 橋接狀態…</p>
-        <progress id="codexProgressBar" max="6" value="0" aria-label="網站回報進度：第 0 步，共 6 步"></progress>
-        <div class="codex-progress-meta">
-          <span id="codexProgressStep">第 0 / 6 步</span>
-          <span id="codexProgressNonce">尚無請求</span>
-          <span id="codexProgressElapsed">尚未計時</span>
-          <span id="codexProgressActivity">最後活動：—</span>
-          <span id="codexProgressBridge">Bridge：讀取中</span>
-        </div>
-      </div>
-      <button id="btnOpenCodexProgress" class="codex-progress-open" type="button">查看完整進度與回覆</button>
-    </section>
 
     <dialog id="codexSupportDialog" class="codex-support-dialog" aria-labelledby="codexSupportTitle">
       <div class="codex-dialog-heading">
@@ -148,40 +156,24 @@
       </details>
     </dialog>
 
-    <section class="device-bar card">
-      <label>控制電腦
-        <select id="deviceSelect"></select>
-      </label>
-      <div>
-        <strong id="deviceTitle">尚未選擇裝置</strong>
-        <span id="deviceSummary">正在讀取狀態…</span>
-      </div>
-      <button id="refreshButton" type="button">立即重讀</button>
-    </section>
-
-    <nav class="tabs" aria-label="控制台頁面" role="tablist">
-      <button id="tabOverview" class="active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panelOverview" tabindex="0">總覽</button>
-      <button id="tabDiagnostics" data-tab="diagnostics" type="button" role="tab" aria-selected="false" aria-controls="panelDiagnostics" tabindex="-1">診斷記錄</button>
-      <button id="tabVideos" data-tab="videos" type="button" role="tab" aria-selected="false" aria-controls="panelVideos" tabindex="-1">直播</button>
-      <button id="tabSettings" data-tab="settings" type="button" role="tab" aria-selected="false" aria-controls="panelSettings" tabindex="-1">設定</button>
-    </nav>
-
     <section id="panelOverview" class="tab-panel active" data-panel="overview" role="tabpanel" aria-labelledby="tabOverview">
       <section id="gameMaintenanceCard" class="card game-maintenance" aria-label="版本維護狀態" hidden></section>
       <div class="grid two">
         <article class="card">
-          <div class="section-title"><div><h2>流程控制</h2><p>命令必須收到精確 ACK 才算完成。</p></div></div>
+          <div class="section-title"><div><h2>流程控制</h2><p>命令受理與實機結果分開確認；重新啟動後仍需核對新心跳與進度。</p></div></div>
           <div class="flow-box">
             <span id="flowBadge" class="badge muted">等待裝置</span>
             <strong id="flowServer">尚無流程資料</strong>
             <p id="flowStep">—</p>
             <p id="switchProgress" class="hint"></p>
           </div>
-          <div class="button-row">
+          <div class="button-row control-actions">
             <button id="pauseButton" class="warn" type="button">暫停</button>
             <button id="runButton" class="ok" type="button">啟動</button>
+            <button id="restartButton" type="button" disabled>重新啟動</button>
             <button id="stopButton" class="danger" type="button">關閉腳本</button>
           </div>
+          <div id="commandStatus" class="notice muted" role="status" aria-live="polite">尚未送出命令。</div>
           <label class="field">跳到指定伺服器
             <div class="inline">
               <select id="serverSelect"><option value="">無設定</option></select>
@@ -190,7 +182,6 @@
             </div>
           </label>
           <p id="serverProgress" class="hint">尚未收到今日伺服器進度。</p>
-          <div id="commandStatus" class="notice muted">尚未送出命令。</div>
           <div id="selfHealingStatus" class="notice muted">自動偵錯：等待裝置回報。</div>
           <details><summary>裝置詳細狀態</summary><pre id="deviceMeta"></pre></details>
         </article>
@@ -316,10 +307,29 @@
         </article>
       </div>
     </section>
+    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite">
+      <div class="codex-progress-overview">
+        <div class="codex-progress-title-row">
+          <span id="codexProgressDeliveryBadge" class="badge muted">尚無回報</span>
+          <strong id="codexProgressHeadline">網站回報進度</strong>
+        </div>
+        <p id="codexProgressSummary">正在讀取家中主機與 Codex 橋接狀態…</p>
+        <progress id="codexProgressBar" max="6" value="0" aria-label="網站回報進度：第 0 步，共 6 步"></progress>
+        <div class="codex-progress-meta">
+          <span id="codexProgressStep">第 0 / 6 步</span>
+          <span id="codexProgressNonce">尚無請求</span>
+          <span id="codexProgressElapsed">尚未計時</span>
+          <span id="codexProgressActivity">最後活動：—</span>
+          <span id="codexProgressBridge">Bridge：讀取中</span>
+        </div>
+      </div>
+      <button id="btnOpenCodexProgress" class="codex-progress-open" type="button">查看完整進度與回覆</button>
+    </section>
+    </div>
   </main>
 
   <div id="toast" class="toast" hidden></div>
   <script src="/vendor/hls.min.js?v=1.6.13"></script>
-  <script type="module" src="/app.js?v=__SERVER_VERSION__-codex-progress-v1"></script>
+  <script type="module" src="/app.js?v=__SERVER_VERSION__-codex-progress-v1-restart-v1-apple-console-v1"></script>
 </body>
 </html>

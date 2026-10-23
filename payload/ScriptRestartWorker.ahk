@@ -42,6 +42,7 @@ try {
     ahkPath := IniRead(requestPath, "request", "ahk")
     scriptPath := IniRead(requestPath, "request", "script")
     launcherPath := IniRead(requestPath, "request", "launcher", "")
+    requireLauncher := IniRead(requestPath,"request","require_launcher","0") = "1"
     for path in [ahkPath, scriptPath, launcherPath] {
         if InStr(path, '"') || InStr(path, "`r") || InStr(path, "`n")
             throw Error("Invalid launch path")
@@ -73,8 +74,10 @@ try {
         flag := mode = "restart resume" ? "--resume-current-task" : "--restart-current-task"
         ; Fall back only if launching failed. A missing ACK never launches a
         ; duplicate payload because the updater may still be applying files.
-        try Run('"' launcherPath '" ' flag, launcherDir, , &launchPid)
+        try Run('"' launcherPath '" ' flag, launcherDir, "Hide", &launchPid)
     }
+    if requireLauncher && !launchPid
+        throw Error("Required update launcher could not start; local payload fallback is disabled")
     if !launchPid {
         SplitPath(scriptPath, , &scriptDir)
         SplitPath(scriptDir, , &installRoot)

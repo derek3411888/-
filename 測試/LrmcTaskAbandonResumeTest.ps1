@@ -132,6 +132,7 @@ RestartAutoScript(args*) {
     restarts += 1
 }
 RC_IsPaused() => livePaused
+CS_RewardAlreadySucceeded(args*) => false
 WaitForSelfHealingCooldown(args*) => allowRecovery
 PrepareSelfHealingPolicy(args*) => {action:"isolated recovery",consecutive:1}
 PerformSafeSelfHealing(args*) => "no external effects in test"

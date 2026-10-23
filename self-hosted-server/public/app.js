@@ -30,6 +30,7 @@ const state = {
   codexSupportRefreshInFlight: false,
   settingsSaving: false,
   settingsSaveStatus: null,
+  commandSending: false,
 };
 
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
@@ -856,6 +857,12 @@ function migrationLabel(mode) {
 
 function selectedDevice() { return state.devices.find((item) => item.uid === state.selectedUid) ?? null; }
 
+function supportsRemoteRestart(device) {
+  const payloadVersion = device?.status?.payloadVersion ?? device?.runtime?.payloadVersion;
+  return [device?.runtime, device?.status, device?.status?.runtime].some((source) => source?.remoteRestartSupported === true &&
+    typeof payloadVersion === "string" && payloadVersion.length > 0 && source.remoteRestartVersion === payloadVersion);
+}
+
 function renderDevices() {
   const previous = state.selectedUid;
   deviceSelect.replaceChildren();
@@ -931,7 +938,12 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   const pendingNonce = Number(device.pending_nonce || (forwardedCommand?.pending ? forwardedCommand.nonce : 0)) || 0;
   const pendingCommand = device.pending_command || forwardedCommand?.command || "";
   const pendingAt = device.pending_created_at || (forwardedCommand?.updatedAt ? new Date(forwardedCommand.updatedAt).toISOString() : "");
-  for (const id of ["pauseButton", "runButton"]) $(id).disabled = !controlEnabled || Boolean(pendingNonce);
+  for (const id of ["pauseButton", "runButton"]) $(id).disabled = !controlEnabled || Boolean(pendingNonce) || Boolean(state.commandSending);
+  $("runButton").disabled ||= !device.online;
+  const restartSupported = supportsRemoteRestart(device);
+  $("restartButton").disabled = !controlEnabled || !device.online || !restartSupported || Boolean(pendingNonce) || Boolean(state.commandSending);
+  $("restartButton").title = !restartSupported ? "執行端尚未回報安全重新啟動能力，請先更新 Payload"
+    : !device.online ? "裝置離線，沒有命令接收端" : "完整關閉鋤地流程，經正式啟動器更新後恢復；不重開 Windows";
   // STOP 可依伺服器契約優先取代尚未套用的非 STOP 命令。
   $("stopButton").disabled = !controlEnabled;
   const serverList = Array.isArray(status.serverScheduleList)
@@ -948,17 +960,19 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   if (pendingNonce) {
     const unanswered = pendingAt && Date.now() - new Date(pendingAt).valueOf() >= 30_000;
     setText("commandStatus", unanswered
-      ? `未回應：${pendingCommand}（nonce=${pendingNonce}）。命令仍安全保留，裝置上線後會繼續套用。`
-      : `已送出 ${pendingCommand}（nonce=${pendingNonce}），等待裝置 ACK…`);
+      ? `未回應：${commandLabel(pendingCommand)}（nonce=${pendingNonce}）。命令仍安全保留，裝置上線後會繼續套用。`
+      : `已送出 ${commandLabel(pendingCommand)}（nonce=${pendingNonce}），等待裝置 ACK…`);
     $("commandStatus").className = `notice ${unanswered ? "warning" : ""}`;
   } else if (firestoreControl && Number(forwardedCommand?.nonce) > 0) {
     const acked = Number(forwardedCommand.lastAckNonce) >= Number(forwardedCommand.nonce)
       && String(forwardedCommand.lastAckState || "").toUpperCase() === String(forwardedCommand.command || "").toUpperCase();
-    setText("commandStatus", `${forwardedCommand.command} #${forwardedCommand.nonce}｜${acked ? "ACKED" : "已轉送"}${forwardedCommand.lastAckResult ? `｜${forwardedCommand.lastAckResult}` : ""}`);
-    $("commandStatus").className = `notice ${acked ? "ok" : "muted"}`;
+    const scheduled = acked && forwardedCommand.command === "RESTART_UPDATE" && forwardedCommand.lastAckResult === "ACCEPTED";
+    setText("commandStatus", `${commandLabel(forwardedCommand.command)} #${forwardedCommand.nonce}｜${scheduled ? restartScheduledText() : acked ? "ACKED" : "已轉送"}${forwardedCommand.lastAckResult ? `｜${forwardedCommand.lastAckResult}` : ""}`);
+    $("commandStatus").className = `notice ${scheduled ? "warning" : acked ? "ok" : "muted"}`;
   } else if (device.last_command) {
-    setText("commandStatus", `${device.last_command.command} #${device.last_command.nonce}｜${device.last_command.status}${device.last_command.ack_result ? `｜${device.last_command.ack_result}` : ""}`);
-    $("commandStatus").className = `notice ${device.last_command.status === "ACKED" ? "ok" : "muted"}`;
+    const scheduled = device.last_command.status === "ACKED" && device.last_command.command === "RESTART_UPDATE" && device.last_command.ack_result === "ACCEPTED";
+    setText("commandStatus", `${commandLabel(device.last_command.command)} #${device.last_command.nonce}｜${scheduled ? restartScheduledText() : device.last_command.status}${device.last_command.ack_result ? `｜${device.last_command.ack_result}` : ""}`);
+    $("commandStatus").className = `notice ${scheduled ? "warning" : device.last_command.status === "ACKED" ? "ok" : "muted"}`;
   } else {
     setText("commandStatus", controlEnabled
       ? (firestoreControl ? "尚未送出命令；此頁會經由 Firestore 安全轉送並等待 ACK。" : "尚未送出命令。")
@@ -1048,11 +1062,12 @@ function renderDetails({ reloadSnapshot = false, reloadSettings = true } = {}) {
   const commandsBody = $("commandsBody"); commandsBody.replaceChildren();
   for (const item of wrapper.commands || []) {
     const row = document.createElement("tr");
-    const statusLabel = item.status === "PENDING" && Date.now() - new Date(item.created_at).valueOf() >= 30_000
+    const statusLabel = item.command === "RESTART_UPDATE" && item.status === "ACKED" && item.ack_result === "ACCEPTED"
+      ? restartScheduledText() : item.status === "PENDING" && Date.now() - new Date(item.created_at).valueOf() >= 30_000
       ? "PENDING／未回應" : item.status;
     [
       ["送出時間", formatTime(item.created_at)],
-      ["命令", item.command],
+      ["命令", commandLabel(item.command)],
       ["Nonce", item.nonce],
       ["狀態", statusLabel],
       ["結果", [item.ack_result, item.ack_detail].filter(Boolean).join("｜")],
@@ -1215,11 +1230,36 @@ function scheduleSelectedRefresh(includeRecordings = false) {
 
 async function sendCommand(command, extras = {}) {
   if (!state.selectedUid) return;
-  const row = await api(`/api/v1/devices/${encodeURIComponent(state.selectedUid)}/commands`, {
-    method: "POST", body: { command, idempotencyKey: crypto.randomUUID(), ...extras },
-  });
-  toast(`已送出 ${command}（nonce=${row.nonce}）`);
-  await refresh();
+  if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER", "RESTART_UPDATE"].includes(command)) throw new Error("命令無效");
+  if (state.commandSending && command !== "STOP") return;
+  const device = state.details?.device?.uid === state.selectedUid ? state.details.device : selectedDevice();
+  const pendingNonce = Number(device?.pending_nonce || (device?.firestore_command?.pending ? device.firestore_command.nonce : 0)) || 0;
+  if (pendingNonce && command !== "STOP") throw new Error("上一筆命令尚未 ACK，不能覆蓋；仍可使用關閉腳本");
+  if (command === "RESTART_UPDATE") {
+    if (!supportsRemoteRestart(device)) throw new Error("執行端尚未回報安全重新啟動能力，請先更新 Payload");
+    if (!device?.online) throw new Error("裝置離線，沒有命令接收端");
+  }
+  if (command === "RUN" && !device?.online) throw new Error("裝置離線，請先在本機啟動");
+  const uid = state.selectedUid;
+  const requestId = crypto.randomUUID();
+  state.commandSending = requestId;
+  try {
+    const row = await api(`/api/v1/devices/${encodeURIComponent(uid)}/commands`, {
+      method: "POST", body: { ...extras, command, idempotencyKey: requestId },
+    });
+    toast(`已送出 ${command === "RESTART_UPDATE" ? "重新啟動並更新（尚未完成）" : command}（nonce=${row.nonce}）`);
+    await refresh();
+  } finally {
+    if (state.commandSending === requestId) state.commandSending = false;
+  }
+}
+
+function commandLabel(command) {
+  return command === "RESTART_UPDATE" ? "重新啟動並更新鋤地流程" : command;
+}
+
+function restartScheduledText() {
+  return "已受理／排程中，尚未完成；等待新心跳與版本／流程進度回報確認";
 }
 
 async function refreshAdmin() {
@@ -1397,8 +1437,8 @@ function bindEvents() {
     button.addEventListener("click", () => activateTab(button));
     button.addEventListener("keydown", (event) => {
       let nextIndex = index;
-      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabButtons.length;
-      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabButtons.length) % tabButtons.length;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % tabButtons.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + tabButtons.length) % tabButtons.length;
       else if (event.key === "Home") nextIndex = 0;
       else if (event.key === "End") nextIndex = tabButtons.length - 1;
       else return;
@@ -1415,6 +1455,7 @@ function bindEvents() {
   $("refreshButton").addEventListener("click", () => refresh({ reloadSnapshot: true, admin: state.activeTab === "settings" }).catch((error) => toast(error.message)));
   $("pauseButton").addEventListener("click", () => sendCommand("PAUSE").catch((error) => toast(error.message)));
   $("runButton").addEventListener("click", () => sendCommand("RUN").catch((error) => toast(error.message)));
+  $("restartButton").addEventListener("click", () => { if (confirm("確定要完整關閉選取裝置的鋤地腳本／遊戲／OKWW／LRMCAI，再由正式啟動器檢查更新並恢復流程？不會重新啟動 Windows。")) sendCommand("RESTART_UPDATE").catch((error) => toast(error.message)); });
   $("stopButton").addEventListener("click", () => { if (confirm("確定要遠端完整關閉腳本？")) sendCommand("STOP").catch((error) => toast(error.message)); });
   $("switchButton").addEventListener("click", () => { const value = $("serverSelect").value; if (!value) return; const target = JSON.parse(value); sendCommand("SWITCH_SERVER", { serverIndex: target.index, serverName: target.name }).catch((error) => toast(error.message)); });
   $("completeButton").addEventListener("click", () => { const value = $("serverSelect").value; if (!value) return; const target = JSON.parse(value); if (confirm(`把 ${target.name} 標記為今天已完成？`)) sendCommand("COMPLETE_SERVER", { serverIndex: target.index, serverName: target.name }).catch((error) => toast(error.message)); });

@@ -41,7 +41,7 @@ function renderSupport(source, company, data) {
     setText: (id, text) => { element(id).textContent = text; },
     state: { codexSupportData: data }, codexSupportData: data,
     codexSupportSending: false, codexSupportRecoveryBusy: false, codexSupportError: "",
-    CODEX_SUPPORT_COOLDOWN_MS: 300_000, CODEX_BRIDGE_ONLINE_MS: 180_000,
+    CODEX_SUPPORT_COOLDOWN_MS: 30_000, CODEX_BRIDGE_ONLINE_MS: 180_000,
     CODEX_SUPPORT_MAX_MESSAGE_LENGTH: 1_000,
     CODEX_SUPPORT_PENDING_STATES: ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"],
     selectedCodexSupportMessage: () => ({ message: "下一筆" }),
@@ -75,7 +75,7 @@ test("company pending, mismatched and stale replies still cannot bypass cooldown
 async function submitCompany(data) {
   let written;
   const context = runFunctions(companySource, ["toInteger", "toMillis", "readField", "isCodexSupportCompleted", "requestCodexSupport"], {
-    Date: fixedDate, CODEX_SUPPORT_COOLDOWN_MS: 300_000, CODEX_SUPPORT_ACTION: "QUEUE_MESSAGE_V1",
+    Date: fixedDate, CODEX_SUPPORT_COOLDOWN_MS: 30_000, CODEX_SUPPORT_ACTION: "QUEUE_MESSAGE_V1",
     CODEX_SUPPORT_DOC_ID: "__codex_support", COLLECTION: "clients", db: {}, doc: () => "support-ref",
     codexSupportSending: false, codexSupportError: "", renderCodexSupportStatus() {},
     selectedCodexSupportMessage: () => ({ mode: "CUSTOM", label: "自訂訊息", message: "下一筆" }),
@@ -117,7 +117,7 @@ test("central queue admits the next report under its lock after final reply", as
     return { rows: [] };
   } };
   const context = runFunctions(queueSource, ["milliseconds", "isCodexResponseChronologicallyValid", "hasCompletedCodexResponse", "latestRequest", "submitDirectCodexSupport"], {
-    Date: fixedDate, CODEX_SUPPORT_COOLDOWN_MS: 300_000,
+    Date: fixedDate, CODEX_SUPPORT_COOLDOWN_MS: 30_000,
     CODEX_SUPPORT_PENDING_STATES: ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"],
     PENDING_RESPONSE_STATES: new Set(["WAITING", "IN_PROGRESS"]), TERMINAL_RESPONSE_STATES: new Set(["COMPLETED", "FAILED", "INTERRUPTED"]),
     resolveCodexSupportMessage: () => ({ mode: "CUSTOM", label: "自訂訊息", message: "下一筆" }),
@@ -183,7 +183,7 @@ test("unrelated client changes still refresh selected-device age-dependent summa
   const calls = [];
   const dropdown = { value: "selected", appendChild() {}, innerHTML: "" };
   const context = runFunctions(companySource, ["toInteger", "toMillis", "readField", "normalizeStatus", "renderClients"], {
-    Date: fixedDate, OFFLINE_THRESHOLD_MS: 300_000,
+    Date: fixedDate, OFFLINE_THRESHOLD_MS: 30_000,
     cache: new Map([["selected", { status: "RUN", lastHeartbeat: 1 }]]), pcDropdown: dropdown,
     document: { createElement: () => ({}) }, statusMsg: {}, maintenanceNotice: "",
     startSelectedMediaSubscription() {}, renderSelectedClient: () => calls.push("full"),
@@ -226,7 +226,7 @@ test("Firestore compatibility status recognizes the current reply and unlocks wi
     Date: fixedDate,
     integer: (value, fallback) => Number(value) || fallback,
     isCodexSupportPending: (request, status, state) => request > status || ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"].includes(state),
-    codexSupportCooldownRemaining: (at) => at ? Math.max(0, at + 300_000 - now) : 0,
+    codexSupportCooldownRemaining: (at) => at ? Math.max(0, at + 30_000 - now) : 0,
   });
   const documentFor = (data) => ({ fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key,
     typeof value === "number" ? { integerValue: String(value) } : { stringValue: value }])) });

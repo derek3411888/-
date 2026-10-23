@@ -139,6 +139,9 @@ RC_IsPaused() => paused
 IniReadSafe(file,section,key,default) => IniRead(file,section,key,default)
 WriteLog(args*) => 0
 WriteStep(args*) => 0
+RRD_AssertDrained(&detail) => true
+CloseManagedAhkForSelfHealing(args*) => 0
+CloseOkwwPythonProcesses(args*) => 0
 __FUNCTIONS__
 '@
     $fixture=$fixture.Replace('__ROOT__',$root).Replace('__FUNCTIONS__',$functions)

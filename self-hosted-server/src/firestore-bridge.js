@@ -164,6 +164,16 @@ export async function importFirestoreDevices({ publish = true } = {}) {
             [uid, JSON.stringify(maintenance), maintenance.observedAt],
           );
         }
+        // Never let an older Firestore mirror overwrite a newer direct heartbeat.
+        await client.query(
+          `UPDATE devices SET status=COALESCE(status,'{}'::jsonb)||jsonb_build_object(
+             'remoteRestartSupported',$2::boolean,'remoteRestartVersion',$3::text,'payloadVersion',$4::text)
+           WHERE uid=$1 AND (last_seen IS NULL OR last_seen<=to_timestamp($5::double precision/1000))`,
+          [uid, field(document, "remoteRestartSupported", false) === true,
+            boundedText(field(document, "remoteRestartVersion", ""), 80),
+            boundedText(field(document, "payloadVersion", ""), 80),
+            integer(field(document, "lastHeartbeat", 0), 0, 0, Number.MAX_SAFE_INTEGER)],
+        );
         if (importedSettings.effectiveRevision > 0) {
           const effectiveAckAt = importedSettings.ackRevision === importedSettings.effectiveRevision
             && importedSettings.ackAt > 0 ? new Date(importedSettings.ackAt) : new Date();

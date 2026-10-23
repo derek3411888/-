@@ -1047,7 +1047,7 @@ RC_ApplyRemoteState(desired, nonce, command := "", recoverClaim := false) {
     global RC_ACTIVE_STOP_ACK, RC_ACTIVE_STOP_SIDE_EFFECTS_COMPLETE
     global __RESTART_IN_PROGRESS, __NEXTSERVER_RESTART
     d := StrUpper(Trim(desired, " `t`r`n"))
-    if (d != "RUN" && d != "PAUSE" && d != "STOP" && d != "SWITCH_SERVER" && d != "COMPLETE_SERVER")
+    if (d != "RUN" && d != "PAUSE" && d != "STOP" && d != "SWITCH_SERVER" && d != "COMPLETE_SERVER" && d != "RESTART_UPDATE")
         d := "RUN"
 
     ; 在任何 callback／ACK／狀態副作用之前，以短 Critical 原子重驗並 claim nonce。
@@ -1100,7 +1100,7 @@ RC_ApplyRemoteState(desired, nonce, command := "", recoverClaim := false) {
         if recoveredClaim
             RC_Log("Replaying interrupted claimed command: state=" d " nonce=" nonce, "WARN")
 
-    if (d = "SWITCH_SERVER" || d = "COMPLETE_SERVER") {
+    if (d = "SWITCH_SERVER" || d = "COMPLETE_SERVER" || d = "RESTART_UPDATE") {
         ; 切服與標記今日完成都是一次性動作，不把 client 執行狀態改成動作名稱。
         ; callback 負責驗證與持久化；切服 ACK 必須在真正關閉前送出。
         resultCode := "HANDLER_ERROR"
@@ -1111,6 +1111,10 @@ RC_ApplyRemoteState(desired, nonce, command := "", recoverClaim := false) {
                 resultCode := "NO_HANDLER"
                 resultDetail := "裝置未註冊伺服器命令處理器"
             } else {
+                if !IsObject(command)
+                    command := {}
+                command.remoteNonce := nonce
+                command.remoteState := d
                 try result := %RC_ON_STATE_CHANGED%(d, command)
                 catch as e
                     result := { code: "HANDLER_ERROR", detail: e.Message }
@@ -1486,6 +1490,8 @@ RC_PatchClientState(state, isShutdown) {
     body .= '"gameMaintenanceJson":{"stringValue":' GM_PublicQuote(GM_PublicStatusJson(),4096) '},'
     body .= '"docKind":{"stringValue":"client"},'
     body .= '"schemaVersion":{"integerValue":"7"},'
+    body .= '"remoteRestartSupported":{"booleanValue":true},'
+    body .= '"remoteRestartVersion":{"stringValue":"' RC_JsonEsc(PAYLOAD_BUILD_VERSION) '"},'
     body .= '"uid":{"stringValue":"' RC_JsonEsc(RC_UID) '"},'
     body .= '"displayName":{"stringValue":"' RC_JsonEsc(RC_DISPLAY_NAME) '"},'
     body .= '"computerName":{"stringValue":"' RC_JsonEsc(A_ComputerName) '"},'
@@ -1569,6 +1575,8 @@ RC_PatchClientState(state, isShutdown) {
     url := RC_ClientDocUrl()
     url .= "&updateMask.fieldPaths=docKind"
     url .= "&updateMask.fieldPaths=schemaVersion"
+    url .= "&updateMask.fieldPaths=remoteRestartSupported"
+    url .= "&updateMask.fieldPaths=remoteRestartVersion"
     url .= "&updateMask.fieldPaths=uid"
     url .= "&updateMask.fieldPaths=displayName"
     url .= "&updateMask.fieldPaths=computerName"

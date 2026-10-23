@@ -4,7 +4,9 @@
 ; Uses the synthesis script's existing ImagePut, RapidOcr and runtime paths.
 ; Every input remains tied to the original HWND and held process handle.
 class SynthesisMenuIo {
-    __New(hwnd) {
+    __New(hwnd, inputGate := 0, budgetClock := 0, pauseEpoch := 0) {
+        this.inputGate := inputGate
+        this.budgetClock := budgetClock, this.pauseEpochCallback := pauseEpoch
         this.hwnd := hwnd, this.sequence := 0, this.processHandle := 0
         this.pid := WinGetPID("ahk_id " hwnd)
         if WinGetClass("ahk_id " hwnd) != "UnrealWindow"
@@ -18,13 +20,24 @@ class SynthesisMenuIo {
         created := Buffer(8), ended := Buffer(8), kernel := Buffer(8), userTime := Buffer(8)
         if !DllCall("GetProcessTimes","ptr",this.processHandle,"ptr",created,"ptr",ended,"ptr",kernel,"ptr",userTime)
             throw Error("聲骸選單：無法取得遊戲建立時間")
-        this.key := hwnd ":" this.pid ":" NumGet(created,0,"Int64")
+        this.started := String(NumGet(created,0,"Int64"))
+        this.path := SMR_ProcessImage(this.processHandle)
+        if this.path = ""
+            throw Error("聲骸選單：無法確認遊戲映像路徑")
+        this.key := hwnd ":" this.pid ":" this.started
     }
     __Delete() {
         if this.HasOwnProp("processHandle") && this.processHandle
             DllCall("CloseHandle","ptr",this.processHandle)
     }
     Now() => DllCall("GetTickCount64","UInt64")
+    BudgetNow() => this.HasOwnProp("budgetClock") && IsObject(this.budgetClock) ? this.budgetClock.Call() : this.Now()
+    PauseEpoch() => this.HasOwnProp("pauseEpochCallback") && IsObject(this.pauseEpochCallback) ? this.pauseEpochCallback.Call() : 0
+    RetryAfterPause(obs) {
+        if IsObject(this.inputGate)
+            this.inputGate.Call()
+        return obs.HasOwnProp("pauseEpoch") && obs.pauseEpoch != this.PauseEpoch()
+    }
     Wait(ms) => Sleep(ms)
     Log(message) {
         global logger
@@ -41,8 +54,10 @@ class SynthesisMenuIo {
     }
     Observe() {
         global ocrEngine
+        if this.HasOwnProp("inputGate") && IsObject(this.inputGate)
+            this.inputGate.Call()
         this.sequence += 1
-        obs := {valid:false,key:"",frame:this.sequence,candidate:{kind:"invalid"},worldReady:false}
+        obs := {valid:false,key:"",frame:this.sequence,candidate:{kind:"invalid"},worldReady:false,pauseEpoch:this.PauseEpoch()}
         if !this.Alive()
             return obs
         path := RuntimeFiles_NewImagePath("synthesis_menu")
@@ -76,6 +91,8 @@ class SynthesisMenuIo {
         return false
     }
     Foreground(obs) {
+        if IsObject(this.inputGate)
+            this.inputGate.Call()
         if !this.Alive() || !SMR_InputFresh(obs,this.key,this.Now())
             return false
         try {
@@ -87,6 +104,8 @@ class SynthesisMenuIo {
         return false
     }
     FinalReady(obs) {
+        if IsObject(this.inputGate)
+            this.inputGate.Call()
         try {
             WinGetClientPos(, ,&width,&height,"ahk_id " this.hwnd)
             return width = obs.width && height = obs.height && this.Alive()
@@ -119,4 +138,23 @@ class SynthesisMenuIo {
             CoordMode("Mouse",oldMode)
         }
     }
+}
+
+SMR_ProcessImage(handle) {
+    pathBuffer := Buffer(65536), chars := 32768
+    if !DllCall("QueryFullProcessImageNameW","ptr",handle,"uint",0,"ptr",pathBuffer,"uint*",&chars)
+        return ""
+    path := StrGet(pathBuffer,chars,"UTF-16")
+    imageFileHandle := DllCall("CreateFileW","str",path,"uint",0,"uint",7,"ptr",0,"uint",3,"uint",0x02000000,"ptr",0,"ptr")
+    if !imageFileHandle || imageFileHandle = -1
+        return ""
+    try {
+        count := DllCall("GetFinalPathNameByHandleW","ptr",imageFileHandle,"ptr",pathBuffer,"uint",32768,"uint",0,"uint")
+        if !count || count >= 32768
+            return ""
+        final := StrGet(pathBuffer)
+        if SubStr(final,1,8) = "\\?\UNC\"
+            return "\\" SubStr(final,9)
+        return SubStr(final,1,4) = "\\?\" ? SubStr(final,5) : final
+    } finally DllCall("CloseHandle","ptr",imageFileHandle)
 }
