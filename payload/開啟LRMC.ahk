@@ -7,6 +7,8 @@ SetWorkingDir A_ScriptDir
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include ManagedProcessGuard.ahk
+#Include CapsLockGuard.ahk
+SetStoreCapsLockMode(false)
 
 ; 初始化新的日誌系統
 global logger := InitLogger("開啟LRMC")
@@ -895,6 +897,7 @@ EnsureWindowForegroundForClick(hwnd, pid := 0) {
     if (!hwnd || !WinExist("ahk_id " hwnd))
         return false
 
+    CapsLockGuard_EnsureOff(WriteLog)
     try WinRestore("ahk_id " hwnd)
     Sleep 120
     try WinActivate("ahk_id " hwnd)
@@ -958,6 +961,7 @@ SendCtrlF1(pid, preferredHwnd := 0) {
         return false
     }
 
+    CapsLockGuard_EnsureOff(WriteLog)
     ; 第一輪：背景 PostMessage
     for hwnd in targets {
         try {

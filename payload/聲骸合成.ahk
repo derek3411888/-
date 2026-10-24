@@ -41,6 +41,8 @@ catch
 #Include SynthesisMenuRuntime.ahk
 #Include SynthesisCompletionChild.ahk
 #Include SynthesisCountPolicy.ahk
+#Include CapsLockGuard.ahk
+SetStoreCapsLockMode(false)
 
 ResolveBundledAhkExe() {
     candidates := []
@@ -1035,6 +1037,7 @@ SynthesisEnsureInputAllowed() {
         throw Error("合成原遊戲程序身分已改變")
     if !SynthesisDesktopAllowsInput()
         throw Error("合成桌面未通過互動／鎖定安全檢查")
+    CapsLockGuard_EnsureOff(WriteLog)
     return true
 }
 

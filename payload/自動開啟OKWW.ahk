@@ -11,6 +11,8 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 #Include RuntimeFilePaths.ahk
 #Include OkwwOcrTextMatchers.ahk
 #Include ManagedProcessGuard.ahk
+#Include CapsLockGuard.ahk
+SetStoreCapsLockMode(false)
 
 global OKWW_HANDOFF_NONCE := ""
 global OKWW_HANDOFF_PATH := ""
@@ -1575,6 +1577,7 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
                 }
                 if ShouldAbortOkwwHandoff(&abortReason)
                     return false
+                CapsLockGuard_EnsureOff(WriteLog)
                 MouseMove best[1], best[2]
                 if SleepOkwwWithAbort(40, &abortReason)
                     return false
@@ -1590,6 +1593,7 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
                 Log("DoOCRClick send hotkey=" sendHotkey)
                 if ShouldAbortOkwwHandoff(&abortReason)
                     return false
+                CapsLockGuard_EnsureOff(WriteLog)
                 Send(sendHotkey)
             }
             if SleepOkwwWithAbort(800, &abortReason)

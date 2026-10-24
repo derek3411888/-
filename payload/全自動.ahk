@@ -55,6 +55,9 @@ global __RESTART_RECOVERY_WAITING := false, __RESTART_RECOVERY_RETRY_ID := 0
 global __RESTART_RECOVERY_REPORT_KEY := "", __RESTART_RECOVERY_REPORT_TICK := 0
 global __RESTART_RECOVERY_RECORDING_STOPPED := false
 #Include InteractiveDesktopGuard.ahk
+#Include CapsLockGuard.ahk
+; Only the dedicated guard changes Caps Lock; Send must not restore it to On.
+SetStoreCapsLockMode(false)
 #Include ForegroundBlockerPolicy.ahk
 #Include ScreenRecordingEncoderPolicy.ahk
 #Include PerformanceTelemetry.ahk
@@ -154,7 +157,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.34"
+global PAYLOAD_BUILD_VERSION := "5.35"
 global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.44"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
@@ -1847,6 +1850,25 @@ Sleep(delayMs) {
     }
 }
 
+; Main owns the periodic guard so Caps Lock is also checked while auxiliary
+; automation runs. It never changes foreground, recovery or completion state.
+CapsLockGuardTick() {
+    if !CapsLockGuardMayCheck()
+        return
+    if !GetKeyState("CapsLock", "T") || !GetInteractiveDesktopState().ok
+        return
+    CapsLockGuard_EnsureOff(WriteLog, CapsLockGuardMayCheck)
+}
+
+CapsLockGuardMayCheck() {
+    global REMOTE_STOP_IN_PROGRESS, EXITING_FROM_TRAY, __RESTART_IN_PROGRESS
+    global __NEXTSERVER_RESTART, __CLEAN_FINAL_EXIT_REQUESTED, REMOTE_CONTROL_ACTIVE
+    if REMOTE_STOP_IN_PROGRESS || EXITING_FROM_TRAY || __RESTART_IN_PROGRESS
+        || __NEXTSERVER_RESTART || __CLEAN_FINAL_EXIT_REQUESTED
+        return false
+    return !(REMOTE_CONTROL_ACTIVE && RC_IsPaused()) && !GM_IsMaintenanceStopped()
+}
+
 GetWutheringAudioTargets() {
     global CFG_FILE, WUTHERING_PROCESS_EXE
 
@@ -2535,6 +2557,8 @@ if (gate.mode = "skip") {
 }
 if (gate.mode = "stop")
     ExitApp
+CapsLockGuardTick()
+SetTimer(CapsLockGuardTick, 1000)
 if (gate.mode = "normal") {
     WriteLog("維護時間閘門已放行，執行啟動前檢測")
     WriteStep("清場", "關閉既有目標進程")
