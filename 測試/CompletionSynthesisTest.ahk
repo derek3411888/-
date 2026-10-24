@@ -42,6 +42,28 @@ try {
     Assert(CS_Run(f,"k") = "stopped" && f.cancelled, "STOP cancels held child and preserves failure")
     f := FinishIo(), f.pauseAt := 200, f.resumeAt := 1200, f.exitAt := 1400
     Assert(CS_Run(f,"k",1000) = "success" && f.launches = 1, "pause keeps one child and excludes paused time from active timeout")
+    for control in ["PAUSE","STOP"] {
+        for boundary in ["reserved-save","first-heartbeat"] {
+            f := FinishIo(), f.flipAt := boundary, f.flipTo := control
+            expectedResult := control = "PAUSE" ? "paused" : "stopped"
+            Assert(CS_Run(f,"k") = expectedResult && f.launches = 0,
+                control " during " boundary " must not launch a child")
+        }
+        for boundary in ["receipt","success-save"] {
+            f := FinishIo(), f.flipAt := boundary, f.flipTo := control
+            expectedResult := control = "PAUSE" ? "paused" : "stopped"
+            Assert(CS_Run(f,"k") = expectedResult && f.saved.stage = "success",
+                control " during " boundary " preserves proof without granting shutdown")
+            Assert(CS_Run(f,"k") = expectedResult && f.launches = 1,
+                "saved success still obeys " control)
+            f.desired := "RUN"
+            Assert(CS_Run(f,"k") = "success" && f.launches = 1,
+                "resuming saved proof never repeats synthesis after " boundary)
+        }
+    }
+    f := FinishIo(), f.flipAt := "monitor-heartbeat", f.flipTo := "STOP", f.exitAt := 0
+    Assert(CS_Run(f,"k") = "stopped" && f.cancelled && f.saved.stage = "stopped",
+        "STOP during monitor heartbeat cannot use stale RUN to accept exit")
     Assert(!CS_LeaseAllowsInput("token|RUN|1000|0","token",4000), "expired parent heartbeat cannot allow input")
     Assert(!CS_LeaseAllowsInput("token|PAUSE|1000|0","token",1000), "PAUSE cannot allow input")
     Assert(!CS_LeaseAllowsInput("other|RUN|1000|0","token",1000), "other attempt cannot allow input")
@@ -56,7 +78,7 @@ try {
         actual := expected.Clone(), actual.%field% := field = "path" ? "E:\other\Client-Win64-Shipping.exe" : "999"
         Assert(!CS_GameIdentityMatches(expected,actual),"changed " field " cannot receive synthesis input")
     }
-    FileAppend("PASS: completion synthesis 35 assertions`n","*")
+    FileAppend("PASS: completion synthesis 52 assertions`n","*")
     ExitApp(0)
 } catch as err {
     FileAppend("FAIL: " err.Message " | " err.File ":" err.Line "`n","**")
@@ -73,6 +95,7 @@ class FinishIo {
         this.desired := "RUN", this.persist := true, this.prepared := true
         this.stopAt := -1, this.pauseAt := -1, this.resumeAt := -1, this.pauseInPrepare := false
         this.cancelWorks := true
+        this.flipAt := "", this.flipTo := "RUN", this.beats := 0
     }
     Now() => this.tick
     Wait(ms) => this.tick += ms
@@ -89,6 +112,9 @@ class FinishIo {
         if !this.persist
             return false
         this.saved := state.Clone()
+        if (this.flipAt = "reserved-save" && state.stage = "reserved")
+            || (this.flipAt = "success-save" && state.stage = "success")
+            this.desired := this.flipTo
         return true
     }
     Prepare() {
@@ -101,8 +127,16 @@ class FinishIo {
         return {owned:true}
     }
     Poll(child) => {exited:this.tick >= this.exitAt,code:this.code}
-    Receipt(state) => this.receiptText
+    Receipt(state) {
+        if this.flipAt = "receipt"
+            this.desired := this.flipTo
+        return this.receiptText
+    }
     Heartbeat(state,control) {
+        this.beats += 1
+        if (this.flipAt = "first-heartbeat" && this.beats = 1)
+            || (this.flipAt = "monitor-heartbeat" && this.beats = 2)
+            this.desired := this.flipTo
     }
     Cancel(child) {
         if !this.cancelWorks

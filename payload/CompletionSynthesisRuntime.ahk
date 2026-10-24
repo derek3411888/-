@@ -50,17 +50,12 @@ class CompletionSynthesisIo {
     Load(key) {
         if !FileExist(this.statePath)
             return 0
-        parts := StrSplit(Trim(FileRead(this.statePath,"UTF-8"),"`r`n"),"`n","`r")
+        parts := StrSplit(Trim(CS_ReadControlText(this.statePath),"`r`n"),"`n","`r")
         if parts.Length != 3
             throw Error("合成持久狀態損毀；禁止重複啟動")
         return {key:parts[1],token:parts[2],stage:parts[3]}
     }
-    Atomic(path,text) {
-        temp := path ".new"
-        try FileDelete(temp)
-        FileAppend(text,temp,"UTF-8-RAW")
-        FileMove(temp,path,1)
-    }
+    Atomic(path,text) => CS_WriteControlText(path,text)
     Save(state) {
         try {
             if InStr(state.key,"`n") || InStr(state.key,"`r")
@@ -108,10 +103,11 @@ class CompletionSynthesisIo {
         }
         return false
     }
-    Heartbeat(state,control) => this.Atomic(this.root "\" state.token ".lease",state.token "|" control "|" this.Now() "|" state.pausedMs)
+    Heartbeat(state,control) => this.Atomic(this.root "\" state.token ".lease",
+        () => state.token "|" CS_RestrictControl(control,this.Control()) "|" this.Now() "|" state.pausedMs)
     Receipt(state) {
         path := this.root "\" state.token ".receipt"
-        return FileExist(path) ? Trim(FileRead(path,"UTF-8")," `t`r`n") : ""
+        return FileExist(path) ? Trim(CS_ReadControlText(path)," `t`r`n") : ""
     }
     Launch(state) {
         global AhkExe

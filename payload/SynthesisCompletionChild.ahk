@@ -29,7 +29,10 @@ class CS_ChildContext {
             code := 0
             if !DllCall("GetExitCodeProcess","ptr",this.parentHandle,"uint*",&code) || code != 259
                 throw Error("收尾合成主程序已退出；禁止任何輸入")
-            lease := FileRead(this.leasePath,"UTF-8"), now := DllCall("GetTickCount64","UInt64")
+            lease := CS_ReadControlText(this.leasePath), now := DllCall("GetTickCount64","UInt64")
+            ; The parent can exit during a bounded file-contention wait.
+            if !DllCall("GetExitCodeProcess","ptr",this.parentHandle,"uint*",&code) || code != 259
+                throw Error("收尾合成主程序已退出；禁止任何輸入")
             parts := StrSplit(Trim(lease," `t`r`n"),"|")
             if parts.Length != 4 || parts[1] != this.token || !IsNumber(parts[3]) || !IsNumber(parts[4])
                 || Number(parts[4]) < this.pausedMs || Number(parts[4]) > now
@@ -62,10 +65,7 @@ class CS_ChildContext {
         if !this.enabled
             return success ? 0 : 2
         text := this.token "|" (success ? "success" : "failed")
-        temp := this.receiptPath ".new"
-        try FileDelete(temp)
-        FileAppend(text,temp,"UTF-8-RAW")
-        FileMove(temp,this.receiptPath,1)
+        CS_WriteControlText(this.receiptPath,text)
         return success ? 0 : 2
     }
 }
