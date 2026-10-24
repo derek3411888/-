@@ -1,8 +1,33 @@
 #Requires AutoHotkey v2.0
 #Include *i ..\payload\SynthesisCountPolicy.ahk
+#Include fixtures\SynthesisCountMytuf20261024.ahk
 #Warn VarUnset, Off
 try {
     Assert(IsSet(SC_ParseCount),"missing semantic merge-count parser")
+    actual := MytufFusionCountBlocks()
+    Assert(SC_ParseCount([actual[2]],1280,720) = 20,"actual MYTUF complete data-fusion label is a count")
+    Assert(SC_ParseCount(actual,1280,720) = 20,"actual material row overlapping the count ROI does not hide the count")
+    Assert(SC_ParseCount([Block("數據融合次數：0")],1280,720) = 0,"traditional complete data-fusion label accepted")
+    Assert(SC_ParseCount([actual[1]],1280,720) = -1,"material selection fraction is never a fusion count")
+    Assert(SC_ParseCount([Block("数据融合次数：0/20")],1280,720) = -1,"partial data-fusion value is unknown")
+    zeroActual := MytufFusionCountBlocks()
+    zeroActual[2].text := "数据融合次数：0"
+    Assert(SC_ParseCount(zeroActual,1280,720) = 0,"explicit zero remains grounded by the full label despite the adjacent material row")
+    for delta in [1,4] {
+        shifted := MytufFusionCountBlocks()
+        for p in shifted[1].boxPoint
+            p.y += delta
+        Assert(SC_ParseCount(shifted,1280,720) = 20,"synthetic material OCR padding jitter cannot mask the real positive count")
+        shifted[2].text := "数据融合次数：0"
+        Assert(SC_ParseCount(shifted,1280,720) = 0,"synthetic material jitter with explicit zero remains semantic")
+    }
+    Assert(SC_ParseCount([Block("次数0"),Block("次数20",840,100)],1280,720) = -1,"center outside ROI cannot hide a clipped conflicting count beside zero")
+    Assert(SC_ParseCount([Block("数据融合次数",940,80),Block("20",1030,25)],1280,720) = 20,"split full label and number remain uniquely aligned")
+    Assert(SC_ParseCount([Block("数据融合次数：20",900)],1280,720) = -1,"clipped actual count candidates are still rejected")
+    for b in actual
+        for p in b.boxPoint
+            p.x *= 1.5, p.y *= 1.5
+    Assert(SC_ParseCount(actual,1920,1080) = 20,"actual neighboring rows scale consistently with the client capture")
     Assert(SC_ParseCount([Block("次数：0")],1280,720) = 0,"explicit contextual zero is accepted")
     Assert(SC_ParseCount([Block("融合次數12")],1280,720) = 12,"traditional count label accepted")
     for text in ["0","12abc","0/12","剩余0","次数0x","次数-1","次数00","次数1.5","0次"]

@@ -2,6 +2,8 @@
 
 ; A standalone digit has no count semantics. Accept a unique complete label +
 ; count (or one aligned split label/value pair), entirely within the known ROI.
+; The known material-selection row can have padded OCR boxes overlapping this
+; ROI. Exclude that exact semantic row, never a potentially clipped count row.
 SC_ParseCount(blocks,width,height) {
     if !(blocks is Array) || width < 100 || height < 100
         return -1
@@ -17,9 +19,11 @@ SC_ParseCount(blocks,width,height) {
             x2 := p[3].x*1280/width, y2 := p[3].y*720/height
             if x2 < 936 || x1 > 1075 || y2 < 603 || y1 > 633
                 continue
+            text := RegExReplace(block.text,"\s+","")
+            if RegExMatch(text,"^已(?:选择|選擇)融合材料[（(][0-9]{1,4}/[0-9]{1,4}[）)]$")
+                continue
             if x1 < 936 || x2 > 1075 || y1 < 603 || y2 > 633 || x2 <= x1 || y2 <= y1
                 return -1
-            text := RegExReplace(block.text,"\s+","")
             if text != ""
                 texts.Push({text:text,x1:x1,x2:x2,y:(y1+y2)/2})
         } catch {
@@ -27,13 +31,13 @@ SC_ParseCount(blocks,width,height) {
         }
     }
     if texts.Length = 1 {
-        if RegExMatch(texts[1].text,"^(?:融合)?(?:次数|次數)[：:]?(0|[1-9][0-9]{0,3})$",&m)
+        if RegExMatch(texts[1].text,"^(?:(?:数据|數據)?融合)?(?:次数|次數)[：:]?(0|[1-9][0-9]{0,3})$",&m)
             return Integer(m[1])
     } else if texts.Length = 2 {
         label := texts[1], value := texts[2]
         if label.x1 > value.x1
             label := texts[2], value := texts[1]
-        if RegExMatch(label.text,"^(?:融合)?(?:次数|次數)[：:]?$")
+        if RegExMatch(label.text,"^(?:(?:数据|數據)?融合)?(?:次数|次數)[：:]?$")
             && RegExMatch(value.text,"^(0|[1-9][0-9]{0,3})$",&m)
             && label.x2 <= value.x1 && value.x1-label.x2 <= 35 && Abs(label.y-value.y) <= 6
             return Integer(m[1])

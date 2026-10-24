@@ -154,7 +154,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.33"
+global PAYLOAD_BUILD_VERSION := "5.34"
 global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.44"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
@@ -2865,8 +2865,7 @@ try {
         }
         
         if (!found) {
-            WriteLog("聲骸合成已完成")
-            ShowTip("✅ 聲骸合成已完成", 2000)
+            WriteLog("聲骸合成子程序已退出，核對結果旗標")
             
             ; 檢查是否有重啟標記
             flagFile := dataDir "\synthesis_restart.flag"
@@ -2882,6 +2881,7 @@ try {
                 RequestRestart(detail, "WARN", CRASH_RESTART_MODE, "SYNTHESIS_RESTART_FLAG", "聲骸合成")
                 return
             }
+            WriteLog("聲骸合成子程序已結束，未回報重啟旗標")
             break
         }
 
