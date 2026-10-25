@@ -75,18 +75,12 @@ TestDurableFinish() {
     GMTest_Assert(RewardMonitorFinishWithSynthesis(restored) = "completed" && launches = 1,
         "restart after child success only replays commit, never synthesis")
     forbidPendingRewrite := false
-    GMTest_Assert(!ClearCompletedRewardPendingOnFreshStart(true,false)
-        && !ClearCompletedRewardPendingOnFreshStart(false,true),"restart and nextserver never clear pending at startup")
-    GMTest_Assert(ClearCompletedRewardPendingOnFreshStart(false,false)
-        && IniRead(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_reason","bad") = "",
-        "explicit fresh launch clears only recorded plus matching successful synthesis")
+    ; Fresh-only archive/reset is exercised with actual control files in
+    ; FreshRewardStateTest.ps1. This suite retains internal replay protection.
     state := Seed(), outcomeValue := "failed"
     SaveRewardMonitorRuntimeState(state)
     IniWrite("1",CFG_FILE,REWARD_MONITOR_STATE_SECTION,"completion_recorded")
     journal[state.key "|" state.pendingAt] := "running"
-    GMTest_Assert(!ClearCompletedRewardPendingOnFreshStart(false,false)
-        && IniRead(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"pending_at","") = state.pendingAt,
-        "fresh launch cannot clear failed, unknown or running synthesis")
     activeKey := "20261024|Asia|new.log", isRestart := true
     restored := LoadRewardMonitorRuntimeState("new.log",0)
     GMTest_Assert(restored.key = state.key && restored.pendingAt = state.pendingAt,

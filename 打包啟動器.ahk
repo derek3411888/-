@@ -2,14 +2,15 @@
 #SingleInstance Off
 #Include LauncherProcessCleanupPolicy.ahk
 #Include LauncherStartupGuard.ahk
+#Include LauncherFreshStart.ahk
 #Include payload\InstallStartupLock.ahk
 #Include LauncherHttp.ahk
 #Include LauncherPayloadUpdatePolicy.ahk
 SetWorkingDir A_ScriptDir
 
 global RUN_ID := FormatTime(, "yyyyMMdd_HHmmss") "@" A_TickCount
-global PACK_LAUNCHER_BUILD_VERSION := "5.48"
-global PACK_PAYLOAD_BUILD_VERSION := "5.36"
+global PACK_LAUNCHER_BUILD_VERSION := "5.49"
+global PACK_PAYLOAD_BUILD_VERSION := "5.37"
 global STEP_SEQ := 0
 global TOOLTIP_SLOT := 5
 global SKIP_PENDING_LAUNCHER_APPLY := false
@@ -967,7 +968,6 @@ WriteStep("管理員權限", "已確認，繼續檢查更新")
 PACK_MAIN_MUTEX_HANDLE := LauncherAcquireMainMutex()
 if (PACK_MAIN_MUTEX_HANDLE = -1) {
     WriteLog("同一路徑的啟動器已在執行，略過重複啟動", "WARN")
-    MsgBox("全自動鋤地啟動器已在執行。", "啟動器", 48)
     ExitApp
 }
 if (PACK_MAIN_MUTEX_HANDLE = 0) {
@@ -976,6 +976,21 @@ if (PACK_MAIN_MUTEX_HANDLE = 0) {
 }
 
 ; BEGIN LAUNCHER RUNTIME RESERVATION
+if LauncherFreshStart_IsFresh(A_Args) {
+    try FLI_Capture(LauncherProjectRoot())
+    catch as intentError {
+        WriteStep("啟動接管未完成",intentError.Message,"ERROR")
+        ExitApp 1
+    }
+} else {
+    EnvSet("PACK_FRESH_INSTALL","")
+    EnvSet("PACK_FRESH_COMMAND_NONCE","")
+}
+freshAdmission := LauncherFreshStart_Prepare(LauncherProjectRoot(),LauncherFreshStart_IsFresh(A_Args))
+if !freshAdmission.ok {
+    WriteStep("啟動接管未完成",freshAdmission.reason "；尚未更新或啟動新流程","ERROR")
+    ExitApp 1
+}
 ; Close the direct-main race throughout payload/runtime installation writes.
 PACK_RUNTIME_MUTEX_HANDLE := InstallStartupLock_AcquireRuntime(LauncherProjectRoot())
 if PACK_RUNTIME_MUTEX_HANDLE <= 0 {
@@ -985,7 +1000,8 @@ if PACK_RUNTIME_MUTEX_HANDLE <= 0 {
 ; END LAUNCHER RUNTIME RESERVATION
 
 ; Must run before releasing/replacing any embedded file or updating payload.
-; Repeated clicks must leave the active task and recorder untouched.
+; Recheck after takeover/runtime acquisition: a racing direct main is not
+; permission to overwrite. Duplicate launchers still lose the startup mutex.
 existingMainGate := LauncherStartup_Inspect(LauncherProjectRoot() "\AutoHotkey64.exe",
     LauncherProjectRoot() "\payload\全自動.ahk")
 if !existingMainGate.allow {
@@ -993,6 +1009,11 @@ if !existingMainGate.allow {
         "；略過更新與重複啟動，不中斷目前任務", "WARN")
     WriteStep("保留既有主流程", existingMainGate.reason " | PID=" existingMainGate.pid)
     ExitApp
+}
+freshFinalization := LauncherFreshStart_Finish(LauncherProjectRoot(),LauncherFreshStart_IsFresh(A_Args))
+if !freshFinalization.ok {
+    WriteStep("舊流程尚未關閉",freshFinalization.reason "；保留檔案，不開始更新","ERROR")
+    ExitApp 1
 }
 
 ; =========================

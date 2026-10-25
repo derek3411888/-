@@ -11,7 +11,10 @@ try {
     if($start -lt 0 -or $end -le $start){throw 'Cannot locate real launcher startup block'}
     $block=$source.Substring($start,$end-$start)
     $earlyStart=$source.IndexOf('existingMainGate := LauncherStartup_Inspect(')
-    $earlyEnd=$source.IndexOf('autoFolderName :=', $earlyStart)
+    # This fixture owns only the existing-main guard. Fresh workflow drain is
+    # exercised with real process/file boundaries by FreshLauncherTakeoverTest.
+    # Including it here would leave its functions undefined in this unit fixture.
+    $earlyEnd=$source.IndexOf('freshFinalization :=', $earlyStart)
     if($earlyStart -lt 0 -or $earlyEnd -le $earlyStart -or
         $earlyEnd -ge $source.IndexOf('FileInstall')) { throw 'Existing-main guard must run before embedded writes' }
     $earlyBlock=$source.Substring($earlyStart,$earlyEnd-$earlyStart)

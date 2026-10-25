@@ -50,6 +50,8 @@ global IMAGEPUT_GDIPLUS_PROCESS_PIN := ImagePut.gdiplusStartup()
 #Include ScriptRestartHandoff.ahk
 #Include RemoteUpdateRestart.ahk
 #Include CompletionSynthesisRuntime.ahk
+#Include FreshRunState.ahk
+#Include FreshLaunchIntent.ahk
 #Include RestartRecovery.ahk
 global __RESTART_RECOVERY_WAITING := false, __RESTART_RECOVERY_RETRY_ID := 0
 global __RESTART_RECOVERY_REPORT_KEY := "", __RESTART_RECOVERY_REPORT_TICK := 0
@@ -157,7 +159,7 @@ global WUTHERING_STARTUP_WAIT_SEC := 45
 global WUTHERING_UPDATE_RECOVERY_WAIT_SEC := 300
 global WUTHERING_NO_WINDOW_TOLERANCE := 3
 global WUTHERING_NO_WINDOW_RESTART_SEC := 180
-global PAYLOAD_BUILD_VERSION := "5.36"
+global PAYLOAD_BUILD_VERSION := "5.37"
 global PAYLOAD_BOOTSTRAP_LAUNCHER_VERSION := "5.44"
 global __OKWW_MINIMIZE_SWEEP_REMAINING := 0
 global __OKWW_MINIMIZE_SWEEP_CONTEXT := ""
@@ -2438,11 +2440,29 @@ maintenanceContinuation := GM_HasActiveContinuation(CFG_FILE,RC_UnixMs())
 remoteContinuationLaunch := maintenanceContinuation || (A_Args.Length > 0
     && (A_Args[1] = "restart" || A_Args[1] = "nextserver"))
 if (REMOTE_CONTROL_ACTIVE && !remoteContinuationLaunch) {
-    if RC_BeginFreshRunCycle("normal-fresh-launch")
-        WriteLog("遠端控制：正常全新日循環已明確重設為 RUN")
-    else
-        WriteLog("遠端控制：無法持久保存全新日循環 RUN；保留既有 desired state", "ERROR")
+    freshIntentCritical := Critical("On"), freshIntentMutex := 0
+    try {
+        freshIntentMutex := RC_AcquirePersistedDesiredStateMutex()
+        if !freshIntentMutex || !FLI_AllowsFresh(CFG_FILE) {
+            WriteLog("全新啟動接管期間收到較新的命令或世代無法確認；不覆蓋停止／暫停，取消本次啟動","WARN")
+            ExitApp 1
+        }
+        if RC_BeginFreshRunCycle("normal-fresh-launch")
+            WriteLog("遠端控制：正常全新日循環已明確重設為 RUN")
+        else
+            WriteLog("遠端控制：無法持久保存全新日循環 RUN；保留既有 desired state", "ERROR")
+    } catch as freshIntentError {
+        WriteLog("全新啟動意圖驗證失敗；未啟動遊戲：" freshIntentError.Message,"ERROR")
+        ExitApp 1
+    } finally {
+        if freshIntentMutex
+            RC_ReleasePersistedDesiredStateMutex(freshIntentMutex)
+        Critical(freshIntentCritical)
+    }
 }
+; This intent has reached its terminal main. Do not leak it into a future,
+; separately requested launcher or auxiliary child.
+FLI_Clear()
 if REMOTE_CONTROL_ACTIVE
     WriteLog("遠端控制：已啟用")
 else
@@ -2501,7 +2521,6 @@ if A_Args.Length > 0 && A_Args[1] = "nextserver" {
 
 if (!isRestart && !isNextServerCycle)
     ResetRestartTrackingOnFreshStart()
-ClearCompletedRewardPendingOnFreshStart(isRestart,isNextServerCycle)
 WriteLog("目前重啟次數: " restartCount "/" MAX_RESTART_COUNT)
 
 ; ★ 設定檔與重啟狀態就緒後才啟動 UE4 崩潰監看。
@@ -2526,6 +2545,10 @@ try {
     GM_Init(CFG_FILE,IniReadSafe(CFG_FILE,"paths","WUTHERING",""),startupMaintenanceContext)
 } finally Critical(resumeCritical)
 REMOTE_SETTINGS_RUNTIME_READY := true
+; A fresh launcher requests a normal close of this exact main window. Route it
+; through full shutdown instead of interpreter-only ExitApp/Single replacement.
+OnMessage(0x10, OnFreshLauncherClose)
+OnMessage(0x111, OnFreshLauncherClose)
 if REMOTE_CONTROL_ACTIVE
     RC_EnableCommandProcessing()
 RefreshServerScheduleAfterStartupCommands()
@@ -2565,6 +2588,10 @@ if (gate.mode = "normal") {
     CheckAndCloseExistingProcesses()
 } else
     WriteLog("版本更新接續：保留現有遊戲，由既有視窗／主畫面驗證，不重複啟動或清場")
+if !isRestart && !isNextServerCycle && !ClearCompletedRewardPendingOnFreshStart(false,false) {
+    WriteStep("全新循環未就緒","舊狀態歸檔或子流程退出尚未確認；未啟動遊戲","ERROR")
+    ExitApp 1
+}
 if (gate.mode = "normal")
     StartCrashWatcher()
 
@@ -8996,12 +9023,19 @@ CanReplaceCompletedRewardMonitorState() {
 
 ClearCompletedRewardPendingOnFreshStart(isRestart, isNextServerCycle) {
     global CFG_FILE, REWARD_MONITOR_STATE_SECTION, __REWARD_MONITOR_COMPLETION_PENDING
-    if isRestart || isNextServerCycle || !CanReplaceCompletedRewardMonitorState()
+    if isRestart || isNextServerCycle
         return false
-    key := IniReadSafe(CFG_FILE,REWARD_MONITOR_STATE_SECTION,"state_key","")
-    if !ClearRewardMonitorRuntimeState(key,true)
+    try {
+        if !FRS_ArchiveAndReset(CFG_FILE,REWARD_MONITOR_STATE_SECTION,
+            RuntimeFiles_RuntimeDir("completion-synthesis"),RuntimeFiles_RuntimeDir("fresh-start-history"),
+            () => CompletionSynthesisIo().Drained())
+            return false
+    } catch as err {
+        WriteLog("全新啟動無法歸檔／清除舊失敗狀態；停止本次啟動：" err.Message,"ERROR")
         return false
+    }
     __REWARD_MONITOR_COMPLETION_PENDING := false
+    WriteLog("全新啟動：舊收尾／合成狀態已歸檔，新循環不承接舊失敗；保留各服完成紀錄")
     return true
 }
 
@@ -13947,6 +13981,19 @@ ExitFromTrayNow(*) {
     try RC_SetPausedFlag(false)
     try WriteLog("系統匣：使用者請求立即離開，改走完整關閉流程")
     ShutdownGameLrmcOkww(false, "PROGRAM_MANUAL")
+}
+
+OnFreshLauncherClose(wParam, lParam, message, hwnd) {
+    static queued := false
+    if hwnd != A_ScriptHwnd
+        return
+    if message = 0x111 && (wParam != 65405 || lParam != 0)
+        return
+    if !queued {
+        queued := true
+        SetTimer(ExitFromTrayNow,-1)
+    }
+    return 1
 }
 
 OpenSettingsFromTray(*) {

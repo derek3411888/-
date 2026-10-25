@@ -3,7 +3,7 @@ param([ValidateSet('Foundation','Native','Notice','Install','Worker','Policy','A
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $suiteTests = [ordered]@{
-    Foundation=@('TestScriptEncodingTest.ps1','GameMaintenanceRunnerTest.ps1','CapsLockGuardTest.ahk','CapsLockIntegrationTest.ps1')
+    Foundation=@('TestScriptEncodingTest.ps1','GameMaintenanceRunnerTest.ps1','CapsLockGuardTest.ahk','CapsLockIntegrationTest.ps1','FreshLauncherPolicyTest.ahk','FreshLaunchIntentTest.ps1','FreshMaintenanceStateTest.ahk')
     Native=@('NativeMaintenanceTest.ps1','LauncherNativeIntegrationTest.ps1','LauncherNativeEmbeddingTest.ps1',
         'LauncherDownloadRegressionTest.ps1','LauncherDownloadIntegrationTest.ps1','LauncherUpdateOutcomeTest.ps1',
         'NativePerformanceTelemetryTest.ps1','NativeRuntimeUtilitiesTest.ps1',
@@ -14,9 +14,9 @@ $suiteTests = [ordered]@{
     Policy=@('GameMaintenancePolicyTest.ahk','GameMaintenanceDaySkipTest.ahk','GameMaintenancePersistenceTest.ahk','SelfHealingPolicyTest.ahk','RewardMonitorIncidentPolicyTest.ahk','LrmcTaskAbandonResumeTest.ps1','RestartRecoveryTest.ahk')
     Adapters=@('GameUpdateAdaptersTest.ahk','ManagedProcessGuardTest.ps1','RestartRecoveryHostTest.ps1','RestartCancelledWorkerTest.ahk')
     Ocr=@('GameUpdateOcrPolicyTest.ahk','GameStableLaunchTest.ahk','GameHotfixRecoveryTest.ahk','GameHotfixHostTest.ps1','AccountLoginPolicyTest.ahk','AccountLoginHostTest.ps1','AccountLoginRuntimeTest.ahk','AccountLoginCaptureTest.ahk','AccountLoginClickGuardTest.ps1','SynthesisMenuRecoveryTest.ahk','SynthesisMenuCaptureAgeTest.ahk','SynthesisMenuSyntaxTest.ps1')
-    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1','LauncherStartupGuardTest.ps1','LauncherStartupNativeTest.ps1','InstallStartupLockTest.ps1','MainInstanceOwnershipTest.ps1','LauncherInstallationRootTest.ps1','LauncherCleanupIdentityTest.ps1','RestartWorkerOwnershipTest.ps1','LauncherNativeHelperDrainTest.ps1')
+    Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1','LauncherStartupGuardTest.ps1','LauncherStartupNativeTest.ps1','FreshLauncherTakeoverTest.ps1','InstallStartupLockTest.ps1','MainInstanceOwnershipTest.ps1','LauncherInstallationRootTest.ps1','LauncherCleanupIdentityTest.ps1','RestartWorkerOwnershipTest.ps1','LauncherNativeHelperDrainTest.ps1')
     Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1','RemoteControlStartupHookTest.ps1','RuntimeSnapshotThrottleTest.ps1','RuntimeRecoveryStatusTest.ps1','RemoteRestartControlTest.ps1','RemoteUpdateRestartTest.ahk','RemoteUpdateRestartHostTest.ps1','RemoteRestartDrainTest.ahk')
-    Completion=@('CompletionSynthesisTest.ahk','CompletionSynthesisRuntimeTest.ahk','CompletionSynthesisFlowTest.ps1','CompletionSynthesisHostTest.ps1','SynthesisPauseBudgetTest.ahk','SynthesisCountPolicyTest.ahk','SynthesisMonthlyGuardTest.ps1')
+    Completion=@('CompletionSynthesisTest.ahk','CompletionSynthesisRuntimeTest.ahk','CompletionSynthesisFlowTest.ps1','CompletionSynthesisHostTest.ps1','FreshRewardStateTest.ps1','SynthesisPauseBudgetTest.ahk','SynthesisCountPolicyTest.ahk','SynthesisMonthlyGuardTest.ps1')
     Ui=@('GameMaintenanceLocalUiTest.ps1')
     Release=@('GameMaintenancePackageTest.ps1')
 }

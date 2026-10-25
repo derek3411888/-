@@ -9,7 +9,7 @@ $context = [pscustomobject]@{ProjectRoot=$root; Root=(Join-Path $root '.dev-runt
 $source = [IO.File]::ReadAllText((Join-Path $root 'payload\全自動.ahk'))
 $extracted = ''
 foreach ($name in @('RewardMonitorFinishWithSynthesis','RewardMonitorPendingMatchesDisk','CommitRewardMonitorCompleted',
-    'ClearCompletedRewardPendingOnFreshStart','CanReplaceCompletedRewardMonitorState','LoadRewardMonitorRuntimeState',
+    'CanReplaceCompletedRewardMonitorState','LoadRewardMonitorRuntimeState',
     'SaveRewardMonitorRuntimeState','ClearRewardMonitorRuntimeState','ReadRewardMonitorStateInteger',
     'ReadRewardMonitorStateBool','MarkServerCompletedInCurrentCycle','HandleCycleFinishAndShutdown','IniReadSafe')) {
     $extracted += "`n" + [regex]::Match($source, '(?ms)^'+$name+'\([^\r\n]*\) \{.*?^\}').Value
