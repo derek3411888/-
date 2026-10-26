@@ -75,12 +75,73 @@ LFW_Classify(record,paths) {
     return titleMatched || RegExMatch(command,"i)ok-ww|okww") ? "owned" : "unknown"
 }
 
-LFW_Record(proc) {
+; Some live processes expose Name/CreationDate to WMI but omit the image.
+; Resolve only through a query-only retained handle with the SAME creation
+; time as the WMI candidate. Do not perform one slow WMI query per process.
+; A missing field is not proof of an old workflow (or kill authority).
+LFW_CreationMatches(creation,started) {
+    if started <= 0 || !RegExMatch(creation,"^\d{14}\.\d{6}[+-]\d{3}$")
+        return false
+    try {
+        stamp := ComObject("WbemScripting.SWbemDateTime")
+        stamp.Value := creation
+        expected := Integer(stamp.GetFileTime(false)) ; UTC, never local offset twice
+        ; WMI preserves microseconds; GetProcessTimes has 100ns precision.
+        return expected > 0 && started // 10 = expected // 10
+    } catch {
+        return false
+    }
+}
+
+LFW_ResolveImage(record,ops := unset) {
+    if !IsSet(ops)
+        ops := LFW_ImageProbeOps()
+    handle := 0
+    try {
+        pid := Integer(record.ProcessId), name := StrLower(record.Name), creation := record.CreationDate
+        if pid <= 0 || name = "" || creation = ""
+            return {image:"",reason:"missing-identity"}
+        handle := ops.open.Call(pid)
+        if !handle
+            return {image:"",reason:"query-handle-unavailable"}
+        if ops.wait.Call(handle,0) != 258
+            return {image:"",reason:"not-running-or-wait-failed"}
+        started := ops.created.Call(handle)
+        image := ops.canonical.Call(ops.image.Call(handle))
+        if started <= 0 || image = ""
+            return {image:"",reason:"query-image-unavailable"}
+        SplitPath(image,&imageName)
+        if !LFW_CreationMatches(creation,started) || StrLower(imageName) != name
+            return {image:"",reason:"identity-changed"}
+        if ops.created.Call(handle) != started || ops.wait.Call(handle,0) != 258
+            return {image:"",reason:"process-changed-or-exited"}
+        return {image:image,reason:"query-handle-verified"}
+    } catch {
+        return {image:"",reason:"identity-query-failed"}
+    } finally {
+        if handle
+            ops.close.Call(handle)
+    }
+}
+
+LFW_ImageProbeOps() {
+    return {open:LauncherCleanup_OpenNative,wait:LauncherCleanup_WaitHandle,
+        image:LauncherCleanup_QueryImagePath,created:LauncherCleanup_QueryCreationTime,
+        canonical:MPG_CanonicalPath,close:LauncherCleanup_Close}
+}
+
+LFW_Record(proc,ops := unset) {
     record := {}
     for field in ["ProcessId","Name","ExecutablePath","CommandLine","CreationDate"]
         record.%field% := LauncherCleanup_NativeRecordValue(proc,field)
     if record.ExecutablePath != ""
         record.ExecutablePath := MPG_CanonicalPath(record.ExecutablePath)
+    record.imageObservation := "wmi-path"
+    if record.ExecutablePath = "" {
+        resolved := IsSet(ops) ? LFW_ResolveImage(record,ops) : LFW_ResolveImage(record)
+        record.ExecutablePath := resolved.image
+        record.imageObservation := resolved.reason
+    }
     record.titles := []
     if RegExMatch(record.Name,"i)^pythonw?\.exe$")
         for hwnd in WinGetList("ahk_pid " record.ProcessId)
@@ -117,38 +178,63 @@ class LauncherFreshWorkflowIo {
         return MPG_CloseRecord(bound)
     }
     Now() => DllCall("GetTickCount64","uint64")
-    Wait() => Sleep(50)
+    Wait() => Sleep(200)
 }
 
 LauncherFreshWorkflow_Drain(root,io := unset) {
     if !IsSet(io)
         io := LauncherFreshWorkflowIo(root)
-    deadline := io.Now() + 10000, clear := 0
+    deadline := io.Now() + 10000, clear := 0, reported := Map()
     loop {
-        owned := []
-        for record in io.Inventory() {
+        if io.Now() >= deadline {
+            WriteLog("全新啟動：舊流程檢查等待逾時（10 秒）；保留檔案，不開始更新","WARN")
+            return false
+        }
+        try records := io.Inventory()
+        catch {
+            WriteLog("全新啟動：程序清單讀取失敗；保留檔案，不開始更新 | reason=inventory-error","WARN")
+            return false
+        }
+        if io.Now() >= deadline {
+            WriteLog("全新啟動：程序清單回應已超過等待期限；不開始更新 | reason=inventory-timeout","WARN")
+            return false
+        }
+        owned := [], blocked := ""
+        for record in records {
             kind := LFW_Classify(record,io.paths)
             if kind = "unknown" || kind = "recorder" {
-                WriteLog("全新啟動：舊流程身分或錄影收尾未確認，尚未更新 | kind=" kind,"WARN")
-                return false
+                reason := kind = "recorder" ? "recording-still-running"
+                    : (record.ExecutablePath = "" ? LauncherCleanup_NativeRecordValue(record,"imageObservation")
+                    : (record.CommandLine = "" ? "command-unavailable" : "scope-unconfirmed"))
+                blocked := "kind=" kind " PID=" record.ProcessId " name=" record.Name " reason=" reason
+                break
             }
             if kind = "owned"
                 owned.Push(record)
         }
-        if !owned.Length {
+        if blocked != "" {
+            ; A process may be exiting or WMI may temporarily omit fields.
+            ; Re-observe within the existing budget, without closing anything
+            ; from this inventory until every candidate is accounted for.
+            clear := 0
+            if !reported.Has(blocked) {
+                WriteLog("全新啟動：等待舊流程身分或錄影收尾確認；尚未更新 | " blocked,"WARN")
+                reported[blocked] := true
+            }
+        } else if !owned.Length {
             clear += 1
             if clear >= 2
                 return true
         } else {
             clear := 0
             for record in owned {
-                if !io.Close(record)
+                if !io.Close(record) {
+                    WriteLog("全新啟動：舊流程關閉未確認；保留檔案，不開始更新 | PID=" record.ProcessId " name=" record.Name,"WARN")
                     return false
+                }
                 WriteLog("全新啟動：已關閉原設定安裝的舊流程 | PID=" record.ProcessId " name=" record.Name)
             }
         }
-        if io.Now() >= deadline
-            return false
         io.Wait()
     }
 }

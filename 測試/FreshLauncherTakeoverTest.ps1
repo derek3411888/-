@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('legacy','current')][string]$Mode='current')
+param([ValidateSet('legacy','current')][string]$Mode='current',[switch]$MissingWorkflowImage)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $project=Split-Path $PSScriptRoot -Parent
@@ -75,7 +75,20 @@ class FixtureInventory {
         service := ComObject("WbemScripting.SWbemLocator").ConnectServer(".","root\cimv2")
         ; Group the original WHERE conditions before adding the fixture scope.
         query := RegExReplace(query,"i) where "," where (")
-        return service.ExecQuery(query ") AND (ProcessId=__CHILD_PID__ OR ProcessId=__NATIVE_PID__)")
+        records := []
+        for proc in service.ExecQuery(query ") AND (ProcessId=__CHILD_PID__ OR ProcessId=__NATIVE_PID__)") {
+            if __MASK_WORKFLOW_IMAGE__ && proc.ProcessId = __NATIVE_PID__ {
+                ; Real retained ping fixture; omit only the WMI image as seen
+                ; on MYDESKPC. Native image/time queries remain unmodified.
+                masked := {}
+                for field in ["ProcessId","Name","CommandLine","CreationDate"]
+                    masked.%field% := proc.%field%
+                masked.ExecutablePath := ""
+                records.Push(masked)
+            } else
+                records.Push(proc)
+        }
+        return records
     }
 }
 LauncherProjectRoot() => "__INSTALL__"
@@ -101,7 +114,7 @@ ExitApp(0)
 $parent=Join-Path $run 'isolated-launcher.ahk'
 $child=Start-Process -FilePath $runtime -ArgumentList ('/ErrorStdOut=UTF-8 "'+$mainPath+'"') -WorkingDirectory $install -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $run 'child.stdout') -RedirectStandardError (Join-Path $run 'child.stderr')
 [void]$child.Handle
-[IO.File]::WriteAllText($parent,$parentText.Replace('__PROJECT__',$project).Replace('__INSTALL__',$install).Replace('__ADMISSION__',$admission).Replace('__CHILD_PID__',[string]$child.Id).Replace('__NATIVE_PID__',[string]$native.Id),[Text.UTF8Encoding]::new($true))
+[IO.File]::WriteAllText($parent,$parentText.Replace('__PROJECT__',$project).Replace('__INSTALL__',$install).Replace('__ADMISSION__',$admission).Replace('__CHILD_PID__',[string]$child.Id).Replace('__NATIVE_PID__',[string]$native.Id).Replace('__MASK_WORKFLOW_IMAGE__',[string][int][bool]$MissingWorkflowImage),[Text.UTF8Encoding]::new($true))
 try {
     $deadline=[DateTime]::UtcNow.AddSeconds(5)
     while(!(Test-Path -LiteralPath (Join-Path $install 'ready')) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 50}
@@ -116,7 +129,7 @@ try {
         Assert-GMEqual ([IO.File]::ReadAllText((Join-Path $install 'exit-reason'))) 'Menu' 'Legacy default File Exit must reach OnExit normally'
     }
     Assert-GMTrue ($native.WaitForExit(2000)) 'Retained harmless native gameplay fixture actually exited'
-    Write-Output ('PASS actual fresh launcher admission ('+$Mode+'): normal main close, native child drain, maintenance archive/reset, runtime ownership')
+    Write-Output ('PASS actual fresh launcher admission ('+$Mode+', missingImage='+[bool]$MissingWorkflowImage+'): normal main close, native child drain, maintenance archive/reset, runtime ownership')
 } finally {
     if(!$child.HasExited){$child.Kill();[void]$child.WaitForExit(3000)}
     $child.Dispose()
