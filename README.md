@@ -4,12 +4,11 @@
 
 ## 從這裡開始
 
-- [專案交接與流程說明](PROJECT_AI_HANDOFF.md)
-- [開發產物、歸檔與清理規則](DEVELOPMENT_ARTIFACTS.md)
 - [自架伺服器說明](self-hosted-server/README.md)
 - [公司版遠端控制網站說明](remote-control-web/README.md)
 - [網站回報故障時的人工救援](WEB_WORK_EMERGENCY_REPAIR.md)
-- [遊戲版本更新功能驗收](docs/game-maintenance-acceptance.md)
+
+開發日記、AI 交接、主機設定、內部驗收與歷史操作紀錄僅留本機，不隨 GitHub 發布。公開版本說明位於 `docs/releases/`。
 
 ## 資料夾用途
 
@@ -19,7 +18,7 @@
 | `self-hosted-server/` | Docker、API、中央網站與橋接 | 不移動設定、部署資料或憑證 |
 | `remote-control-web/` | GitHub Pages 公司版網站 | 正式網站來源，不能當暫存清掉 |
 | `測試/`、`文字識別/`、`郵件測試/` | 測試原始碼與人工測試工具 | 不是測試輸出；保留使用者未提交的檔案 |
-| `docs/` | 設計、驗收與歷史操作文件 | 過期指令放 `docs/archive/`，不能直接當現行操作流程 |
+| `docs/` | 公開版本說明；內部文件另行忽略 | `docs/archive/` 與 `docs/superpowers/` 僅留本機 |
 | `.dev-runtime/` | 開發期間產生的資料 | 按下方分類管理，不可整包刪除 |
 | `.venv/`、`.vscode/`、`.github/`、`.superpowers/`、`.git/` | 工具、編輯器、CI、工作紀錄與版本控制 | 不屬於一般清理範圍 |
 
@@ -49,13 +48,20 @@
 - 正式發布：`全自動鋤地.exe`、`payload.zip`、`self-hosted-server.zip`、`update_manifest.example.json`。
 - 打包入口：`打包啟動器.ahk`、`打包更新.ps1`、`完整發布更新.ps1`、`編譯打包.bat`。
 - 共用工具：`AutoHotkey64.exe`、`ProjectDevelopmentPaths.ps1`、`LauncherProcessCleanupPolicy.ahk`。
-- 交接／規範文件與網站救援文件：既有發布流程會引用，不為了外觀整齊任意移走。
+- 公開網站救援文件與 `ReleaseRepositoryPolicy.ps1`：保留文件與發布檢查入口。
 
 根目錄不再新增一次性測試副本、抽幀、截圖或 `*.out`。舊版產生的 `打包啟動器_fallback.log` 已歸入診斷區，正式安裝端的 Log 與錄影不在本次整理範圍。
 
-## 歷史文件
+## GitHub 發布邊界
 
-- [2026-09-01 MyTUF 錄影清理指令（舊版封存）](docs/archive/2026-09-01/MYTUF_GPT_錄影清理指令.md)
-- [2026-08-27 伺服器切換 50 次實測紀錄](測試/實機伺服器切換50次驗證報告.md)
+`.gitignore` 排除本機日記、AI 指令、編輯器／遠端 worker 設定及診斷產物。已追蹤的內部檔案須用 `git rm --cached -- <精確路徑>` 取消追蹤，這不會刪除本機副本。
 
-歷史文件中的版本、路徑與操作授權只適用於當次工作；重新操作前必須重新確認。
+`完整發布更新.ps1` 會在提交前檢查整個 Git 暫存區，推送前再檢查 HEAD 的檔案樹；即使以 `git add -f` 加入已列管的本機資料，也會阻止正式發布。手動發布亦須先執行同一檢查；這不是 GitHub 端的全域攔截器。
+
+```powershell
+. ./ReleaseRepositoryPolicy.ps1
+Assert-ReleaseRepositoryPrivacy -ProjectRoot $PWD.Path
+Assert-ReleaseRepositoryPrivacy -ProjectRoot $PWD.Path -Revision HEAD
+```
+
+回歸測試：`測試/ReleaseRepositoryPolicyTest.ps1`。產品原始碼、測試程式、公開說明與必要更新 EXE／ZIP／manifest 仍可發布。移除目前分支的檔案不會抹除過去 Git 歷史。
