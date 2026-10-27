@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$PayloadVersion = '5.00',
     [string]$LauncherVersion = '5.11',
@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $projectRoot
 . (Join-Path $projectRoot 'ProjectDevelopmentPaths.ps1')
+. (Join-Path $projectRoot 'ReleaseRepositoryPolicy.ps1')
 $developmentPaths = Initialize-ProjectDevelopmentPaths -ProjectRoot $projectRoot -RunName 'release'
 $developmentSucceeded = $false
 
@@ -83,7 +84,7 @@ if ([string]$manifest.version -ne $PayloadVersion -or
 }
 
 $releasePaths = @(
-    '.gitignore', 'PROJECT_AI_HANDOFF.md', 'DEVELOPMENT_ARTIFACTS.md',
+    '.gitignore', 'README.md', 'ReleaseRepositoryPolicy.ps1',
     'ProjectDevelopmentPaths.ps1', 'LauncherProcessCleanupPolicy.ahk',
     '打包啟動器.ahk', '打包更新.ps1', '完整發布更新.ps1', '編譯打包.bat',
     'payload', '測試', '文字識別/文字識別測試.ahk', '郵件測試/寄送信件測試.ahk',
@@ -92,6 +93,7 @@ $releasePaths = @(
 )
 & git add -- $releasePaths
 Assert-ExitCode '建立發布提交暫存區'
+Assert-ReleaseRepositoryPrivacy -ProjectRoot $projectRoot
 $stagedPaths = @(& git -c core.quotepath=false diff --cached --name-only)
 if ($stagedPaths | Where-Object {
     $_ -match '^\.vscode/' -or $_ -eq '文字識別/LRMCAI主視窗OCR測試.ahk'
@@ -113,6 +115,7 @@ $artifactCommit = ([string](& git rev-parse HEAD)).Trim().ToLowerInvariant()
 $manifest = Set-ManifestArtifactCommit $manifestPath $artifactCommit
 & git add -- $manifestPath
 Assert-ExitCode '暫存固定發布檔來源的 manifest'
+Assert-ReleaseRepositoryPrivacy -ProjectRoot $projectRoot
 if (@(& git diff --cached --name-only).Count -gt 0) {
     & git diff --cached --check
     Assert-ExitCode '固定發布檔 manifest 檢查'
@@ -121,6 +124,7 @@ if (@(& git diff --cached --name-only).Count -gt 0) {
 }
 
 if (-not $SkipPush) {
+    Assert-ReleaseRepositoryPrivacy -ProjectRoot $projectRoot -Revision HEAD
     & git push origin HEAD:main
     Assert-ExitCode '推送 GitHub'
     $publishedCommit = ([string](& git rev-parse HEAD)).Trim()
