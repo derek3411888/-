@@ -32,6 +32,19 @@ TestHotfix() {
         candidate := GH_Classify([HotfixBlock(text,640,360),HotfixBlock("确认",840,454)],1280,720)
         GMTest_Assert(IsObject(candidate) && candidate.x = 840,"completed hotfix selects the observed confirmation, both locales")
     }
+    ; MYDESKPC 2026-10-28: RapidOCR returns the completed-update prompt as
+    ; one block. Do not require the restart instruction to be a separate line.
+    for text in ["更新完成，请重新启动游戏。","更新完成，請重新啟動遊戲。",
+        "更新完成, 请重新启动游戏!","更新完成。請重新啟動遊戲！"] {
+        candidate := GH_Classify([HotfixBlock(text,640,347),HotfixBlock("退出",840,454)],1280,720)
+        GMTest_Assert(IsObject(candidate) && candidate.label = "退出" && candidate.x = 840,
+            "combined completed-update restart instruction selects the unique observed exit button")
+    }
+    for text in ["尚未更新完成，请重新启动游戏。","更新完成，请输入密码。",
+        "正在更新，请重新启动游戏。","更新完成，请重新启动游戏。尚未完成验证",
+        "公告：更新完成，请重新启动游戏。"]
+        GMTest_Assert(!GH_Classify([HotfixBlock(text,640,347),HotfixBlock("退出",840,454)],1280,720),
+            "non-completion, credentials and embedded instructions cannot authorize hotfix exit")
     GMTest_Assert(!GH_Classify([HotfixBlock("確認離開",640,360),HotfixBlock("确认",840,454)],1280,720),"dungeon exit is not a hotfix")
     GMTest_Assert(!GH_Classify([HotfixBlock("更新完成",640,360),HotfixBlock("确认",440,454),HotfixBlock("退出",840,454)],1280,720),"ambiguous buttons do not authorize input")
     GMTest_Assert(!GH_Classify([HotfixBlock("正在更新",640,360),HotfixBlock("退出",840,454)],1280,720),"in-progress download is never closed")

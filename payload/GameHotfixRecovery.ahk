@@ -2,7 +2,7 @@
 
 ; Completed in-game hotfix only. Official version-day gating remains upstream.
 GH_IsCompletionText(text) {
-    return RegExMatch(RegExReplace(text,"\s",""),"^(更新完成[，,。.!！]?((游戏|遊戲)即[将將]重[启啟][。.!！]?)?|(游戏|遊戲)即[将將]重[启啟][。.!！]?|请重新启动游戏[。.!！]?|請重新啟動遊戲[。.!！]?)$") != 0
+    return RegExMatch(RegExReplace(text,"\s",""),"^(更新完成[，,。.!！]?(((游戏|遊戲)即[将將]重[启啟]|请重新启动游戏|請重新啟動遊戲)[。.!！]?)?|(游戏|遊戲)即[将將]重[启啟][。.!！]?|请重新启动游戏[。.!！]?|請重新啟動遊戲[。.!！]?)$") != 0
 }
 
 GH_Classify(blocks,width,height) {
