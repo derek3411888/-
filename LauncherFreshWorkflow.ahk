@@ -163,19 +163,40 @@ class LauncherFreshWorkflowIo {
     Close(expected) {
         ; Reuse the existing retained-handle identity guard. Snapshot PID/name
         ; alone is never authority to terminate a process.
-        if expected.CreationDate = "" || expected.CommandLine = "" || LFW_Classify(expected,this.paths) != "owned"
+        ; Native configured executables are identified by canonical image and
+        ; creation time. Unlike shared Python runtimes they do not need a
+        ; command line; WMI can omit it even for the elevated launcher.
+        commandRequired := !this.paths.targets.Has(StrLower(expected.Name))
+        if expected.CreationDate = "" || (commandRequired && expected.CommandLine = "") || LFW_Classify(expected,this.paths) != "owned" {
+            WriteLog("全新啟動清理未送出：必要身分欄位不足 | PID=" expected.ProcessId
+                " name=" expected.Name " creation=" (expected.CreationDate != "")
+                " command=" (expected.CommandLine != "") " kind=" LFW_Classify(expected,this.paths),"WARN")
             return false
+        }
         bound := MPG_ReadRecord(Integer(expected.ProcessId),expected.ExecutablePath)
-        if !IsObject(bound)
+        if !IsObject(bound) {
+            WriteLog("全新啟動清理未送出：原生程序身分無法綁定 | PID=" expected.ProcessId,"WARN")
             return !ProcessExist(Integer(expected.ProcessId))
-        current := LauncherCleanup_QueryIdentity(Integer(expected.ProcessId))
-        if !IsObject(current)
-            return !ProcessExist(Integer(expected.ProcessId))
-        current := LFW_Record(current)
-        if current.CreationDate != expected.CreationDate || current.CommandLine != expected.CommandLine
-            || current.ExecutablePath != expected.ExecutablePath || LFW_Classify(current,this.paths) != "owned"
+        }
+        if !LFW_CreationMatches(expected.CreationDate,Integer(bound.started)) {
+            WriteLog("全新啟動清理未送出：原始程序建立時間與原生身分不符 | reason=creation-mismatch PID=" expected.ProcessId,"WARN")
             return false
-        return MPG_CloseRecord(bound)
+        }
+        current := LauncherCleanup_QueryIdentity(Integer(expected.ProcessId))
+        if !IsObject(current) {
+            WriteLog("全新啟動清理未送出：程序再確認無資料 | PID=" expected.ProcessId,"WARN")
+            return !ProcessExist(Integer(expected.ProcessId))
+        }
+        current := LFW_Record(current)
+        if current.CreationDate != expected.CreationDate || (commandRequired && current.CommandLine != expected.CommandLine)
+            || current.ExecutablePath != expected.ExecutablePath || LFW_Classify(current,this.paths) != "owned" {
+            WriteLog("全新啟動清理未送出：程序身分已變動 | PID=" expected.ProcessId,"WARN")
+            return false
+        }
+        closed := MPG_CloseRecord(bound)
+        if !closed
+            WriteLog("全新啟動清理：已通過身分檢查，但原生關閉未確認 | PID=" expected.ProcessId,"WARN")
+        return closed
     }
     Now() => DllCall("GetTickCount64","uint64")
     Wait() => Sleep(200)

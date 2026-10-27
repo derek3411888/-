@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('legacy','current')][string]$Mode='current',[switch]$MissingWorkflowImage)
+param([ValidateSet('legacy','current')][string]$Mode='current',[switch]$MissingWorkflowImage,[switch]$MissingWorkflowCommand,[switch]$StaleWorkflowCreation)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $project=Split-Path $PSScriptRoot -Parent
@@ -25,6 +25,7 @@ $childText=@'
 #NoTrayIcon
 #Include __LOCK__
 #Include __PROJECT__\payload\GameMaintenance.ahk
+FileEncoding("UTF-8")
 global lock := InstallStartupLock_AcquireRuntime("__INSTALL__")
 if lock <= 0
     ExitApp(9)
@@ -77,13 +78,18 @@ class FixtureInventory {
         query := RegExReplace(query,"i) where "," where (")
         records := []
         for proc in service.ExecQuery(query ") AND (ProcessId=__CHILD_PID__ OR ProcessId=__NATIVE_PID__)") {
-            if __MASK_WORKFLOW_IMAGE__ && proc.ProcessId = __NATIVE_PID__ {
+            if (__MASK_WORKFLOW_IMAGE__ || __MASK_WORKFLOW_COMMAND__ || __STALE_WORKFLOW_CREATION__) && proc.ProcessId = __NATIVE_PID__ {
                 ; Real retained ping fixture; omit only the WMI image as seen
                 ; on MYDESKPC. Native image/time queries remain unmodified.
                 masked := {}
-                for field in ["ProcessId","Name","CommandLine","CreationDate"]
+                for field in ["ProcessId","Name","CommandLine","CreationDate","ExecutablePath"]
                     masked.%field% := proc.%field%
-                masked.ExecutablePath := ""
+                if __MASK_WORKFLOW_IMAGE__
+                    masked.ExecutablePath := ""
+                if __MASK_WORKFLOW_COMMAND__
+                    masked.CommandLine := ""
+                if __STALE_WORKFLOW_CREATION__
+                    masked.CreationDate := "20000101000000.000000+000"
                 records.Push(masked)
             } else
                 records.Push(proc)
@@ -114,12 +120,20 @@ ExitApp(0)
 $parent=Join-Path $run 'isolated-launcher.ahk'
 $child=Start-Process -FilePath $runtime -ArgumentList ('/ErrorStdOut=UTF-8 "'+$mainPath+'"') -WorkingDirectory $install -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $run 'child.stdout') -RedirectStandardError (Join-Path $run 'child.stderr')
 [void]$child.Handle
-[IO.File]::WriteAllText($parent,$parentText.Replace('__PROJECT__',$project).Replace('__INSTALL__',$install).Replace('__ADMISSION__',$admission).Replace('__CHILD_PID__',[string]$child.Id).Replace('__NATIVE_PID__',[string]$native.Id).Replace('__MASK_WORKFLOW_IMAGE__',[string][int][bool]$MissingWorkflowImage),[Text.UTF8Encoding]::new($true))
+[IO.File]::WriteAllText($parent,$parentText.Replace('__PROJECT__',$project).Replace('__INSTALL__',$install).Replace('__ADMISSION__',$admission).Replace('__CHILD_PID__',[string]$child.Id).Replace('__NATIVE_PID__',[string]$native.Id).Replace('__MASK_WORKFLOW_IMAGE__',[string][int][bool]$MissingWorkflowImage).Replace('__MASK_WORKFLOW_COMMAND__',[string][int][bool]$MissingWorkflowCommand).Replace('__STALE_WORKFLOW_CREATION__',[string][int][bool]$StaleWorkflowCreation),[Text.UTF8Encoding]::new($true))
 try {
     $deadline=[DateTime]::UtcNow.AddSeconds(5)
     while(!(Test-Path -LiteralPath (Join-Path $install 'ready')) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 50}
     Assert-GMTrue (Test-Path -LiteralPath (Join-Path $install 'ready')) 'Isolated old main owns the real runtime mutex'
     $result=Invoke-GMTestProcess -ScriptPath $parent -Context $context -TimeoutSeconds 15
+    if($StaleWorkflowCreation) {
+        Assert-GMEqual $result.ExitCode 1 'Stale WMI creation must block real native termination and update'
+        Assert-GMTrue ($result.Stdout.Contains('reason=creation-mismatch')) 'Rejection must come from the original-to-native creation guard'
+        Assert-GMTrue (!$native.HasExited) 'Stale snapshot must not terminate the harmless native process'
+        Assert-GMTrue (!$result.Stdout.Contains('NEXT_PHASE')) 'Stale native identity must not admit installation'
+        Write-Output 'PASS stale original WMI creation: live native process retained and update blocked'
+        return
+    }
     Assert-GMEqual $result.ExitCode 0 ('Fresh launcher admission failed: '+$result.Stdout+$result.Stderr)
     Assert-GMTrue ($result.Stdout.Contains('NEXT_PHASE')) 'Fresh launch must close old owned main before update instead of exiting at its runtime lock'
     Assert-GMTrue ($child.WaitForExit(2000)) 'Old retained process must actually exit'

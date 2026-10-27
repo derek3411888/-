@@ -3,7 +3,7 @@ param([ValidateSet('Foundation','Native','Notice','Install','Worker','Policy','A
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'GameMaintenanceTestHelpers.ps1')
 $suiteTests = [ordered]@{
-    Foundation=@('TestScriptEncodingTest.ps1','GameMaintenanceRunnerTest.ps1','CapsLockGuardTest.ahk','CapsLockIntegrationTest.ps1','FreshLauncherPolicyTest.ahk','FreshWorkflowInventoryTest.ahk','FreshLaunchIntentTest.ps1','FreshMaintenanceStateTest.ahk')
+    Foundation=@('TestScriptEncodingTest.ps1','GameMaintenanceRunnerTest.ps1','CapsLockGuardTest.ahk','CapsLockIntegrationTest.ps1','FreshLauncherPolicyTest.ahk','FreshWorkflowInventoryTest.ahk','FreshWorkflowMissingCommandTest.ps1','FreshLaunchIntentTest.ps1','FreshMaintenanceStateTest.ahk')
     Native=@('NativeMaintenanceTest.ps1','LauncherNativeIntegrationTest.ps1','LauncherNativeEmbeddingTest.ps1',
         'LauncherDownloadRegressionTest.ps1','LauncherDownloadIntegrationTest.ps1','LauncherUpdateOutcomeTest.ps1',
         'NativePerformanceTelemetryTest.ps1','NativeRuntimeUtilitiesTest.ps1',
