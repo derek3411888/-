@@ -12,6 +12,23 @@ payload/menu*.png
 .dev-runtime/
 .codex_tmp/
 
+# Local development journals, AI context, host settings, and private evidence
+/開發日記.md
+/AGENTS.md
+/PROJECT_AI_HANDOFF.md
+/DEVELOPMENT_ARTIFACTS.md
+/.agents/
+/.vscode/
+/.superpowers/
+/docs/superpowers/
+/docs/archive/
+/docs/game-maintenance-acceptance.md
+/docs/game-maintenance-final-review.md
+/測試/實機伺服器切換50次驗證報告.md
+/測試/RemoteWorkerCommandTest.ps1
+/測試/主畫面模板比對/roi_debug.png
+/測試/主畫面模板比對/test_log.txt
+
 # Self-hosted server local dependencies, secrets, and disposable smoke data
 self-hosted-server/node_modules/
 self-hosted-server/.env
