@@ -123,8 +123,30 @@ try {
     Check(!LauncherFreshWorkflow_Drain("fixture",io) && io.tick >= 10000 && !io.closed.Length,"live recorder remains protected at deadline")
     io := InventoryFixture([[own],[],[]],paths)
     Check(LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1,"exact owned cleanup still precedes clear passes")
+    io := InventoryFixture([[own],[own],[],[]],paths), io.closeOk := false
+    Check(LauncherFreshWorkflow_Drain("fixture",io) && io.reads = 4 && io.closed.Length = 1,
+        "unconfirmed native close may finish asynchronously; observe exit and two clear passes without repeating termination")
+    io := InventoryFixture([[own],[own],[],[]],paths)
+    Check(LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1,
+        "a stale inventory after confirmed close must not trigger another termination")
     io := InventoryFixture([[own]],paths), io.closeOk := false
-    Check(!LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1,"denied close blocks and is not repeatedly forced")
+    Check(!LauncherFreshWorkflow_Drain("fixture",io) && io.tick >= 10000 && io.closed.Length = 1,
+        "denied close stays blocked at the original deadline and is not repeatedly forced")
+    reused := own.Clone(), reused.CreationDate := "replacement"
+    io := InventoryFixture([[own],[reused],[],[]],paths), io.closeOk := false
+    Check(!LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1,
+        "a reused PID after close must not grant authority to terminate its replacement or proceed")
+    replaced := own.Clone(), replaced.ExecutablePath := "C:\other\LRMCAI.exe"
+    io := InventoryFixture([[own],[replaced],[replaced]],paths), io.closeOk := false
+    Check(!LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1,
+        "a changed path on the attempted PID blocks admission even when the replacement is unrelated")
+    fading := own.Clone(), fading.ExecutablePath := ""
+    io := InventoryFixture([[own],[fading],[],[]],paths), io.closeOk := false
+    Check(LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1 && io.reads = 4,
+        "temporarily missing image during exit is wait-only, never replacement or kill authority")
+    io := InventoryFixture([[own],[own]],paths), io.closeOk := false, io.inventoryDelay := 6000
+    Check(!LauncherFreshWorkflow_Drain("fixture",io) && io.closed.Length = 1,
+        "unconfirmed close does not reset or extend the inventory deadline")
     io := InventoryFixture([[]],paths), io.fail := true
     Check(!LauncherFreshWorkflow_Drain("fixture",io),"inventory error cannot be interpreted as clear")
     io := InventoryFixture([[],[]],paths), io.inventoryDelay := 6000

@@ -205,7 +205,7 @@ class LauncherFreshWorkflowIo {
 LauncherFreshWorkflow_Drain(root,io := unset) {
     if !IsSet(io)
         io := LauncherFreshWorkflowIo(root)
-    deadline := io.Now() + 10000, clear := 0, reported := Map()
+    deadline := io.Now() + 10000, clear := 0, reported := Map(), attempted := Map()
     loop {
         if io.Now() >= deadline {
             WriteLog("全新啟動：舊流程檢查等待逾時（10 秒）；保留檔案，不開始更新","WARN")
@@ -222,6 +222,15 @@ LauncherFreshWorkflow_Drain(root,io := unset) {
         }
         owned := [], blocked := ""
         for record in records {
+            pidKey := String(record.ProcessId)
+            if attempted.Has(pidKey) {
+                original := attempted[pidKey]
+                if (record.CreationDate != "" && record.CreationDate != original.CreationDate)
+                    || (record.ExecutablePath != "" && record.ExecutablePath != original.ExecutablePath) {
+                    WriteLog("全新啟動：等待退出期間程序身分已變動；保留新程序，不開始更新 | reason=close-identity-changed PID=" record.ProcessId,"WARN")
+                    return false
+                }
+            }
             kind := LFW_Classify(record,io.paths)
             if kind = "unknown" || kind = "recorder" {
                 reason := kind = "recorder" ? "recording-still-running"
@@ -249,11 +258,17 @@ LauncherFreshWorkflow_Drain(root,io := unset) {
         } else {
             clear := 0
             for record in owned {
-                if !io.Close(record) {
-                    WriteLog("全新啟動：舊流程關閉未確認；保留檔案，不開始更新 | PID=" record.ProcessId " name=" record.Name,"WARN")
-                    return false
+                pidKey := String(record.ProcessId)
+                if attempted.Has(pidKey) {
+                    ; Termination is asynchronous and inventory can lag. Never
+                    ; terminate again (or reacquire a replacement) while waiting.
+                    continue
                 }
-                WriteLog("全新啟動：已關閉原設定安裝的舊流程 | PID=" record.ProcessId " name=" record.Name)
+                attempted[pidKey] := record.Clone()
+                if !io.Close(record) {
+                    WriteLog("全新啟動：舊流程關閉尚未確認；在原 10 秒期限內只觀察退出，不重送關閉、不開始更新 | PID=" record.ProcessId " name=" record.Name,"WARN")
+                } else
+                    WriteLog("全新啟動：已關閉原設定安裝的舊流程 | PID=" record.ProcessId " name=" record.Name)
             }
         }
         io.Wait()
