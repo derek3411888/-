@@ -1,13 +1,13 @@
 {
-  "release_id": "p5.40-l5.54-s1.0.88-A6C24E5D-4260730E-E85C1872-EF66A452",
-  "version": "5.40",
-  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/3c207ee4ec755926253ff1ea234eea178736722e/payload.zip?release=p5.40-l5.54-s1.0.88-A6C24E5D-4260730E-E85C1872-EF66A452",
-  "payload_sha256": "A6C24E5DBB6699E3412830DBC22D620F40BE3DE998AEDC1E15CED8D122483E5E",
-  "launcher_version": "5.54",
-  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/3c207ee4ec755926253ff1ea234eea178736722e/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.40-l5.54-s1.0.88-A6C24E5D-4260730E-E85C1872-EF66A452",
-  "launcher_sha256": "4260730E56578E6FBD15E4FEAD34FBD3957F649A1B8AC672B29807A37BC9F43A",
+  "release_id": "p5.41-l5.55-s1.0.88-91B499C0-7141EAD0-E85C1872-EF66A452",
+  "version": "5.41",
+  "payload_url": "https://raw.githubusercontent.com/derek3411888/-/396d2b61b600e977dc4fe18d55c1e4fd4b24ec3d/payload.zip?release=p5.41-l5.55-s1.0.88-91B499C0-7141EAD0-E85C1872-EF66A452",
+  "payload_sha256": "91B499C0D1619A08A0C60A9B696B432EEE038F57EEBD7DC6356ADB5625F064EB",
+  "launcher_version": "5.55",
+  "launcher_url": "https://raw.githubusercontent.com/derek3411888/-/396d2b61b600e977dc4fe18d55c1e4fd4b24ec3d/%E5%85%A8%E8%87%AA%E5%8B%95%E9%8B%A4%E5%9C%B0.exe?release=p5.41-l5.55-s1.0.88-91B499C0-7141EAD0-E85C1872-EF66A452",
+  "launcher_sha256": "7141EAD0A40EB07A41F7AB041E26DECBE97AADE33232C571FBC0F8C29E3AC303",
   "server_version": "1.0.88",
-  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/3c207ee4ec755926253ff1ea234eea178736722e/self-hosted-server.zip?release=p5.40-l5.54-s1.0.88-A6C24E5D-4260730E-E85C1872-EF66A452",
+  "server_bundle_url": "https://raw.githubusercontent.com/derek3411888/-/396d2b61b600e977dc4fe18d55c1e4fd4b24ec3d/self-hosted-server.zip?release=p5.41-l5.55-s1.0.88-91B499C0-7141EAD0-E85C1872-EF66A452",
   "server_sha256": "E85C1872E8A639CFC3BBB6C63B205C186D8BA3F0B30B28F1EF231F65FC865DF0",
   "web_sha256": "EF66A4521A6375E51B8BA9B18C478E59E286AA6E671D86B696D96FEE4EA24ABA"
 }
