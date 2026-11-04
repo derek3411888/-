@@ -17,7 +17,7 @@ $suiteTests = [ordered]@{
     Startup=@('GameMaintenanceStartupTest.ahk','GameMaintenanceHostTest.ps1','GameMaintenanceHostIntegrationTest.ps1','GameLauncherOnlyHostTest.ps1','LrmcRestartBudgetTest.ps1','LauncherStartupGuardTest.ps1','LauncherStartupNativeTest.ps1','FreshLauncherTakeoverTest.ps1','InstallStartupLockTest.ps1','MainInstanceOwnershipTest.ps1','LauncherInstallationRootTest.ps1','LauncherCleanupIdentityTest.ps1','RestartWorkerOwnershipTest.ps1','LauncherNativeHelperDrainTest.ps1')
     Transport=@('GameMaintenanceTransportTest.ahk','GameMaintenancePreviewRefreshTest.ps1','RemoteControlStartupHookTest.ps1','RuntimeSnapshotThrottleTest.ps1','RuntimeRecoveryStatusTest.ps1','RemoteRestartControlTest.ps1','RemoteUpdateRestartTest.ahk','RemoteUpdateRestartHostTest.ps1','RemoteRestartDrainTest.ahk')
     Completion=@('CompletionSynthesisTest.ahk','CompletionSynthesisRuntimeTest.ahk','CompletionSynthesisFlowTest.ps1','CompletionSynthesisHostTest.ps1','FreshRewardStateTest.ps1','SynthesisPauseBudgetTest.ahk','SynthesisCountPolicyTest.ahk','SynthesisMonthlyGuardTest.ps1')
-    Ui=@('GameMaintenanceLocalUiTest.ps1')
+    Ui=@('GameMaintenanceLocalUiTest.ps1','OkwwInstalledLaunchTest.ahk','OkwwInstalledLaunchHostTest.ps1','OkwwInstalledInputTest.ps1','OKWW自動戰鬥OCR判斷測試.ahk')
     Release=@('GameMaintenancePackageTest.ps1')
 }
 $context = Initialize-ProjectDevelopmentPaths -ProjectRoot (Split-Path $PSScriptRoot -Parent) -RunName "gm-$Suite"

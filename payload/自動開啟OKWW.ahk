@@ -10,6 +10,7 @@ global BUNDLED_AHK_EXE := ResolveBundledAhkExe()
 #Include LogManager.ahk
 #Include RuntimeFilePaths.ahk
 #Include OkwwOcrTextMatchers.ahk
+#Include OkwwInstalledLaunch.ahk
 #Include ManagedProcessGuard.ahk
 #Include CapsLockGuard.ahk
 SetStoreCapsLockMode(false)
@@ -1610,6 +1611,91 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
     return false
 }
 
+; ====================== 已安裝啟動器：精確實體輸入 ======================
+InstalledOkwwIdentity(hwnd) {
+    global CFG_FILE
+    if GetOkwwWindowKind(hwnd) != "upgrade"
+        return 0
+    configured := NormalizePath(IniReadSafe(CFG_FILE,"paths","OKWW",""))
+    if configured = ""
+        return 0
+    try {
+        record := MPG_ReadRecord(WinGetPID("ahk_id " hwnd),configured)
+        if !IsObject(record)
+            return 0
+        ; ImagePut's WindowToBitmap captures physical CLIENT pixels (PW_CLIENTONLY).
+        oldDpi := DllCall("SetThreadDpiAwarenessContext","ptr",-3,"ptr")
+        if !oldDpi
+            return 0
+        try WinGetClientPos(&x,&y,&w,&h,"ahk_id " hwnd)
+        finally DllCall("SetThreadDpiAwarenessContext","ptr",oldDpi,"ptr")
+        return {hwnd:hwnd,pid:record.pid,path:record.path,started:record.started,
+            kind:"upgrade",x:x,y:y,w:w,h:h}
+    } catch
+        return 0
+}
+
+CaptureInstalledOkww() {
+    global targetHwnd, pid
+    if ShouldAbortOkwwHandoff(&reason)
+        return {ok:false,reason:"handoff_aborted"}
+    ; The launcher may stay open after spawning pythonw. Prefer the real final UI.
+    AttachNewestOkww(&pid,&targetHwnd,true)
+    before := InstalledOkwwIdentity(targetHwnd)
+    capturedAt := DllCall("GetTickCount64","uint64")
+    result := CaptureAndOCR(8192)
+    if !result.ok
+        return result
+    after := InstalledOkwwIdentity(targetHwnd)
+    if !OKWW_SameInstalledSnapshot(before,after)
+        return {ok:false,reason:"launcher_changed"}
+    after.ok := true, after.reason := "", after.blocks := result.blocks, after.capturedAt := capturedAt
+    return after
+}
+
+InstalledOkwwInputSafe(snapshot,point) {
+    if ShouldAbortOkwwHandoff(&reason)
+        return false
+    age := DllCall("GetTickCount64","uint64") - snapshot.capturedAt
+    if age < 0 || age > 5000 || !OKWW_SameInstalledSnapshot(snapshot,InstalledOkwwIdentity(snapshot.hwnd))
+        return false
+    if !WinActive("ahk_id " snapshot.hwnd) || !DllCall("IsWindowEnabled","ptr",snapshot.hwnd)
+        || DllCall("IsHungAppWindow","ptr",snapshot.hwnd)
+        return false
+    sx := snapshot.x+point.x, sy := snapshot.y+point.y
+    packed := Buffer(8)
+    NumPut("int",sx,"int",sy,packed)
+    hit := DllCall("WindowFromPoint","int64",NumGet(packed,0,"int64"),"ptr")
+    return hit && DllCall("GetAncestor","ptr",hit,"uint",2,"ptr") = snapshot.hwnd
+}
+
+ClickInstalledOkww(snapshot,point) {
+    oldMode := A_CoordModeMouse
+    oldDpi := DllCall("SetThreadDpiAwarenessContext","ptr",-3,"ptr")
+    if !oldDpi
+        return false
+    try {
+        CoordMode "Mouse", "Screen"
+        if !InstalledOkwwInputSafe(snapshot,point)
+            return false
+        CapsLockGuard_EnsureOff(WriteLog)
+        MouseMove snapshot.x+point.x, snapshot.y+point.y
+        if SleepOkwwWithAbort(40,&reason) || !InstalledOkwwInputSafe(snapshot,point)
+            return false
+        MouseClick "left",snapshot.x+point.x,snapshot.y+point.y
+        Log("已用實體滑鼠點擊 OKWW 啟動應用程式；等待真正主視窗交接 | hwnd=" snapshot.hwnd)
+        return true
+    } finally {
+        CoordMode "Mouse",oldMode
+        DllCall("SetThreadDpiAwarenessContext","ptr",oldDpi,"ptr")
+    }
+}
+
+StartInstalledOkww() {
+    return OKWW_StartInstalled(CaptureInstalledOkww,ClickInstalledOkww,
+        (*) => ShouldAbortOkwwHandoff(),(ms) => SleepOkwwWithAbort(ms))
+}
+
 ; ====================== 前檢查與四階段流程 ======================
 WriteStep("升級檢測", "檢查是否需要執行升級流程")
 upgradeDetectState := DetectOCRText("升级APP", 15000)
@@ -1632,9 +1718,10 @@ if (upgradeDetectState = "capture_failed") {
     ExitApp
 }
 if (upgradeDetectState != "found") {
-    WriteStep("升級檢測", "未偵測到升级APP，流程結束")
-    ShowTip("🔍 未偵測到「升级APP」，不執行升級", 1200)
-    Log("no upgrade keyword after repeated valid OCR, exit")
+    WriteStep("已安裝啟動", "未偵測到升级APP，檢查啟動應用程式按鈕")
+    installedResult := StartInstalledOkww()
+    WriteStep("OKWW交接", "已安裝啟動器結果=" installedResult,
+        installedResult = "final_ready" ? "INFO" : "WARN")
     ExitApp
 }
 
