@@ -49,8 +49,46 @@ OKWW_SameInstalledSnapshot(left, right) {
     return true
 }
 
+OKWW_InstalledAction(snapshot) {
+    if !snapshot.ok || snapshot.kind != "upgrade"
+        return 0
+    message := ""
+    for block in snapshot.blocks {
+        if !IsObject(block) || !block.HasOwnProp("text")
+            continue
+        message .= RegExReplace(block.text, "[\s\p{P}]", "")
+    }
+    ; The instruction is context, never the click target. While it is present,
+    ; do not fall through to a Start button visible behind the completion panel.
+    if InStr(message, "處理完成請檢視日誌並點選完成") {
+        candidates := []
+        for block in snapshot.blocks {
+            if !IsObject(block) || !block.HasOwnProp("text") || RegExReplace(block.text,"\s","") != "完成"
+                continue
+            if !block.HasOwnProp("boxPoint") || !(block.boxPoint is Array) || block.boxPoint.Length < 4
+                return 0
+            x1 := snapshot.w, y1 := snapshot.h, x2 := 0, y2 := 0
+            for point in block.boxPoint {
+                if !IsObject(point) || !point.HasOwnProp("x") || !point.HasOwnProp("y")
+                    || !IsNumber(point.x) || !IsNumber(point.y)
+                    return 0
+                x1 := Min(x1,point.x), y1 := Min(y1,point.y)
+                x2 := Max(x2,point.x), y2 := Max(y2,point.y)
+            }
+            if x1 < 0 || y1 < 0 || x2 >= snapshot.w || y2 >= snapshot.h || x2 <= x1 || y2 <= y1
+                return 0
+            candidates.Push({x:Round((x1+x2)/2),y:Round((y1+y2)/2),action:"complete"})
+        }
+        return candidates.Length = 1 ? candidates[1] : 0
+    }
+    point := OKWW_InstalledLaunchButton(snapshot)
+    if IsObject(point)
+        point.action := "start"
+    return point
+}
+
 OKWW_StartInstalled(capture, click, abort, sleep, maxPolls := 120) {
-    previous := 0, previousPoint := 0, clicked := false
+    previous := 0, previousPoint := 0, clicked := Map()
     Loop maxPolls {
         if abort.Call()
             return "handoff_aborted"
@@ -62,15 +100,18 @@ OKWW_StartInstalled(capture, click, abort, sleep, maxPolls := 120) {
                 || snapshot.reason = "handoff_aborted")
                 return snapshot.reason
             previous := 0
-        } else if !clicked {
-            point := OKWW_InstalledLaunchButton(snapshot)
+        } else {
+            point := OKWW_InstalledAction(snapshot)
+            if IsObject(point) && clicked.Has(point.action)
+                point := 0
             if IsObject(point) && OKWW_SameInstalledSnapshot(previous, snapshot)
+                && point.action = previousPoint.action
                 && Abs(point.x-previousPoint.x) <= 3 && Abs(point.y-previousPoint.y) <= 3 {
                 if abort.Call()
                     return "handoff_aborted"
                 if !click.Call(snapshot,point)
                     return "click_rejected"
-                clicked := true
+                clicked[point.action] := true
             }
             previous := IsObject(point) ? snapshot : 0
             previousPoint := point
@@ -78,5 +119,5 @@ OKWW_StartInstalled(capture, click, abort, sleep, maxPolls := 120) {
         if sleep.Call(500)
             return "handoff_aborted"
     }
-    return clicked ? "final_timeout" : "not_found"
+    return clicked.Count ? "final_timeout" : "not_found"
 }

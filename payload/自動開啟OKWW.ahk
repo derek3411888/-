@@ -1539,7 +1539,7 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
         }
         blocks := capture.blocks
 
-        best := ""
+        best := "", completionCandidates := 0
         bestScore := (mode = "leftmost") ?  999999999 : -999999999
         for block in blocks {
             if ShouldAbortOkwwHandoff(&abortReason)
@@ -1547,10 +1547,12 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
             if !block.HasOwnProp("text") || !block.HasOwnProp("boxPoint")
                 continue
             clean := StrReplace(block.text, " ", "")
-            if !InStr(clean, keyword)
+            if (keyword = "完成" ? RegExReplace(clean,"\s","") != "完成" : !InStr(clean, keyword))
                 continue
             if !(block.boxPoint is Array) || (block.boxPoint.Length < 3)
                 continue
+            if keyword = "完成"
+                completionCandidates++
             x1 := block.boxPoint[1].x, y1 := block.boxPoint[1].y
             x2 := block.boxPoint[3].x, y2 := block.boxPoint[3].y
             cx := Round((x1 + x2) / 2)
@@ -1562,7 +1564,7 @@ DoOCRClick(keyword, stageText, mode := "leftmost", sendHotkey := "", attempts :=
             }
         }
 
-        if best is Array {
+        if best is Array && (keyword != "完成" || completionCandidates = 1) {
             Log("DoOCRClick click at x=" best[1] " y=" best[2] " score=" bestScore)
             ShowTip(stageText "`n→ 點擊: " best[1] ", " best[2], 500)
             oldMode := A_CoordModeMouse
@@ -1683,7 +1685,8 @@ ClickInstalledOkww(snapshot,point) {
         if SleepOkwwWithAbort(40,&reason) || !InstalledOkwwInputSafe(snapshot,point)
             return false
         MouseClick "left",snapshot.x+point.x,snapshot.y+point.y
-        Log("已用實體滑鼠點擊 OKWW 啟動應用程式；等待真正主視窗交接 | hwnd=" snapshot.hwnd)
+        label := point.HasOwnProp("action") && point.action = "complete" ? "更新完成按鈕" : "啟動應用程式"
+        Log("已用實體滑鼠點擊 OKWW " label "；等待真正主視窗交接 | hwnd=" snapshot.hwnd)
         return true
     } finally {
         CoordMode "Mouse",oldMode
@@ -1718,7 +1721,7 @@ if (upgradeDetectState = "capture_failed") {
     ExitApp
 }
 if (upgradeDetectState != "found") {
-    WriteStep("已安裝啟動", "未偵測到升级APP，檢查啟動應用程式按鈕")
+    WriteStep("已安裝啟動", "未偵測到升级APP，檢查更新完成提示及啟動應用程式按鈕")
     installedResult := StartInstalledOkww()
     WriteStep("OKWW交接", "已安裝啟動器結果=" installedResult,
         installedResult = "final_ready" ? "INFO" : "WARN")
