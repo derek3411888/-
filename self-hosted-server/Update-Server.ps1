@@ -168,7 +168,10 @@ function Expand-VerifiedBundle([string]$ArchivePath, [string]$Destination) {
             if ($entryName.StartsWith('/') -or $entryName -match '^[A-Za-z]:' -or $entryName -match '(^|/)\.\.(/|$)') {
                 throw "伺服器套件包含不安全路徑：$entryName"
             }
-            if ($entryName -eq '.env' -or $entryName.StartsWith('node_modules/')) {
+            $pathParts = @($entryName -split '/' | Where-Object { $_ -ne '' -and $_ -ne '.' })
+            if ($pathParts.Count -eq 0) { continue }
+            $topLevel = $pathParts[0].TrimEnd(' ', '.')
+            if ($topLevel -in @('.env', 'node_modules', 'secrets')) {
                 throw "伺服器套件不得包含敏感或本機檔案：$entryName"
             }
         }
@@ -199,6 +202,25 @@ function Get-OptionalJsonValue($Object, [string]$Name, $Fallback) {
     return $property.Value
 }
 
+function Resolve-CodexUpdateRuntime($BridgeConfig) {
+    $runtimePath = [string](Get-OptionalJsonValue $BridgeConfig 'BridgePowerShellPath' '')
+    if ([string]::IsNullOrWhiteSpace($runtimePath)) {
+        $runtimePath = [string](Get-Command pwsh.exe -CommandType Application -ErrorAction Stop).Source
+    }
+    # IsPathFullyQualified is unavailable in Windows PowerShell 5.1.
+    if ($runtimePath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)' -or
+        [IO.Path]::GetFileName($runtimePath) -ine 'pwsh.exe' -or
+        -not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) {
+        throw 'Codex bridge update requires an existing, absolute PowerShell 7 pwsh.exe path.'
+    }
+    $major = @(& $runtimePath -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.Major')
+    if ($LASTEXITCODE -ne 0 -or $major.Count -ne 1 -or
+        [string]$major[0] -notmatch '^\d+$' -or [int]$major[0] -lt 7) {
+        throw 'Codex bridge update requires PowerShell 7 or newer.'
+    }
+    return [IO.Path]::GetFullPath($runtimePath)
+}
+
 function Update-InstalledCodexBridge {
     $bridgeRoot = Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge'
     $bridgeConfigPath = Join-Path $bridgeRoot 'config.json'
@@ -219,15 +241,13 @@ function Update-InstalledCodexBridge {
     $bridgeConfig = Get-Content -LiteralPath $bridgeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $threadId = [string](Get-OptionalJsonValue $bridgeConfig 'ThreadId' '')
     if ($threadId -notmatch '^[0-9a-fA-F-]{36}$') { throw '既有 Codex 橋接 ThreadId 無效，無法安全更新。' }
-    & $installer `
-        -ThreadId $threadId `
-        -Workspace ([string](Get-OptionalJsonValue $bridgeConfig 'Workspace' (Split-Path -Parent $script:serverRoot))) `
-        -ProjectId ([string](Get-OptionalJsonValue $bridgeConfig 'ProjectId' 'ww-control-a3988')) `
-        -ApiKey ([string](Get-OptionalJsonValue $bridgeConfig 'ApiKey' '')) `
-        -Collection ([string](Get-OptionalJsonValue $bridgeConfig 'Collection' 'ahk_clients')) `
-        -SelfHostedBaseUrl 'http://127.0.0.1:3000' `
-        -PollSeconds ([int](Get-OptionalJsonValue $bridgeConfig 'PollSeconds' 15)) `
-        -MinimumRequestIntervalSeconds ([int](Get-OptionalJsonValue $bridgeConfig 'MinimumRequestIntervalSeconds' 300))
+    $runtime = Resolve-CodexUpdateRuntime $bridgeConfig
+    $wrapper = Join-Path $script:serverRoot 'windows\Update-CodexSupportBridge.ps1'
+    if (-not (Test-Path -LiteralPath $wrapper -PathType Leaf)) { throw 'Missing PS7 bridge update entry point.' }
+    # Forward only a config path. Secrets remain in memory in the PS7 child,
+    # never in process arguments, and normal -File policy still applies.
+    & $runtime -NoProfile -NonInteractive -File $wrapper -ConfigPath $bridgeConfigPath
+    if ($LASTEXITCODE -ne 0) { throw "Codex bridge installer failed with exit code $LASTEXITCODE." }
 }
 
 function Restore-PreviousVersion {

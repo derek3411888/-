@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { requireAllowedOrigin } from "./access-auth.js";
 import { query, withTransaction } from "./db.js";
 import {
   HttpError,
@@ -49,11 +50,7 @@ export async function ensureBrowser(req) {
 }
 
 export function requireSameOrigin(req) {
-  const origin = String(req.headers.origin ?? "");
-  if (origin && origin !== config.publicUrl) throw new HttpError(403, "來源驗證失敗", "ORIGIN_REJECTED");
-  if (String(req.headers["x-wuthering-csrf"] ?? "") !== "1") {
-    throw new HttpError(403, "缺少操作確認標頭", "CSRF_REJECTED");
-  }
+  requireAllowedOrigin(req, config.allowedOrigins);
 }
 
 export async function requireDevice(req) {

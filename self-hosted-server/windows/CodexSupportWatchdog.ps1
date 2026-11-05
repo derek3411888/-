@@ -5,9 +5,10 @@ param(
     [switch]$ValidateOnly
 )
 
+#Requires -Version 7.0
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$WatchdogVersion = '1.0.0'
+$WatchdogVersion = '1.0.2'
 
 function Write-WatchdogLog([string]$Path, [string]$Level, [string]$Message) {
     $directory = Split-Path -Parent $Path
@@ -30,7 +31,11 @@ function Get-BridgeProcesses([string]$ScriptPath) {
         Where-Object {
             if ($_.Name -notin @('powershell.exe', 'pwsh.exe')) { return $false }
             $normalized = ([string]$_.CommandLine).Replace('"', '').Replace("'", '')
-            return $normalized -match $needlePattern
+            # 同一腳本的 -QueueWorker 是獨立執行中的 Codex 任務，
+            # 不是 Bridge 主輪詢程序。若誤認為主程式，主程式當掉時
+            # Watchdog 就會拒絕重啟，讓網站心跳與回覆同步永久停止。
+            return ($normalized -match $needlePattern) -and
+                ($normalized -notmatch '(?i)(?:^|\s)-QueueWorker(?:\s|$)')
         })
 }
 
@@ -40,18 +45,14 @@ if (-not (Test-Path -LiteralPath $bridgeFull -PathType Leaf)) { throw "找不到
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) { throw "找不到 Codex 橋接設定：$configFull" }
 $installRoot = Split-Path -Parent $bridgeFull
 $logPath = Join-Path $installRoot 'watchdog.log'
-$powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-try {
-    $runtimeConfig = Get-Content -LiteralPath $configFull -Raw -Encoding UTF8 | ConvertFrom-Json
-    $runtimeProperty = $runtimeConfig.PSObject.Properties['BridgePowerShellPath']
-    if ($null -ne $runtimeProperty -and
-        (Test-Path -LiteralPath ([string]$runtimeProperty.Value) -PathType Leaf)) {
-        $powershellPath = [string]$runtimeProperty.Value
-    }
-} catch {
-    # 舊設定或損壞設定仍交由 bridge 自己輸出精確錯誤；watchdog 先用 5.1 回退。
+$runtimeConfig = Get-Content -LiteralPath $configFull -Raw -Encoding UTF8 | ConvertFrom-Json
+$runtimeProperty = $runtimeConfig.PSObject.Properties['BridgePowerShellPath']
+$powershellPath = if ($null -ne $runtimeProperty) { [string]$runtimeProperty.Value } else { '' }
+if (-not [IO.Path]::IsPathFullyQualified($powershellPath) -or
+    [IO.Path]::GetFileName($powershellPath) -ine 'pwsh.exe' -or
+    -not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) {
+    throw 'BridgePowerShellPath must point to an existing PowerShell 7 pwsh.exe; no PS5.1 fallback is permitted.'
 }
-if (-not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) { throw '找不到可用的 PowerShell。' }
 
 if ($ValidateOnly) {
     [pscustomobject]@{
@@ -59,6 +60,8 @@ if ($ValidateOnly) {
         WatchdogVersion = $WatchdogVersion
         BridgeScriptPath = $bridgeFull
         ConfigPath = $configFull
+        PowerShellPath = $powershellPath
+        RuntimeMajor = $PSVersionTable.PSVersion.Major
     } | ConvertTo-Json -Depth 3
     exit 0
 }
@@ -76,7 +79,7 @@ if (-not $mutexOwned) {
 }
 
 try {
-    Write-WatchdogLog $logPath 'INFO' "Codex bridge watchdog $WatchdogVersion started"
+    Write-WatchdogLog $logPath 'INFO' "Codex bridge watchdog $WatchdogVersion started runtime=$($PSVersionTable.PSVersion) childRuntime=$powershellPath"
     $backoffSeconds = 5
     while ($true) {
         $existing = @(Get-BridgeProcesses $bridgeFull)
@@ -87,7 +90,7 @@ try {
 
         $quotedBridge = '"' + $bridgeFull.Replace('"', '""') + '"'
         $quotedConfig = '"' + $configFull.Replace('"', '""') + '"'
-        $arguments = "-NoProfile -NoLogo -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $quotedBridge -ConfigPath $quotedConfig"
+        $arguments = "-NoProfile -NoLogo -NonInteractive -WindowStyle Hidden -File $quotedBridge -ConfigPath $quotedConfig"
         $startedAt = [DateTimeOffset]::UtcNow
         try {
             $process = Start-Process -FilePath $powershellPath -ArgumentList $arguments `

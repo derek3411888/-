@@ -3,7 +3,11 @@ param(
     [string]$ConfigPath = (Join-Path $env:ProgramData 'WutheringAutomation\CodexSupportBridge\config.json'),
     [switch]$Once,
     [switch]$ValidateOnly,
-    [switch]$RegressionTest
+    [switch]$RegressionTest,
+    # 獨立執行的佇列工作者：只啟動已驗證且已保存的訊息，不重複加入佇列。
+    [switch]$QueueWorker,
+    [string]$QueueSubmissionId = '',
+    [string]$QueueMessageSha256 = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,7 +17,7 @@ Set-StrictMode -Version Latest
 $ExpectedAction = 'QUEUE_MESSAGE_V1'
 $LegacyAction = 'FIX_SCRIPT'
 $FixedPrompt = '現在腳本有問題，請你找出問題並修正'
-$BridgeVersion = '3.4.2'
+$BridgeVersion = '3.5.0'
 $MaxMessageLength = 1000
 $MaxContextLength = 14000
 $MaxQueuedMessageLength = 15500
@@ -29,17 +33,26 @@ $CodexTurnStartEvidenceTimeoutMs = 180000L
 $script:LastFirestoreDocument = $null
 $script:CodexSessionLogPath = ''
 $script:CodexResponseCursors = @{}
+# 主 Bridge 每次只啟動一名 Codex 工作者；避免相同指令被多個程序競爭啟動。
 
 function Read-JsonFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "找不到 Codex 橋接設定：$Path" }
     return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
+function Test-FirestoreSupportEnabled($Config) {
+    # Missing settings are fail-closed. A string "false" is not PowerShell $true.
+    $value = Read-OptionalProperty $Config 'FirestoreSupportEnabled' $false
+    return ($value -is [bool] -and $value -eq $true)
+}
+
 function Assert-Config($Config) {
-    if ([string]$Config.ProjectId -notmatch '^[A-Za-z0-9._-]{3,120}$') { throw 'ProjectId 格式無效。' }
-    if ([string]::IsNullOrWhiteSpace([string]$Config.ApiKey)) { throw 'ApiKey 不可空白。' }
-    if ([string]$Config.Collection -notmatch '^[A-Za-z0-9._-]{1,120}$') { throw 'Collection 格式無效。' }
-    if ([string]$Config.DocumentId -ne '__codex_support') { throw '只允許固定的 __codex_support 文件。' }
+    if (Test-FirestoreSupportEnabled $Config) {
+        if ([string]$Config.ProjectId -notmatch '^[A-Za-z0-9._-]{3,120}$') { throw 'ProjectId 格式無效。' }
+        if ([string]::IsNullOrWhiteSpace([string]$Config.ApiKey)) { throw 'ApiKey 不可空白。' }
+        if ([string]$Config.Collection -notmatch '^[A-Za-z0-9._-]{1,120}$') { throw 'Collection 格式無效。' }
+        if ([string]$Config.DocumentId -ne '__codex_support') { throw '只允許固定的 __codex_support 文件。' }
+    }
     if ([string]$Config.ThreadId -notmatch '^[0-9a-fA-F-]{36}$') { throw 'Codex ThreadId 格式無效。' }
     if (-not (Test-Path -LiteralPath ([string]$Config.Workspace) -PathType Container)) { throw 'Codex 工作區不存在。' }
     $bridgePowerShellPath = [string](Read-OptionalProperty $Config 'BridgePowerShellPath' '')
@@ -49,11 +62,14 @@ function Assert-Config($Config) {
     $poll = [int]$Config.PollSeconds
     if ($poll -lt 10 -or $poll -gt 300) { throw 'PollSeconds 必須介於 10 到 300 秒。' }
     $cooldown = [int]$Config.MinimumRequestIntervalSeconds
-    if ($cooldown -lt 60 -or $cooldown -gt 3600) { throw 'MinimumRequestIntervalSeconds 必須介於 60 到 3600 秒。' }
+    if ($cooldown -lt 30 -or $cooldown -gt 3600) { throw 'MinimumRequestIntervalSeconds 必須介於 30 到 3600 秒。' }
 
     $selfHostedBaseUrl = [string](Read-OptionalProperty $Config 'SelfHostedBaseUrl' '')
     $selfHostedToken = [string](Read-OptionalProperty $Config 'SelfHostedBridgeToken' '')
     $dispatcherId = [string](Read-OptionalProperty $Config 'DispatcherId' '')
+    if (-not (Test-FirestoreSupportEnabled $Config) -and -not $selfHostedBaseUrl) {
+        throw 'Firestore Codex 已停用，必須設定中央 loopback 來源。'
+    }
     if ($selfHostedBaseUrl -or $selfHostedToken) {
         if ([string]::IsNullOrWhiteSpace($selfHostedBaseUrl) -or [string]::IsNullOrWhiteSpace($selfHostedToken)) {
             throw 'SelfHostedBaseUrl 與 SelfHostedBridgeToken 必須同時設定。'
@@ -115,6 +131,7 @@ function ConvertFrom-FirestoreJson([string]$Json) {
 }
 
 function Get-FirestoreDocument($Config) {
+    if (-not (Test-FirestoreSupportEnabled $Config)) { return $null }
     $url = "$(Get-FirestoreBaseUrl $Config)?key=$([Uri]::EscapeDataString([string]$Config.ApiKey))"
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 15
@@ -141,6 +158,7 @@ function ConvertTo-FirestoreField($Value) {
 }
 
 function Set-FirestoreFields($Config, [hashtable]$Values) {
+    if (-not (Test-FirestoreSupportEnabled $Config)) { return }
     $fields = @{}
     foreach ($name in $Values.Keys) { $fields[$name] = ConvertTo-FirestoreField $Values[$name] }
     $query = New-Object Collections.Generic.List[string]
@@ -154,6 +172,7 @@ function Set-FirestoreFields($Config, [hashtable]$Values) {
 }
 
 function Set-FirestoreFieldsAtVersion($Config, [hashtable]$Values, [string]$UpdateTime) {
+    if (-not (Test-FirestoreSupportEnabled $Config)) { return $null }
     if ([string]::IsNullOrWhiteSpace($UpdateTime)) { throw 'Firestore CAS 缺少 updateTime。' }
     $fields = @{}
     foreach ($name in $Values.Keys) { $fields[$name] = ConvertTo-FirestoreField $Values[$name] }
@@ -895,19 +914,6 @@ function Invoke-CodexRpcRequest($Session, [long]$Id, [string]$Method, $Params, [
     }
 }
 
-function Resume-CodexBridgeThread($Session, $Config, [long]$RequestId = 2L) {
-    $response = Invoke-CodexRpcRequest $Session $RequestId 'thread/resume' @{
-        threadId = [string]$Config.ThreadId
-    } 30000
-    $result = Read-OptionalProperty $response 'result' $null
-    $thread = Read-OptionalProperty $result 'thread' $null
-    $actualThreadId = [string](Read-OptionalProperty $thread 'id' '')
-    if (-not $actualThreadId -or
-        -not $actualThreadId.Equals([string]$Config.ThreadId, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Codex thread/resume 沒有回傳設定中的 Thread ID。"
-    }
-    return $thread
-}
 
 function Get-CodexThreadTurnsFromSession($Session, $Config, [long]$RequestId = 3L) {
     $response = Invoke-CodexRpcRequest $Session $RequestId 'thread/turns/list' @{
@@ -1037,6 +1043,50 @@ function Invoke-CodexQueuedTurnDelivery(
     } finally {
         Close-CodexAppServerProxy $session
     }
+}
+
+
+# ============================================================================
+# 舊網站回報佇列啟動器相容入口（Bridge 3.5.0：非原子啟動已停用）
+# 橋接器只持久保存訊息及同步回覆，實際執行交由原生 Desktop owner。
+# ============================================================================
+function Start-CodexQueuedSubmission($Session, $Config, [string]$SubmissionId, [string]$ExpectedHash) {
+    # Compatibility entry point only. queue/update can replace input under the
+    # same ID; queue/start has no expected hash/revision, and resume can dequeue
+    # other work. Do not execute from this bridge without an atomic API contract.
+    throw 'CODEX_NATIVE_QUEUE_OWNER_REQUIRED: 保留 WAITING；由原生 Codex Desktop 接手，橋接不自動啟動佇列。'
+}
+
+# Codex 工作者已持有正式 Turn ID，直接把真實進度回寫 Firestore。
+# 避免大型 JSONL 聊天歷史掃描讓網頁長時間仍顯示 WAITING。
+function Publish-CodexQueueWorkerFirestoreMatch($Config, [string]$ExpectedHash, $Match, [string]$LogPath) {
+    if (-not (Test-FirestoreSupportEnabled $Config)) { return }
+    try {
+        $doc = Get-FirestoreDocument $Config
+        $nonce = [long](Read-FirestoreField $doc 'supportRequestNonce' 0L)
+        $documentHash = [string](Read-FirestoreField $doc 'bridgeMessageSha256' '')
+        if ($nonce -le 0 -or $documentHash -cne $ExpectedHash) { return }
+        $target = [pscustomobject]@{ Source='firestore'; Nonce=$nonce; MessageSha256=$ExpectedHash }
+        if (Publish-FirestoreCodexResponse $Config $target $Match) {
+            Write-BridgeLog $LogPath 'INFO' "Codex queue worker synced nonce=$nonce state=$($Match.ResponseState) turn=$($Match.TurnId)"
+        }
+    } catch {
+        # 回報失敗不能中斷已在執行中的 Codex 任務；主 Bridge 仍有備援同步。
+        Write-BridgeLog $LogPath 'WARN' "Codex worker progress sync deferred: $($_.Exception.Message)"
+    }
+}
+
+
+function Invoke-CodexQueueWorker($Config, [string]$SubmissionId, [string]$ExpectedHash, [string]$LogPath) {
+    # Reject stale scheduled/command-line workers before opening an app-server.
+    # Never resume, attach, enqueue again, or infer that an uncertain turn failed.
+    throw 'CODEX_NATIVE_QUEUE_OWNER_REQUIRED: 此版停用非原子佇列工作者；既有請求與回覆綁定保留。'
+}
+
+function Start-CodexQueueWorkerProcess($Config, [string]$SubmissionId, [string]$ExpectedHash, [string]$LogPath) {
+    # Deliberate no-op: persist/observe the original submission, do not spawn a
+    # worker that can race the native Desktop owner. WAITING is not success.
+    return $false
 }
 
 function Get-CodexThreadTurns($Config) {
@@ -1173,6 +1223,8 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
     $finalText = ''
     $finalAt = 0L
     $supersededAt = 0L
+    # 實際對應 Turn 的中止事件才可判定 INTERRUPTED，避免另一個 reader 誤判。
+    $abortedAt = 0L
     $skipPartialLine = $false
     try {
         $fileLength = [long]$stream.Length
@@ -1231,6 +1283,17 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
                 continue
             }
 
+            # 以本機 JSONL 裡同一個 Turn ID 的 event_msg/turn_aborted 作為明確中斷證據。
+            # 臨時 app-server 可能回傳 interrupted，原工作者卻仍然繼續執行。
+            if ([string](Read-OptionalProperty $record 'type' '') -eq 'event_msg' -and
+                [string](Read-OptionalProperty $payload 'type' '') -eq 'turn_aborted') {
+                $eventTurnId = [string](Read-OptionalProperty $payload 'turn_id' '')
+                if ($targetSeen -and $targetTurnId -and $eventTurnId -eq $targetTurnId) {
+                    $abortedAt = Get-CodexRecordTimestampMs $record
+                }
+                continue
+            }
+
             $role = [string](Read-OptionalProperty $payload 'role' '')
             if ($role -eq 'user') {
                 $userText = Get-CodexUserMessageText $payload
@@ -1277,6 +1340,15 @@ function Find-CodexResponseFromSessionLog($Config, $Target) {
 
     if ($finalText) {
         $match = New-CodexResponseMatch $true 'COMPLETED' $finalText $finalAt $targetTurnId 'completed' ''
+        $script:CodexResponseCursors[$cursorKey] = [pscustomobject]@{
+            Offset = 0L; TurnId = $targetTurnId; TerminalMatch = $match
+        }
+        return $match
+    }
+    if ($targetSeen -and $abortedAt -gt 0) {
+        if ($abortedAt -lt $queuedAt) { $abortedAt = $queuedAt }
+        $match = New-CodexResponseMatch $true 'INTERRUPTED' '' $abortedAt $targetTurnId 'interrupted' `
+            '已確認 Codex 寫入 turn_aborted 事件，本次沒有正式最終回覆'
         $script:CodexResponseCursors[$cursorKey] = [pscustomobject]@{
             Offset = 0L; TurnId = $targetTurnId; TerminalMatch = $match
         }
@@ -1333,7 +1405,10 @@ function Find-CodexResponseByMessageHash($Turns, [string]$MessageSha256) {
         if (-not [string]::IsNullOrWhiteSpace($finalText)) {
             $responseState = 'COMPLETED'
             if ($completedAt -le 0) { $completedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
-        } elseif ($completedAt -gt 0) {
+        } elseif ($turnStatus -in @('interrupted', 'failed') -or $completedAt -gt 0) {
+            # Codex 遇到程序關閉可能標記 interrupted，但未寫入 completedAt。
+            # 不能因此一直把已中斷任務顯示為 IN_PROGRESS。
+            if ($completedAt -le 0) { $completedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
             if ($turnStatus -eq 'interrupted') { $responseState = 'INTERRUPTED' }
             else { $responseState = 'FAILED' }
             $turnError = Read-OptionalProperty $turn 'error' $null
@@ -1489,7 +1564,7 @@ function Sync-CodexResponses($Config, $SelfHostedBridge, [string]$LogPath) {
         }
     }
 
-    $document = $script:LastFirestoreDocument
+    $document = if (Test-FirestoreSupportEnabled $Config) { $script:LastFirestoreDocument } else { $null }
     if ($null -ne $document) {
         $repair = Repair-FirestoreInvalidCodexResponse $Config $document
         if ($repair.Repaired) {
@@ -1514,7 +1589,27 @@ function Sync-CodexResponses($Config, $SelfHostedBridge, [string]$LogPath) {
     if ($targets.Count -eq 0) { return }
 
     foreach ($target in $targets) {
-        $match = Find-CodexResponseFromSessionLog $Config $target
+        $match = $null
+        # 已有 Turn ID 時，優先確認 Codex 官方 turn 狀態。
+        # JSONL 可能記錄 turn_aborted 卻沒有最終回答，單靠文字掃描會誤判
+        # 為無限期 IN_PROGRESS，導致網站不能安全重送。
+        if ([string]$target.ResponseState -eq 'IN_PROGRESS' -and [string]$target.TurnId) {
+            try {
+                $statusTurns = Get-CodexThreadTurns $Config
+                $officialStatus = Find-CodexResponseByMessageHash $statusTurns ([string]$target.MessageSha256)
+                # 官方狀態可能來自另一個暫時性 reader，不能把缺少終局證據的
+                # interrupted/failed 蓋掉仍在運作的原 Codex 工作者。
+                if ($officialStatus.Found -and $officialStatus.ResponseState -eq 'COMPLETED' -and
+                    $officialStatus.TurnId -eq [string]$target.TurnId -and $officialStatus.ResponseText) {
+                    $match = $officialStatus
+                }
+            } catch {
+                Write-BridgeLog $LogPath 'WARN' "Official Codex turn status unavailable source=$($target.Source) nonce=$($target.Nonce): $($_.Exception.Message)"
+            }
+        }
+        if ($null -eq $match) {
+            $match = Find-CodexResponseFromSessionLog $Config $target
+        }
         if (-not $match.Found -and
             ([string]$target.ResponseState).Trim().ToUpperInvariant() -eq 'WAITING' -and
             [string]::IsNullOrWhiteSpace([string]$target.TurnId)) {
@@ -1523,21 +1618,37 @@ function Sync-CodexResponses($Config, $SelfHostedBridge, [string]$LogPath) {
                 # the thread from this temporary reader. A queue is not a turn.
                 $activation = Invoke-CodexQueuedTurnDelivery $Config ([string]$target.MessageSha256) '' '' $false
                 if ($activation.Delivered -and $activation.TurnId) {
-                    $match = $activation.Match
-                    Write-BridgeLog $LogPath 'INFO' "Recovered queued Codex request source=$($target.Source) nonce=$($target.Nonce) turn=$($activation.TurnId)"
-                } elseif (-not $activation.QueuedFound -and [long]$target.QueuedAt -gt 0 -and
-                    ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$target.QueuedAt) -ge $CodexTurnStartEvidenceTimeoutMs) {
-                    $failedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-                    $match = New-CodexResponseMatch $true 'FAILED' '' $failedAt '' 'notStarted' `
-                        '找不到 Codex Turn 或保留的佇列項目；請按重送建立新請求'
+                    $observed = $activation.Match
+                    # A temporary reader can report an interrupted/failed turn
+                    # while its real owner is still running. Require local
+                    # terminal evidence before opening retry for those states.
+                    if ($null -ne $observed -and $observed.Found -and
+                        ($observed.ResponseState -eq 'IN_PROGRESS' -or
+                            ($observed.ResponseState -eq 'COMPLETED' -and $observed.ResponseText))) {
+                        $match = $observed
+                        Write-BridgeLog $LogPath 'INFO' "Recovered queued Codex request source=$($target.Source) nonce=$($target.Nonce) turn=$($activation.TurnId)"
+                    }
+                } elseif ($activation.QueuedFound -and $activation.SubmissionId) {
+                    # Durable queue remains WAITING until its native Desktop
+                    # owner supplies real turn evidence. Never resume/start here.
                 }
+                # History/queue reads are bounded snapshots. Absence (even after
+                # a timeout) cannot prove non-delivery; keep WAITING, never resend.
             } catch {
                 Write-BridgeLog $LogPath 'WARN' "Queued Codex recovery pending source=$($target.Source) nonce=$($target.Nonce): $($_.Exception.Message)"
             }
         } elseif (-not $match.Found) {
             try {
                 $turns = Get-CodexThreadTurns $Config
-                $match = Find-CodexResponseByMessageHash $turns ([string]$target.MessageSha256)
+                $fallback = Find-CodexResponseByMessageHash $turns ([string]$target.MessageSha256)
+                # A missing local record is not proof of abortion. Transient
+                # readers cannot open retry, nor replace an already bound turn.
+                if ($fallback.Found -and
+                    (-not [string]$target.TurnId -or $fallback.TurnId -eq [string]$target.TurnId) -and
+                    ($fallback.ResponseState -eq 'IN_PROGRESS' -or
+                        ($fallback.ResponseState -eq 'COMPLETED' -and $fallback.ResponseText))) {
+                    $match = $fallback
+                }
             } catch {
                 Write-BridgeLog $LogPath 'WARN' "Codex turn lookup pending source=$($target.Source) nonce=$($target.Nonce): $($_.Exception.Message)"
             }
@@ -1645,6 +1756,7 @@ function Recover-FirestoreInFlight(
     [string]$InFlightPath,
     [string]$LogPath
 ) {
+    if (-not (Test-FirestoreSupportEnabled $Config)) { return }
     $marker = Read-InFlightMarker $InFlightPath
     if ($null -eq $marker) { return }
     $nonce = [long](Read-OptionalProperty $marker 'Nonce' 0L)
@@ -1702,6 +1814,7 @@ function Invoke-FirestoreQueue(
     [string[]]$AllStatePaths,
     [string]$LogPath
 ) {
+    if (-not (Test-FirestoreSupportEnabled $Config)) { return }
     $document = Get-FirestoreDocument $Config
     if ($null -eq $document) { return }
     $nonce = [long](Read-FirestoreField $document 'supportRequestNonce' 0L)
@@ -2078,6 +2191,17 @@ $allStatePaths = @($firestoreStatePath, $selfHostedStatePath)
 $logPath = Join-Path $installRoot 'bridge.log'
 $selfHostedBridge = Get-SelfHostedBridgeConfig $config
 
+# 舊 worker 命令列相容入口：明確拒絕，不開 app-server 或修改佇列。
+if ($QueueWorker) {
+    try {
+        Invoke-CodexQueueWorker $config $QueueSubmissionId $QueueMessageSha256 $logPath
+        exit 0
+    } catch {
+        Write-BridgeLog $logPath 'ERROR' "Codex queue worker failed queue=$QueueSubmissionId detail=$($_.Exception.Message)"
+        exit 1
+    }
+}
+
 if (-not (Test-Path -LiteralPath $firestoreStatePath) -and (Test-Path -LiteralPath $legacyStatePath)) {
     Copy-Item -LiteralPath $legacyStatePath -Destination $firestoreStatePath
 }
@@ -2104,7 +2228,8 @@ if ($ValidateOnly) {
         CodexVersion = $version.Trim()
         CodexPath = $codexPath
         ThreadId = [string]$config.ThreadId
-        FirestoreReachable = $true
+        FirestoreEnabled = (Test-FirestoreSupportEnabled $config)
+        FirestoreReachable = (Test-FirestoreSupportEnabled $config)
         SupportDocumentExists = ($null -ne $document)
         SelfHostedConfigured = ($null -ne $selfHostedBridge)
         SelfHostedReachable = $selfHostedReachable
@@ -2135,13 +2260,14 @@ if (-not $mutexOwned) {
 }
 
 try {
-    Write-BridgeLog $logPath 'INFO' "Codex bridge $BridgeVersion started transports=firestore,$(if ($null -ne $selfHostedBridge) { 'selfhost' } else { 'selfhost-disabled' })"
+    Write-BridgeLog $logPath 'INFO' "Codex bridge $BridgeVersion started firestore=$(Test-FirestoreSupportEnabled $config) selfhost=$($null -ne $selfHostedBridge)"
     $lastFirestoreHeartbeat = 0L
     $lastSelfHostedHeartbeat = 0L
     do {
         $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
         # 兩個來源各自隔離錯誤；Firestore 故障不得阻止中央 loopback，反之亦然。
+        if (Test-FirestoreSupportEnabled $config) {
         try {
             Recover-FirestoreInFlight $config $firestoreStatePath $firestoreInFlightPath $logPath
             if ($now - $lastFirestoreHeartbeat -ge 90000) {
@@ -2155,6 +2281,7 @@ try {
             Invoke-FirestoreQueue $config $firestoreStatePath $firestoreInFlightPath $allStatePaths $logPath
         } catch {
             Write-BridgeLog $logPath 'ERROR' "Firestore source: $(Get-HttpErrorSummary $_)"
+        }
         }
 
         if ($null -ne $selfHostedBridge) {

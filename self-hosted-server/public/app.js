@@ -579,6 +579,14 @@ function isCodexSupportCompleted(data) {
 }
 
 function renderCodexSupportStatus() {
+  if (!isCodexAuthorized()) {
+    $("btnAskCodex").disabled = true;
+    $("btnCancelCodexSupport").disabled = true;
+    $("btnRetryCodexSupport").disabled = true;
+    $("codexResponseText").textContent = "";
+    $("codexResponseText").hidden = true;
+    return setCodexSupportMessage("idle", "一般控制免登入；使用 Codex 時才需要登入");
+  }
   const data = state.codexSupportData || {};
   const requestNonce = Math.max(0, Number(data.requestNonce) || 0);
   const statusNonce = Math.max(0, Number(data.statusNonce) || 0);
@@ -756,19 +764,51 @@ function stopCodexSupportPolling() {
   state.codexSupportTimer = 0;
 }
 
+function isCodexAuthorized() {
+  return state.me?.codexAccess?.authorized === true;
+}
+
+function requireCodexLogin() {
+  if (isCodexAuthorized()) return true;
+  // Only a fixed server-configured HTTPS entrance; never put messages/tokens in URLs.
+  const loginUrl = state.me?.codexAccess?.loginUrl;
+  if (loginUrl) {
+    const target = new URL(loginUrl);
+    if (window.location.origin === target.origin && window.location.pathname === target.pathname && window.location.search === target.search) {
+      window.location.hash = target.hash;
+      window.location.reload(); // Same-document hash navigation would never re-enter Access.
+    } else window.location.assign(loginUrl);
+  }
+  else toast("Codex 登入入口尚未設定完成；一般裝置控制不受影響。");
+  return false;
+}
+
+function clearCodexAccess() {
+  if (state.me?.codexAccess) state.me.codexAccess.authorized = false;
+  state.codexSupportData = null;
+  stopCodexSupportPolling();
+  $("codexResponseText").textContent = "";
+  $("codexResponseText").hidden = true;
+  for (const node of Object.values(codexDetails)) node.textContent = "";
+  $("codexSupportDialog").close();
+}
+
 function scheduleCodexSupportRefresh() {
   stopCodexSupportPolling();
+  if (!isCodexAuthorized()) return;
   const delay = state.codexSupportData?.pending ? 3_000 : (document.hidden ? 60_000 : 15_000);
   state.codexSupportTimer = setTimeout(() => refreshCodexSupport().catch(() => {}), delay);
 }
 
 async function refreshCodexSupport({ schedule = true } = {}) {
+  if (!isCodexAuthorized()) { renderCodexSupportStatus(); return; }
   if (state.codexSupportRefreshInFlight) return;
   state.codexSupportRefreshInFlight = true;
   try {
     state.codexSupportData = await api("/api/v1/codex-support");
     state.codexSupportError = "";
   } catch (error) {
+    if ([401, 403].includes(error.status) || error instanceof TypeError) clearCodexAccess();
     state.codexSupportError = `無法讀取 Codex 橋接狀態：${error.message}`;
   } finally {
     state.codexSupportRefreshInFlight = false;
@@ -778,6 +818,7 @@ async function refreshCodexSupport({ schedule = true } = {}) {
 }
 
 async function requestCodexSupport() {
+  if (!requireCodexLogin()) return;
   if (state.codexSupportSending) return;
   const selection = selectedCodexSupportMessage();
   if (!selection.message) {
@@ -815,6 +856,7 @@ async function requestCodexSupport() {
 }
 
 async function recoverCodexSupport(action) {
+  if (!requireCodexLogin()) return;
   if (state.codexSupportRecoveryBusy) return;
   state.codexSupportRecoveryBusy = true;
   state.codexSupportError = "";
@@ -838,7 +880,18 @@ async function api(path, options = {}) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
   }
-  const response = await fetch(path, { credentials: "same-origin", ...options, method, headers });
+  const privileged = /^\/api\/v1\/(?:codex-support|admin)(?:\/|$)/.test(path);
+  let response;
+  try {
+    response = await fetch(path, { credentials: "same-origin", ...options, method, headers, ...(privileged ? { redirect: "error" } : {}) });
+  } catch (error) {
+    if (privileged) clearCodexAccess();
+    throw error;
+  }
+  if (privileged && (response.redirected || !response.headers.get("content-type")?.includes("application/json") || [401, 403].includes(response.status))) {
+    clearCodexAccess();
+    throw Object.assign(new Error("登入已失效，請重新開啟 Codex 登入"), { status: 401, code: "CODEX_ACCESS_REQUIRED" });
+  }
   if (response.status === 204) return null;
   const payload = response.headers.get("content-type")?.includes("application/json") ? await response.json() : null;
   if (!response.ok) {
@@ -1263,6 +1316,11 @@ function restartScheduledText() {
 }
 
 async function refreshAdmin() {
+  if (!isCodexAuthorized()) {
+    $("cutoverButton").disabled = true;
+    setText("migrationStatus", "進階管理需透過 Codex 登入入口驗證；一般控制仍可使用。");
+    return;
+  }
   const [migration, alerts] = await Promise.all([
     api("/api/v1/admin/migration"), api("/api/v1/admin/alerts"),
   ]);
@@ -1381,6 +1439,7 @@ async function stopLive() {
 }
 
 function openCodexSupportDialog() {
+    if (!requireCodexLogin()) return;
     state.codexSupportError = "";
     syncCodexLogDeviceOptions(true);
     updateCodexMessageControls();
@@ -1528,6 +1587,7 @@ async function boot() {
   await refresh({ reloadSnapshot: true, admin: true });
   refreshCodexSupport().catch(() => {});
   clearInterval(state.periodicTimer);
+  if (window.location.hash === "#codex" && isCodexAuthorized()) openCodexSupportDialog();
   state.periodicTimer = setInterval(() => {
     if (!document.hidden) refresh({ reloadSettings: state.activeTab === "settings", admin: state.activeTab === "settings" }).catch((error) => toast(error.message));
   }, 60_000);

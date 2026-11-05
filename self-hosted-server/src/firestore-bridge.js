@@ -70,6 +70,9 @@ function field(document, name, fallback = undefined) {
 }
 
 async function firestoreFetch(url, options = {}) {
+  if (config.selfHostOnly) {
+    throw new HttpError(503, "Firestore 已退役", "FIRESTORE_RETIRED");
+  }
   const response = await fetch(url, {
     ...options,
     headers: { "Content-Type": "application/json; charset=utf-8", ...(options.headers ?? {}) },
@@ -92,6 +95,14 @@ async function firestoreFetch(url, options = {}) {
 export async function getMigrationState() {
   const result = await query("SELECT value,updated_at FROM system_settings WHERE key='migration'");
   const value = result.rows[0]?.value ?? { mode: "shadow", shadowStartedAt: new Date().toISOString(), consistencyErrors: 0 };
+  if (config.selfHostOnly) {
+    // Retirement is not a shortcut around cutover/reconciliation. Never reset
+    // nonces or silently make a shadow database authoritative.
+    if (value.mode !== "primary" || value.writesFrozen === true) {
+      throw new HttpError(503, "須先完成自架 primary 切換才能退役 Firestore", "SELFHOST_CUTOVER_REQUIRED");
+    }
+    return { ...value, fallbackUntil: null, updatedAt: result.rows[0]?.updated_at ?? null };
+  }
   return { ...value, updatedAt: result.rows[0]?.updated_at ?? null };
 }
 
@@ -795,6 +806,7 @@ export async function runCutoverSequence({ freeze, reconcile, readiness, publish
 }
 
 export async function cutoverToPrimary() {
+  if (config.selfHostOnly) throw new HttpError(409, "Firestore 已退役，不再執行雲端遷移", "FIRESTORE_RETIRED");
   return serializeMigrationTransition(async () => {
     const original = await getMigrationState();
     if ((original.mode ?? "shadow") !== "shadow") {
@@ -847,6 +859,10 @@ export async function cutoverToPrimary() {
 export async function forceMigrationMode(mode) {
   if (!["shadow", "primary", "fallback", "disabled"].includes(mode)) {
     throw new HttpError(400, "遷移模式無效", "INVALID_MIGRATION_MODE");
+  }
+  if (config.selfHostOnly) {
+    if (mode !== "primary") throw new HttpError(409, "Firestore 已退役，不可重新開啟雲端路由", "FIRESTORE_RETIRED");
+    return getMigrationState();
   }
   return serializeMigrationTransition(async () => {
     const original = await getMigrationState();

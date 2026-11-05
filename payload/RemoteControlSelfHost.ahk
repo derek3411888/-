@@ -6,6 +6,7 @@
 global RCSH_CFG_PATH := ""
 global RCSH_SERVER_URL := ""
 global RCSH_MODE := "shadow"
+global RCSH_TRANSPORT := "migration"
 global RCSH_EPOCH := ""
 global RCSH_FIRESTORE_FALLBACK_UNTIL := 0
 global RCSH_DEVICE_TOKEN := ""
@@ -32,15 +33,17 @@ global RCSH_LIVE_HARDWARE_ENCODER_CHECKED := false
 global RCSH_PREVIEW_MARKER := "WUTHERING_RUNTIME_PREVIEW_V1"
 global RCSH_HTTP_FAILURE_COUNT := 0
 global RCSH_HTTP_RETRY_AFTER := 0
+global RCSH_HTTP_IN_PROGRESS := false
 global RCSH_LAST_ERROR_LOG_AT := 0
 global RCSH_DEFAULT_SERVER_URL := "https://220.135.218.98"
 
 RCSH_Init(cfgPath) {
     global RCSH_CFG_PATH, RCSH_SERVER_URL, RCSH_MODE, RCSH_EPOCH
     global RCSH_FIRESTORE_FALLBACK_UNTIL, RCSH_DEVICE_TOKEN, RCSH_ENROLLED
-    global RCSH_DEFAULT_SERVER_URL
+    global RCSH_DEFAULT_SERVER_URL, RCSH_TRANSPORT
 
     RCSH_CFG_PATH := cfgPath
+    RCSH_TRANSPORT := RCSH_IsSelfHostOnly(cfgPath) ? "selfhost_only" : "migration"
     RCSH_EnsureDefaults(cfgPath)
     RCSH_SERVER_URL := RCSH_NormalizeServerUrl(
         RC_IniReadSafe(cfgPath, "self_hosted", "server_url", RCSH_DEFAULT_SERVER_URL))
@@ -88,7 +91,8 @@ RCSH_EnsureDefaults(cfgPath) {
     defaults := Map(
         ; 固定公網 HTTPS 是全新電腦的零設定入口。同網域直播仍由伺服器
         ; 下發內網 SRT 候選；外網電腦會自動輪替到固定公網位址。
-        "server_url", RCSH_DEFAULT_SERVER_URL,
+        "server_url", RCSH_IsSelfHostOnly(cfgPath) ? "https://ww.sckang.cc" : RCSH_DEFAULT_SERVER_URL,
+        "transport", "migration",
         "mode", "shadow",
         "epoch", "",
         "firestore_fallback_until", "0",
@@ -102,6 +106,13 @@ RCSH_EnsureDefaults(cfgPath) {
             try IniWrite(value, cfgPath, "self_hosted", key)
         }
     }
+}
+
+RCSH_IsSelfHostOnly(cfgPath := "") {
+    global RCSH_TRANSPORT
+    transport := cfgPath != ""
+        ? RC_IniReadSafe(cfgPath, "self_hosted", "transport", "migration") : RCSH_TRANSPORT
+    return StrLower(Trim(transport, " `t`r`n")) = "selfhost_only"
 }
 
 RCSH_NormalizeMode(value) {
@@ -124,7 +135,9 @@ RCSH_NormalizeServerUrl(value) {
 RCSH_ProcessDiscoveryResponse(resp) {
     global RCSH_CFG_PATH, RCSH_SERVER_URL, RCSH_MODE, RCSH_EPOCH
     global RCSH_FIRESTORE_FALLBACK_UNTIL
-    if (resp = "" || RCSH_CFG_PATH = "")
+    ; Explicit local retirement cannot be undone by old discovery or a server
+    ; fallback response. Endpoint changes require an explicit local config update.
+    if (RCSH_IsSelfHostOnly() || resp = "" || RCSH_CFG_PATH = "")
         return false
 
     discoveredUrl := RCSH_NormalizeServerUrl(RC_JsonGetString(resp, "selfHostedServerUrl"))
@@ -162,11 +175,14 @@ RCSH_IsAvailable() {
 
 RCSH_IsPrimary() {
     global RCSH_MODE
-    return RCSH_IsAvailable() && RCSH_MODE = "primary"
+    ; Ownership remains selfhost even when its endpoint is unavailable.
+    return RCSH_IsSelfHostOnly() || (RCSH_IsAvailable() && RCSH_MODE = "primary")
 }
 
 RCSH_ShouldReadFirestore(forceStartup := false) {
     global RCSH_LAST_FIRESTORE_READ_AT, RCSH_FIRESTORE_FALLBACK_UNTIL
+    if RCSH_IsSelfHostOnly()
+        return false
     if !RCSH_IsPrimary()
         return true
     nowMs := RC_UnixMs()
@@ -181,6 +197,8 @@ RCSH_ShouldReadFirestore(forceStartup := false) {
 
 RCSH_ShouldWriteFirestore() {
     global RCSH_LAST_FIRESTORE_WRITE_AT, RCSH_FIRESTORE_FALLBACK_UNTIL
+    if RCSH_IsSelfHostOnly()
+        return false
     if !RCSH_IsPrimary()
         return true
     nowMs := RC_UnixMs()
@@ -196,7 +214,7 @@ RCSH_ShouldWriteFirestore() {
 RCSH_SelectControlResponse(firestoreResp := "") {
     if !RCSH_IsAvailable() {
         RCSH_ExpireLivePreviewIfNeeded()
-        return firestoreResp
+        return RCSH_IsSelfHostOnly() ? "" : firestoreResp
     }
     ; A busy AHK thread can delay the 10-second timer beyond the locally cached
     ; deadline. Fetch current control first so a browser renewal extends the
@@ -257,6 +275,16 @@ RCSH_GetControl() {
         return ""
     }
     RCSH_LAST_CONTROL_OK := RC_UnixMs()
+    if RCSH_IsSelfHostOnly() {
+        ; Never execute shadow copies of commands before the server's atomic
+        ; cutover. Keep local journals/PAUSE and retry; do not consult Firebase.
+        if (RC_JsonGetString(result.body, "selfHostedMode") != "primary") {
+            RCSH_SetError("control: awaiting self-hosted primary cutover")
+            return ""
+        }
+        RCSH_HandleLiveControl(result.body)
+        return result.body
+    }
     ; primary 模式已停止 Firestore 輪詢後，API 仍必須能把網址從舊 DDNS
     ; 遷移到固定 IP。此欄位與 Firestore discovery 使用同一格式及驗證。
     RCSH_ProcessDiscoveryResponse(result.body)
@@ -771,7 +799,7 @@ RCSH_Shutdown() {
 RCSH_HttpRequest(method, apiPath, body := "", authenticated := true,
     contentType := "application/json; charset=utf-8") {
     global RCSH_SERVER_URL, RCSH_DEVICE_TOKEN, RC_TIMEOUT_MS, RCSH_ENROLLED
-    global RCSH_HTTP_FAILURE_COUNT, RCSH_HTTP_RETRY_AFTER
+    global RCSH_HTTP_FAILURE_COUNT, RCSH_HTTP_RETRY_AFTER, RCSH_HTTP_IN_PROGRESS
     result := {ok: false, status: 0, body: "", msg: ""}
     if (RCSH_SERVER_URL = "") {
         result.msg := "self-hosted server URL is empty"
@@ -782,12 +810,27 @@ RCSH_HttpRequest(method, apiPath, body := "", authenticated := true,
         result.msg := "self-hosted retry backoff until " RCSH_HTTP_RETRY_AFTER
         return result
     }
+    acquired := false
+    previousCritical := Critical("On")
+    try {
+        if !RCSH_HTTP_IN_PROGRESS {
+            RCSH_HTTP_IN_PROGRESS := true
+            acquired := true
+        }
+    } finally {
+        Critical(previousCritical)
+    }
+    if !acquired {
+        result.msg := "self-hosted request already in progress"
+        return result
+    }
     try {
         http := ComObject("WinHttp.WinHttpRequest.5.1")
         ; 控制傳輸不可長時間佔住 AHK 主執行緒；大型影片另由背景 PowerShell 上傳。
         timeout := Max(1500, Min(5000, RC_TIMEOUT_MS))
         http.SetTimeouts(timeout, timeout, timeout, timeout)
-        http.Open(method, RCSH_SERVER_URL apiPath, false)
+        boundedWait := RCSH_IsSelfHostOnly()
+        http.Open(method, RCSH_SERVER_URL apiPath, boundedWait)
         http.SetRequestHeader("Content-Type", contentType)
         http.SetRequestHeader("Accept", "application/json")
         http.SetRequestHeader("Cache-Control", "no-cache")
@@ -799,6 +842,11 @@ RCSH_HttpRequest(method, apiPath, body := "", authenticated := true,
             http.Send(body)
         else
             http.Send()
+        ; SetTimeouts bounds individual phases, not the complete response.
+        ; WaitForResponse does not abort automatically on timeout (WinHTTP).
+        if (boundedWait && !http.WaitForResponse(timeout / 1000)) {
+            throw Error("self-hosted response deadline exceeded")
+        }
         result.status := http.Status + 0
         try result.body := http.ResponseText
         result.ok := result.status >= 200 && result.status < 300
@@ -813,9 +861,15 @@ RCSH_HttpRequest(method, apiPath, body := "", authenticated := true,
         }
         return result
     } catch as e {
+        if IsSet(http)
+            try http.Abort()
         result.msg := e.Message
         RCSH_MarkHttpFailure()
         return result
+    } finally {
+        previousCritical := Critical("On")
+        try RCSH_HTTP_IN_PROGRESS := false
+        finally Critical(previousCritical)
     }
 }
 

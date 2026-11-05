@@ -8,7 +8,7 @@
 (control_site) {
 	encode zstd gzip
 
-	@internal path /internal/*
+	@internal path /internal /internal/*
 	respond @internal 404
 
 	header {
@@ -24,7 +24,12 @@
 	reverse_proxy api:3000
 }
 
-{$PUBLIC_HOSTNAME} {
+{$PUBLIC_HOSTNAME} {$DIRECT_HOSTNAME:} {
+	import control_site
+}
+
+# Docker-network-only HTTP origin for the named Tunnel. Never publish 8080.
+http://:8080 {
 	import control_site
 }
 

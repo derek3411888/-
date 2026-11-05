@@ -176,24 +176,13 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(script, /DIAGNOSE_ONLY:\s*Object\.freeze/);
   assert.match(script, /CHECK_CURRENT_STATUS:\s*Object\.freeze/);
   assert.match(script, /CODEX_SUPPORT_DOC_ID\s*=\s*"__codex_support"/);
-  assert.match(script, /transaction\.set\(supportRef,[\s\S]*supportRequestAction:\s*CODEX_SUPPORT_ACTION[\s\S]*supportRequestMessage:\s*selection\.message/);
-  assert.match(script, /bridgeAttemptCount:\s*0/);
-  assert.match(script, /bridgeNextRetryAt:\s*0/);
-  assert.match(script, /codexResponseState:\s*"WAITING"/);
-  assert.match(script, /codexResponseText:\s*""/);
-  assert.match(script, /async function cancelCodexSupport/);
-  assert.match(script, /async function retryCodexSupport/);
-  const cancelBlock = script.match(/async function cancelCodexSupport\(\)[\s\S]*?\r?\n}\r?\n\r?\nasync function retryCodexSupport/)?.[0] ?? "";
-  const retryBlock = script.match(/async function retryCodexSupport\(\)[\s\S]*?\r?\n}\r?\n\r?\nasync function requestCodexSupport/)?.[0] ?? "";
-  assert.doesNotMatch(cancelBlock, /codexResponseNonce:\s*nextNonce/);
-  assert.match(cancelBlock, /codexResponseNonce:\s*nonce/);
-  assert.match(cancelBlock, /codexResponseState:\s*"NONE"/);
-  assert.match(retryBlock, /codexResponseNonce:\s*nextNonce/);
-  assert.match(retryBlock, /codexResponseState:\s*"WAITING"/);
-  assert.match(retryBlock, /codexResponseText:\s*""/);
-  assert.match(script, /supportRetryOfNonce:\s*currentNonce/);
-  assert.match(script, /DISPATCH_RESULT_UNKNOWN/);
-  assert.match(script, /為避免重複執行，禁止直接重送/);
+  assert.doesNotMatch(script, /transaction\.set\(supportRef/);
+  assert.match(script, /CODEX_LOGIN_URL = "https:\/\/codex\.sckang\.cc\/#codex"/);
+  for (const action of ["cancelCodexSupport", "retryCodexSupport", "requestCodexSupport"]) {
+    const block = script.match(new RegExp("async function " + action + "\\(\\)[\\s\\S]*?\\r?\\n}"))?.[0] ?? "";
+    assert.match(block, /window\.location\.assign\(CODEX_LOGIN_URL\)/);
+    assert.doesNotMatch(block, /runTransaction|supportRef/);
+  }
   assert.match(bridge, /\$ExpectedAction\s*=\s*'QUEUE_MESSAGE_V1'/);
   assert.match(bridge, /\$LegacyAction\s*=\s*'FIX_SCRIPT'/);
   assert.match(bridge, /\$FixedPrompt\s*=\s*'現在腳本有問題，請你找出問題並修正'/);

@@ -42,11 +42,10 @@
 5. 在 PowerShell 執行：
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
 .\Install-Server.ps1
 ```
 
-直接按 Enter 就採用 D 槽資料、E 槽備份。只有在明確接受 Docker named volume 位於其他磁碟時，才使用 `-AllowDockerStorageOutsideDataDrive` 略過防呆；一般安裝不建議略過。
+使用符合主機現行執行原則的 PowerShell 環境；若執行遭拒，先處理正式安裝條件，不使用 Bypass 或降低系統執行原則。直接按 Enter 就採用 D 槽資料、E 槽備份。只有在明確接受 Docker named volume 位於其他磁碟時，才使用 `-AllowDockerStorageOutsideDataDrive` 略過防呆；一般安裝不建議略過。
 
 安裝工具會產生 `.env` 密鑰、建立服務、執行 migration、健康檢查、第一次備份與實際還原測試。網站直接開啟即可使用，不需要帳號、密碼或私人啟用連結。伺服器會自動設定 `Secure + HttpOnly + SameSite=Strict` Cookie，僅用來區分各瀏覽器的直播觀看租約，不作為人工驗證步驟。
 
@@ -94,21 +93,52 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 更新工具會先備份，再建立與啟動新版、執行 migration 並等待健康檢查；失敗時把 API 容器回復到上一個映像。容器 Log 使用 10 MB 輪替並保留 15 份。資料庫備份保留每日 14 份、每週 8 份與更新前 5 份。
 
-## 兩個控制台通知目前 Codex 任務
+## Cloudflare Tunnel、同站直連與 Codex 登入
 
-GitHub Pages 公司控制台與自架一般控制台都有「通知目前 Codex 任務」，但使用不同的耐故障路徑：公司控制台以 Firestore 原子 nonce 跨受限網路傳回家中；自架一般控制台直接寫入 PostgreSQL 中央佇列，不再繞經 Firestore。Windows watchdog 同時讀取兩個來源，再由本機 Codex CLI 的任務佇列交給指定的既有 Codex 任務；取消、重送、來源間隔與本機 journal 共同避免重複送入。它不會另開 ChatGPT，也不會建立新的 Codex 任務。第一次在 Docker 主機安裝時，從 Codex 任務網址或 Codex 任務列表取得該任務 UUID，執行：
+網站與 API 仍由同一組 Caddy／Node／PostgreSQL 提供，不另外建立公司版後端。可設定三個 HTTPS 入口：一般控制站走 named Tunnel、另一個 DNS-only 網址直連 Caddy、獨立 Codex 網址由 Cloudflare Access 保護。只有 Codex／管理功能要求允許帳號登入；一般控制仍可匿名使用。任何知道一般站網址的人仍能操作鋤地控制，這是產品的公開控制模式，不是靠 Docker 或隱藏網址提供身分驗證。
+
+- 在 `.env` 設定 `PUBLIC_URL`、精確列舉的 `ALLOWED_ORIGINS`、`DIRECT_HOSTNAME`；必須保留仍在使用的舊入口，不使用萬用來源。
+- 設定 `CLOUDFLARE_ACCESS_ISSUER`、`CLOUDFLARE_ACCESS_AUDIENCE`、`CODEX_ALLOWED_EMAILS`、`CODEX_LOGIN_URL`。issuer 必須是該帳戶的 HTTPS `*.cloudflareaccess.com`，login URL 指向受保護的 Codex 網址。
+- Access application 保護整個 Codex hostname，policy 只允許指定帳號。named Tunnel 的 Codex ingress 也驗證 Access；一般控制 hostname 不套互動登入。兩者 origin 都指向 Docker 網路內的 `http://caddy:8080`，最後一條 ingress 為404。
+- Tunnel token 放受限 ACL 的本機檔案，`CLOUDFLARED_TOKEN_FILE` 指向它；不放命令列／Git／更新包。`cloudflared` profile 不公開 host port、不使用 host network 或 Docker socket。
+- 完成設定及備份後，只部署這個專案需要的服務；不重啟 Docker 引擎或資料庫。連接器使用 `docker compose --profile tunnel up -d --no-deps cloudflared`，API／Caddy 設定更新須按既有 scoped 部署流程套用。
+- origin 本身驗證 RS256 JWT 的 issuer、audience、期限及 Email，舊 IP／直連不能繞過 Codex 授權。機器 bearer 與 loopback bridge token 維持獨立；公開 Caddy 路由拒絕 `/internal` 及其子路徑。
+
+一般控制網頁用 SSE 接收事件，隧道須使用支援 SSE 的正式 named Tunnel。即時性仍受裝置回報／命令輪詢頻率影響；只部署網域不會讓舊版腳本自動加速。SRT UDP 直播也不是 HTTP Tunnel 的功能，維持原通道。
+
+部署驗收須分開記錄 HTTPS／SSE、未登入拒絕、允許帳號登入、舊 IP／direct 旁路拒絕及公司實際連通。若網站或兩台腳本尚未移轉完成，不要提前停用一般裝置的 Firestore import／mirror／fallback；既有資料保留。
+
+## 裝置自架獨立模式與 Firestore 退役順序
+
+安裝新版不會自行切換控制權。先用既有 migration readiness／cutover 流程完成中央 `primary`（且未凍結寫入），再於各裝置安全更新點，在既有 `config.ini` 的 `[self_hosted]` 設定 `transport=selfhost_only` 與已驗證的 HTTPS `server_url`。保留原 UID、DPAPI 機器憑證、nonce、claim／ACK、PAUSE／STOP、設定版本及完成清單；不可用清零或重新註冊身分代替移轉。
+
+獨立模式預設每 10 秒回報 heartbeat、每 2 秒查詢命令；可在同區段設定 `heartbeat_interval_ms`（最低 5000）與 `poll_interval_ms`（最低 1000）。舊 `migration` 模式仍維持原 Firestore 額度下限，兩種設定不互相覆寫。請求有總回應期限、失敗退避及非重入保護；ACK 回覆遺失會沿用持久紀錄補送，不重做已套用命令或設定。網站 SSE 可立即轉送收到的變化，但不代表畫面、裝置心跳或命令有零延遲保證。
+
+`selfhost_only` 不讀 Firestore discovery、不再建立 Firebase 設定，也不會因舊 fallback 設定或自架故障切回 Firebase。中央若仍回報 shadow／fallback，裝置保留狀態等待，不採用尚未移交控制權的命令。這項 fail-closed 行為是切換前先驗證中央的原因。
+
+只有所有裝置已完成新 Log、heartbeat、命令／設定 ACK、快照及預期任務進度驗收後，才把中央 `SELFHOST_ONLY=true` 與 `FIRESTORE_IMPORT_ENABLED=false` 套用到本專案 API。此時原始 Firestore HTTP、import／mirror／discovery 與回退管理入口都停用。若中央尚未 primary 或 writesFrozen，回報 `SELFHOST_CUTOVER_REQUIRED`，不擅改資料庫 epoch／游標；必須先完成原遷移程序。舊資料與憑證保留，不刪除 Firebase 專案。這些設定說明不表示任何實機已完成移轉。
+
+## 通知目前 Codex 任務
+
+一般控制頁點選 Codex 會前往固定的 Access 登入網址，不把 token 放入 URL。登入後由同一後端的 PostgreSQL 中央佇列接收請求，不再經 Firestore 傳送 Codex 訊息。舊公司頁的 Codex 入口只導向新站；一般裝置 Firestore 通道的退役另依移轉驗收處理。
+
+Windows bridge 將請求持久保存到指定的既有 Codex 聊天，取消、來源間隔與本機 journal 避免重複投遞。它不建立新的聊天。第一次在 Docker 主機安裝時，從 Codex 聊天資訊取得 UUID，執行：
 
 ```powershell
-.\windows\Install-CodexSupportBridge.ps1 -ThreadId '你的-Codex-任務-UUID' -Workspace 'E:\Downloads\一鍵啟動鋤地腳本'
+pwsh -NoProfile -File .\windows\Install-CodexSupportBridge.ps1 -ThreadId '你的-Codex-任務-UUID' -Workspace 'E:\Downloads\一鍵啟動鋤地腳本'
 ```
 
-安裝工具會驗證 Firestore、中央 loopback API、本機 Codex CLI 與工作區，將 bridge、watchdog 與 bootstrap 放到 Task Scheduler 可見的 ProgramData，建立隱藏的登入啟動項目並立即啟動。設定會保留穩定的 dispatcher ID，讓橋接或 Codex 更新重啟後仍可以安全回報原本的 claim。設定與最多 15 份輪替 Log 位於 `%ProgramData%\WutheringAutomation\CodexSupportBridge`，資料夾 ACL 僅允許目前 Windows 使用者與 SYSTEM。伺服器更新會同步重裝 bridge/watchdog；移除時執行 `windows\Uninstall-CodexSupportBridge.ps1`。
+安裝工具驗證中央 loopback API、本機 Codex CLI 與工作區，將 bridge、watchdog 與 bootstrap 放到 Task Scheduler 可見的 ProgramData。`FirestoreSupportEnabled` 預設 false，缺少也視為停用；舊設定仍需明確遷移為 false。此開關同時封鎖 Firestore 收件、舊 in-flight 恢復與回覆寫入，不會清除 journal。只有顯式 legacy opt-in 才驗證及啟用 Firestore，正式新站不可再開啟這條未登入的 Codex 入口。
+
+設定保留穩定 dispatcher ID。安裝器遇到進行中的 queue worker 會延後，不強制終止它；原主 bridge 與 watchdog 才在精確路徑核對後更新。Log／設定位於 `%ProgramData%\WutheringAutomation\CodexSupportBridge`，ACL 僅允許目前使用者與 SYSTEM。所有啟動都遵循現行 ExecutionPolicy；安裝器、排程 bootstrap、watchdog 與 bridge 統一使用 PowerShell 7（新裝從 PATH 尋找 `pwsh.exe`，更新沿用 `BridgePowerShellPath`，不存在或不是 PS7 時停止，不回退 PS5.1）。`CodexSupportBootstrap.ps1 -ValidateOnly` 只驗證 bootstrap/watchdog 設定、不啟動 bridge；仍須另外以真正排程啟動、新 Log 與中央橋接心跳驗收。移除時執行 `windows\Uninstall-CodexSupportBridge.ps1`。
 
 新版網站使用 `QUEUE_MESSAGE_V1`，提供三種預設訊息及最多 1,000 字元的自訂訊息，也可選擇一台裝置並附上經截斷、遮蔽敏感字串的最近 Log。橋接端會再次檢查動作、長度、空白與控制字元，並相容舊版 `FIX_SCRIPT`。Codex task ID 仍只存在主機本機。網頁會顯示收到、驗證、嘗試、重試與排入時間、嘗試次數、訊息 SHA-256 指紋及錯誤代碼；尚未開始送出的請求可取消，失敗或安全判定卡住的請求會以新 nonce 重送；「已排入」不會被描述成 Codex 已完成。自架網站只在載入時讀取一次，開啟對話框後才以 3～15 秒間隔查詢；橋接主機每 90 秒回報心跳，兩次成功排入至少間隔 5 分鐘。
 
-由於 GitHub Pages 控制台目前沒有登入驗證，自訂訊息會經過 Firestore，請勿輸入密碼、金鑰或其他敏感資料，也不要公開分享控制台網址。橋接 Log 只記錄 nonce、長度、指紋與結果，不記錄訊息本文。
+請勿在自訂訊息中輸入密碼、金鑰或其他敏感資料。橋接 Log 只記錄 nonce、長度、指紋與結果，不記錄訊息本文。
 
-Bridge 3.4.2 將入列與實際執行分開：短暫的 stdio App Server 只讀取歷史、查詢及保存持久佇列，不呼叫 `thread/resume` 或 `thread/queue/start`，模型執行仍由目前開啟的 Codex 桌面版負責。佇列 ACK 對應 `WAITING`，指定聊天室中相同訊息的 Turn 才對應 `IN_PROGRESS`。傳送前連線錯誤最多自動嘗試 3 次；錯誤細節保留根本原因，不無限每 15 秒重試。三條標準輸入輸出均固定使用無 BOM UTF-8，標準輸入直接寫入 UTF-8 位元組以相容 Windows PowerShell 5.1，不受隱藏 PowerShell 的 Windows 字碼頁影響。聊天室紀錄的增量游標不跳過第一筆新紀錄，避免漏掉簡短的最終回覆；網站同步失敗時保留已讀到的最終回覆供下一輪重試。實際網站送達及回覆同步仍必須另行驗收，不能以單元測試或佇列 ACK 代替。
+Bridge 3.5.0 將入列與實際執行分開：短暫 stdio App Server 只讀取歷史、查詢及保存持久佇列，不呼叫 `thread/resume` 或 `thread/queue/start`，模型執行由原生 Codex Desktop owner 負責。舊 `-QueueWorker` 入口明確拒絕；目前 API 可在同一 submission ID 下更新內容，卻不提供 expected hash/revision 的原子啟動契約，橋接不可用先查再啟動冒充安全驗證。這是自動喚醒功能的限制，並不代表原生桌面自動執行已通過實測。
+
+佇列 ACK 對應 `WAITING`，相符訊息的真實 Turn 才對應 `IN_PROGRESS`。有限頁 history／queue 找不到項目，或暫時 reader 回報 interrupted／failed，不構成允許重送的證據；中斷須有本機對應 Turn 的終局紀錄。傳送前連線錯誤最多自動嘗試3次；送出結果不明時保留狀態，不重送。標準輸入輸出固定無 BOM UTF-8，JSONL 增量游標保留第一筆新紀錄，回覆同步失敗保留快取。實際網站送達、原生聊天起跑及回覆同步必須另外驗收，不能以測試或 ACK 代替。
 
 專案根目錄的 `完整發布更新.ps1` 是正式發布唯一入口；舊的 `編譯打包.bat` 也只會呼叫它。它會強制同次產生 Launcher、Payload、網站與 Docker 套件，推送 GitHub 後等待遠端 manifest 與雜湊一致，再從遠端套件部署 Docker、核對公開網站版本並執行控制／正式影片停用／直播整合測試。任何一段失敗都不會顯示「完整發布完成」。
 
@@ -132,3 +162,6 @@ docker compose --env-file .env -f compose.yml config --quiet
 ```
 
 `test/integration-smoke.mjs` 供完整測試環境驗證註冊、命令、ACK、設定、快照、中央錄影 API 拒絕上傳／播放，以及加密 SRT 到 HLS 的整條鏈路。
+
+部署 smoke 不使用真實 Access 憑證：匿名 Codex/admin 請求必須回 401；登入後的輸入與 CSRF 檢查由隔離 HTTP 測試搭配測試簽章驗證。真實登入／公司網路及兩台裝置移轉仍須分別驗收。
+伺服器 ZIP 排除 `secrets/`，安裝端亦在解壓前拒絕含此目錄的套件。更新既有 Windows bridge 時，即使外層更新器是 PS5.1，也會驗證設定的 PS7 並以正常 `-File` 啟動專用更新入口；只傳設定檔路徑，不把憑證放在命令列，不改 ExecutionPolicy。

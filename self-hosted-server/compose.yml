@@ -33,7 +33,12 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://wuthering:${POSTGRES_PASSWORD}@postgres:5432/wuthering_control
-      PUBLIC_URL: https://${PUBLIC_IP_ADDRESS}
+      PUBLIC_URL: ${PUBLIC_URL:-https://${PUBLIC_IP_ADDRESS}}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      CLOUDFLARE_ACCESS_ISSUER: ${CLOUDFLARE_ACCESS_ISSUER:-}
+      CLOUDFLARE_ACCESS_AUDIENCE: ${CLOUDFLARE_ACCESS_AUDIENCE:-}
+      CODEX_ALLOWED_EMAILS: ${CODEX_ALLOWED_EMAILS:-}
+      CODEX_LOGIN_URL: ${CODEX_LOGIN_URL:-}
       PUBLIC_SRT_HOST: ${PUBLIC_SRT_HOST}
       LOCAL_SRT_HOST: ${LOCAL_SRT_HOST:-}
       PUBLIC_SRT_PORT: ${PUBLIC_SRT_PORT:-8890}
@@ -49,6 +54,7 @@ services:
       MIN_FREE_GB: ${MIN_FREE_GB:-20}
       SESSIONS_PER_DEVICE: ${SESSIONS_PER_DEVICE:-5}
       FIRESTORE_IMPORT_ENABLED: ${FIRESTORE_IMPORT_ENABLED:-true}
+      SELFHOST_ONLY: ${SELFHOST_ONLY:-false}
       FIRESTORE_PROJECT_ID: ${FIRESTORE_PROJECT_ID:-ww-control-a3988}
       FIRESTORE_API_KEY: ${FIRESTORE_API_KEY}
       FIRESTORE_COLLECTION: ${FIRESTORE_COLLECTION:-ahk_clients}
@@ -92,6 +98,7 @@ services:
     environment:
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
       PUBLIC_IP_ADDRESS: ${PUBLIC_IP_ADDRESS}
+      DIRECT_HOSTNAME: ${DIRECT_HOSTNAME:-}
     ports:
       - "80:80"
       - "443:443"
@@ -99,6 +106,22 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    logging: *rotated_logs
+
+  # Optional named Tunnel; no host ports, host network, or Docker socket.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.7
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/run/secrets/cloudflared_token"]
+    depends_on:
+      caddy:
+        condition: service_started
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    secrets:
+      - cloudflared_token
     logging: *rotated_logs
 
   backup:
@@ -120,6 +143,10 @@ services:
         source: ${BACKUP_ROOT_HOST}
         target: /backups
     logging: *rotated_logs
+
+secrets:
+  cloudflared_token:
+    file: ${CLOUDFLARED_TOKEN_FILE:-./secrets/cloudflared-token}
 
 volumes:
   postgres_data:

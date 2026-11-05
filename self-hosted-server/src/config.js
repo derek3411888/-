@@ -37,6 +37,19 @@ function publicUrl() {
 }
 
 const publicBase = publicUrl();
+const selfHostOnly = boolean("SELFHOST_ONLY", false);
+const allowedOrigins = [...new Set([publicBase.origin, ...String(process.env.ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean)])];
+for (const origin of allowedOrigins) {
+  const parsed = new URL(origin);
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.origin !== origin) throw new Error("ALLOWED_ORIGINS 必須為精確 HTTP(S) origin 清單");
+}
+const codexLoginUrl = String(process.env.CODEX_LOGIN_URL ?? "").trim();
+if (codexLoginUrl) {
+  const parsed = new URL(codexLoginUrl);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || !allowedOrigins.includes(parsed.origin)) {
+    throw new Error("CODEX_LOGIN_URL 必須為已允許來源的固定 HTTPS 網址");
+  }
+}
 const serverRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const localDevelopmentRoot = path.resolve(serverRoot, "..", ".dev-runtime", "self-hosted-runtime");
 const staticRoot = path.resolve(process.env.STATIC_ROOT ?? fileURLToPath(new URL("../public", import.meta.url)));
@@ -56,9 +69,17 @@ function webAssetSha256(root) {
 }
 
 export const config = Object.freeze({
+  selfHostOnly,
   port: integer("PORT", 3000, 1, 65535),
   databaseUrl: process.env.DATABASE_URL ?? "postgres://wuthering:wuthering@postgres:5432/wuthering_control",
   publicUrl: publicBase.origin,
+  allowedOrigins: Object.freeze(allowedOrigins),
+  codexAccess: Object.freeze({
+    issuer: String(process.env.CLOUDFLARE_ACCESS_ISSUER ?? "").trim(),
+    audience: String(process.env.CLOUDFLARE_ACCESS_AUDIENCE ?? "").trim(),
+    allowedEmails: Object.freeze(String(process.env.CODEX_ALLOWED_EMAILS ?? "").split(",").map((value) => value.trim()).filter(Boolean)),
+    loginUrl: codexLoginUrl,
+  }),
   serverVersion: String(packageInfo.version ?? "0.0.0"),
   webSha256: webAssetSha256(staticRoot),
   publicSrtHost: srtHost("PUBLIC_SRT_HOST", publicBase.hostname),
@@ -89,7 +110,7 @@ export const config = Object.freeze({
   maxUploadChunkBytes: integer("MAX_UPLOAD_CHUNK_BYTES", 8 * 1024 * 1024, 256 * 1024, 32 * 1024 * 1024),
   cookieName: "wu_owner_session",
   firestore: Object.freeze({
-    enabled: String(process.env.FIRESTORE_IMPORT_ENABLED ?? "false").toLowerCase() === "true",
+    enabled: !selfHostOnly && String(process.env.FIRESTORE_IMPORT_ENABLED ?? "false").toLowerCase() === "true",
     projectId: String(process.env.FIRESTORE_PROJECT_ID ?? "").trim(),
     apiKey: String(process.env.FIRESTORE_API_KEY ?? "").trim(),
     collection: String(process.env.FIRESTORE_COLLECTION ?? "ahk_clients").trim() || "ahk_clients",

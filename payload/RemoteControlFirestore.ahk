@@ -28,6 +28,7 @@ global RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT := true
 global RC_COMMAND_PROCESSING_READY := false
 global RC_STARTUP_PENDING_COMMAND := ""
 global RC_POLL_IN_PROGRESS := false
+global RC_HEARTBEAT_IN_PROGRESS := false
 global RC_PENDING_COMMAND_ACK := ""
 global RC_ACK_RETRY_IN_PROGRESS := false
 global RC_PENDING_COMMAND_CLAIM := ""
@@ -55,21 +56,18 @@ RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") 
     if !RC_ENABLED
         return false
 
-    RC_PROJECT_ID := Trim(RC_IniReadSafe(cfgPath, "remote_control", "project_id", ""), " `t`r`n")
-    RC_API_KEY := Trim(RC_IniReadSafe(cfgPath, "remote_control", "api_key", ""), " `t`r`n")
+    RC_PROJECT_ID := RCSH_IsSelfHostOnly(cfgPath) ? ""
+        : Trim(RC_IniReadSafe(cfgPath, "remote_control", "project_id", ""), " `t`r`n")
+    RC_API_KEY := RCSH_IsSelfHostOnly(cfgPath) ? ""
+        : Trim(RC_IniReadSafe(cfgPath, "remote_control", "api_key", ""), " `t`r`n")
     RC_COLLECTION := Trim(RC_IniReadSafe(cfgPath, "remote_control", "collection", "ahk_clients"), " `t`r`n")
     if (RC_COLLECTION = "")
         RC_COLLECTION := "ahk_clients"
 
-    ; 免費額度保護：心跳至少 60 秒、命令輪詢至少 10 秒。
-    ; 一般命令平均約 5 秒、最慢約 10 秒收到，不再以 5 秒頻率整天讀取文件。
-    RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "heartbeat_interval_ms", "90000"), 90000, 60000, 300000)
-    RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "poll_interval_ms", "10000"), 10000, 10000, 30000)
+    RC_ConfigureCadence(cfgPath)
     RC_TIMEOUT_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, "remote_control", "http_timeout_ms", "2500"), 2500, 800, 10000)
     RC_CLEAR_SNAPSHOT_ON_CLEAN_EXIT := RC_ParseBool01(
         RC_IniReadSafe(cfgPath, "remote_control", "clear_snapshot_on_clean_exit", "1"), 1) ? true : false
-    try IniWrite(RC_HEARTBEAT_INTERVAL_MS, cfgPath, "remote_control", "heartbeat_interval_ms")
-    try IniWrite(RC_POLL_INTERVAL_MS, cfgPath, "remote_control", "poll_interval_ms")
 
     RC_UID := Trim(RC_IniReadSafe(cfgPath, "remote_control", "uid", ""), " `t`r`n")
     if (RC_UID = "") {
@@ -120,6 +118,22 @@ RC_Init(cfgPath, onStateChangedCallback := "", onSettingsChangedCallback := "") 
         " poll=" RC_POLL_INTERVAL_MS "ms heartbeat=" RC_HEARTBEAT_INTERVAL_MS "ms")
     RC_Start()
     return true
+}
+
+RC_ConfigureCadence(cfgPath) {
+    global RC_HEARTBEAT_INTERVAL_MS, RC_POLL_INTERVAL_MS
+    if RCSH_IsSelfHostOnly(cfgPath) {
+        ; Separate keys preserve the legacy quota limits if migration is rolled back.
+        section := "self_hosted"
+        RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, section, "heartbeat_interval_ms", "10000"), 10000, 5000, 300000)
+        RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, section, "poll_interval_ms", "2000"), 2000, 1000, 30000)
+    } else {
+        section := "remote_control"
+        RC_HEARTBEAT_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, section, "heartbeat_interval_ms", "90000"), 90000, 60000, 300000)
+        RC_POLL_INTERVAL_MS := RC_ToIntRange(RC_IniReadSafe(cfgPath, section, "poll_interval_ms", "10000"), 10000, 10000, 30000)
+    }
+    try IniWrite(RC_HEARTBEAT_INTERVAL_MS, cfgPath, section, "heartbeat_interval_ms")
+    try IniWrite(RC_POLL_INTERVAL_MS, cfgPath, section, "poll_interval_ms")
 }
 
 RC_StartupRestoreDesiredState() {
@@ -179,11 +193,29 @@ RC_Shutdown(cleanFinalExit := false) {
 }
 
 RC_HeartbeatTick() {
-    global RC_COMMAND_PROCESSING_READY, RC_REMOTE_DESIRED_STATE, RC_REMOTE_PAUSED
-    reportedState := (!RC_COMMAND_PROCESSING_READY && RC_REMOTE_DESIRED_STATE = "PAUSE")
-        ? "PAUSE" : (RC_REMOTE_PAUSED ? "PAUSE" : "RUN")
-    RC_PatchClientState(reportedState, false)
-    RC_TryFlushPendingCommandAck("heartbeat")
+    global RC_COMMAND_PROCESSING_READY, RC_REMOTE_DESIRED_STATE, RC_REMOTE_PAUSED, RC_HEARTBEAT_IN_PROGRESS
+    acquired := false
+    previousCritical := Critical("On")
+    try {
+        if !RC_HEARTBEAT_IN_PROGRESS {
+            RC_HEARTBEAT_IN_PROGRESS := true
+            acquired := true
+        }
+    } finally {
+        Critical(previousCritical)
+    }
+    if !acquired
+        return
+    try {
+        reportedState := (!RC_COMMAND_PROCESSING_READY && RC_REMOTE_DESIRED_STATE = "PAUSE")
+            ? "PAUSE" : (RC_REMOTE_PAUSED ? "PAUSE" : "RUN")
+        RC_PatchClientState(reportedState, false)
+        RC_TryFlushPendingCommandAck("heartbeat")
+    } finally {
+        previousCritical := Critical("On")
+        try RC_HEARTBEAT_IN_PROGRESS := false
+        finally Critical(previousCritical)
+    }
 }
 
 RC_ReportRuntimeState() {
@@ -976,8 +1008,22 @@ RC_ProcessRemoteSettings(resp) {
     global RC_LAST_SETTINGS_SEEN_REVISION, RC_LAST_SETTINGS_APPLIED_REVISION
 
     revision := RC_JsonGetInteger(resp, "desiredSettingsRevision", 0)
-    if (revision <= 0 || revision <= RC_LAST_SETTINGS_SEEN_REVISION)
+    if (revision <= 0)
         return
+    if (revision <= RC_LAST_SETTINGS_SEEN_REVISION) {
+        ; 已套用的設定只補送 durable ACK，不再次呼叫設定處理器。
+        ; 舊 Firestore 路徑維持原行為；獨立自架模式不可靠雲端鏡像補齊。
+        if RCSH_IsSelfHostOnly() {
+            ackRevision := RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_revision", "0"), 0, 0, 2147483647)
+            deliveredRevision := RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, "self_hosted", "settings_ack_delivered_revision", "0"), 0, 0, 2147483647)
+            if (ackRevision = revision && ackRevision > deliveredRevision)
+                RC_PatchSettingsAck(ackRevision,
+                    RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_result", "REJECTED"),
+                    RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_detail", ""),
+                    RC_ParseBool01(RC_IniReadSafe(RC_CFG_PATH, "remote_control", "last_settings_ack_applied", "0"), 0) != 0)
+        }
+        return
+    }
 
     settings := {
         revision: revision,
@@ -2301,12 +2347,16 @@ RC_PatchCommandAck(nonce, stateApplied, resultCode := "APPLIED", resultDetail :=
 }
 
 RC_PatchSettingsAck(revision, resultCode, resultDetail, applied, ackAt := 0) {
-    global RC_LAST_SETTINGS_APPLIED_REVISION
+    global RC_LAST_SETTINGS_APPLIED_REVISION, RC_CFG_PATH
     global CURRENT_SERVER_TARGET, SERVER_SCHEDULE_ENABLED, SERVER_SCHEDULE_INDEX, SERVER_SCHEDULE_LIST
     nowMs := (ackAt > 0 ? ackAt : RC_UnixMs())
     if RCSH_IsPrimary() {
-        if !RCSH_SendSettingsAck(revision, resultCode, resultDetail, applied)
+        if !RCSH_SendSettingsAck(revision, resultCode, resultDetail, applied) {
             RC_Log("Self-hosted settings ACK failed; local applied revision remains durable", "WARN")
+        } else if RCSH_IsSelfHostOnly() {
+            deliveredRevision := RC_ToIntRange(RC_IniReadSafe(RC_CFG_PATH, "self_hosted", "settings_ack_delivered_revision", "0"), 0, 0, 2147483647)
+            try IniWrite(Max(revision, deliveredRevision), RC_CFG_PATH, "self_hosted", "settings_ack_delivered_revision")
+        }
         return
     }
     effectiveSettings := RC_ReadEffectiveRemoteSettings()
@@ -2424,6 +2474,10 @@ RC_ClientMediaDocUrl() {
 RC_HttpRequest(method, url, body := "") {
     global RC_TIMEOUT_MS
     result := { ok: false, status: 0, body: "", msg: "" }
+    if RCSH_IsSelfHostOnly() {
+        result.msg := "Firestore transport is disabled (selfhost_only)"
+        return result
+    }
     try {
         http := ComObject("WinHttp.WinHttpRequest.5.1")
         http.SetTimeouts(RC_TIMEOUT_MS, RC_TIMEOUT_MS, RC_TIMEOUT_MS, RC_TIMEOUT_MS)
@@ -2525,6 +2579,8 @@ RC_EnsureRemoteControlDefaults(cfgPath) {
     wrote := 0
     sentinel := "__RC_MISSING__"
     for key, defaultVal in defaults {
+        if (RCSH_IsSelfHostOnly(cfgPath) && (key = "project_id" || key = "api_key" || key = "collection"))
+            continue
         cur := RC_IniReadSafe(cfgPath, "remote_control", key, sentinel)
         if (cur = sentinel) {
             try {

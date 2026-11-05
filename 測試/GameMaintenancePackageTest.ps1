@@ -36,6 +36,48 @@ try {
     New-FilteredZip $source $archive $excludes
     Assert-ZipContains $archive ($required + @('RuntimeFilePaths.ahk','icon_main.png','plugin/license.txt'))
     Assert-ZipExcludes $archive $forbidden
+    $updateAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $context.ProjectRoot 'self-hosted-server/Update-Server.ps1'),[ref]$null,[ref]$null)
+    $expandFunction=$updateAst.Find({param($item)
+        $item -is [Management.Automation.Language.FunctionDefinitionAst] -and $item.Name -eq 'Expand-VerifiedBundle'
+    },$true)
+    . ([ScriptBlock]::Create($expandFunction.Extent.Text))
+    foreach($entryName in @('secrets/cloudflared-token','Secrets/nested/token','./secrets/token','secrets','.env')) {
+        $badArchive=Join-Path $context.RunRoot ('bad-server-'+[guid]::NewGuid().ToString('N')+'.zip')
+        $zip=[IO.Compression.ZipFile]::Open($badArchive,[IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $entry=$zip.CreateEntry($entryName)
+            $writer=[IO.StreamWriter]::new($entry.Open())
+            try {$writer.Write('inert fixture only')} finally {$writer.Dispose()}
+        } finally {$zip.Dispose()}
+        $extractDestination=Join-Path $context.RunRoot ('rejected-'+[guid]::NewGuid().ToString('N'))
+        $rejected=$false
+        try {Expand-VerifiedBundle $badArchive $extractDestination} catch {$rejected=$true}
+        Assert-GMTrue $rejected "bundle extractor rejects local secret entry: $entryName"
+        Assert-GMTrue (-not (Test-Path -LiteralPath $extractDestination)) 'reject entire archive before extracting anything'
+    }
+    # Run the real server-package call against a fake checkout. Git/Docker
+    # exclusions alone must not allow the named tunnel credential into a ZIP.
+    $serverFixture=Join-Path $context.RunRoot 'server-package'
+    foreach($name in @('package.json','public/index.html','.env.example','.env','secrets/cloudflared-token','secrets/nested/another-token')) {
+        $destination=Join-Path $serverFixture ('self-hosted-server/'+$name)
+        [IO.Directory]::CreateDirectory((Split-Path $destination -Parent)) | Out-Null
+        [IO.File]::WriteAllText($destination,'inert fixture, not a real credential')
+    }
+    $serverZipCall=$ast.FindAll({param($item)
+        $item -is [Management.Automation.Language.CommandAst] -and
+        $item.GetCommandName() -eq 'New-FilteredZip' -and
+        $item.CommandElements[1].Value -eq 'self-hosted-server'
+    },$true)
+    Assert-GMEqual @($serverZipCall).Count 1 'one actual server package call'
+    Push-Location -LiteralPath $serverFixture
+    try {
+        & ([ScriptBlock]::Create($serverZipCall[0].Extent.Text))
+        Assert-ZipContains 'self-hosted-server.zip' @('package.json','public/index.html','.env.example')
+        Assert-ZipExcludes 'self-hosted-server.zip' @('.env','secrets/*')
+        $accepted=Join-Path $context.RunRoot 'accepted-server'
+        Expand-VerifiedBundle (Join-Path $serverFixture 'self-hosted-server.zip') $accepted
+        Assert-GMTrue (Test-Path -LiteralPath (Join-Path $accepted 'public/index.html')) 'safe bundle still extracts'
+    } finally {Pop-Location}
     # Invoking the packager from another directory must still use its PowerShell
     # project location, not the process-global .NET current directory.
     $otherCwd=Join-Path $context.RunRoot 'other-process-cwd'

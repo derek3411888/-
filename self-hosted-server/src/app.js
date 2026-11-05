@@ -1,9 +1,11 @@
 import fsp from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { config, assertChildPath } from "./config.js";
+import { createAccessVerifier, isPrivilegedPath } from "./access-auth.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
 import { allowInternalSmokeMutation } from "./internal-smoke.js";
@@ -79,6 +81,7 @@ import {
 } from "./utils.js";
 
 const eventHub = new EventHub();
+const verifyCodexAccess = createAccessVerifier(config.codexAccess);
 const limiter = new RateLimiter();
 const liveLeaseTouches = new Map();
 const liveHlsSessions = new Map();
@@ -818,9 +821,10 @@ async function serveStatic(res, pathname) {
   return true;
 }
 
-async function handleRequest(req, res) {
+export async function handleRequest(req, res) {
   const url = new URL(req.url, config.publicUrl);
   const pathname = url.pathname;
+  if (isPrivilegedPath(pathname)) await verifyCodexAccess(req.headers["cf-access-jwt-assertion"]);
   if (req.method === "GET" && staticFiles.has(pathname)) {
     await serveStatic(res, pathname);
     return;
@@ -978,10 +982,13 @@ async function handleRequest(req, res) {
   if (browserAccess.token) res.setHeader("Set-Cookie", browserCookie(browserAccess.token, browser.expires_at));
   if (!["GET", "HEAD"].includes(req.method)) requireSameOrigin(req);
   if (pathname === "/api/v1/auth/me" && req.method === "GET") {
+    let codexAuthorized = false;
+    try { await verifyCodexAccess(req.headers["cf-access-jwt-assertion"]); codexAuthorized = true; } catch { /* Public controls remain anonymous. */ }
     sendJson(res, 200, {
       session: browser, publicUrl: config.publicUrl, accessMode: "direct",
       serverVersion: config.serverVersion, webSha256: config.webSha256,
       formalMediaEnabled: config.formalMediaEnabled,
+      codexAccess: { loginUrl: config.codexAccess.loginUrl, authorized: codexAuthorized },
     });
     return;
   }
@@ -1219,7 +1226,9 @@ async function start() {
   process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
-start().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  start().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

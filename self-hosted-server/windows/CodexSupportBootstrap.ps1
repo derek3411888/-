@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
-param()
+param([switch]$ValidateOnly)
 
+#Requires -Version 7.0
 $ErrorActionPreference = 'Stop'
 $installRoot = $PSScriptRoot
 $watchdogPath = Join-Path $installRoot 'CodexSupportWatchdog.ps1'
@@ -14,10 +15,10 @@ function Write-BootstrapLog([string]$Level, [string]$Message) {
 }
 
 try {
-    Write-BootstrapLog 'INFO' 'Scheduled bootstrap invoking watchdog'
-    & $watchdogPath -BridgeScriptPath $bridgePath -ConfigPath $configPath
+    if (-not $ValidateOnly) { Write-BootstrapLog 'INFO' "Scheduled bootstrap invoking watchdog runtime=$($PSVersionTable.PSVersion)" }
+    & $watchdogPath -BridgeScriptPath $bridgePath -ConfigPath $configPath -ValidateOnly:$ValidateOnly
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
-    Write-BootstrapLog 'WARN' ("Watchdog exited code={0}" -f $exitCode)
+    if (-not $ValidateOnly) { Write-BootstrapLog 'WARN' ("Watchdog exited code={0}" -f $exitCode) }
     exit $exitCode
 } catch {
     Write-BootstrapLog 'ERROR' (($_ | Out-String).Trim())

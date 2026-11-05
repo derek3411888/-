@@ -46,6 +46,8 @@ Write-Output 'PASS: hidden-process RPC is UTF-8 independent of the Windows conso
 # Desktop-owned thread. Model the external RPC boundary, not delivery behavior.
 $script:submissions = @()
 $script:addCount = 0
+$script:startCount = 0
+$script:expectedQueueId = '11111111-2222-4333-8444-555555555555'
 $script:turnFixture = @()
 function Open-CodexAppServerProxy($Config) { return [pscustomobject]@{QueueOnly=$true} }
 function Close-CodexAppServerProxy($Session) {}
@@ -54,6 +56,11 @@ function Invoke-CodexRpcRequest($Session, [long]$Id, [string]$Method, $Params, [
     switch ($Method) {
         'thread/turns/list' { return (@{result=@{data=$script:turnFixture}} | ConvertTo-Json -Depth 12 | ConvertFrom-Json) }
         'thread/queue/list' { return (@{result=@{data=$script:submissions;nextCursor=$null}} | ConvertTo-Json -Depth 12 | ConvertFrom-Json) }
+        'thread/queue/start' {
+            if ($Params.queuedSubmissionId -cne $script:expectedQueueId) { throw 'Wrong queued submission was started' }
+            $script:startCount++
+            return (@{result=@{turn=@{id='22222222-3333-4444-8555-666666666666';status='inProgress'}}} | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+        }
         'thread/queue/add' {
             $script:addCount++
             $submission = [pscustomobject]@{id='queued-1';clientUserMessageId=$Params.clientUserMessageId;input=$Params.input}
@@ -64,7 +71,7 @@ function Invoke-CodexRpcRequest($Session, [long]$Id, [string]$Method, $Params, [
     }
 }
 
-$config = [pscustomobject]@{ThreadId='test-thread'}
+$config = [pscustomobject]@{ThreadId='test-thread';FirestoreSupportEnabled=$true}
 $message = 'test report with a stable identity'
 $hash = Get-MessageSha256 $message
 $result = Invoke-CodexQueuedTurnDelivery $config $hash $message 'test-correlation' $true
@@ -95,6 +102,65 @@ Assert-Equal $missing.QueuedFound $false 'A missing request is not queued'
 Assert-Equal $script:addCount 1 'Read-only recovery cannot enqueue a missing request'
 
 Write-Output 'PASS: Desktop queue ownership, exact delivery evidence, deduplication, read-only recovery'
+
+# 3.5.0: queue/update can mutate input under an existing ID. Without an atomic
+# expected-hash start contract, even a currently valid item must remain queued.
+$script:submissions = @([pscustomobject]@{
+    id=$script:expectedQueueId
+    clientUserMessageId='wuthering-support/firestore/555'
+    input=@([pscustomobject]@{type='text';text=$message})
+})
+try {
+    Start-CodexQueuedSubmission ([pscustomobject]@{}) $config $script:expectedQueueId $hash | Out-Null
+    throw 'Mutable queued input was automatically started'
+} catch {
+    if ($_.Exception.Message -notmatch 'CODEX_NATIVE_QUEUE_OWNER_REQUIRED') { throw }
+}
+Assert-Equal $script:startCount 0 'Queue-start must not run without an atomic content check'
+Assert-Equal $script:addCount 1 'Queue-start must not add duplicate queue items'
+$config.FirestoreSupportEnabled = $false
+try {
+    Start-CodexQueuedSubmission ([pscustomobject]@{}) $config $script:expectedQueueId $hash | Out-Null
+    throw 'Retired Firestore queue was accepted'
+} catch {
+    if ($_.Exception.Message -eq 'Retired Firestore queue was accepted') { throw }
+}
+Assert-Equal $script:startCount 0 'Retired Firestore queue cannot start'
+$config.FirestoreSupportEnabled = $true
+
+$script:submissions[0].clientUserMessageId = 'untrusted/999'
+try {
+    Start-CodexQueuedSubmission ([pscustomobject]@{}) $config $script:expectedQueueId $hash | Out-Null
+    throw 'Invalid correlation was accepted'
+} catch {
+    if ($_.Exception.Message -eq 'Invalid correlation was accepted') { throw }
+}
+Assert-Equal $script:startCount 0 'Untrusted queue must never execute'
+
+$script:submissions[0].clientUserMessageId = 'wuthering-support/firestore/555'
+try {
+    Start-CodexQueuedSubmission ([pscustomobject]@{}) $config 'aaaaaaaa-2222-4333-8444-555555555555' $hash | Out-Null
+    throw 'Missing queued input was automatically started'
+} catch {
+    if ($_.Exception.Message -notmatch 'CODEX_NATIVE_QUEUE_OWNER_REQUIRED') { throw }
+}
+Assert-Equal $script:startCount 0 'Missing queue entry did not execute'
+$script:submissions = @()
+Write-Output 'PASS: mutable queue never auto-starts; no duplicate messages or fallback activation'
+
+# Codex app-server 因連線關閉而中斷時，可能不包含 completedAt。
+# 網站不能把這類已中斷的工作永久顯示成 IN_PROGRESS。
+$abortedTurn = [pscustomobject]@{
+    id='22222222-3333-4444-8555-666666666666'
+    status='interrupted'
+    completedAt=$null
+    items=@([pscustomobject]@{type='userMessage';content=@([pscustomobject]@{type='inputText';text=$message})})
+}
+$abortedMatch = Find-CodexResponseByMessageHash @($abortedTurn) $hash
+Assert-Equal $abortedMatch.Found $true 'Interrupted Turn must be correlated'
+Assert-Equal $abortedMatch.ResponseState 'INTERRUPTED' 'Interrupted Turn without completion timestamp must not appear active'
+if ($abortedMatch.ResponseAt -le 0L) { throw 'Interrupted Turn must provide a terminal response timestamp' }
+Write-Output 'PASS: aborted turn cannot remain IN_PROGRESS on the website'
 
 $firstFailure = Get-CodexDeliveryFailure 'failed to connect to socket (os error 10050)' 1 15 $false
 Assert-Equal $firstFailure.State 'RETRYING' 'A known pre-delivery connection failure may retry'
@@ -149,7 +215,7 @@ $runtime = Join-Path $projectRoot ('.dev-runtime\tests\codex-bridge-transport-' 
 $statePath = Join-Path $runtime 'state.json'
 $inflightPath = Join-Path $runtime 'inflight.json'
 $logPath = Join-Path $runtime 'bridge.log'
-$testConfig = [pscustomobject]@{ThreadId='test-thread';PollSeconds=15;MinimumRequestIntervalSeconds=300}
+$testConfig = [pscustomobject]@{ThreadId='test-thread';PollSeconds=15;MinimumRequestIntervalSeconds=30;FirestoreSupportEnabled=$true}
 Invoke-FirestoreQueue $testConfig $statePath $inflightPath @($statePath) $logPath
 Assert-Equal (Read-State $statePath).LastStatus 'QUEUED' 'Durably accepted input must not retry as a connection failure'
 Assert-Equal (Read-FirestoreField $script:doc 'codexResponseState' '') 'WAITING' 'Website must distinguish queued from started'
@@ -188,6 +254,40 @@ $replyRetry = Find-CodexResponseFromSessionLog $config $replyTarget
 Assert-Equal $replyRetry.ResponseState 'COMPLETED' 'A failed website write must not consume the final reply'
 Assert-Equal $replyRetry.ResponseText 'REPLY_CURSOR_OK' 'The next poll must be able to publish the same final reply'
 Write-Output 'PASS: incremental session reader retains the first newly appended final reply'
+
+# 3.4.5：臨時 app-server 有時會說 interrupted，實際原工作者仍持續執行。
+# 只有本機 JSONL 內確實有相同 Turn ID 的 turn_aborted，才能回報中斷。
+$restoreSessionPath = $script:CodexSessionLogPath
+$script:CodexSessionLogPath = Join-Path $runtime 'authoritative-abort-events.jsonl'
+$script:CodexResponseCursors = @{}
+$abortQueuedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$abortMessage = 'authoritative abort requires an exact event'
+$abortHash = Get-MessageSha256 $abortMessage
+$abortTurnId = '11111111-2222-4333-8444-999999999999'
+$abortTarget = [pscustomobject]@{
+    Source='firestore';Nonce=41;MessageSha256=$abortHash
+    TurnId=$abortTurnId;QueuedAt=$abortQueuedAt
+}
+$abortEventBase = @(
+    @{timestamp=[DateTimeOffset]::FromUnixTimeMilliseconds($abortQueuedAt).ToString('o');type='turn_context';payload=@{turn_id=$abortTurnId}}
+    @{timestamp=[DateTimeOffset]::FromUnixTimeMilliseconds($abortQueuedAt+10).ToString('o');type='response_item';payload=@{type='message';role='user';content=@(@{type='input_text';text=$abortMessage})}}
+    @{timestamp=[DateTimeOffset]::FromUnixTimeMilliseconds($abortQueuedAt+100).ToString('o');type='event_msg';payload=@{type='item_completed';turn_id=$abortTurnId}}
+) | ForEach-Object { $_ | ConvertTo-Json -Depth 9 -Compress }
+[IO.File]::WriteAllLines($script:CodexSessionLogPath, $abortEventBase, [Text.UTF8Encoding]::new($false))
+
+$stillRunning = Find-CodexResponseFromSessionLog $config $abortTarget
+Assert-Equal $stillRunning.Found $true 'Active local user Turn must match'
+Assert-Equal $stillRunning.ResponseState 'IN_PROGRESS' 'Tool work without abort remains active despite transient official state'
+$abortEvent = @{timestamp=[DateTimeOffset]::FromUnixTimeMilliseconds($abortQueuedAt+120).ToString('o');type='event_msg';payload=@{type='turn_aborted';turn_id=$abortTurnId}} | ConvertTo-Json -Depth 9 -Compress
+[IO.File]::AppendAllText($script:CodexSessionLogPath, $abortEvent + "`n", [Text.UTF8Encoding]::new($false))
+$abortedResult = Find-CodexResponseFromSessionLog $config $abortTarget
+Assert-Equal $abortedResult.ResponseState 'INTERRUPTED' 'Exact Codex turn_aborted event is authoritative'
+Assert-Equal $abortedResult.TurnId $abortTurnId 'Aborted Turn must be the same requested Turn'
+$abortedRetry = Find-CodexResponseFromSessionLog $config $abortTarget
+Assert-Equal $abortedRetry.ResponseState 'INTERRUPTED' 'Terminal abort must survive polling/retry'
+$script:CodexSessionLogPath = $restoreSessionPath
+$script:CodexResponseCursors = @{}
+Write-Output 'PASS: live Turn remains active, exact turn_aborted terminates, terminal state persists'
 
 # Completion of the exact queued report releases cooldown, not merely elapsed
 # wall time or an unrelated final answer. Preserve the cross-source guard.

@@ -30,8 +30,9 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.33-l5.45-s1.0.88-codex30s-restart-v1-apple-console-v1";
+const WEB_BUILD = "p5.42-l5.56-s1.0.89";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
+const CODEX_LOGIN_URL = "https://codex.sckang.cc/#codex";
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
 const CODEX_SUPPORT_MAX_CONTEXT_LENGTH = 14000;
@@ -756,230 +757,19 @@ function renderCodexSupportStatus() {
 }
 
 async function cancelCodexSupport() {
-  if (codexSupportRecoveryBusy) return;
-  codexSupportRecoveryBusy = true;
-  codexSupportError = "";
-  renderCodexSupportStatus();
-  const supportRef = doc(db, COLLECTION, CODEX_SUPPORT_DOC_ID);
-  try {
-    await runTransaction(db, async (transaction) => {
-      const snapshot = await transaction.get(supportRef);
-      if (!snapshot.exists()) throw new Error("目前沒有可取消的請求");
-      const data = snapshot.data();
-      const nonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
-      const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
-      const storedState = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
-      const state = nonce > statusNonce ? "PENDING" : storedState;
-      const attempts = Math.max(0, toInteger(readField(data, "bridgeAttemptCount", 0), 0));
-      if (!nonce || attempts > 0 || !["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(state)) {
-        throw new Error("這筆請求已開始送往 Codex，不能安全取消");
-      }
-      const now = Date.now();
-      transaction.set(supportRef, {
-        bridgeStatusNonce: nonce,
-        bridgeState: "CANCELLED",
-        bridgeDetail: "已由公司控制台取消；未送入 Codex",
-        bridgeUpdatedAt: now,
-        bridgeNextRetryAt: 0,
-        bridgeErrorCode: "",
-        bridgeErrorDetail: "",
-        codexResponseNonce: nonce,
-        codexResponseState: "NONE",
-        codexResponseText: "",
-        codexResponseAt: 0,
-        codexResponseSha256: "",
-        codexResponseTurnId: "",
-        codexResponseTurnStatus: "",
-        codexResponseCheckedAt: 0,
-        codexResponseError: "",
-      }, { merge: true });
-    });
-  } catch (error) {
-    codexSupportError = error?.message || String(error);
-  } finally {
-    codexSupportRecoveryBusy = false;
-    renderCodexSupportStatus();
-  }
+  window.location.assign(CODEX_LOGIN_URL);
 }
 
 async function retryCodexSupport() {
-  if (codexSupportRecoveryBusy) return;
-  codexSupportRecoveryBusy = true;
-  codexSupportError = "";
-  renderCodexSupportStatus();
-  const supportRef = doc(db, COLLECTION, CODEX_SUPPORT_DOC_ID);
-  try {
-    await runTransaction(db, async (transaction) => {
-      const snapshot = await transaction.get(supportRef);
-      if (!snapshot.exists()) throw new Error("目前沒有可重送的請求");
-      const data = snapshot.data();
-      const currentNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
-      const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
-      const storedState = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
-      const state = currentNonce > statusNonce ? "PENDING" : storedState;
-      const attempts = Math.max(0, toInteger(readField(data, "bridgeAttemptCount", 0), 0));
-      const requestedAt = toMillis(readField(data, "supportRequestedAt", 0));
-      const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
-      const errorCode = String(readField(data, "bridgeErrorCode", "") || "").trim().toUpperCase();
-      const responseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
-      const responseState = String(readField(data, "codexResponseState", "") || "").trim().toUpperCase();
-      const responseAt = toMillis(readField(data, "codexResponseAt", 0));
-      const invalidResponseChronology = ["COMPLETED", "FAILED", "INTERRUPTED"].includes(responseState)
-        && queuedAt > 0 && responseAt < queuedAt;
-      const responseRetryable = currentNonce === statusNonce && currentNonce === responseNonce
-        && state === "QUEUED" && (["FAILED", "INTERRUPTED"].includes(responseState) || invalidResponseChronology);
-      if (errorCode === "DISPATCH_RESULT_UNKNOWN") {
-        throw new Error("上一筆傳送結果不明，可能已進入 Codex；為避免重複執行，禁止直接重送");
-      }
-      const stalled = attempts === 0 && ["PENDING", "RECEIVED", "VALIDATING", "RETRYING"].includes(state)
-        && requestedAt > 0 && Date.now() - requestedAt >= CODEX_BRIDGE_ONLINE_MS;
-      if (!["CANCELLED", "REJECTED", "RATE_LIMITED", "FAILED"].includes(state) && !stalled && !responseRetryable) {
-        throw new Error("這筆請求仍可能正在處理，暫時不能重送");
-      }
-      const nextNonce = currentNonce + 1;
-      const now = Date.now();
-      transaction.set(supportRef, {
-        supportRequestNonce: nextNonce,
-        supportRequestedAt: now,
-        supportRetryOfNonce: currentNonce,
-        bridgeStatusNonce: nextNonce,
-        bridgeState: "PENDING",
-        bridgeDetail: "已建立新的重送編號，等待家中主機接收",
-        bridgeUpdatedAt: now,
-        bridgeReceivedAt: 0,
-        bridgeValidatedAt: 0,
-        bridgeAttemptCount: 0,
-        bridgeLastAttemptAt: 0,
-        bridgeNextRetryAt: 0,
-        bridgeQueuedAt: 0,
-        bridgeMessageSha256: "",
-        bridgeContextIncluded: false,
-        bridgeContextLength: 0,
-        bridgeErrorCode: "",
-        bridgeErrorDetail: "",
-        codexResponseNonce: nextNonce,
-        codexResponseState: "WAITING",
-        codexResponseText: "",
-        codexResponseAt: 0,
-        codexResponseSha256: "",
-        codexResponseTurnId: "",
-        codexResponseTurnStatus: "",
-        codexResponseCheckedAt: 0,
-        codexResponseError: "",
-      }, { merge: true });
-    });
-  } catch (error) {
-    codexSupportError = error?.message || String(error);
-  } finally {
-    codexSupportRecoveryBusy = false;
-    renderCodexSupportStatus();
-  }
+  window.location.assign(CODEX_LOGIN_URL);
 }
 
 async function requestCodexSupport() {
-  if (codexSupportSending) return;
-  const selection = selectedCodexSupportMessage();
-  if (!selection.message) {
-    codexSupportError = "請先輸入要送出的自訂訊息";
-    renderCodexSupportStatus();
-    codexCustomMessage.focus();
-    return;
-  }
-  codexSupportSending = true;
-  codexSupportError = "";
-  renderCodexSupportStatus();
-
-  const supportRef = doc(db, COLLECTION, CODEX_SUPPORT_DOC_ID);
-  try {
-    const attachContext = Boolean(codexAttachSelectedLog.checked);
-    const logSelection = selectedCodexLogDevice();
-    const selectedUid = attachContext ? logSelection.uid : String(pcDropdown.value || "").trim();
-    const supportContext = attachContext
-      ? buildCodexDeviceContext(logSelection.uid, logSelection.data)
-      : { text: "", logAvailable: false, logFileName: "" };
-    await runTransaction(db, async (transaction) => {
-      const snapshot = await transaction.get(supportRef);
-      const data = snapshot.exists() ? snapshot.data() : {};
-      const currentNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
-      const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
-      const state = String(readField(data, "bridgeState", "") || "").trim().toUpperCase();
-      const queuedAt = toMillis(readField(data, "bridgeQueuedAt", 0));
-      const existingResponseState = String(readField(data, "codexResponseState", "") || "").trim().toUpperCase();
-      const existingResponseNonce = Math.max(0, toInteger(readField(data, "codexResponseNonce", 0), 0));
-      if (currentNonce > statusNonce || (
-        currentNonce === statusNonce && ["PENDING", "RECEIVED", "VALIDATING", "QUEUEING", "RETRYING"].includes(state)
-      )) {
-        throw new Error("上一筆維修請求仍在等待家中主機接收");
-      }
-      if (currentNonce === statusNonce && state === "QUEUED" && existingResponseNonce === currentNonce
-          && ["WAITING", "IN_PROGRESS"].includes(existingResponseState)) {
-        throw new Error("上一筆維修請求仍在等待 Codex 完成並回覆");
-      }
-      if (!isCodexSupportCompleted(data) && queuedAt > 0 && Date.now() - queuedAt < CODEX_SUPPORT_COOLDOWN_MS) {
-        throw new Error("剛剛已送進 Codex，請等候處理結果");
-      }
-
-      const nextNonce = currentNonce + 1;
-      const requestedAt = Date.now();
-      transaction.set(supportRef, {
-        supportRequestNonce: nextNonce,
-        supportRequestAction: CODEX_SUPPORT_ACTION,
-        supportRequestMode: selection.mode,
-        supportRequestLabel: selection.label,
-        supportRequestMessage: selection.message,
-        supportRequestMessageLength: selection.message.length,
-        supportRequestContext: supportContext.text,
-        supportRequestContextLength: supportContext.text.length,
-        supportRequestContextIncluded: Boolean(supportContext.text),
-        supportRequestContextDeviceUid: supportContext.text ? selectedUid : "",
-        supportRequestLogAvailable: supportContext.logAvailable,
-        supportRequestLogFileName: supportContext.logFileName,
-        supportRequestedAt: requestedAt,
-        supportRequestedDeviceUid: selectedUid,
-        bridgeState: "PENDING",
-        bridgeStatusNonce: nextNonce,
-        bridgeDetail: "已由公司控制台送出，等待家中主機接收",
-        bridgeUpdatedAt: requestedAt,
-        bridgeReceivedAt: 0,
-        bridgeValidatedAt: 0,
-        bridgeAttemptCount: 0,
-        bridgeLastAttemptAt: 0,
-        bridgeNextRetryAt: 0,
-        bridgeQueuedAt: 0,
-        bridgeMessageSha256: "",
-        bridgeContextIncluded: false,
-        bridgeContextLength: 0,
-        bridgeErrorCode: "",
-        bridgeErrorDetail: "",
-        codexResponseNonce: nextNonce,
-        codexResponseState: "WAITING",
-        codexResponseText: "",
-        codexResponseAt: 0,
-        codexResponseSha256: "",
-        codexResponseTurnId: "",
-        codexResponseTurnStatus: "",
-        codexResponseCheckedAt: 0,
-        codexResponseError: "",
-      }, { merge: true });
-    });
-  } catch (error) {
-    codexSupportError = error?.message || String(error);
-  } finally {
-    codexSupportSending = false;
-    renderCodexSupportStatus();
-  }
+  window.location.assign(CODEX_LOGIN_URL);
 }
 
 function startCodexSupportListener() {
-  const supportRef = doc(db, COLLECTION, CODEX_SUPPORT_DOC_ID);
-  onSnapshot(supportRef, (snapshot) => {
-    codexSupportData = snapshot.exists() ? snapshot.data() : {};
-    codexSupportError = "";
-    renderCodexSupportStatus();
-  }, (error) => {
-    codexSupportError = `無法讀取 Codex 橋接狀態：${error?.message || String(error)}`;
-    renderCodexSupportStatus();
-  });
+  setCodexSupportMessage("idle", "Codex 已改用登入保護入口；點按通知即可前往。");
 }
 
 function normalizeStatus(v) {
@@ -3425,11 +3215,7 @@ btnReloadSettings.addEventListener("click", () => {
 });
 
 function openCodexSupportDialog() {
-  codexSupportError = "";
-  syncCodexLogDeviceOptions(true);
-  updateCodexMessageControls();
-  if (typeof codexSupportDialog.showModal === "function") codexSupportDialog.showModal();
-  else codexSupportDialog.setAttribute("open", "");
+  window.location.assign(CODEX_LOGIN_URL);
 }
 
 btnOpenCodexSupport.addEventListener("click", openCodexSupportDialog);

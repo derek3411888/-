@@ -30,8 +30,8 @@ test("company console exposes performance dashboard without another Firestore li
   assert.match(html, /styles\.css\?v=20261023-apple-console-v1/);
   assert.match(script, /效能資料部分可用；遊戲 FPS 採集異常/);
   assert.doesNotMatch(script, /基礎效能監測正常；遊戲 FPS 採集異常/);
-  assert.equal((script.match(/\bonSnapshot\s*\(/g) || []).length, 3,
-    "performance must reuse the existing client listener instead of adding one");
+  assert.equal((script.match(/\bonSnapshot\s*\(/g) || []).length, 2,
+    "performance reuses the client listener; the anonymous Codex listener is retired");
   assert.match(styles, /\.performance-kpis\s*\{[^}]*repeat\(4,/s);
   assert.match(styles, /@media \(max-width: 700px\)[\s\S]*\.performance-kpis\s*\{[^}]*minmax\(0, 1fr\)/);
 });

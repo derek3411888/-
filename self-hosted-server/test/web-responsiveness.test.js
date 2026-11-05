@@ -36,10 +36,10 @@ function elementFactory() {
 const fixedDate = class extends Date { static now() { return now; } };
 function renderSupport(source, company, data) {
   const { elements, element } = elementFactory();
-  const context = runFunctions(source, ["toInteger", "toMillis", "toBoolean", "readField", "isCodexSupportCompleted", "renderCodexSupportStatus"], {
+  const context = runFunctions(source, ["toInteger", "toMillis", "toBoolean", "readField", "isCodexAuthorized", "isCodexSupportCompleted", "renderCodexSupportStatus"], {
     Date: fixedDate, document: { getElementById: element }, $: element,
     setText: (id, text) => { element(id).textContent = text; },
-    state: { codexSupportData: data }, codexSupportData: data,
+    state: { codexSupportData: data, me: { codexAccess: { authorized: true } } }, codexSupportData: data,
     codexSupportSending: false, codexSupportRecoveryBusy: false, codexSupportError: "",
     CODEX_SUPPORT_COOLDOWN_MS: 30_000, CODEX_BRIDGE_ONLINE_MS: 180_000,
     CODEX_SUPPORT_MAX_MESSAGE_LENGTH: 1_000,
@@ -74,7 +74,9 @@ test("company pending, mismatched and stale replies still cannot bypass cooldown
 
 async function submitCompany(data) {
   let written;
+  let login;
   const context = runFunctions(companySource, ["toInteger", "toMillis", "readField", "isCodexSupportCompleted", "requestCodexSupport"], {
+    window: { location: { assign: (url) => { login = url; } } }, CODEX_LOGIN_URL: "https://codex.sckang.cc/#codex",
     Date: fixedDate, CODEX_SUPPORT_COOLDOWN_MS: 30_000, CODEX_SUPPORT_ACTION: "QUEUE_MESSAGE_V1",
     CODEX_SUPPORT_DOC_ID: "__codex_support", COLLECTION: "clients", db: {}, doc: () => "support-ref",
     codexSupportSending: false, codexSupportError: "", renderCodexSupportStatus() {},
@@ -87,19 +89,19 @@ async function submitCompany(data) {
     }),
   });
   await context.requestCodexSupport();
-  return { written, error: context.codexSupportError };
+  return { written, error: context.codexSupportError, login };
 }
-test("company transaction accepts a new nonce after verified completion", async () => {
+test("legacy company action redirects to login without allocating another Firestore nonce", async () => {
   const result = await submitCompany(completedCompany);
   assert.equal(result.error, "");
-  assert.equal(result.written?.supportRequestNonce, 10);
-  assert.equal(result.written?.codexResponseState, "WAITING");
-  assert.equal(result.written?.codexResponseText, "");
+  assert.equal(result.written, undefined);
+  assert.equal(result.login, "https://codex.sckang.cc/#codex");
 });
-test("company transaction rereads and blocks when the previous response is still pending", async () => {
+test("legacy company redirect cannot modify a pending Firestore response", async () => {
   const result = await submitCompany({ ...completedCompany, codexResponseState: "IN_PROGRESS" });
   assert.equal(result.written, undefined);
-  assert.match(result.error, /等待 Codex 完成/);
+  assert.equal(result.error, "");
+  assert.equal(result.login, "https://codex.sckang.cc/#codex");
 });
 
 test("central queue admits the next report under its lock after final reply", async () => {

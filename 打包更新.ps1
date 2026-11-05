@@ -414,6 +414,7 @@ foreach ($bridgeScript in @(
     'self-hosted-server\windows\CodexSupportBootstrap.ps1',
     'self-hosted-server\windows\CodexSupportWatchdog.ps1',
     'self-hosted-server\windows\Install-CodexSupportBridge.ps1',
+    'self-hosted-server\windows\Update-CodexSupportBridge.ps1',
     'self-hosted-server\windows\Uninstall-CodexSupportBridge.ps1'
 )) {
     $bridgeTokens = $null
@@ -491,7 +492,7 @@ Move-Item -LiteralPath $launcherTemp -Destination '全自動鋤地.exe' -Force
 Write-Host '建立同版 self-hosted-server.zip…'
 New-FilteredZip 'self-hosted-server' 'self-hosted-server.zip' @(
     '.dev-runtime/*', 'node_modules/*', '.update-work/*',
-    '.env', '*.log', '*.partial'
+    'secrets', 'secrets/*', '.env', '*.log', '*.partial'
 )
 Assert-ZipContains 'self-hosted-server.zip' @(
     '.npmrc', 'package.json', 'compose.yml', 'src/app.js', 'src/media.js',
@@ -504,13 +505,13 @@ Assert-ZipContains 'self-hosted-server.zip' @(
     'src/performance.js', 'src/settings.js',
     'src/codex-support.js', 'src/codex-support-queue.js', 'Update-Server.ps1',
     'test/dev-runtime.js', 'test/development-paths.test.js', 'test/run-tests.mjs',
-    'test/integration-smoke.mjs', 'test/media-stream.test.js',
+    'test/integration-smoke.mjs', 'test/integration-access-smoke.mjs', 'test/media-stream.test.js',
     'test/company-performance-web.test.js',
     'windows/CodexSupportBridge.ps1', 'windows/CodexSupportWatchdog.ps1', 'windows/CodexSupportBootstrap.ps1', 'windows/Install-CodexSupportBridge.ps1',
-    'windows/Uninstall-CodexSupportBridge.ps1'
+    'windows/Uninstall-CodexSupportBridge.ps1', 'windows/Update-CodexSupportBridge.ps1'
 )
 Assert-ZipExcludes 'self-hosted-server.zip' @(
-    '.dev-runtime/*', 'node_modules/*', '.update-work/*', '.env'
+    '.dev-runtime/*', 'node_modules/*', '.update-work/*', 'secrets', 'secrets/*', '.env'
 )
 
 $payloadHash = (Get-FileHash -LiteralPath 'payload.zip' -Algorithm SHA256).Hash

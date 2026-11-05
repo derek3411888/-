@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { assertChildPath, config } from "../src/config.js";
 import { closeDatabase, query } from "../src/db.js";
+import { verifyAnonymousPrivilegedAccess } from "./integration-access-smoke.mjs";
 
 const base = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
 const uid = `smoke-device-${Date.now()}`;
@@ -78,19 +79,7 @@ async function main() {
   assert(directAccessBody.accessMode === "direct", "browser access mode is not direct");
   const directDeviceList = await request("/api/v1/devices", { browser: true });
   assert(Array.isArray(directDeviceList.devices), "direct browser could not list devices");
-  const codexSupportStatus = await request("/api/v1/codex-support", { browser: true });
-  assert(Number.isFinite(Number(codexSupportStatus.requestNonce)), "Codex support bridge status is unavailable");
-  const rejectedCodexSupportMode = await fetch(`${base}/api/v1/codex-support`, {
-    method: "POST",
-    headers: { Cookie: cookie, Origin: config.publicUrl, "X-Wuthering-CSRF": "1", "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "UNKNOWN", message: "must not be sent" }),
-  });
-  assert(rejectedCodexSupportMode.status === 400, "invalid Codex support mode was accepted");
-  const rejectedCrossSiteMutation = await fetch(`${base}/api/v1/admin/migration/mode`, {
-    method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "primary" }),
-  });
-  assert(rejectedCrossSiteMutation.status === 403, "mutation without CSRF confirmation was accepted");
+  await verifyAnonymousPrivilegedAccess({ base, cookie, origin: config.publicUrl });
 
   const automaticEnrollment = await fetch(`${base}/api/v1/device/enroll`, {
     method: "POST", headers: { "Content-Type": "application/json" },
