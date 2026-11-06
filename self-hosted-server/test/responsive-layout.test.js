@@ -209,7 +209,7 @@ test("GitHub Pages company mode retains its layout but disables Codex entry and 
   assert.match(bridge, /Publish-FirestoreCodexResponse/);
   assert.doesNotMatch(bridge, /\[[^\]]+\]\(if\s*\(/);
   assert.match(script, /startClientListener\(\)/);
-  assert.match(script, /snap\.forEach\(\(s\) => cache\.set\(s\.id, s\.data\(\)\)\);[\s\S]*syncCodexLogDeviceOptions\(false\)/);
+  assert.match(script, /snap\.forEach\(\(s\) => cache\.set\(s\.id, companyView\(s\.data\(\)\)\)\);[\s\S]*syncCodexLogDeviceOptions\(false\)/);
   assert.match(script, /startCodexSupportListener\(\)/);
   assert.match(script, /function renderCodexProgressOverview/);
   assert.match(script, /目前聊天室已辨識到這筆網站回報/);

@@ -71,6 +71,7 @@ function webAssetSha256(root) {
 export const config = Object.freeze({
   selfHostOnly,
   pagesReadonlyEnabled: boolean("PAGES_READONLY_ENABLED", false),
+  companyBridgeEnabled: boolean("COMPANY_BRIDGE_ENABLED", false),
   port: integer("PORT", 3000, 1, 65535),
   databaseUrl: process.env.DATABASE_URL ?? "postgres://wuthering:wuthering@postgres:5432/wuthering_control",
   publicUrl: publicBase.origin,

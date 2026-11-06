@@ -1,5 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import { attachMaintenanceUI, maintenanceViewModel } from "./game-maintenance-view.js?v=maintenance-preview-v2";
+import { companyView, assertCompanyReady, companyRequestUpdate, companyRequestStatus } from "./company-bridge-client.js?v=1";
 import {
   collection,
   doc,
@@ -9,6 +10,7 @@ import {
   onSnapshot,
   query,
   runTransaction,
+  serverTimestamp,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
@@ -30,7 +32,7 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.42-l5.56-s1.0.90-company1";
+const WEB_BUILD = "p5.42-l5.56-s1.0.91-company2";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
 const COMPANY_CODEX_ENABLED = false;
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
@@ -798,6 +800,7 @@ async function cleanupStaleClients() {
   try {
     const now = Date.now();
     for (const [id, data] of cache.entries()) {
+      if (data.companyBridge) continue;
       if (!isPastStaleClientRetention(data, now)) continue;
 
       // 網頁剛開啟時先觀察 10 分鐘。若裝置只是系統時鐘錯誤但仍持續心跳，
@@ -814,6 +817,7 @@ async function cleanupStaleClients() {
           if (!current.exists()) return false;
 
           const currentData = current.data();
+          if (currentData.companyBridge) return false;
           if (String(readField(currentData, "uid", "")) !== id) return false;
           if (!isPastStaleClientRetention(currentData)) return false;
 
@@ -1502,6 +1506,7 @@ function selectedClientData() {
 }
 
 function currentMediaData() {
+  if (selectedClientData()?.companyBridge) return null; // Never present a retired Firestore image as current.
   const id = pcDropdown.value;
   if (!id || selectedMediaClientId !== id) return null;
   return selectedMediaData;
@@ -1535,7 +1540,7 @@ function startSelectedMediaSubscription(force = false) {
   const id = pcDropdown.value;
   // 只有使用者真的正在看總覽時才維持 media listener；背景分頁不消耗
   // 每分鐘快照的 Firestore reads / outbound data transfer。
-  if (activeView !== "overview" || document.hidden) {
+  if (activeView !== "overview" || document.hidden || selectedClientData()?.companyBridge) {
     if (stopSelectedMediaListener) stopSelectedMediaListener();
     stopSelectedMediaListener = null;
     selectedMediaClientId = "";
@@ -2324,6 +2329,8 @@ function renderCommandStatus() {
     return;
   }
 
+  const companyStatus = companyRequestStatus(data);
+  if (companyStatus) { setCommandStatus(companyStatus.state, companyStatus.title, companyStatus.detail); return; }
   const latest = deriveCommandHistory(data)[0];
   if (!latest) {
     setCommandStatus("idle", "尚未送出新版命令", "只有收到精確 ACK 才會顯示成功。");
@@ -2523,6 +2530,8 @@ function renderSettingsStatus() {
     return;
   }
 
+  const companyStatus = companyRequestStatus(data, 'settings');
+  if (companyStatus) { setSettingsStatus(companyStatus.state === 'waiting' ? 'pending' : companyStatus.state, companyStatus.title, companyStatus.detail); return; }
   const settings = readRemoteSettings(data, !settingsPreferEffective);
   const effective = readRemoteSettings(data, false);
   document.getElementById("settingsEffectiveSummary").textContent = effective.supported
@@ -2662,6 +2671,7 @@ function validateSettingsForm(data) {
 }
 
 function assertFirestoreControlWritable(data) {
+  if (data.companyBridge) { assertCompanyReady(data.uid, data); return; }
   const mode = String(readField(data, "selfHostedMode", "shadow") || "shadow").trim().toLowerCase();
   const writesFrozen = toBoolean(readField(data, "selfHostedWritesFrozen", false));
   if (writesFrozen || ["cutover", "primary", "disabled"].includes(mode)) {
@@ -2693,10 +2703,12 @@ async function saveRemoteSettings(event, maintenancePatch = null, expectedId = p
   try {
     const ref = doc(db, COLLECTION, id);
     const updatedAt = Date.now();
+    const requestId = crypto.randomUUID();
     const result = await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(ref);
       if (!snap.exists()) throw new Error("選取的電腦文件不存在");
-      const current = snap.data();
+      const raw = snap.data();
+      const current = companyView(raw);
       assertFirestoreControlWritable(current);
       if (maintenancePatch) {
         const model = maintenanceViewModel(readField(current, "gameMaintenanceJson", null), Date.now(), isClientOnline(current));
@@ -2714,6 +2726,19 @@ async function saveRemoteSettings(event, maintenancePatch = null, expectedId = p
       const ackRevision = Math.max(0, toInteger(readField(current, "lastSettingsAckRevision", 0), 0));
       if (desiredRevision > ackRevision) {
         throw new Error(`上一版設定 ${desiredRevision} 尚未收到 ACK，不能覆蓋。`);
+      }
+
+      if (current.companyBridge) {
+        const payload = { ...values, schemaVersion: SETTINGS_SCHEMA_VERSION, serverScheduleList: values.serverScheduleList.join(' | '),
+          liveQualityProfile: readField(current, 'effectiveLiveQualityProfile', 'balanced'),
+          ...Object.fromEntries(MAINTENANCE_SETTING_KEYS.map(key => [key, maintenancePatch && Object.hasOwn(maintenancePatch, key)
+            ? maintenancePatch[key] : readField(current, `effective${key[0].toUpperCase()}${key.slice(1)}`, key === 'maintenanceEnabled' ? true : key === 'maintenanceDelayUntilUtc' ? 0 : '')])) };
+        // Form metadata is not a writable setting.
+        const allowed = ['schemaVersion','serverScheduleEnabled','serverScheduleList','mailNotifyEnabled','runtimeDiagnosticsEnabled',
+          'runtimeDiagnosticsIntervalSec','runtimeDiagnosticsErrorKeepCount','maxRestartCount','liveQualityProfile',...MAINTENANCE_SETTING_KEYS];
+        const update = companyRequestUpdate(id, raw, { id: requestId, kind: 'settings', payload: Object.fromEntries(allowed.map(k => [k, payload[k]])) }, serverTimestamp);
+        transaction.update(ref, update);
+        return { nextRevision: null, data: companyView({ ...raw, ...update }) };
       }
 
       const currentRevision = Math.max(
@@ -2784,6 +2809,7 @@ async function reconcileClientHistory(id) {
   if (!id || reconcileInFlightFor) return;
   const cachedData = cache.get(id);
   if (!cachedData) return;
+  if (cachedData.companyBridge) return;
   const cachedBefore = readCommandHistory(cachedData);
   if (cachedBefore.length === 0) return;
   const cachedAfter = cachedBefore.map((entry) => deriveHistoryEntry(entry, cachedData));
@@ -2831,7 +2857,7 @@ async function loadClients() {
   try {
     const snap = await getDocs(clientsQuery);
     cache.clear();
-    snap.forEach((s) => cache.set(s.id, s.data()));
+    snap.forEach((s) => cache.set(s.id, companyView(s.data())));
     renderClients();
     const selectedId = pcDropdown.value;
     if (selectedId) void reconcileClientHistory(selectedId);
@@ -2855,7 +2881,7 @@ function startClientListener() {
           clientLastObservedChangeAt.delete(change.doc.id);
           staleCleanupRetryAfter.delete(change.doc.id);
         } else {
-          cache.set(change.doc.id, change.doc.data());
+          cache.set(change.doc.id, companyView(change.doc.data()));
           clientLastObservedChangeAt.set(change.doc.id, observedNow);
         }
       });
@@ -2975,7 +3001,8 @@ async function sendCommand(state, payload = {}) {
       const current = await transaction.get(ref);
       if (!current.exists()) throw new Error("選取的電腦文件不存在");
 
-      const data = current.data();
+      const raw = current.data();
+      const data = companyView(raw);
       assertFirestoreControlWritable(data);
       if (commandState === "RESTART_UPDATE") {
         if (!supportsRemoteRestart(data)) {
@@ -3030,6 +3057,13 @@ async function sendCommand(state, payload = {}) {
         }
       }
 
+      if (data.companyBridge) {
+        const update = companyRequestUpdate(id, raw, { id: requestId, kind: 'command', payload: {
+          command: commandState, serverIndex: requestedServerIndex, serverName: requestedServerName,
+        } }, serverTimestamp);
+        transaction.update(ref, update);
+        return { nextNonce: null, data: companyView({ ...raw, ...update }) };
+      }
       const currentNonce = Math.max(0, toInteger(readField(data, "nonce", 0), 0));
       const ackNonce = Math.max(0, toInteger(readField(data, "lastAckNonce", 0), 0));
       const pending = currentNonce > ackNonce;

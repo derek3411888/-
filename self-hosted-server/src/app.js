@@ -8,6 +8,8 @@ import { config, assertChildPath } from "./config.js";
 import { createAccessVerifier, isPrivilegedPath } from "./access-auth.js";
 import { createPagesReadonly } from "./pages-readonly.js";
 import { createPagesDeviceReader } from "./pages-readonly-db.js";
+import { createCompanyBridge, createCompanyTransport } from "./company-bridge.js";
+import { createCompanyDatabase, createCompanyStore } from "./company-bridge-store.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
 import { allowInternalSmokeMutation } from "./internal-smoke.js";
@@ -166,7 +168,7 @@ function scheduleFirestoreCommandSync(uid, expectedNonce, attempt = 0) {
   firestoreCommandSyncTimers.set(uid, timer);
 }
 
-async function sendCommand(uid, body, allowShadow = false) {
+export async function sendCommand(uid, body, allowShadow = false, transaction = withTransaction) {
   const command = String(body.command ?? "").trim().toUpperCase();
   if (!["RUN", "PAUSE", "STOP", "SWITCH_SERVER", "COMPLETE_SERVER", "RESTART_UPDATE"].includes(command)) {
     throw new HttpError(400, "命令不在允許清單", "INVALID_COMMAND");
@@ -184,7 +186,7 @@ async function sendCommand(uid, body, allowShadow = false) {
       throw new HttpError(423, "目前遷移模式不允許送出命令", "COMMAND_WRITE_DISABLED", { mode });
     }
   }
-  return withTransaction(async (client) => {
+  return transaction(async (client) => {
     const device = await client.query("SELECT * FROM devices WHERE uid=$1 FOR UPDATE", [uid]);
     if (!device.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
     if (idempotencyKey) {
@@ -512,8 +514,8 @@ async function ackCommand(uid, body) {
   return updated;
 }
 
-async function savePrimarySettings(uid, body) {
-  const inserted = await withTransaction(async (client) => {
+export async function savePrimarySettings(uid, body, transaction = withTransaction) {
+  const inserted = await transaction(async (client) => {
     const device = await client.query("SELECT settings_revision,settings,status FROM devices WHERE uid=$1 FOR UPDATE", [uid]);
     if (!device.rowCount) throw new HttpError(404, "找不到裝置", "DEVICE_NOT_FOUND");
     const settings = normalizeSettingsInput(body, { previous: device.rows[0].settings ?? {}, status: device.rows[0].status?.gameMaintenance });
@@ -1212,6 +1214,13 @@ async function start() {
   server.headersTimeout = 65_000;
   server.requestTimeout = 0;
   server.listen(config.port, "0.0.0.0", () => console.log(`Wuthering control API listening on :${config.port}`));
+  const companyDatabase = config.companyBridgeEnabled ? createCompanyDatabase(config.databaseUrl) : null;
+  const companyBridge = companyDatabase ? createCompanyBridge({
+    store: createCompanyStore({ withTransaction: companyDatabase.withTransaction, sendCommand, saveSettings: savePrimarySettings }),
+    transport: createCompanyTransport(config.firestore), readDetails: companyDatabase.readDetails,
+    onError: (uid, code) => console.warn('Company bridge cycle failed', { uid, code }),
+  }) : null;
+  companyBridge?.start();
   const heartbeatTimer = setInterval(() => { eventHub.heartbeat(); pagesReadonly.notify(); }, 20_000);
   const cleanupTimer = setInterval(() => cleanupRuntimeData().catch(console.error), 60 * 60_000);
   const mediaRepairTimer = config.formalMediaEnabled ? setInterval(() => {
@@ -1236,6 +1245,8 @@ async function start() {
     for (const timer of firestoreCommandSyncTimers.values()) clearTimeout(timer);
     firestoreCommandSyncTimers.clear();
     pagesReadonly.close();
+    await companyBridge?.close();
+    await companyDatabase?.close();
     await pagesDeviceReader.close();
     await new Promise((resolve) => server.close(resolve));
     await closeDatabase();

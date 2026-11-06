@@ -5,6 +5,8 @@ import test from "node:test";
 
 const companySource = readFileSync(new URL("../../remote-control-web/app.js", import.meta.url), "utf8");
 const centralSource = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+const bridgeSource = readFileSync(new URL("../../remote-control-web/company-bridge-client.js", import.meta.url), "utf8");
+const bridge = await import(`data:text/javascript;base64,${Buffer.from(bridgeSource).toString('base64')}`);
 function functions(source, names) {
   return names.map((name) => {
     const match = new RegExp(`^(?:async )?function ${name}\\(`, "m").exec(source);
@@ -21,6 +23,7 @@ function companyHarness(overrides = {}) {
   const messages = [];
   let release = null;
   const context = vm.createContext({ Date, Map, Math, Set, String, Number, Boolean, Error,
+    ...bridge, serverTimestamp: () => Date.now(),
     pcDropdown: { value: "PC" }, statusMsg: {}, db: {}, COLLECTION: "clients", cache: new Map(),
     COMMAND_HISTORY_LIMIT: 30, OFFLINE_THRESHOLD_MS: 300000, crypto: { randomUUID: () => "company-request-1" },
     sending: false, sendingState: "", commandError: null,
@@ -57,6 +60,19 @@ test("company real sender emits restart once, blocks pending and lets STOP repla
   assert.equal(harness.writes[1].commandHistory[1].statusReason, "STOP_PRIORITY");
   await harness.send("STOP");
   assert.equal(harness.writes.length, 2);
+});
+
+test('company real sender writes bridge request without allocating central nonce', async () => {
+  const uid = 'MYTUFPC_4e8bb5ec68f3';
+  const snapshot = { uid, nonce: 149, lastAckNonce: 149, desiredSettingsRevision: 4, state: 'RUN', status: 'RUN', online: true,
+    lastHeartbeat: Date.now(), remoteRestartSupported: true, remoteRestartVersion: '5.42', payloadVersion: '5.42' };
+  const harness = companyHarness({ ...snapshot, companySnapshot: snapshot, companyBridge: {version:1,enabled:true,epoch:'epoch',heartbeatAt:Date.now()} });
+  harness.context.pcDropdown.value = uid;
+  await harness.send('RESTART_UPDATE');
+  assert.equal(harness.writes.length, 1);
+  assert.deepEqual(Object.keys(harness.writes[0]), ['companyRequest']);
+  assert.equal(harness.writes[0].companyRequest.payload.command, 'RESTART_UPDATE');
+  assert.equal(harness.writes[0].companyRequest.expectedNonce, 149);
 });
 
 test("company sender checks fresh transaction capability and blocks duplicate in-flight submit", async () => {

@@ -7,6 +7,8 @@ const companySource = readFileSync(new URL("../../remote-control-web/app.js", im
 const publicSource = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const queueSource = readFileSync(new URL("../src/codex-support-queue.js", import.meta.url), "utf8");
 const bridgeSource = readFileSync(new URL("../src/firestore-bridge.js", import.meta.url), "utf8");
+const companyBridgeSource = readFileSync(new URL("../../remote-control-web/company-bridge-client.js", import.meta.url), "utf8");
+const { companyView } = await import(`data:text/javascript;base64,${Buffer.from(companyBridgeSource).toString('base64')}`);
 function functionSource(source, name) {
   return source.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([^]*?\\n\\}`))?.[0].replace(/^export /, "") || "";
 }
@@ -168,6 +170,7 @@ test("client listener applies only changed documents and does not touch unrelate
   let renderedSelected;
   const cache = new Map([["selected", selected]]);
   const context = runFunctions(companySource, ["startClientListener"], {
+    companyView,
     Date: fixedDate, clientsQuery: {}, onSnapshot: (_query, callback) => { subscribe = callback; },
     cache, clientLastObservedChangeAt: new Map(), staleCleanupRetryAfter: new Map(),
     pcDropdown: { value: "selected" }, renderClients: (refreshSelected) => { renderedSelected = refreshSelected; },
