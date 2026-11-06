@@ -55,14 +55,17 @@ test("expired session clears private data and stops polling", async () => {
   assert.equal(element("detail-message").textContent, "");
   assert.deepEqual(calls, []);
 });
-test("legacy company Codex subscription and mutations are retired", async () => {
+test("disabled company Codex actions neither navigate, subscribe, nor send requests", async () => {
   const calls = [];
-  const ctx = vm.createContext({ CODEX_LOGIN_URL: "https://codex.sckang.cc/#codex", window: { location: { assign: (url) => calls.push(url) } }, setCodexSupportMessage() {} });
+  const ctx = vm.createContext({ window: { location: { assign: (url) => calls.push(url) } },
+    CODEX_LOGIN_URL: "https://codex.sckang.cc/#codex", fetch: () => calls.push("fetch"),
+    onSnapshot: () => calls.push("subscribe"), runTransaction: () => calls.push("write"),
+    setCodexSupportMessage() {} });
   vm.runInContext(["startCodexSupportListener", "requestCodexSupport", "cancelCodexSupport", "retryCodexSupport", "openCodexSupportDialog"].map((name) => functionText(company, name)).join("\n"), ctx);
   ctx.startCodexSupportListener();
   assert.equal(calls.length, 0);
   for (const name of ["requestCodexSupport", "cancelCodexSupport", "retryCodexSupport", "openCodexSupportDialog"]) await ctx[name]();
-  assert.deepEqual(calls, Array(4).fill("https://codex.sckang.cc/#codex"));
+  assert.deepEqual(calls, []);
 });
 
 test("Access login HTML and redirected API responses expire the UI session", async () => {

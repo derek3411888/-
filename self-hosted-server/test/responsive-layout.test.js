@@ -135,7 +135,7 @@ test("recording status uses an isolated responsive layout", async () => {
   assert.match(codexBridgeWatchdog, /PSObject\.Properties\['BridgePowerShellPath'\]/);
 });
 
-test("GitHub Pages company mode supports preset or custom Codex messages with detailed status", async () => {
+test("GitHub Pages company mode retains its layout but disables Codex entry and actions", async () => {
   const [html, script, css, bridge, fallback] = await Promise.all([
     readFile(new URL("index.html", companyControlDirectory), "utf8"),
     readFile(new URL("app.js", companyControlDirectory), "utf8"),
@@ -177,11 +177,10 @@ test("GitHub Pages company mode supports preset or custom Codex messages with de
   assert.match(script, /CHECK_CURRENT_STATUS:\s*Object\.freeze/);
   assert.match(script, /CODEX_SUPPORT_DOC_ID\s*=\s*"__codex_support"/);
   assert.doesNotMatch(script, /transaction\.set\(supportRef/);
-  assert.match(script, /CODEX_LOGIN_URL = "https:\/\/codex\.sckang\.cc\/#codex"/);
+  assert.match(html, /id="btnOpenCodexSupport"[^>]*\bdisabled\b/);
   for (const action of ["cancelCodexSupport", "retryCodexSupport", "requestCodexSupport"]) {
     const block = script.match(new RegExp("async function " + action + "\\(\\)[\\s\\S]*?\\r?\\n}"))?.[0] ?? "";
-    assert.match(block, /window\.location\.assign\(CODEX_LOGIN_URL\)/);
-    assert.doesNotMatch(block, /runTransaction|supportRef/);
+    assert.doesNotMatch(block, /window\.location|runTransaction|supportRef|fetch\(/);
   }
   assert.match(bridge, /\$ExpectedAction\s*=\s*'QUEUE_MESSAGE_V1'/);
   assert.match(bridge, /\$LegacyAction\s*=\s*'FIX_SCRIPT'/);

@@ -48,11 +48,10 @@
       </div>
       <div class="header-actions">
         <div class="support-control">
-          <button id="btnOpenCodexSupport" class="support-button" type="button">
-            通知目前 Codex 任務
+          <button id="btnOpenCodexSupport" class="support-button" type="button" disabled>
+            公司版 Codex 已停用
           </button>
-          <a class="web-work-fallback-link" href="web-work-fallback.html">自動回報壞掉？開啟人工救援</a>
-          <span id="codexSupportStatus" class="support-status idle" role="status" aria-live="polite">正在確認本機 Codex…</span>
+          <span id="codexSupportStatus" class="support-status idle" role="status" aria-live="polite">公司版不再傳送 Codex 回報，一般版功能不變。</span>
         </div>
         <span class="quota-badge">免費額度保護</span>
       </div>
@@ -391,7 +390,7 @@
         </div>
       </form>
     </section>
-    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite">
+    <section id="codexProgressBanner" class="codex-progress-banner idle" aria-labelledby="codexProgressHeadline" aria-live="polite" hidden>
       <div class="codex-progress-overview">
         <div class="codex-progress-title-row">
           <span id="codexProgressDeliveryBadge" class="badge muted">尚無回報</span>
@@ -412,6 +411,6 @@
     </div>
   </main>
 
-  <script type="module" src="app.js?v=p5.42-l5.56-s1.0.89"></script>
+    <script type="module" src="app.js?v=p5.42-l5.56-s1.0.90-company1"></script>
 </body>
 </html>

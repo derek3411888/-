@@ -38,6 +38,7 @@ function renderSupport(source, company, data) {
   const { elements, element } = elementFactory();
   const context = runFunctions(source, ["toInteger", "toMillis", "toBoolean", "readField", "isCodexAuthorized", "isCodexSupportCompleted", "renderCodexSupportStatus"], {
     Date: fixedDate, document: { getElementById: element }, $: element,
+    COMPANY_CODEX_ENABLED: false,
     setText: (id, text) => { element(id).textContent = text; },
     state: { codexSupportData: data, me: { codexAccess: { authorized: true } } }, codexSupportData: data,
     codexSupportSending: false, codexSupportRecoveryBusy: false, codexSupportError: "",
@@ -47,6 +48,7 @@ function renderSupport(source, company, data) {
     selectedCodexSupportMessage: () => ({ message: "下一筆" }),
     btnAskCodex: element("btnAskCodex"), btnCancelCodexSupport: element("btnCancelCodexSupport"),
     btnRetryCodexSupport: element("btnRetryCodexSupport"), codexRecoveryHint: element("codexRecoveryHint"),
+    btnOpenCodexSupport: element("btnOpenCodexSupport"), btnOpenCodexProgress: element("btnOpenCodexProgress"),
     codexDetails: Object.fromEntries(["state", "nonce", "requestedAt", "device", "log", "message", "host", "heartbeat", "receivedAt", "validatedAt", "attemptCount", "lastAttemptAt", "queuedAt", "nextRetryAt", "messageHash", "error"].map((key) => [key, element(key)])),
     codexStages: {}, setCodexStage() {}, renderCodexProgressOverview() {}, setCodexSupportMessage() {},
     fmtTs: String, fmtAge: String, formatTime: String, formatAge: String,
@@ -55,8 +57,8 @@ function renderSupport(source, company, data) {
   return elements.get("btnAskCodex").disabled;
 }
 
-test("company send button unlocks immediately after the current final reply", () => {
-  assert.equal(renderSupport(companySource, true, completedCompany), false);
+test("company Codex remains disabled even after a completed historical reply", () => {
+  assert.equal(renderSupport(companySource, true, completedCompany), true);
 });
 test("general send button unlocks immediately after the current final reply", () => {
   assert.equal(renderSupport(publicSource, false, {
@@ -91,17 +93,17 @@ async function submitCompany(data) {
   await context.requestCodexSupport();
   return { written, error: context.codexSupportError, login };
 }
-test("legacy company action redirects to login without allocating another Firestore nonce", async () => {
+test("disabled company action cannot navigate or allocate another Firestore nonce", async () => {
   const result = await submitCompany(completedCompany);
   assert.equal(result.error, "");
   assert.equal(result.written, undefined);
-  assert.equal(result.login, "https://codex.sckang.cc/#codex");
+  assert.equal(result.login, undefined);
 });
-test("legacy company redirect cannot modify a pending Firestore response", async () => {
+test("disabled company action cannot modify a pending Firestore response", async () => {
   const result = await submitCompany({ ...completedCompany, codexResponseState: "IN_PROGRESS" });
   assert.equal(result.written, undefined);
   assert.equal(result.error, "");
-  assert.equal(result.login, "https://codex.sckang.cc/#codex");
+  assert.equal(result.login, undefined);
 });
 
 test("central queue admits the next report under its lock after final reply", async () => {

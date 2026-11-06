@@ -30,9 +30,9 @@ const COMMAND_HISTORY_LIMIT = 30;
 const SETTINGS_SCHEMA_VERSION = 1;
 const SUPPORTED_SERVERS = ["America", "Europe", "Asia", "HMT(HK,MO,TW)", "SEA"];
 const MAX_REMOTE_SERVERS = SUPPORTED_SERVERS.length;
-const WEB_BUILD = "p5.42-l5.56-s1.0.89";
+const WEB_BUILD = "p5.42-l5.56-s1.0.90-company1";
 const CODEX_SUPPORT_DOC_ID = "__codex_support";
-const CODEX_LOGIN_URL = "https://codex.sckang.cc/#codex";
+const COMPANY_CODEX_ENABLED = false;
 const CODEX_SUPPORT_ACTION = "QUEUE_MESSAGE_V1";
 const CODEX_SUPPORT_MAX_MESSAGE_LENGTH = 1000;
 const CODEX_SUPPORT_MAX_CONTEXT_LENGTH = 14000;
@@ -547,6 +547,12 @@ function isCodexSupportCompleted(data) {
 }
 
 function renderCodexSupportStatus() {
+  if (!COMPANY_CODEX_ENABLED) {
+    for (const button of [btnOpenCodexSupport, btnOpenCodexProgress, btnAskCodex, btnCancelCodexSupport, btnRetryCodexSupport]) button.disabled = true;
+    document.getElementById("codexProgressBanner").hidden = true;
+    setCodexSupportMessage("idle", "公司版 Codex 回報已停用；一般版功能不變。");
+    return;
+  }
   const data = codexSupportData || {};
   const requestNonce = Math.max(0, toInteger(readField(data, "supportRequestNonce", 0), 0));
   const statusNonce = Math.max(0, toInteger(readField(data, "bridgeStatusNonce", 0), 0));
@@ -757,19 +763,19 @@ function renderCodexSupportStatus() {
 }
 
 async function cancelCodexSupport() {
-  window.location.assign(CODEX_LOGIN_URL);
+  return false;
 }
 
 async function retryCodexSupport() {
-  window.location.assign(CODEX_LOGIN_URL);
+  return false;
 }
 
 async function requestCodexSupport() {
-  window.location.assign(CODEX_LOGIN_URL);
+  return false;
 }
 
 function startCodexSupportListener() {
-  setCodexSupportMessage("idle", "Codex 已改用登入保護入口；點按通知即可前往。");
+  setCodexSupportMessage("idle", "公司版 Codex 回報已停用；一般版功能不變。");
 }
 
 function normalizeStatus(v) {
@@ -3215,7 +3221,7 @@ btnReloadSettings.addEventListener("click", () => {
 });
 
 function openCodexSupportDialog() {
-  window.location.assign(CODEX_LOGIN_URL);
+  return false;
 }
 
 btnOpenCodexSupport.addEventListener("click", openCodexSupportDialog);
@@ -3247,7 +3253,6 @@ updateCodexMessageControls();
 setActiveView(activeView, false);
 startCodexSupportListener();
 startClientListener();
-window.setInterval(renderCodexSupportStatus, 1000);
 window.setInterval(renderCommandStatus, 1000);
 window.setInterval(renderSettingsStatus, 1000);
 window.setInterval(() => void cleanupStaleClients(), 60_000);
