@@ -37,7 +37,7 @@ export function createCompanyStore({ withTransaction, sendCommand, saveSettings 
           if (migration?.mode !== 'primary' || migration?.writesFrozen === true) reject('COMPANY_NOT_PRIMARY');
           const d = (await c.query('SELECT command_nonce,settings_revision,last_seen,state FROM devices WHERE uid=$1 FOR UPDATE', [uid])).rows[0];
           if (!d || Number(d.command_nonce) !== request.expectedNonce || Number(d.settings_revision) !== request.expectedRevision) reject('COMPANY_STALE_BASELINE');
-          if (request.kind === 'command' && (!d.last_seen || now - new Date(d.last_seen).valueOf() > 300000 || ['STOP','OFFLINE'].includes(d.state))) reject('DEVICE_OFFLINE');
+          if (!d.last_seen || now - new Date(d.last_seen).valueOf() > 300000 || ['STOP','OFFLINE'].includes(d.state)) reject('DEVICE_OFFLINE');
           const tx = callback => callback(c);
           const result = request.kind === 'command'
             ? await sendCommand(uid, { ...request.payload, idempotencyKey: `company:${request.id}` }, true, tx)
@@ -71,7 +71,7 @@ export function createCompanyDatabase(connectionString) {
     assertCompanyUid(uid);
     const device = (await pool.query("SELECT *, (state NOT IN ('STOP','OFFLINE') AND last_seen>now()-interval '5 minutes' AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.uid=devices.uid AND c.command='STOP' AND c.status='ACKED' AND c.acked_at>=devices.last_seen)) AS online FROM devices WHERE uid=$1", [uid])).rows[0];
     if (!device) throw new Error('Company device missing');
-    const commands = (await pool.query('SELECT nonce,command,payload,status,created_at,acked_at,ack_result,ack_detail FROM commands WHERE uid=$1 ORDER BY nonce DESC LIMIT 30', [uid])).rows;
+    const commands = (await pool.query('SELECT nonce,command,payload,status,created_at,acked_at,ack_result,ack_detail,ack_payload FROM commands WHERE uid=$1 ORDER BY nonce DESC LIMIT 30', [uid])).rows;
     const settings = (await pool.query('SELECT revision,settings FROM settings_revisions WHERE uid=$1 ORDER BY revision DESC LIMIT 1', [uid])).rows[0];
     const events = (await pool.query('SELECT event_at,level,name,detail FROM runtime_events WHERE uid=$1 ORDER BY event_at DESC LIMIT 50', [uid])).rows;
     return { device, commands, settings, events };

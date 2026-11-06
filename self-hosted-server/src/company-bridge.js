@@ -14,6 +14,14 @@ const text = (v, limit = 1200) => redact(typeof v === 'string' ? v : '').slice(0
 const millis = v => typeof v === 'number' ? v : new Date(v || 0).valueOf() || 0;
 const number = v => Math.max(0, Number(v) || 0);
 function reject(code) { throw new HttpError(409, code, code); }
+function commandStatus(c) {
+  if (c.status === 'PENDING') return 'WAITING_ACK';
+  const result = String(c.ack_result || '').toUpperCase();
+  const rejected = ['REJECTED', 'ERROR', 'NO_SERVER_CONFIG', 'INVALID_TARGET', 'CONFIG_CHANGED', 'ALREADY_CURRENT',
+    'BUSY', 'CONFIG_WRITE_FAILED', 'UNSUPPORTED_CLIENT', 'HANDLER_ERROR', 'NO_HANDLER'].includes(result) ||
+    (c.command === 'SWITCH_SERVER' && result === 'ALREADY_COMPLETED_TODAY');
+  return c.status === 'ACKED' && rejected ? 'REJECTED' : text(c.status, 40);
+}
 export function assertCompanyUid(uid) { if (!COMPANY_UIDS.includes(uid)) reject('COMPANY_UID_DENIED'); }
 export function validateCompanyRequest(uid, raw, state, now = Date.now()) {
   assertCompanyUid(uid);
@@ -37,8 +45,10 @@ export function projectCompanySnapshot({ device: d, commands: history = [], even
   const s = d.status || {}, ack = history.find(c => c.status === 'ACKED'), log = s.diagnosticLog || {};
   const out = { uid: d.uid, schemaVersion: 5, displayName: text(d.display_name, 160), deviceAlias: text(d.device_alias, 120),
     state: text(d.state, 40), status: text(d.state, 40), online: d.online === true, lastHeartbeat: millis(d.last_seen),
-    nonce: number(d.command_nonce), lastAckNonce: number(d.last_nonce), desiredState: text(history[0]?.command, 40),
+    nonce: number(d.command_nonce), lastAckNonce: number(ack?.nonce), desiredState: text(history[0]?.command, 40),
     lastAckState: text(ack?.command, 40), lastAckResult: text(ack?.ack_result, 120), lastAckDetail: text(ack?.ack_detail, 2000), lastAckAt: millis(ack?.acked_at),
+    lastAckServerIndex: number(ack?.ack_payload?.serverIndex ?? ack?.payload?.serverIndex),
+    lastAckServerName: text(ack?.ack_payload?.serverName ?? ack?.payload?.serverName, 80),
     remoteSettingsSchemaVersion: number(d.settings?.schemaVersion), desiredSettingsRevision: number(d.settings_revision),
     effectiveSettingsRevision: number(d.settings_effective_revision), lastSettingsAckRevision: number(d.settings_ack?.revision),
     lastSettingsAckResult: text(d.settings_ack?.result, 120), lastSettingsAckDetail: text(d.settings_ack?.detail, 2000), lastSettingsAckAt: millis(d.settings_ack?.at),
@@ -50,7 +60,7 @@ export function projectCompanySnapshot({ device: d, commands: history = [], even
     recentEventsJson: JSON.stringify(events.slice(0, 50).reverse().map(e => ({ at: millis(e.event_at), name: text(e.name, 160), level: text(e.level, 20), detail: text(e.detail, 1000) }))),
     commandHistory: history.slice(0, 30).map(c => ({ commandId: String(c.nonce), commandNonce: number(c.nonce), requestedState: text(c.command, 40),
       targetServerIndex: number(c.payload?.serverIndex), targetServerName: text(c.payload?.serverName, 80), sentAt: millis(c.created_at),
-      status: c.status === 'PENDING' ? 'WAITING_ACK' : c.status === 'ACKED' && ['REJECTED', 'ERROR', 'UNSUPPORTED_CLIENT', 'NO_SERVER_CONFIG'].includes(c.ack_result) ? 'REJECTED' : text(c.status, 40),
+      status: commandStatus(c),
       ackAt: millis(c.acked_at), ackResult: text(c.ack_result, 120), ackDetail: text(c.ack_detail, 2000) })),
   };
   for (const key of ['currentStep', 'currentStepLevel', 'currentStepDetail', 'payloadVersion', 'currentServer', 'currentServerLabel', 'serverCycleKey',

@@ -1032,7 +1032,8 @@ function readRemoteSettings(data, preferDesired = true) {
       useDesired ? "desiredMailNotifyEnabled" : "effectiveMailNotifyEnabled",
       false,
     )),
-    mailNotifyConfigured: toBoolean(readField(source, "mailNotifyConfigured", false)),
+    mailNotifyConfigured: source.companyBridge && readField(source, "mailNotifyConfigured", null) === null
+      ? null : toBoolean(readField(source, "mailNotifyConfigured", false)),
     runtimeDiagnosticsEnabled: toBoolean(readField(
       source,
       useDesired ? "desiredRuntimeDiagnosticsEnabled" : "effectiveRuntimeDiagnosticsEnabled",
@@ -2530,13 +2531,13 @@ function renderSettingsStatus() {
     return;
   }
 
-  const companyStatus = companyRequestStatus(data, 'settings');
-  if (companyStatus) { setSettingsStatus(companyStatus.state === 'waiting' ? 'pending' : companyStatus.state, companyStatus.title, companyStatus.detail); return; }
   const settings = readRemoteSettings(data, !settingsPreferEffective);
   const effective = readRemoteSettings(data, false);
   document.getElementById("settingsEffectiveSummary").textContent = effective.supported
     ? `目前實際生效值（revision ${effective.effectiveRevision || "—"}）：排程 ${effective.serverScheduleEnabled ? "開" : "關"}（${effective.serverScheduleList.join(" → ") || "未設定"}）｜重啟上限 ${effective.maxRestartCount}｜診斷 ${effective.runtimeDiagnosticsEnabled ? "開" : "關"}/${effective.runtimeDiagnosticsIntervalSec} 秒｜郵件 ${effective.mailNotifyEnabled ? "開" : "關"}`
     : "目前實際生效值：裝置尚未支援回報";
+  const companyStatus = companyRequestStatus(data, 'settings');
+  if (companyStatus) { setSettingsStatus(companyStatus.state === 'waiting' ? 'pending' : companyStatus.state, companyStatus.title, companyStatus.detail); return; }
   if (!settings.supported) {
     setSettingsStatus("rejected", "此裝置尚不支援網頁設定", "需更新執行端 Payload；舊版裝置仍可使用總覽控制功能。");
     return;
@@ -2618,10 +2619,12 @@ function renderSettingsPage(force = false) {
     populateSettingsForm(settings, id);
   }
 
-  settingsMailHint.textContent = settings.mailNotifyConfigured
+  settingsMailHint.textContent = settings.mailNotifyConfigured === null
+    ? "公司橋接未回報 SMTP 能力；可保留已啟用的郵件設定，由裝置再次驗證，不能據此新啟用。"
+    : settings.mailNotifyConfigured
     ? "本機 SMTP 欄位已完成；郵件帳密不會上傳到 Firestore。"
     : "本機尚未完成 SMTP 欄位；可從網頁停用，但裝置會拒絕從網頁啟用。";
-  settingsMailHint.classList.toggle("danger-text", !settings.mailNotifyConfigured);
+  settingsMailHint.classList.toggle("danger-text", settings.mailNotifyConfigured === false);
   settingsDirtyHint.textContent = settingsDirty ? "有尚未儲存的變更" : "沒有未儲存的變更";
   setSettingsFormDisabled(settingsSaving);
   renderSettingsStatus();
@@ -2655,7 +2658,8 @@ function validateSettingsForm(data) {
   }
 
   const currentSettings = readRemoteSettings(data, false);
-  if (settingsMailEnabled.checked && !currentSettings.mailNotifyConfigured) {
+  const preservingCompanyMail = data.companyBridge && currentSettings.mailNotifyConfigured === null && currentSettings.mailNotifyEnabled;
+  if (settingsMailEnabled.checked && !currentSettings.mailNotifyConfigured && !preservingCompanyMail) {
     throw new Error("本機尚未完成 SMTP 設定，無法從網頁啟用郵件通知");
   }
 
@@ -2687,6 +2691,8 @@ async function saveRemoteSettings(event, maintenancePatch = null, expectedId = p
   const data = selectedClientData();
   if (!id || !data) return;
   if (id !== expectedId) throw new Error("選取裝置已改變，請重新確認。");
+  const formSourceKey = settingsFormSourceKey;
+  const preferDesired = !settingsPreferEffective;
 
   let values;
   try {
@@ -2729,6 +2735,9 @@ async function saveRemoteSettings(event, maintenancePatch = null, expectedId = p
       }
 
       if (current.companyBridge) {
+        if (!maintenancePatch && formSourceKey !== settingsSourceKey(id, readRemoteSettings(current, preferDesired))) {
+          throw new Error("設定已由其他控制台變更，請重新載入設定後再編輯；未覆寫新設定。");
+        }
         const payload = { ...values, schemaVersion: SETTINGS_SCHEMA_VERSION, serverScheduleList: values.serverScheduleList.join(' | '),
           liveQualityProfile: readField(current, 'effectiveLiveQualityProfile', 'balanced'),
           ...Object.fromEntries(MAINTENANCE_SETTING_KEYS.map(key => [key, maintenancePatch && Object.hasOwn(maintenancePatch, key)

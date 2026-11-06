@@ -22,6 +22,11 @@ step, server progress, bounded redacted logs, command history and settings are
 mirrored. Old Firestore screenshots are deliberately not displayed as current;
 live video/image transport is not part of this bridge. General-site media is
 unchanged. The company UI waits if a previous bridge request lacks a receipt.
+ACK fields come from one precise command receipt, never from a heartbeat cursor.
+An edited settings form refuses a newer baseline instead of overwriting it.
+Unknown SMTP capability permits preserving already enabled mail only; enabling
+mail anew requires reported capability. Device-side settings validation remains.
+Both new command and settings requests are rejected if offline at intake.
 
 This uses the existing Firestore access rules, not a new authentication system.
 Anyone allowed by those rules may submit the limited supported operations.

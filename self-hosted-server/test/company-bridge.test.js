@@ -18,7 +18,7 @@ test('snapshot replaces legacy state, uses real timestamps and counters, exclude
   assert.equal(snapshot.status, 'RUN');
   assert.equal(snapshot.recordingStateDetail, '');
   assert.equal(snapshot.nonce, 127);
-  assert.equal(snapshot.lastAckNonce, 127);
+  assert.equal(snapshot.lastAckNonce, 0); // A cursor without a command ACK is not execution evidence.
   assert.equal(snapshot.effectiveMaxRestartCount, 10);
   assert.equal(snapshot.recentLogFileName, 'new.log');
   assert.match(snapshot.recentLogExcerpt, /REDACTED/);

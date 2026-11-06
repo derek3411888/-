@@ -40,6 +40,14 @@ try {
   assert.equal((await store.intake(uid,settings,now+7)).revision,5); checks++;
   const nextSettings = req({expectedNonce:129,expectedRevision:5,kind:'settings',payload:{serverScheduleEnabled:false}});
   assert.equal((await store.intake(uid,nextSettings,now+7)).code,'SETTINGS_PENDING'); checks++;
+  await query("UPDATE settings_revisions SET status='APPLIED' WHERE uid=$1",[uid]);
+  for (const offline of [{state:'RUN',last_seen:new Date(now-300001)}, {state:'STOP',last_seen:new Date(now)}]) {
+    await query('UPDATE devices SET state=$2,last_seen=$3,settings_effective_revision=5 WHERE uid=$1',[uid,offline.state,offline.last_seen]);
+    const response=await store.intake(uid,req({expectedNonce:129,expectedRevision:5,kind:'settings',payload:{serverScheduleEnabled:false}}),now+8);
+    assert.equal(response.code,'DEVICE_OFFLINE');
+    assert.equal((await query('SELECT settings_revision FROM devices WHERE uid=$1',[uid])).rows[0].settings_revision,'5');checks++;
+  }
+  await query("UPDATE devices SET state='RUN',last_seen=now() WHERE uid=$1",[uid]);
   await query("UPDATE system_settings SET value='{\"mode\":\"cutover\"}' WHERE key='migration'");
   assert.equal((await store.intake(uid,req({expectedNonce:129,expectedRevision:5}),now+8)).code,'COMPANY_NOT_PRIMARY'); checks++;
   console.log(JSON.stringify({ isolated:true, checks, passed:true, deviceCommandsSent:0 }));
