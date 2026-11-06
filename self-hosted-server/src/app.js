@@ -6,6 +6,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { config, assertChildPath } from "./config.js";
 import { createAccessVerifier, isPrivilegedPath } from "./access-auth.js";
+import { createPagesReadonly } from "./pages-readonly.js";
+import { createPagesDeviceReader } from "./pages-readonly-db.js";
 import { closeDatabase, migrate, query, withTransaction } from "./db.js";
 import { installFileLogger } from "./logger.js";
 import { allowInternalSmokeMutation } from "./internal-smoke.js";
@@ -87,7 +89,20 @@ const liveLeaseTouches = new Map();
 const liveHlsSessions = new Map();
 const firestoreCommandSyncTimers = new Map();
 const startedAt = Date.now();
+const pagesDeviceReader = createPagesDeviceReader(config.databaseUrl);
+const pagesReadonly = createPagesReadonly({
+  enabled: config.pagesReadonlyEnabled, publicUrl: config.publicUrl,
+  readDevices: pagesDeviceReader.read,
+  ensureBrowser: async (req, res) => {
+    const access = await ensureBrowser(req);
+    if (access.token) res.setHeader("Set-Cookie", browserCookie(access.token, access.session.expires_at));
+    return access.session;
+  },
+  requireSameOrigin,
+});
 const staticFiles = new Map([
+  ["/pages-readonly-authorize.html", ["pages-readonly-authorize.html", "text/html; charset=utf-8"]],
+  ["/pages-readonly-authorize.js", ["pages-readonly-authorize.js", "text/javascript; charset=utf-8"]],
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
   ["/web-work-fallback.html", ["web-work-fallback.html", "text/html; charset=utf-8"]],
@@ -360,6 +375,7 @@ async function updateHeartbeat(uid, body) {
     }
   }
   eventHub.emit("device", { uid, state, at: Date.now() });
+  pagesReadonly.notify();
 }
 
 async function reconcileSettingsRevisionFromHeartbeat(uid, revision) {
@@ -824,6 +840,7 @@ async function serveStatic(res, pathname) {
 export async function handleRequest(req, res) {
   const url = new URL(req.url, config.publicUrl);
   const pathname = url.pathname;
+  if (await pagesReadonly.handle(req, res, url)) return;
   if (isPrivilegedPath(pathname)) await verifyCodexAccess(req.headers["cf-access-jwt-assertion"]);
   if (req.method === "GET" && staticFiles.has(pathname)) {
     await serveStatic(res, pathname);
@@ -1195,7 +1212,7 @@ async function start() {
   server.headersTimeout = 65_000;
   server.requestTimeout = 0;
   server.listen(config.port, "0.0.0.0", () => console.log(`Wuthering control API listening on :${config.port}`));
-  const heartbeatTimer = setInterval(() => eventHub.heartbeat(), 20_000);
+  const heartbeatTimer = setInterval(() => { eventHub.heartbeat(); pagesReadonly.notify(); }, 20_000);
   const cleanupTimer = setInterval(() => cleanupRuntimeData().catch(console.error), 60 * 60_000);
   const mediaRepairTimer = config.formalMediaEnabled ? setInterval(() => {
       repairStalledMediaJobs().then((summary) => {
@@ -1218,6 +1235,8 @@ async function start() {
     clearInterval(discoveryTimer); clearInterval(rateTimer);
     for (const timer of firestoreCommandSyncTimers.values()) clearTimeout(timer);
     firestoreCommandSyncTimers.clear();
+    pagesReadonly.close();
+    await pagesDeviceReader.close();
     await new Promise((resolve) => server.close(resolve));
     await closeDatabase();
     process.exit(0);

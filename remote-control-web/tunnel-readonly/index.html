@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://ww.sckang.cc; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer"><title>鋤地狀態 · 唯讀測試</title><link rel="stylesheet" href="styles.css"><script type="module" src="app.js"></script></head>
+<body><main><p class="eyebrow">WUTHERING CONTROL · READ ONLY</p><h1>兩台裝置，<br>即時掌握。</h1>
+<p class="intro">透過既有 Cloudflare 隧道取得精簡狀態。此測試頁不能控制裝置，也不會讀取日誌、錄影或設定。</p>
+<div class="actions"><button id="connect">連接並授權 10 分鐘</button><button id="disconnect" class="secondary">停止讀取</button></div>
+<p id="connection" role="status">尚未連接。按下連接後，在新視窗允許唯讀存取。</p><section id="devices" aria-label="裝置狀態" aria-live="polite"></section>
+<footer>授權只留在記憶體，重新整理或到期後需重新連接。心跳時間是裝置回報時間，不代表任務已完成。若公司出現封鎖或憑證警告，請停止並交由資訊處確認。<br><a href="https://ww.sckang.cc/pages-readonly-authorize.html" target="_blank" rel="noopener noreferrer">撤銷此瀏覽器的唯讀授權</a></footer></main></body></html>
